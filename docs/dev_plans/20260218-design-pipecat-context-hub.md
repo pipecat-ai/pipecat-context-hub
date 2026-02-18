@@ -64,7 +64,7 @@ The proposed solution is a Pipecat Context Hub with:
   - [x] `examples/foundational` class -> example -> capability mapping (supports both subdirectory and flat file layouts).
   - [x] `pipecat-examples` capability mapping with no manual curation in v0 (root-level dir scanning).
 - [x] Implement vector index + FTS index with `IndexWriter`/`IndexReader`. *(T4)*
-- [ ] Add optional DeepWiki ingestion as a secondary source (explicit URL allowlist). *(T2, stretch — deferred to v1)*
+- [x] ~~Add optional DeepWiki ingestion as a secondary source.~~ **DoA:** `llms-full.txt` provides complete official docs (305 pages) in LLM-friendly markdown format, making a third-party mirror redundant.
 
 ### Phase 3: Retrieval and Quality — T5 (parallel) ✅
 - [x] Implement hybrid retrieval (vector + keyword + metadata filters). *(T5)*
@@ -346,7 +346,7 @@ All of T1–T7 depend only on T0. T8 depends on all of T1–T7.
 - `https://docs.pipecat.ai/` (primary docs source).
 - `https://github.com/pipecat-ai/pipecat/tree/main/examples` (including `examples/foundational`).
 - `https://github.com/pipecat-ai/pipecat-examples` (project-level examples).
-- `https://deepwiki.com/pipecat-ai/pipecat/2-getting-started` and same-repo DeepWiki paths (optional secondary source, disabled by default).
+- ~~`https://deepwiki.com/pipecat-ai/pipecat/`~~ — **Dropped.** The official `llms-full.txt` provides complete docs in LLM-friendly format; a third-party mirror adds no value.
 
 ### v0 Technology Defaults
 - **Language:** Python 3.11+ (align with Pipecat ecosystem and existing examples).
@@ -362,7 +362,7 @@ All of T1–T7 depend only on T0. T8 depends on all of T1–T7.
 - **Known:** Fully automated taxonomy extraction from `pipecat/examples/foundational` and `pipecat-examples`.
 - **Known:** `latest` is the only index in v0.
 - **Unknown:** Final vector backend implementation details (to be selected during Phase 1 benchmark).
-- **Unknown:** Whether DeepWiki adds enough recall value for v0 to remain enabled by default.
+- **Resolved:** DeepWiki is not needed — `llms-full.txt` covers all 305 doc pages in LLM-friendly markdown.
 
 ### MCP Tool Contracts (v0)
 1. `search_docs`
@@ -662,6 +662,6 @@ pipecat-context-hub serve
 
 #### Remaining Items
 - [ ] Load/latency benchmarks on retrieval paths (deferred to post-MVP)
-- [ ] DeepWiki secondary source ingestion (deferred to v1)
+- [x] ~~DeepWiki secondary source ingestion~~ — DoA: replaced by llms-full.txt
 - [ ] v0 release tag + changelog
 - [ ] `compose_solution` and `propose_architecture` tools (v1)

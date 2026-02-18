@@ -79,12 +79,6 @@ class SourceConfig(BaseModel):
         default=["pipecat-ai/pipecat", "pipecat-ai/pipecat-examples"],
         description="GitHub repos to ingest.",
     )
-    deepwiki_enabled: bool = Field(
-        default=False, description="Whether to ingest DeepWiki as secondary source."
-    )
-    deepwiki_urls: list[str] = Field(
-        default_factory=list, description="DeepWiki URL allowlist (if enabled)."
-    )
 
 
 class HubConfig(BaseModel):

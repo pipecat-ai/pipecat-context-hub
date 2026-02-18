@@ -91,8 +91,6 @@ class TestSourceConfig:
         assert s.docs_url == "https://docs.pipecat.ai/"
         assert s.docs_llms_txt_url == "https://docs.pipecat.ai/llms-full.txt"
         assert s.repos == ["pipecat-ai/pipecat", "pipecat-ai/pipecat-examples"]
-        assert s.deepwiki_enabled is False
-        assert s.deepwiki_urls == []
 
     def test_custom_llms_txt_url(self):
         s = SourceConfig(docs_llms_txt_url="https://example.com/docs.txt")
@@ -118,10 +116,10 @@ class TestHubConfig:
         h = HubConfig(
             chunking=ChunkingConfig(doc_max_tokens=1024),
             storage=StorageConfig(data_dir=Path("/tmp/custom")),
-            sources=SourceConfig(deepwiki_enabled=True),
+            sources=SourceConfig(docs_llms_txt_url="https://example.com/docs.txt"),
         )
         rebuilt = _round_trip(h)
         assert rebuilt.chunking.doc_max_tokens == 1024
         assert rebuilt.storage.data_dir == Path("/tmp/custom")
         assert rebuilt.storage.sqlite_path == Path("/tmp/custom/metadata.db")
-        assert rebuilt.sources.deepwiki_enabled is True
+        assert rebuilt.sources.docs_llms_txt_url == "https://example.com/docs.txt"
