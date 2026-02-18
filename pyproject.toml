@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pipecat-context-hub"
+version = "0.1.0"
+description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
+readme = "docs/README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0,<3.0",
+    "mcp>=1.0,<2.0",
+    "httpx>=0.27,<1.0",
+    "beautifulsoup4>=4.12,<5.0",
+    "markdownify>=0.13,<1.0",
+    "chromadb>=0.5,<1.0",
+    "sentence-transformers>=3.0,<4.0",
+    "gitpython>=3.1,<4.0",
+    "click>=8.0,<9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-asyncio>=0.24,<1.0",
+    "mypy>=1.10,<2.0",
+    "ruff>=0.5,<1.0",
+]
+
+[project.scripts]
+pipecat-context-hub = "pipecat_context_hub.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pipecat_context_hub"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
