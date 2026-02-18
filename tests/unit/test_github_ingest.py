@@ -561,3 +561,36 @@ class TestGitHubRepoIngester:
         assert rec.metadata.get("line_start") == 1
         assert isinstance(rec.metadata.get("line_end"), int)
         assert rec.metadata["line_end"] >= 1
+        # execution_mode inferred from capability tags:
+        # daily tag → cloud
+        assert rec.metadata.get("execution_mode") == "cloud"
+
+    async def test_execution_mode_local_when_no_cloud_tags(self, tmp_path: Path):
+        """Examples without cloud transport tags get execution_mode='local'."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {
+                "examples/foundational/01-hello/bot.py": (
+                    "from pipecat.pipeline import Pipeline\n"
+                    "def main():\n"
+                    "    pipeline = Pipeline([])\n"
+                ),
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            await ingester.ingest()
+
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        assert records[0].metadata.get("execution_mode") == "local"

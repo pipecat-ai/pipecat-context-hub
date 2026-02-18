@@ -273,6 +273,24 @@ def _build_taxonomy_lookup(
     return lookup
 
 
+# Tags whose presence implies the example requires a cloud service.
+_CLOUD_TAGS: frozenset[str] = frozenset({
+    "daily", "twilio", "vonage", "livekit", "azure", "aws", "google",
+})
+
+
+def _infer_execution_mode(capability_tags: list[str]) -> str:
+    """Infer execution_mode from capability tags.
+
+    If any tag implies a hosted transport or cloud service, the example
+    is classified as ``"cloud"``; otherwise ``"local"``.
+    """
+    for tag in capability_tags:
+        if tag in _CLOUD_TAGS:
+            return "cloud"
+    return "local"
+
+
 def _build_chunk_metadata(
     *,
     repo_slug: str,
@@ -286,7 +304,7 @@ def _build_chunk_metadata(
     """Build enriched metadata dict for a ChunkedRecord.
 
     Merges basic provenance fields with taxonomy-derived fields
-    (foundational_class, capability_tags, key_files).
+    (foundational_class, capability_tags, key_files, execution_mode).
     """
     meta: dict[str, object] = {
         "repo": repo_slug,
@@ -306,6 +324,7 @@ def _build_chunk_metadata(
             meta["capability_tags"] = cap_tag_names
         if taxonomy_entry.key_files:
             meta["key_files"] = taxonomy_entry.key_files
+        meta["execution_mode"] = _infer_execution_mode(cap_tag_names)
 
     return meta
 
