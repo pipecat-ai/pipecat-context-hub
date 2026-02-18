@@ -1,0 +1,517 @@
+"""Unit tests for the GitHub repo ingester."""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+from pipecat_context_hub.services.ingest.github_ingest import (
+    GitHubRepoIngester,
+    _chunk_by_boundaries,
+    _chunk_by_lines,
+    _chunk_code,
+    _find_example_dirs,
+    _iter_code_files,
+    _make_chunk_id,
+)
+from pipecat_context_hub.shared.config import HubConfig, StorageConfig
+from pipecat_context_hub.shared.types import ChunkedRecord
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_writer() -> AsyncMock:
+    """Create a mock IndexWriter."""
+    writer = AsyncMock()
+    writer.upsert = AsyncMock(side_effect=lambda records: len(records))
+    writer.delete_by_source = AsyncMock(return_value=0)
+    return writer
+
+
+def _create_fake_repo(tmp_path: Path, repo_name: str, files: dict[str, str]) -> Path:
+    """Create a fake git-like repo directory with files.
+
+    ``files`` maps relative paths to content.
+    """
+    from git import Repo as GitRepo
+
+    repo_dir = tmp_path / repo_name
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    for rel_path, content in files.items():
+        fpath = repo_dir / rel_path
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text(content, encoding="utf-8")
+
+    git_repo = GitRepo.init(str(repo_dir))
+    git_repo.index.add([str(repo_dir / p) for p in files])
+    git_repo.index.commit("initial commit")
+    return repo_dir
+
+
+# ---------------------------------------------------------------------------
+# _chunk_code tests
+# ---------------------------------------------------------------------------
+
+
+class TestChunkCode:
+    """Tests for the _chunk_code function."""
+
+    def test_small_file_single_chunk(self):
+        """A file smaller than max_tokens returns a single chunk."""
+        source = "x = 1\ny = 2\n"
+        chunks = _chunk_code(source, max_tokens=256)
+        assert len(chunks) == 1
+        assert chunks[0] == source
+
+    def test_function_boundary_splitting(self):
+        """Large file with functions splits at boundaries."""
+        funcs = []
+        for i in range(10):
+            body = "\n".join(f"    line_{i}_{j} = {j}" for j in range(20))
+            funcs.append(f"def func_{i}():\n{body}\n\n")
+        source = "\n".join(funcs)
+        chunks = _chunk_code(source, max_tokens=100, overlap_tokens=0, prefer_boundaries=True)
+        assert len(chunks) > 1
+        # Each chunk should contain at least one function definition.
+        for chunk in chunks:
+            assert "def func_" in chunk or "line_" in chunk
+
+    def test_line_based_fallback(self):
+        """When prefer_boundaries=False, falls back to line splitting."""
+        source = "\n".join(f"line_{i} = {i}" for i in range(200))
+        chunks = _chunk_code(source, max_tokens=50, overlap_tokens=5, prefer_boundaries=False)
+        assert len(chunks) > 1
+
+    def test_no_boundaries_falls_back(self):
+        """File with no function/class defs falls back to line-based."""
+        source = "\n".join(f"x_{i} = {i}" for i in range(200))
+        chunks = _chunk_code(source, max_tokens=50, overlap_tokens=0, prefer_boundaries=True)
+        assert len(chunks) > 1
+
+    def test_overlap_present(self):
+        """Chunks with overlap share content at boundaries."""
+        funcs = []
+        for i in range(5):
+            body = "\n".join(f"    v_{i}_{j} = {j}" for j in range(30))
+            funcs.append(f"def func_{i}():\n{body}\n\n")
+        source = "\n".join(funcs)
+        chunks = _chunk_code(source, max_tokens=80, overlap_tokens=10, prefer_boundaries=True)
+        if len(chunks) >= 2:
+            # The end of chunk 0 should appear at the start of chunk 1.
+            tail = chunks[0][-20:]
+            assert tail in chunks[1]
+
+    def test_empty_source(self):
+        """Empty string returns single empty chunk."""
+        chunks = _chunk_code("", max_tokens=256)
+        assert chunks == [""]
+
+
+# ---------------------------------------------------------------------------
+# _chunk_by_lines tests
+# ---------------------------------------------------------------------------
+
+
+class TestChunkByLines:
+    """Tests for the line-based chunker."""
+
+    def test_basic_splitting(self):
+        lines = [f"line_{i}\n" for i in range(100)]
+        chunks = _chunk_by_lines(lines, max_tokens=20, overlap_tokens=0)
+        assert len(chunks) > 1
+        # All lines should appear across chunks.
+        joined = "".join(chunks)
+        for line in lines:
+            assert line in joined
+
+    def test_single_line_chunk(self):
+        lines = ["short\n"]
+        chunks = _chunk_by_lines(lines, max_tokens=256, overlap_tokens=0)
+        assert len(chunks) == 1
+
+
+# ---------------------------------------------------------------------------
+# _chunk_by_boundaries tests
+# ---------------------------------------------------------------------------
+
+
+class TestChunkByBoundaries:
+    """Tests for the boundary-aware chunker."""
+
+    def test_no_boundaries_returns_empty(self):
+        lines = ["x = 1\n", "y = 2\n"]
+        result = _chunk_by_boundaries(lines, max_tokens=256, overlap_tokens=0)
+        assert result == []
+
+    def test_single_function(self):
+        lines = ["def foo():\n", "    return 1\n"]
+        result = _chunk_by_boundaries(lines, max_tokens=256, overlap_tokens=0)
+        assert len(result) == 1
+        assert "def foo" in result[0]
+
+
+# ---------------------------------------------------------------------------
+# _make_chunk_id tests
+# ---------------------------------------------------------------------------
+
+
+class TestMakeChunkId:
+    """Tests for deterministic chunk ID generation."""
+
+    def test_deterministic(self):
+        id1 = _make_chunk_id("pipecat-ai/pipecat", "examples/foo.py", "abc123", 0)
+        id2 = _make_chunk_id("pipecat-ai/pipecat", "examples/foo.py", "abc123", 0)
+        assert id1 == id2
+
+    def test_different_index_different_id(self):
+        id1 = _make_chunk_id("repo", "path.py", "sha", 0)
+        id2 = _make_chunk_id("repo", "path.py", "sha", 1)
+        assert id1 != id2
+
+    def test_format(self):
+        cid = _make_chunk_id("r", "p", "s", 0)
+        assert len(cid) == 24
+        # Should be valid hex.
+        int(cid, 16)
+
+    def test_matches_expected_sha256(self):
+        key = "repo:path.py:sha:0"
+        expected = hashlib.sha256(key.encode()).hexdigest()[:24]
+        assert _make_chunk_id("repo", "path.py", "sha", 0) == expected
+
+
+# ---------------------------------------------------------------------------
+# _find_example_dirs tests
+# ---------------------------------------------------------------------------
+
+
+class TestFindExampleDirs:
+    """Tests for example directory discovery."""
+
+    def test_finds_direct_example_dirs(self, tmp_path: Path):
+        """Finds example dirs that directly contain code files."""
+        ex = tmp_path / "examples" / "bot1"
+        ex.mkdir(parents=True)
+        (ex / "main.py").write_text("print('hello')")
+
+        result = _find_example_dirs(tmp_path)
+        assert len(result) == 1
+        assert result[0] == ex
+
+    def test_finds_nested_example_dirs(self, tmp_path: Path):
+        """Finds subdirs under category dirs (e.g. foundational/)."""
+        cat = tmp_path / "examples" / "foundational" / "01-hello"
+        cat.mkdir(parents=True)
+        (cat / "bot.py").write_text("pass")
+
+        result = _find_example_dirs(tmp_path)
+        assert len(result) == 1
+        assert result[0].name == "01-hello"
+
+    def test_no_examples_dir(self, tmp_path: Path):
+        result = _find_example_dirs(tmp_path)
+        assert result == []
+
+    def test_skips_pycache(self, tmp_path: Path):
+        ex = tmp_path / "examples" / "__pycache__"
+        ex.mkdir(parents=True)
+        (ex / "cached.pyc").write_text("...")
+
+        result = _find_example_dirs(tmp_path)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _iter_code_files tests
+# ---------------------------------------------------------------------------
+
+
+class TestIterCodeFiles:
+    """Tests for code file iteration."""
+
+    def test_finds_python_files(self, tmp_path: Path):
+        (tmp_path / "main.py").write_text("pass")
+        (tmp_path / "config.yaml").write_text("key: val")
+        (tmp_path / "readme.md").write_text("# Hi")  # not a code extension
+
+        result = _iter_code_files(tmp_path)
+        extensions = {p.suffix for p in result}
+        assert ".py" in extensions
+        assert ".yaml" in extensions
+        assert ".md" not in extensions
+
+    def test_skips_pycache(self, tmp_path: Path):
+        cache = tmp_path / "__pycache__"
+        cache.mkdir()
+        (cache / "mod.cpython-312.pyc").write_text("...")
+
+        result = _iter_code_files(tmp_path)
+        assert len(result) == 0
+
+    def test_skips_large_files(self, tmp_path: Path):
+        big = tmp_path / "big.py"
+        big.write_text("x" * 600_000)
+
+        result = _iter_code_files(tmp_path)
+        assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# GitHubRepoIngester tests
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubRepoIngester:
+    """Tests for the main ingester class."""
+
+    def _make_config(self, tmp_path: Path, repos: list[str] | None = None) -> HubConfig:
+        return HubConfig(
+            storage=StorageConfig(data_dir=tmp_path / "data"),
+            sources=HubConfig().sources.model_copy(
+                update={"repos": repos or ["test-org/test-repo"]}
+            ),
+        )
+
+    async def test_ingest_processes_example_code(self, tmp_path: Path):
+        """Full integration-style test with a real git repo on disk."""
+        # Set up a fake repo with an example directory.
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {
+                "examples/bot1/main.py": (
+                    "import os\n\n"
+                    "def run():\n"
+                    "    print('hello')\n\n"
+                    "if __name__ == '__main__':\n"
+                    "    run()\n"
+                ),
+                "examples/bot1/config.yaml": "name: bot1\n",
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        # Patch _clone_or_fetch to return our fake repo.
+        from git import Repo as GitRepo
+
+        git_repo = GitRepo(str(repo_dir))
+        commit_sha = git_repo.head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            result = await ingester.ingest()
+
+        assert result.records_upserted > 0
+        assert result.errors == []
+        writer.upsert.assert_called_once()
+
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        assert len(records) > 0
+
+        # Verify record fields.
+        for rec in records:
+            assert rec.content_type == "code"
+            assert rec.repo == "test-org/test-repo"
+            assert rec.commit_sha == commit_sha
+            assert rec.path.startswith("examples/")
+            assert rec.metadata["repo"] == "test-org/test-repo"
+            assert rec.metadata["commit_sha"] == commit_sha
+            assert isinstance(rec.indexed_at, datetime)
+
+    async def test_ingest_idempotent(self, tmp_path: Path):
+        """Same commit SHA produces identical chunk IDs."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {"examples/bot1/main.py": "def hello():\n    pass\n"},
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        git_repo = GitRepo(str(repo_dir))
+        commit_sha = git_repo.head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            await ingester.ingest()
+            await ingester.ingest()
+
+        records1: list[ChunkedRecord] = writer.upsert.call_args_list[0][0][0]
+        records2: list[ChunkedRecord] = writer.upsert.call_args_list[1][0][0]
+
+        ids1 = [r.chunk_id for r in records1]
+        ids2 = [r.chunk_id for r in records2]
+        assert ids1 == ids2
+
+    async def test_ingest_multiple_repos(self, tmp_path: Path):
+        """Ingester processes all configured repos."""
+        repos = ["org/repo-a", "org/repo-b"]
+        config = self._make_config(tmp_path, repos=repos)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        repo_a = _create_fake_repo(
+            tmp_path / "repos_a",
+            "repo_a",
+            {"examples/ex1/main.py": "a = 1\n"},
+        )
+        repo_b = _create_fake_repo(
+            tmp_path / "repos_b",
+            "repo_b",
+            {"examples/ex1/main.py": "b = 2\n"},
+        )
+
+        from git import Repo as GitRepo
+
+        sha_a = GitRepo(str(repo_a)).head.commit.hexsha
+        sha_b = GitRepo(str(repo_b)).head.commit.hexsha
+
+        def mock_clone(slug: str) -> tuple[Path, str]:
+            if slug == "org/repo-a":
+                return repo_a, sha_a
+            return repo_b, sha_b
+
+        with patch.object(ingester, "_clone_or_fetch", side_effect=mock_clone):
+            result = await ingester.ingest()
+
+        assert result.source == "github"
+        assert result.records_upserted > 0
+        assert result.errors == []
+        # upsert called once per repo.
+        assert writer.upsert.call_count == 2
+
+    async def test_ingest_clone_failure(self, tmp_path: Path):
+        """Clone failure is reported as an error, not an exception."""
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        with patch.object(
+            ingester, "_clone_or_fetch", side_effect=RuntimeError("network error")
+        ):
+            result = await ingester.ingest()
+
+        assert len(result.errors) == 1
+        assert "network error" in result.errors[0]
+        assert result.records_upserted == 0
+
+    async def test_ingest_no_examples(self, tmp_path: Path):
+        """Repo with no examples/ dir produces zero records without error."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {"src/main.py": "pass\n"},
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            result = await ingester.ingest()
+
+        assert result.records_upserted == 0
+        assert result.errors == []
+
+    async def test_refresh_delegates_to_ingest(self, tmp_path: Path):
+        """refresh() calls ingest() in v0."""
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        with patch.object(
+            ingester, "_clone_or_fetch", side_effect=RuntimeError("skip")
+        ):
+            result = await ingester.refresh()
+
+        # Should still return an IngestResult (from ingest path).
+        assert result.source == "github"
+
+    async def test_source_url_format(self, tmp_path: Path):
+        """Records have correct GitHub blob URLs."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {"examples/bot1/app.py": "x = 1\n"},
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            await ingester.ingest()
+
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        for rec in records:
+            assert rec.source_url.startswith("https://github.com/test-org/test-repo/blob/")
+            assert commit_sha in rec.source_url
+
+    async def test_ingester_implements_protocol(self, tmp_path: Path):
+        """GitHubRepoIngester satisfies the Ingester protocol."""
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        # Protocol structural check: has ingest() and refresh().
+        assert hasattr(ingester, "ingest")
+        assert hasattr(ingester, "refresh")
+        assert callable(ingester.ingest)
+        assert callable(ingester.refresh)
+
+    async def test_foundational_nested_examples(self, tmp_path: Path):
+        """Discovers nested example dirs (foundational/01-hello pattern)."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {
+                "examples/foundational/01-hello/bot.py": "def hello(): pass\n",
+                "examples/foundational/02-goodbye/bot.py": "def bye(): pass\n",
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            result = await ingester.ingest()
+
+        assert result.records_upserted >= 2
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        paths = {r.path for r in records}
+        assert any("01-hello" in p for p in paths)
+        assert any("02-goodbye" in p for p in paths)
