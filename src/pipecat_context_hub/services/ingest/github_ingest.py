@@ -460,6 +460,13 @@ class GitHubRepoIngester:
             # Look up taxonomy entry at the directory level.
             rel_ex_dir = str(ex_dir.relative_to(repo_path))
             dir_taxonomy_entry = taxonomy_lookup.get(rel_ex_dir)
+            if dir_taxonomy_entry is None:
+                logger.warning(
+                    "No taxonomy entry for example dir %s in %s — "
+                    "chunks will lack capability_tags, execution_mode, key_files",
+                    rel_ex_dir,
+                    repo_slug,
+                )
 
             code_files = _iter_code_files(ex_dir)
             for code_file in code_files:

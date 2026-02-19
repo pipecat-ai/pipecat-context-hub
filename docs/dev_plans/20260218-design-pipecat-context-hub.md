@@ -21,6 +21,7 @@
 - Higher-order tools: `compose_solution`, `propose_architecture`.
 - More advanced reranking and guardrail inference.
 - Optional scheduled auto-refresh and richer local observability.
+- Decide and document refresh failure policy: **empty-on-failure** (current v0 behavior — stale data is worse than missing data for LLM context) vs **retain-previous-on-failure** (keep last-known-good records when ingestion fails). May require snapshot/swap semantics in IndexStore.
 
 ## Context
 Pipecat developers need grounded context for coding and ideation based on rapidly changing docs and examples. A static prompt-only approach drifts quickly and does not provide verifiable citations or reproducible outputs.
