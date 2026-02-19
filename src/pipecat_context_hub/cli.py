@@ -90,6 +90,13 @@ def refresh(ctx: click.Context) -> None:
     async def _run_refresh() -> None:
         nonlocal total_upserted, all_errors
 
+        # Design decision: each content type is deleted BEFORE its ingester
+        # runs.  If ingestion then fails, that type stays empty until the
+        # next successful refresh.  This is intentional — for an LLM context
+        # server, serving stale/outdated records is worse than serving none,
+        # because stale context silently misleads the model.  A failed
+        # refresh is visible in logs and the CLI exit message.
+
         # 1. Crawl docs — clear stale doc records first
         await index_store.delete_by_content_type("doc")
         crawler = DocsCrawler(writer, config.sources, config.chunking)
