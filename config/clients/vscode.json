@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "pipecat-context-hub": {
+      "type": "stdio",
+      "command": "pipecat-context-hub",
+      "args": ["serve"],
+      "env": {}
+    }
+  }
+}
