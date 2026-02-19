@@ -29,6 +29,12 @@ class IndexStore:
         self._fts = FTSIndex(config.sqlite_path)
         logger.info("IndexStore initialized with data_dir=%s", config.data_dir)
 
+    def clear(self) -> None:
+        """Drop all records from both indexes for a clean rebuild."""
+        self._vector.clear()
+        self._fts.clear()
+        logger.info("IndexStore cleared")
+
     async def upsert(self, records: list[ChunkedRecord]) -> int:
         """Insert or update records in both indexes. Returns count written."""
         vector_count = self._vector.upsert(records)

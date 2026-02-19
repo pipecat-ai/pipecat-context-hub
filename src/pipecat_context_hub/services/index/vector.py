@@ -169,6 +169,15 @@ class VectorIndex:
         )
         logger.info("VectorIndex initialized at %s", chroma_path)
 
+    def clear(self) -> None:
+        """Drop all records by deleting and recreating the collection."""
+        self._client.delete_collection(COLLECTION_NAME)
+        self._collection = self._client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.info("VectorIndex cleared")
+
     def upsert(self, records: list[ChunkedRecord]) -> int:
         """Upsert records into ChromaDB. Returns count of records written."""
         if not records:

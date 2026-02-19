@@ -219,6 +219,36 @@ class TestVectorIndex:
         assert len(results) == 1
         assert results[0].chunk.chunk_id == "t1"
 
+    def test_clear(self, vector_index: VectorIndex):
+        """clear() should drop all records so searches return nothing."""
+        vector_index.upsert(_make_records(5))
+        vector_index.clear()
+
+        query = IndexQuery(
+            query_text="test",
+            query_embedding=_random_embedding(0),
+            limit=10,
+        )
+        results = vector_index.search(query)
+        assert results == []
+
+    def test_clear_then_upsert(self, vector_index: VectorIndex):
+        """Index should be usable after clear()."""
+        vector_index.upsert(_make_records(3))
+        vector_index.clear()
+
+        new_records = [_make_record(chunk_id="new-1", content="fresh data")]
+        vector_index.upsert(new_records)
+
+        query = IndexQuery(
+            query_text="test",
+            query_embedding=new_records[0].embedding,
+            limit=10,
+        )
+        results = vector_index.search(query)
+        assert len(results) == 1
+        assert results[0].chunk.chunk_id == "new-1"
+
     def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new VectorIndex on the same path."""
         chroma_path = tmp_path / "chroma"
@@ -380,6 +410,28 @@ class TestFTSIndex:
         assert len(results) == 1
         assert results[0].chunk.chunk_id == "t1"
 
+    def test_clear(self, fts_index: FTSIndex):
+        """clear() should drop all records so searches return nothing."""
+        fts_index.upsert(_make_records(5))
+        fts_index.clear()
+
+        query = IndexQuery(query_text="pipecat", limit=10)
+        results = fts_index.search(query)
+        assert results == []
+
+    def test_clear_then_upsert(self, fts_index: FTSIndex):
+        """Index should be usable after clear()."""
+        fts_index.upsert(_make_records(3))
+        fts_index.clear()
+
+        new_records = [_make_record(chunk_id="new-1", content="fresh pipecat data")]
+        fts_index.upsert(new_records)
+
+        query = IndexQuery(query_text="pipecat", limit=10)
+        results = fts_index.search(query)
+        assert len(results) == 1
+        assert results[0].chunk.chunk_id == "new-1"
+
     def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new FTSIndex on the same path."""
         db_path = tmp_path / "metadata.db"
@@ -491,6 +543,45 @@ class TestIndexStore:
         k_results = await store.keyword_search(kq)
         assert len(k_results) == 1
         assert k_results[0].chunk.content == "updated pipecat content"
+
+    @pytest.mark.asyncio
+    async def test_clear(self, store: IndexStore):
+        """clear() should drop all records from both indexes."""
+        records = _make_records(5)
+        await store.upsert(records)
+        store.clear()
+
+        vq = IndexQuery(
+            query_text="test",
+            query_embedding=_random_embedding(0),
+            limit=10,
+        )
+        assert await store.vector_search(vq) == []
+
+        kq = IndexQuery(query_text="pipecat", limit=10)
+        assert await store.keyword_search(kq) == []
+
+    @pytest.mark.asyncio
+    async def test_clear_then_upsert(self, store: IndexStore):
+        """Index should be usable after clear()."""
+        await store.upsert(_make_records(3))
+        store.clear()
+
+        new_records = [_make_record(chunk_id="new-1", content="fresh pipecat data")]
+        await store.upsert(new_records)
+
+        vq = IndexQuery(
+            query_text="test",
+            query_embedding=new_records[0].embedding,
+            limit=10,
+        )
+        v_results = await store.vector_search(vq)
+        assert len(v_results) == 1
+        assert v_results[0].chunk.chunk_id == "new-1"
+
+        kq = IndexQuery(query_text="pipecat", limit=10)
+        k_results = await store.keyword_search(kq)
+        assert len(k_results) == 1
 
     def test_satisfies_writer_protocol(self, store: IndexStore):
         """Verify IndexStore has all IndexWriter methods."""

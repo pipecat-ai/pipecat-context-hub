@@ -74,6 +74,12 @@ class FTSIndex:
         """Close the database connection."""
         self._conn.close()
 
+    def clear(self) -> None:
+        """Delete all records from the chunks table (triggers sync FTS)."""
+        self._conn.execute("DELETE FROM chunks")
+        self._conn.commit()
+        logger.info("FTSIndex cleared")
+
     def upsert(self, records: list[ChunkedRecord]) -> int:
         """Upsert records into the FTS index. Returns count written."""
         if not records:

@@ -81,6 +81,7 @@ def refresh(ctx: click.Context) -> None:
 
     # Build the ingestion pipeline
     index_store = IndexStore(config.storage)
+    index_store.clear()
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
 
