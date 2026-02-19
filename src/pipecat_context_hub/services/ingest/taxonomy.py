@@ -322,8 +322,13 @@ class TaxonomyBuilder:
         """Generic scan: auto-detects foundational vs examples layout.
 
         Looks for ``examples/foundational/`` inside *root* — if present,
-        treats it as a pipecat main repo.  Otherwise, scans top-level
-        subdirectories as independent examples.
+        treats it as a pipecat main repo and scans foundational examples.
+        Also scans any **non-foundational** sibling directories under
+        ``examples/`` (e.g. ``examples/quickstart``) so mixed-layout
+        repos get full taxonomy coverage.
+
+        If ``examples/foundational/`` is absent, falls back to scanning
+        top-level subdirectories as independent examples.
 
         Args:
             root: Path to the repo root or examples directory.
@@ -335,9 +340,30 @@ class TaxonomyBuilder:
         """
         foundational_dir = root / "examples" / "foundational"
         if foundational_dir.is_dir():
-            return self.build_from_foundational(
+            entries = self.build_from_foundational(
                 foundational_dir, repo=repo, commit_sha=commit_sha
             )
+            # Also scan non-foundational sibling dirs under examples/
+            examples_dir = root / "examples"
+            for child in sorted(examples_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                if child.name == "foundational":
+                    continue
+                if child.name.startswith(".") or child.name in (
+                    "__pycache__",
+                    "node_modules",
+                ):
+                    continue
+                entry = self._build_entry_for_example(
+                    child,
+                    repo=repo,
+                    commit_sha=commit_sha,
+                    path_prefix="examples",
+                )
+                entries.append(entry)
+                self._entries.append(entry)
+            return entries
         return self.build_from_examples_repo(root, repo=repo, commit_sha=commit_sha)
 
     @property
@@ -448,10 +474,21 @@ class TaxonomyBuilder:
         *,
         repo: str,
         commit_sha: str | None,
+        path_prefix: str = "",
     ) -> TaxonomyEntry:
-        """Build a TaxonomyEntry for a pipecat-examples subdirectory."""
+        """Build a TaxonomyEntry for an example subdirectory.
+
+        Args:
+            example_dir: The example directory to scan.
+            repo: GitHub repo slug.
+            commit_sha: Optional commit SHA for provenance.
+            path_prefix: Optional prefix for the entry path (e.g. ``"examples"``
+                for dirs under ``examples/`` in mixed-layout repos).  When empty,
+                the path is just the directory name.
+        """
         dirname = example_dir.name
         example_id = f"example-{dirname}"
+        rel_path = f"{path_prefix}/{dirname}" if path_prefix else dirname
 
         tags: list[CapabilityTag] = []
         tags.extend(_infer_tags_from_directory_name(dirname))
@@ -472,7 +509,7 @@ class TaxonomyBuilder:
         return TaxonomyEntry(
             example_id=example_id,
             repo=repo,
-            path=dirname,
+            path=rel_path,
             foundational_class=None,
             capabilities=_dedup_tags(tags),
             key_files=_find_key_files(example_dir),

@@ -553,6 +553,117 @@ class TestTaxonomyBuilderBuildFromDirectory:
             assert entry.foundational_class is None
 
 
+class TestTaxonomyBuilderMixedLayout:
+    """Tests for repos with both examples/foundational/ and sibling example dirs."""
+
+    @pytest.fixture
+    def mixed_repo_dir(self, tmp_path: Path) -> Path:
+        """Create a repo with examples/foundational/ + examples/quickstart/."""
+        # Foundational example
+        foundational = tmp_path / "examples" / "foundational" / "01-hello"
+        foundational.mkdir(parents=True)
+        (foundational / "bot.py").write_text(
+            "from pipecat.pipeline.pipeline import Pipeline\n"
+            "Pipeline()\n"
+        )
+        (foundational / "README.md").write_text("# Hello\n\nA hello example.\n")
+
+        # Non-foundational sibling: quickstart
+        quickstart = tmp_path / "examples" / "quickstart"
+        quickstart.mkdir(parents=True)
+        (quickstart / "main.py").write_text(
+            "from pipecat.services.openai import OpenAILLMService\n"
+            "from pipecat.services.deepgram import DeepgramSTTService\n"
+        )
+        (quickstart / "README.md").write_text(
+            "# Quickstart\n\nGet started quickly with Pipecat.\n"
+        )
+
+        # Non-foundational sibling: websocket-demo
+        ws = tmp_path / "examples" / "websocket-demo"
+        ws.mkdir(parents=True)
+        (ws / "server.py").write_text(
+            "from pipecat.transports.websocket import WebSocketTransport\n"
+        )
+
+        # Dirs that should be skipped
+        (tmp_path / "examples" / ".hidden").mkdir()
+        (tmp_path / "examples" / "__pycache__").mkdir()
+
+        return tmp_path
+
+    def test_returns_both_foundational_and_non_foundational(self, mixed_repo_dir: Path):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(mixed_repo_dir, repo="pipecat-ai/pipecat")
+        # 1 foundational + 2 non-foundational
+        assert len(entries) == 3
+
+    def test_foundational_entries_have_foundational_class(self, mixed_repo_dir: Path):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(mixed_repo_dir, repo="pipecat-ai/pipecat")
+        foundational = [e for e in entries if e.foundational_class is not None]
+        assert len(foundational) == 1
+        assert foundational[0].foundational_class == "01-hello"
+        assert foundational[0].path == "examples/foundational/01-hello"
+
+    def test_non_foundational_paths_include_examples_prefix(self, mixed_repo_dir: Path):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(mixed_repo_dir, repo="pipecat-ai/pipecat")
+        non_foundational = [e for e in entries if e.foundational_class is None]
+        paths = {e.path for e in non_foundational}
+        assert "examples/quickstart" in paths
+        assert "examples/websocket-demo" in paths
+
+    def test_non_foundational_capabilities_inferred(self, mixed_repo_dir: Path):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(mixed_repo_dir, repo="pipecat-ai/pipecat")
+        entry_map = {e.path: e for e in entries}
+
+        qs = entry_map["examples/quickstart"]
+        qs_tags = {t.name for t in qs.capabilities}
+        assert "openai" in qs_tags
+        assert "deepgram" in qs_tags
+
+        ws = entry_map["examples/websocket-demo"]
+        ws_tags = {t.name for t in ws.capabilities}
+        assert "websocket" in ws_tags
+
+    def test_skips_hidden_and_pycache(self, mixed_repo_dir: Path):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(mixed_repo_dir, repo="pipecat-ai/pipecat")
+        paths = {e.path for e in entries}
+        assert "examples/.hidden" not in paths
+        assert "examples/__pycache__" not in paths
+
+    def test_entries_accumulated(self, mixed_repo_dir: Path):
+        builder = TaxonomyBuilder()
+        builder.build_from_directory(mixed_repo_dir, repo="pipecat-ai/pipecat")
+        assert len(builder.entries) == 3
+
+    def test_taxonomy_lookup_matches_find_example_dirs(self, mixed_repo_dir: Path):
+        """Verify taxonomy paths match what _find_example_dirs produces.
+
+        This is the integration seam that caused the P1 bug — the ingester
+        discovers dirs via _find_example_dirs and looks them up by relative
+        path in the taxonomy. Both sides must agree on path format.
+        """
+        from pipecat_context_hub.services.ingest.github_ingest import _find_example_dirs
+
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            mixed_repo_dir, repo="pipecat-ai/pipecat", commit_sha="abc123"
+        )
+        lookup = {e.path: e for e in entries}
+
+        example_dirs = _find_example_dirs(mixed_repo_dir)
+        for ex_dir in example_dirs:
+            rel_path = str(ex_dir.relative_to(mixed_repo_dir))
+            assert rel_path in lookup, (
+                f"Taxonomy has no entry for {rel_path!r}; "
+                f"available: {sorted(lookup.keys())}"
+            )
+
+
 class TestTaxonomyBuilderQueryMethods:
     def test_query_by_class(self, foundational_dir: Path):
         builder = TaxonomyBuilder()
