@@ -938,6 +938,50 @@ class TestRootLevelFileCapture:
         # Subdirectory files also captured.
         assert "processors/video.py" in paths
 
+    async def test_root_files_have_taxonomy_metadata(self, tmp_path: Path):
+        """Root-level code files get execution_mode/capability_tags from repo-root taxonomy."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {
+                "sidekick.py": (
+                    "from pipecat.pipeline import Pipeline\n"
+                    "from pipecat.services.deepgram import DeepgramSTTService\n"
+                    "def main(): pass\n"
+                ),
+                "processors/video.py": (
+                    "from pipecat.services.openai import OpenAILLMService\n"
+                    "def process(): pass\n"
+                ),
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            result = await ingester.ingest()
+
+        assert result.records_upserted > 0
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        by_path = {r.path: r for r in records}
+
+        # Root-level sidekick.py should have taxonomy metadata.
+        root_rec = by_path["sidekick.py"]
+        assert root_rec.metadata.get("execution_mode") is not None, (
+            "root-level file missing execution_mode"
+        )
+        assert isinstance(root_rec.metadata.get("capability_tags"), list), (
+            "root-level file missing capability_tags"
+        )
+
     async def test_root_files_not_captured_for_examples_layout(self, tmp_path: Path):
         """Layout A repos (with examples/ dir) do NOT capture root-level files."""
         repo_dir = _create_fake_repo(

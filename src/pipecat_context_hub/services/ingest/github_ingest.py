@@ -598,6 +598,18 @@ class GitHubRepoIngester:
         is_layout_b = not examples_dir.is_dir()
         has_subdir_examples = any(d != repo_path for d in example_dirs)
         if is_layout_b and has_subdir_examples:
+            # Ensure a repo-root taxonomy entry exists so root-level files
+            # inherit execution_mode / capability_tags (file-level keys like
+            # "sidekick.py" almost never appear in the taxonomy).
+            if "." not in taxonomy_lookup:
+                from pipecat_context_hub.services.ingest.taxonomy import TaxonomyBuilder
+
+                root_builder = TaxonomyBuilder()
+                taxonomy_lookup["."] = root_builder.build_entry_for_repo_root(
+                    repo_path, repo=repo_slug, commit_sha=commit_sha,
+                )
+            root_taxonomy = taxonomy_lookup.get(".")
+
             root_files = _iter_root_level_code_files(repo_path)
             for code_file in root_files:
                 try:
@@ -607,7 +619,7 @@ class GitHubRepoIngester:
                     continue
 
                 rel_path = str(code_file.relative_to(repo_path))
-                taxonomy_entry = taxonomy_lookup.get(rel_path)
+                taxonomy_entry = taxonomy_lookup.get(rel_path) or root_taxonomy
                 source_url = (
                     f"https://github.com/{repo_slug}/blob/{commit_sha}/{rel_path}"
                 )
