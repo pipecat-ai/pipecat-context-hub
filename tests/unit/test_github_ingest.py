@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from pipecat_context_hub.services.ingest.github_ingest import (
     GitHubRepoIngester,
+    _ROOT_FALLBACK_SKIP_DIRS,
     _chunk_by_boundaries,
     _chunk_by_lines,
     _chunk_code,
@@ -264,6 +265,37 @@ class TestIterCodeFiles:
         result = _iter_code_files(tmp_path)
         assert len(result) == 0
 
+    def test_root_fallback_skip_dirs_excludes_tests_and_docs(self, tmp_path: Path):
+        """With _ROOT_FALLBACK_SKIP_DIRS, tests/ and docs/ are excluded."""
+        (tmp_path / "src" / "pkg").mkdir(parents=True)
+        (tmp_path / "src" / "pkg" / "server.py").write_text("pass")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_server.py").write_text("pass")
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "conf.py").write_text("pass")
+        (tmp_path / ".github" / "workflows").mkdir(parents=True)
+        (tmp_path / ".github" / "workflows" / "ci.yml").write_text("on: push")
+
+        result = _iter_code_files(tmp_path, skip_dirs=_ROOT_FALLBACK_SKIP_DIRS)
+        paths = {str(p.relative_to(tmp_path)) for p in result}
+        assert "src/pkg/server.py" in paths
+        assert "tests/test_server.py" not in paths
+        assert "docs/conf.py" not in paths
+        assert ".github/workflows/ci.yml" not in paths
+
+    def test_root_fallback_skip_dirs_keeps_src_and_lib(self, tmp_path: Path):
+        """Root fallback intentionally keeps src/ and lib/ (source code)."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "mod.py").write_text("pass")
+        (tmp_path / "lib").mkdir()
+        (tmp_path / "lib" / "util.py").write_text("pass")
+
+        # Use _ROOT_FALLBACK_SKIP_DIRS — src/ and lib/ should NOT be skipped
+        result = _iter_code_files(tmp_path, skip_dirs=_ROOT_FALLBACK_SKIP_DIRS)
+        names = {p.name for p in result}
+        assert "mod.py" in names
+        assert "util.py" in names
+
 
 # ---------------------------------------------------------------------------
 # GitHubRepoIngester tests
@@ -438,6 +470,40 @@ class TestGitHubRepoIngester:
         assert result.errors == []
         records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
         assert any(r.path == "src/main.py" for r in records)
+
+    async def test_root_fallback_excludes_tests_and_docs(self, tmp_path: Path):
+        """Root-fallback ingestion skips tests/, docs/, .github/ files."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {
+                "src/server.py": "def serve(): pass\n",
+                "tests/test_server.py": "def test_it(): pass\n",
+                "docs/conf.py": "project = 'x'\n",
+                ".github/workflows/ci.yml": "on: push\n",
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            result = await ingester.ingest()
+
+        assert result.records_upserted > 0
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        paths = {r.path for r in records}
+        assert "src/server.py" in paths
+        assert "tests/test_server.py" not in paths
+        assert "docs/conf.py" not in paths
+        assert ".github/workflows/ci.yml" not in paths
 
     async def test_root_fallback_chunks_have_taxonomy_metadata(self, tmp_path: Path):
         """Root-fallback repos (src/-layout) get execution_mode/capability_tags."""

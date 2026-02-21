@@ -21,7 +21,14 @@ def _load_dotenv() -> None:
     """Load ``.env`` file from the current directory if it exists.
 
     Only sets variables that are not already in the environment so that
-    explicit env vars always take precedence.
+    explicit env vars always take precedence.  Supports quoted values
+    and inline comments::
+
+        KEY="value"          # ok
+        KEY='value'          # ok
+        KEY=value            # ok
+        KEY="value" # note   # inline comment stripped
+        KEY=value # note     # inline comment stripped
     """
     env_path = Path.cwd() / ".env"
     if not env_path.is_file():
@@ -32,8 +39,20 @@ def _load_dotenv() -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if not key:
+            continue
+        value = value.strip()
+        # Quoted value: extract content between matching quotes.
+        if value and value[0] in ('"', "'"):
+            quote = value[0]
+            end = value.find(quote, 1)
+            value = value[1:end] if end != -1 else value[1:]
+        else:
+            # Unquoted: strip inline comments (# preceded by whitespace).
+            idx = value.find(" #")
+            if idx != -1:
+                value = value[:idx].rstrip()
+        if key not in os.environ:
             os.environ[key] = value
 
 

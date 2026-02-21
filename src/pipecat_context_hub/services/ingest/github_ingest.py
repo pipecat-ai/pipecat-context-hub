@@ -207,6 +207,16 @@ _NON_EXAMPLE_ROOT_DIRS: frozenset[str] = frozenset({
     "include", "man", "config", "deploy",
 })
 
+# Directories to skip when the repo root IS the single example (root fallback).
+# Like _NON_EXAMPLE_ROOT_DIRS but keeps ``src/`` and ``lib/`` — those contain
+# the actual source code in single-project repos.
+_ROOT_FALLBACK_SKIP_DIRS: frozenset[str] = frozenset({
+    *_SKIP_DIRS,
+    "docs", "doc", "tests", "test", "scripts", "tools",
+    "ci", ".github", ".tox", ".nox", "assets", "static", "bin",
+    "include", "man", "config", "deploy",
+})
+
 
 def _find_example_dirs(repo_root: Path) -> list[Path]:
     """Discover example directories within a cloned repo.
@@ -275,13 +285,25 @@ def _discover_root_level_examples(repo_root: Path) -> list[Path]:
     return result
 
 
-def _iter_code_files(directory: Path) -> list[Path]:
-    """Return all code files under *directory*, respecting skip/size rules."""
+def _iter_code_files(
+    directory: Path,
+    *,
+    skip_dirs: frozenset[str] = _SKIP_DIRS,
+) -> list[Path]:
+    """Return all code files under *directory*, respecting skip/size rules.
+
+    Args:
+        directory: Root directory to scan recursively.
+        skip_dirs: Directory names to exclude from traversal.  Defaults to
+            ``_SKIP_DIRS``; callers may pass ``_ROOT_FALLBACK_SKIP_DIRS``
+            when scanning a repo root as a single example to also exclude
+            ``tests/``, ``docs/``, ``.github/``, etc.
+    """
     files: list[Path] = []
     for p in sorted(directory.rglob("*")):
         if not p.is_file():
             continue
-        if any(part in _SKIP_DIRS for part in p.parts):
+        if any(part in skip_dirs for part in p.parts):
             continue
         if p.suffix not in _CODE_EXTENSIONS:
             continue
@@ -497,6 +519,8 @@ class GitHubRepoIngester:
         now = datetime.now(tz=timezone.utc)
         chunking = self._config.chunking
 
+        is_root_fallback = repo_path in example_dirs
+
         for ex_dir in example_dirs:
             # Look up taxonomy entry at the directory level.
             rel_ex_dir = str(ex_dir.relative_to(repo_path))
@@ -509,7 +533,10 @@ class GitHubRepoIngester:
                     repo_slug,
                 )
 
-            code_files = _iter_code_files(ex_dir)
+            # When the repo root IS the example, skip non-source dirs
+            # (tests/, docs/, .github/, …) to avoid polluting example search.
+            skip = _ROOT_FALLBACK_SKIP_DIRS if (is_root_fallback and ex_dir == repo_path) else _SKIP_DIRS
+            code_files = _iter_code_files(ex_dir, skip_dirs=skip)
             for code_file in code_files:
                 try:
                     content = code_file.read_text(encoding="utf-8", errors="replace")
