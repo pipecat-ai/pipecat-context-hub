@@ -33,6 +33,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   (`execution_mode`, `capability_tags`, `key_files`) — previously the
   taxonomy lookup keyed by `"."` missed, producing unenriched chunks that
   broke filtered retrieval (e.g. `execution_mode="local"` returned 0 hits)
+- Root-fallback ingestion now skips `tests/`, `docs/`, `.github/`, and other
+  non-source directories — previously `_iter_code_files` only skipped build
+  artifacts, polluting example search with test and CI files
+- `.env` parser now correctly handles inline comments and quoted values —
+  `KEY="val" # note` previously included `" # note` in the value, producing
+  malformed repo slugs
 - `HubConfig` import moved to top of `cli.py` (fixes E402 lint violation)
 - Server version string corrected from `0.1.0` to match package version
 
