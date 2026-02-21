@@ -25,6 +25,10 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `get_code_snippet` now accepts `intent` combined with `path` and
+  `line_start` — `path` acts as an optional filter scoping the intent search
+  to a specific file, and `line_start`/`line_end` trim results to the
+  requested range
 - Server version string corrected from `0.1.0` to match package version
 
 ## [0.0.1] - 2026-02-19
