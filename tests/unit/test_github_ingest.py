@@ -15,6 +15,7 @@ from pipecat_context_hub.services.ingest.github_ingest import (
     _discover_root_level_examples,
     _find_example_dirs,
     _iter_code_files,
+    _iter_root_level_code_files,
     _make_chunk_id,
 )
 from pipecat_context_hub.shared.config import HubConfig, StorageConfig
@@ -215,9 +216,10 @@ class TestFindExampleDirs:
         assert len(result) == 1
         assert result[0].name == "01-hello"
 
-    def test_no_examples_dir(self, tmp_path: Path):
+    def test_no_examples_dir_falls_back_to_root(self, tmp_path: Path):
+        """Repo with no examples/ dir falls back to root as single example."""
         result = _find_example_dirs(tmp_path)
-        assert result == []
+        assert result == [tmp_path]
 
     def test_skips_pycache(self, tmp_path: Path):
         ex = tmp_path / "examples" / "__pycache__"
@@ -411,8 +413,8 @@ class TestGitHubRepoIngester:
         assert "network error" in result.errors[0]
         assert result.records_upserted == 0
 
-    async def test_ingest_no_examples(self, tmp_path: Path):
-        """Repo with no examples/ dir produces zero records without error."""
+    async def test_ingest_src_layout_repo(self, tmp_path: Path):
+        """Repo with only src/ dir (no examples/) is indexed via root fallback."""
         repo_dir = _create_fake_repo(
             tmp_path / "data" / "repos",
             "test-org_test-repo",
@@ -432,8 +434,10 @@ class TestGitHubRepoIngester:
         ):
             result = await ingester.ingest()
 
-        assert result.records_upserted == 0
+        assert result.records_upserted > 0
         assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        assert any(r.path == "src/main.py" for r in records)
 
     async def test_source_url_format(self, tmp_path: Path):
         """Records have correct GitHub blob URLs."""
@@ -691,25 +695,166 @@ class TestDiscoverRootLevelExamples:
         assert len(result) == 1
         assert result[0].name == "chatbot"
 
-    def test_skips_non_example_dirs(self, tmp_path: Path):
-        """Skips src, docs, tests, hidden dirs."""
+    def test_skips_non_example_dirs_falls_back_to_root(self, tmp_path: Path):
+        """Skips src, docs, tests, hidden dirs — falls back to repo root."""
         for name in ["src", "docs", "tests", ".github", "__pycache__"]:
             d = tmp_path / name
             d.mkdir()
             (d / "file.py").write_text("pass")
 
         result = _discover_root_level_examples(tmp_path)
-        assert result == []
+        # Individual filtered dirs are not returned; root is the fallback.
+        assert result == [tmp_path]
+        assert not any(r.name in {"src", "docs", "tests"} for r in result)
 
-    def test_skips_dirs_without_code(self, tmp_path: Path):
-        """Skips dirs that don't contain code files."""
+    def test_skips_dirs_without_code_falls_back_to_root(self, tmp_path: Path):
+        """Skips dirs that don't contain code files — falls back to repo root."""
         d = tmp_path / "images"
         d.mkdir()
         (d / "logo.png").write_bytes(b"\x89PNG")
 
         result = _discover_root_level_examples(tmp_path)
+        assert result == [tmp_path]
+
+    def test_empty_root_falls_back_to_root(self, tmp_path: Path):
+        """Empty repo root falls back to root itself."""
+        result = _discover_root_level_examples(tmp_path)
+        assert result == [tmp_path]
+
+    def test_no_fallback_when_code_dirs_found(self, tmp_path: Path):
+        """Root is NOT included when qualifying subdirs are found."""
+        bot = tmp_path / "bot"
+        bot.mkdir()
+        (bot / "main.py").write_text("pass")
+
+        result = _discover_root_level_examples(tmp_path)
+        assert result == [bot]
+        assert tmp_path not in result
+
+
+# ---------------------------------------------------------------------------
+# _iter_root_level_code_files tests
+# ---------------------------------------------------------------------------
+
+
+class TestIterRootLevelCodeFiles:
+    """Tests for _iter_root_level_code_files (non-recursive)."""
+
+    def test_finds_root_level_code_files(self, tmp_path: Path):
+        """Returns code files directly in the directory."""
+        (tmp_path / "app.py").write_text("pass")
+        (tmp_path / "config.yaml").write_text("key: val")
+        (tmp_path / "README.md").write_text("# Hi")
+
+        result = _iter_root_level_code_files(tmp_path)
+        names = {p.name for p in result}
+        assert "app.py" in names
+        assert "config.yaml" in names
+        assert "README.md" not in names
+
+    def test_does_not_recurse(self, tmp_path: Path):
+        """Does NOT return files in subdirectories."""
+        sub = tmp_path / "subdir"
+        sub.mkdir()
+        (sub / "nested.py").write_text("pass")
+        (tmp_path / "root.py").write_text("pass")
+
+        result = _iter_root_level_code_files(tmp_path)
+        names = {p.name for p in result}
+        assert "root.py" in names
+        assert "nested.py" not in names
+
+    def test_skips_large_files(self, tmp_path: Path):
+        """Skips files exceeding the size limit."""
+        big = tmp_path / "big.py"
+        big.write_text("x" * 600_000)
+
+        result = _iter_root_level_code_files(tmp_path)
+        assert len(result) == 0
+
+    def test_empty_dir(self, tmp_path: Path):
+        result = _iter_root_level_code_files(tmp_path)
         assert result == []
 
-    def test_empty_root(self, tmp_path: Path):
-        result = _discover_root_level_examples(tmp_path)
-        assert result == []
+
+# ---------------------------------------------------------------------------
+# Root-level file capture in Layout B ingestion
+# ---------------------------------------------------------------------------
+
+
+class TestRootLevelFileCapture:
+    """Tests for root-level code file capture in Layout B repos."""
+
+    def _make_config(self, tmp_path: Path, repos: list[str] | None = None) -> HubConfig:
+        return HubConfig(
+            storage=StorageConfig(data_dir=tmp_path / "data"),
+            sources=HubConfig().sources.model_copy(
+                update={"repos": repos or ["test-org/test-repo"]}
+            ),
+        )
+
+    async def test_root_files_captured_alongside_subdirs(self, tmp_path: Path):
+        """Root-level code files are indexed alongside subdirectory examples."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {
+                "main.py": "def entry(): pass\n",
+                "config.yaml": "name: bot\n",
+                "processors/video.py": "def process(): pass\n",
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            result = await ingester.ingest()
+
+        assert result.records_upserted > 0
+        assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        paths = {r.path for r in records}
+        # Root-level files captured.
+        assert "main.py" in paths
+        assert "config.yaml" in paths
+        # Subdirectory files also captured.
+        assert "processors/video.py" in paths
+
+    async def test_root_files_not_captured_for_examples_layout(self, tmp_path: Path):
+        """Layout A repos (with examples/ dir) do NOT capture root-level files."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {
+                "setup.py": "pass\n",
+                "examples/bot1/main.py": "def run(): pass\n",
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with patch.object(
+            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+        ):
+            result = await ingester.ingest()
+
+        assert result.records_upserted > 0
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        paths = {r.path for r in records}
+        # Root-level setup.py should NOT be captured for Layout A.
+        assert "setup.py" not in paths
+        assert "examples/bot1/main.py" in paths

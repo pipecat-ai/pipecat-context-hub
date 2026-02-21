@@ -248,7 +248,12 @@ def _discover_under_examples(examples_dir: Path) -> list[Path]:
 
 
 def _discover_root_level_examples(repo_root: Path) -> list[Path]:
-    """Discover example dirs at the repo root (no ``examples/`` dir)."""
+    """Discover example dirs at the repo root (no ``examples/`` dir).
+
+    When no qualifying subdirectories are found (e.g. single-project repos
+    where all code lives under ``src/``), falls back to returning the repo
+    root itself so that ``_iter_code_files`` can recurse into it.
+    """
     result: list[Path] = []
     for child in sorted(repo_root.iterdir()):
         if not child.is_dir():
@@ -261,6 +266,12 @@ def _discover_root_level_examples(repo_root: Path) -> list[Path]:
         )
         if has_code:
             result.append(child)
+
+    # Fallback: treat the whole repo as a single example when no qualifying
+    # subdirectories are found (e.g. src/-layout packages).
+    if not result:
+        result.append(repo_root)
+
     return result
 
 
@@ -271,6 +282,24 @@ def _iter_code_files(directory: Path) -> list[Path]:
         if not p.is_file():
             continue
         if any(part in _SKIP_DIRS for part in p.parts):
+            continue
+        if p.suffix not in _CODE_EXTENSIONS:
+            continue
+        if p.stat().st_size > _MAX_FILE_BYTES:
+            continue
+        files.append(p)
+    return files
+
+
+def _iter_root_level_code_files(directory: Path) -> list[Path]:
+    """Return code files directly in *directory* (non-recursive).
+
+    Captures entry-point files (e.g. ``sidekick.py``, config YAMLs) that
+    sit at the repo root alongside subdirectory examples.
+    """
+    files: list[Path] = []
+    for p in sorted(directory.iterdir()):
+        if not p.is_file():
             continue
         if p.suffix not in _CODE_EXTENSIONS:
             continue
@@ -418,7 +447,7 @@ class GitHubRepoIngester:
         all_errors: list[str] = []
         total_upserted = 0
 
-        for repo_slug in self._config.sources.repos:
+        for repo_slug in self._config.sources.effective_repos:
             result = await self._ingest_repo(repo_slug)
             total_upserted += result.records_upserted
             all_errors.extend(result.errors)
@@ -509,6 +538,61 @@ class GitHubRepoIngester:
                         taxonomy_entry=taxonomy_entry,
                     )
 
+                    records.append(
+                        ChunkedRecord(
+                            chunk_id=chunk_id,
+                            content=chunk_text,
+                            content_type="code",
+                            source_url=source_url,
+                            repo=repo_slug,
+                            path=rel_path,
+                            commit_sha=commit_sha,
+                            indexed_at=now,
+                            metadata=meta,
+                        )
+                    )
+
+        # For Layout B repos (no examples/ dir) where subdirectory examples
+        # were found, also capture root-level code files (e.g. entry-point
+        # scripts like sidekick.py) that would otherwise be missed.
+        examples_dir = repo_path / "examples"
+        is_layout_b = not examples_dir.is_dir()
+        has_subdir_examples = any(d != repo_path for d in example_dirs)
+        if is_layout_b and has_subdir_examples:
+            root_files = _iter_root_level_code_files(repo_path)
+            for code_file in root_files:
+                try:
+                    content = code_file.read_text(encoding="utf-8", errors="replace")
+                except Exception as exc:
+                    errors.append(f"Error reading {code_file}: {exc}")
+                    continue
+
+                rel_path = str(code_file.relative_to(repo_path))
+                taxonomy_entry = taxonomy_lookup.get(rel_path)
+                source_url = (
+                    f"https://github.com/{repo_slug}/blob/{commit_sha}/{rel_path}"
+                )
+                language = _EXTENSION_TO_LANGUAGE.get(code_file.suffix)
+                chunks = _chunk_code(
+                    content,
+                    max_tokens=chunking.code_max_tokens,
+                    overlap_tokens=chunking.code_overlap_tokens,
+                    prefer_boundaries=chunking.code_prefer_function_boundaries,
+                )
+                line_ranges = _compute_chunk_line_ranges(content, chunks)
+
+                for idx, chunk_text in enumerate(chunks):
+                    chunk_id = _make_chunk_id(repo_slug, rel_path, commit_sha, idx)
+                    line_start, line_end = line_ranges[idx]
+                    meta = _build_chunk_metadata(
+                        repo_slug=repo_slug,
+                        commit_sha=commit_sha,
+                        chunk_index=idx,
+                        language=language,
+                        line_start=line_start,
+                        line_end=line_end,
+                        taxonomy_entry=taxonomy_entry,
+                    )
                     records.append(
                         ChunkedRecord(
                             chunk_id=chunk_id,

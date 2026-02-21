@@ -7,10 +7,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
+from pathlib import Path
 
 import click
+
+
+def _load_dotenv() -> None:
+    """Load ``.env`` file from the current directory if it exists.
+
+    Only sets variables that are not already in the environment so that
+    explicit env vars always take precedence.
+    """
+    env_path = Path.cwd() / ".env"
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 from pipecat_context_hub.shared.config import HubConfig
 
@@ -29,6 +51,7 @@ def _configure_logging(level: str) -> None:
 @click.pass_context
 def main(ctx: click.Context, log_level: str) -> None:
     """Pipecat Context Hub — local-first MCP server."""
+    _load_dotenv()
     _configure_logging(log_level)
     ctx.ensure_object(dict)
     config = HubConfig()
