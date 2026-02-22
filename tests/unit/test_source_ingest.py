@@ -3,167 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import sys
-import types
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
-# ---------------------------------------------------------------------------
-# Provide a fake ast_extractor module so source_ingest can be imported even
-# when the real ast_extractor (created in parallel) is not yet available.
-# ---------------------------------------------------------------------------
+from unittest.mock import AsyncMock, MagicMock
 
 
-@dataclass
-class ParameterInfo:
-    name: str
-    annotation: str | None = None
-    default: str | None = None
-
-
-@dataclass
-class MethodInfo:
-    name: str
-    parameters: list[ParameterInfo] = field(default_factory=list)
-    return_type: str | None = None
-    decorators: list[str] = field(default_factory=list)
-    docstring: str | None = None
-    is_abstract: bool = False
-    line_start: int = 0
-    line_end: int = 0
-    source: str = ""
-
-
-@dataclass
-class ClassInfo:
-    name: str
-    base_classes: list[str] = field(default_factory=list)
-    decorators: list[str] = field(default_factory=list)
-    docstring: str | None = None
-    methods: list[MethodInfo] = field(default_factory=list)
-    line_start: int = 0
-    line_end: int = 0
-    is_dataclass: bool = False
-
-
-@dataclass
-class FunctionInfo:
-    name: str
-    parameters: list[ParameterInfo] = field(default_factory=list)
-    return_type: str | None = None
-    decorators: list[str] = field(default_factory=list)
-    docstring: str | None = None
-    line_start: int = 0
-    line_end: int = 0
-    source: str = ""
-
-
-@dataclass
-class ModuleInfo:
-    module_path: str
-    docstring: str | None = None
-    classes: list[ClassInfo] = field(default_factory=list)
-    functions: list[FunctionInfo] = field(default_factory=list)
-    all_exports: list[str] = field(default_factory=list)
-    imports: list[str] = field(default_factory=list)
-
-
-def _build_signature(name: str, params: list[ParameterInfo], return_type: str | None) -> str:
-    """Minimal build_signature for testing."""
-    param_parts: list[str] = []
-    for p in params:
-        part = p.name
-        if p.annotation:
-            part += f": {p.annotation}"
-        if p.default:
-            part += f" = {p.default}"
-        param_parts.append(part)
-    sig = f"({', '.join(param_parts)})"
-    if return_type:
-        sig += f" -> {return_type}"
-    return sig
-
-
-def _extract_module_info(source: str, module_path: str) -> ModuleInfo:
-    """Minimal extract_module_info for testing -- parses simple Python sources."""
-    import ast
-
-    tree = ast.parse(source)
-    classes: list[ClassInfo] = []
-    functions: list[FunctionInfo] = []
-    imports: list[str] = []
-    docstring = ast.get_docstring(tree)
-
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.ClassDef):
-            methods: list[MethodInfo] = []
-            for item in node.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    methods.append(MethodInfo(
-                        name=item.name,
-                        parameters=[
-                            ParameterInfo(name=a.arg)
-                            for a in item.args.args
-                        ],
-                        docstring=ast.get_docstring(item),
-                        line_start=item.lineno,
-                        line_end=item.end_lineno or item.lineno,
-                        source=ast.get_source_segment(source, item) or "",
-                    ))
-            classes.append(ClassInfo(
-                name=node.name,
-                base_classes=[
-                    (b.attr if isinstance(b, ast.Attribute) else b.id)
-                    for b in node.bases
-                    if isinstance(b, (ast.Name, ast.Attribute))
-                ],
-                docstring=ast.get_docstring(node),
-                methods=methods,
-                line_start=node.lineno,
-                line_end=node.end_lineno or node.lineno,
-            ))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            functions.append(FunctionInfo(
-                name=node.name,
-                parameters=[
-                    ParameterInfo(name=a.arg)
-                    for a in node.args.args
-                ],
-                docstring=ast.get_docstring(node),
-                line_start=node.lineno,
-                line_end=node.end_lineno or node.lineno,
-                source=ast.get_source_segment(source, node) or "",
-            ))
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                imports.append(node.module)
-
-    return ModuleInfo(
-        module_path=module_path,
-        docstring=docstring,
-        classes=classes,
-        functions=functions,
-        all_exports=[],
-        imports=imports,
-    )
-
-
-# Install the fake ast_extractor module before importing source_ingest.
-_fake_ast_extractor = types.ModuleType("pipecat_context_hub.services.ingest.ast_extractor")
-_fake_ast_extractor.ParameterInfo = ParameterInfo  # type: ignore[attr-defined]
-_fake_ast_extractor.MethodInfo = MethodInfo  # type: ignore[attr-defined]
-_fake_ast_extractor.ClassInfo = ClassInfo  # type: ignore[attr-defined]
-_fake_ast_extractor.FunctionInfo = FunctionInfo  # type: ignore[attr-defined]
-_fake_ast_extractor.ModuleInfo = ModuleInfo  # type: ignore[attr-defined]
-_fake_ast_extractor.build_signature = _build_signature  # type: ignore[attr-defined]
-_fake_ast_extractor.extract_module_info = _extract_module_info  # type: ignore[attr-defined]
-sys.modules["pipecat_context_hub.services.ingest.ast_extractor"] = _fake_ast_extractor
-
-from pipecat_context_hub.services.ingest.source_ingest import (  # noqa: E402
+from pipecat_context_hub.services.ingest.ast_extractor import extract_module_info
+from pipecat_context_hub.services.ingest.source_ingest import (
     SourceIngester,
     _build_chunks,
     _find_python_files,
@@ -171,7 +17,7 @@ from pipecat_context_hub.services.ingest.source_ingest import (  # noqa: E402
     _make_source_url,
     _SKIP_DIRS,
 )
-from pipecat_context_hub.shared.types import ChunkedRecord  # noqa: E402
+from pipecat_context_hub.shared.types import ChunkedRecord
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +202,7 @@ class TestBuildChunks:
 
     def _get_chunks(self) -> list[ChunkedRecord]:
         """Build chunks from _SIMPLE_MODULE_SOURCE."""
-        module_info = _extract_module_info(_SIMPLE_MODULE_SOURCE, "pipecat.processors.my")
+        module_info = extract_module_info(_SIMPLE_MODULE_SOURCE, "pipecat.processors.my")
         return _build_chunks(
             module_info=module_info,
             source=_SIMPLE_MODULE_SOURCE,

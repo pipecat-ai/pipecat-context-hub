@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import textwrap
 
-import pytest
 
 from pipecat_context_hub.services.ingest.ast_extractor import (
     ParameterInfo,

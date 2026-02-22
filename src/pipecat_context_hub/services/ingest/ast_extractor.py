@@ -6,7 +6,6 @@ No I/O, no imports of pipecat code. Uses only the Python standard library.
 from __future__ import annotations
 
 import ast
-import textwrap
 from dataclasses import dataclass, field
 
 
