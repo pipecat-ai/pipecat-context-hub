@@ -102,8 +102,10 @@ class HybridRetriever:
 
         logger.debug("Hybrid search: query=%r filters=%r limit=%d", query_text, filters, limit)
 
-        vector_results = await self._index.vector_search(query)
-        keyword_results = await self._index.keyword_search(query)
+        vector_results, keyword_results = await asyncio.gather(
+            self._index.vector_search(query),
+            self._index.keyword_search(query),
+        )
 
         logger.debug(
             "Raw results: vector=%d keyword=%d",

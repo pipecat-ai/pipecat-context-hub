@@ -93,9 +93,9 @@ The proposed solution is a Pipecat Context Hub with:
 - [x] Merge all parallel worktrees. *(T8)*
 - [x] Run end-to-end integration tests. *(T8)*
 - [x] Validate local retrieval-first user journeys for coding and ideation. *(T8)*
-- [ ] Run load and latency tests on top retrieval paths. *(T8 — deferred to post-MVP)*
+- [x] Run load and latency tests on top retrieval paths. *(T8 — 11 benchmarks, `pytest -m benchmark`)*
 - [x] Publish local setup + refresh runbook. *(T8)*
-- [ ] Cut v0 local release. *(T8 — pending: tag + changelog)*
+- [x] Cut v0 local release. *(T8 — v0.0.1 + v0.0.2 shipped)*
 
 ### Phase 5b: Integration Seam Fixes — T10 (serial) ✅
 Post-merge audit of cross-component boundaries revealed three integration seam bugs
@@ -684,7 +684,7 @@ pipecat-context-hub serve
 - Per-file taxonomy lookup enables flat files to get per-file metadata enrichment
 
 #### Remaining Items
-- [ ] Load/latency benchmarks on retrieval paths (deferred to post-MVP)
+- [x] Load/latency benchmarks on retrieval paths *(11 benchmarks added)*
 - [x] ~~DeepWiki secondary source ingestion~~ — DoA: replaced by llms-full.txt
 - [x] v0 release tag + changelog
 - [ ] `compose_solution` and `propose_architecture` tools (v1)
