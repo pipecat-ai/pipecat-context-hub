@@ -152,10 +152,11 @@ def _find_python_files(src_dir: Path) -> list[Path]:
 
 
 def _make_chunk_id(
-    module_path: str, chunk_type: str, class_name: str, method_name: str, commit_sha: str
+    module_path: str, chunk_type: str, class_name: str, method_name: str,
+    commit_sha: str, line_start: int = 0,
 ) -> str:
     """Deterministic chunk ID."""
-    key = f"source:{module_path}:{chunk_type}:{class_name}:{method_name}:{commit_sha}"
+    key = f"source:{module_path}:{chunk_type}:{class_name}:{method_name}:{commit_sha}:{line_start}"
     return hashlib.sha256(key.encode()).hexdigest()[:24]
 
 
@@ -182,7 +183,7 @@ def _build_chunks(
     # --- Module overview chunk ---
     module_content = _build_module_overview(module_info)
     records.append(ChunkedRecord(
-        chunk_id=_make_chunk_id(mp, "module_overview", "", "", commit_sha),
+        chunk_id=_make_chunk_id(mp, "module_overview", "", "", commit_sha, line_start=1),
         content=module_content,
         content_type="source",
         source_url=_make_source_url(rel_path, commit_sha, 1, len(source.splitlines())),
@@ -210,7 +211,7 @@ def _build_chunks(
         # Class overview
         class_content = _build_class_overview(cls, mp)
         records.append(ChunkedRecord(
-            chunk_id=_make_chunk_id(mp, "class_overview", cls.name, "", commit_sha),
+            chunk_id=_make_chunk_id(mp, "class_overview", cls.name, "", commit_sha, line_start=cls.line_start),
             content=class_content,
             content_type="source",
             source_url=_make_source_url(rel_path, commit_sha, cls.line_start, cls.line_end),
@@ -241,7 +242,7 @@ def _build_chunks(
             method_content = _build_method_chunk(cls, method, mp)
             sig = build_signature(method.name, method.parameters, method.return_type)
             records.append(ChunkedRecord(
-                chunk_id=_make_chunk_id(mp, "method", cls.name, method.name, commit_sha),
+                chunk_id=_make_chunk_id(mp, "method", cls.name, method.name, commit_sha, line_start=method.line_start),
                 content=method_content,
                 content_type="source",
                 source_url=_make_source_url(
@@ -275,7 +276,7 @@ def _build_chunks(
         func_content = _build_function_chunk(func, mp)
         sig = build_signature(func.name, func.parameters, func.return_type)
         records.append(ChunkedRecord(
-            chunk_id=_make_chunk_id(mp, "function", "", func.name, commit_sha),
+            chunk_id=_make_chunk_id(mp, "function", "", func.name, commit_sha, line_start=func.line_start),
             content=func_content,
             content_type="source",
             source_url=_make_source_url(rel_path, commit_sha, func.line_start, func.line_end),
