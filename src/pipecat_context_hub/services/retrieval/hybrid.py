@@ -439,7 +439,11 @@ class HybridRetriever:
             citation = build_citation(r)
             base_classes_raw = r.chunk.metadata.get("base_classes", [])
             if isinstance(base_classes_raw, str):
-                base_classes_raw = base_classes_raw.split(",") if base_classes_raw else []
+                import json as _json
+                try:
+                    base_classes_raw = _json.loads(base_classes_raw)
+                except (ValueError, TypeError):
+                    base_classes_raw = base_classes_raw.split(",") if base_classes_raw else []
             hits.append(
                 ApiHit(
                     chunk_id=r.chunk.chunk_id,

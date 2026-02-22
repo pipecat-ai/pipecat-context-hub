@@ -409,7 +409,7 @@ class SearchApiInput(BaseModel):
     class_name: str | None = Field(default=None, description="Filter by class name, e.g. 'TTSService'.")
     chunk_type: str | None = Field(
         default=None,
-        description="Filter by chunk type: 'module_overview', 'class_overview', or 'method'.",
+        description="Filter by chunk type: 'module_overview', 'class_overview', 'method', or 'function'.",
     )
     is_dataclass: bool | None = Field(default=None, description="Filter for dataclass types only.")
     limit: int = Field(default=10, ge=1, le=50)

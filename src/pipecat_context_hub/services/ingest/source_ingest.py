@@ -80,7 +80,7 @@ class SourceIngester:
                 errors.append(f"Error reading {py_file}: {exc}")
                 continue
 
-            rel_path = str(py_file.relative_to(clone_dir / "src"))
+            rel_path = py_file.relative_to(clone_dir / "src").as_posix()
             module_path = rel_path.replace("/", ".").removesuffix(".py")
             # Handle __init__.py: module path is the parent package
             if module_path.endswith(".__init__"):

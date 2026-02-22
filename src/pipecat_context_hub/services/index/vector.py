@@ -7,6 +7,7 @@ single namespace for v0.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -63,10 +64,10 @@ def _record_to_metadata(
         val = record.metadata.get(key)
         if val is not None:
             meta[key] = bool(val)
-    # List metadata stored as comma-separated
+    # List metadata stored as JSON string (lossless for values containing commas)
     base_classes = record.metadata.get("base_classes")
     if base_classes and isinstance(base_classes, list):
-        meta["base_classes"] = ",".join(str(b) for b in base_classes)
+        meta["base_classes"] = json.dumps(base_classes)
     return meta
 
 
@@ -99,7 +100,11 @@ def _metadata_to_record_fields(
             extra_meta[key] = bool(val)
     base_classes_str = meta.get("base_classes", "")
     if base_classes_str:
-        extra_meta["base_classes"] = base_classes_str.split(",")
+        try:
+            extra_meta["base_classes"] = json.loads(base_classes_str)
+        except (json.JSONDecodeError, TypeError):
+            # Fallback for legacy comma-separated format
+            extra_meta["base_classes"] = base_classes_str.split(",")
 
     return ChunkedRecord(
         chunk_id=chunk_id,
