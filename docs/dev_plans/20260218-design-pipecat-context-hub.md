@@ -787,12 +787,23 @@ in 4 git worktrees) → T8 (serial integration + review fixes)
   indefinitely. Fixed: `timeout=10`
 - `mock_retriever` fixture missing `search_api` return value → search_api
   dispatch untested. Fixed: added `SearchApiOutput` mock with `ApiHit`
+- mypy type narrowing for `kw_defaults[i]` in AST extractor
+- FTS `module_path` filter: exact-match → prefix-match
+- `_make_chunk_id()`: added `line_start` to disambiguate duplicate
+  class/method names in same module (pipecat source has overloaded methods
+  and re-opened classes)
+- `base_classes` metadata: comma-join → JSON string (lossless for generics)
+- `rel_path`: `str()` → `as_posix()` for cross-platform Windows support
+- `chunk_type` field description: added missing `'function'` type
+
+**Refresh results:** 454 files → 5,075 source chunks, 10,017 total index
+(3,520 docs + 1,422 code + 5,075 source)
 
 **New files:**
-- `src/pipecat_context_hub/services/ingest/ast_extractor.py` (329 lines)
-- `src/pipecat_context_hub/services/ingest/source_ingest.py` (379 lines)
+- `src/pipecat_context_hub/services/ingest/ast_extractor.py` (334 lines)
+- `src/pipecat_context_hub/services/ingest/source_ingest.py` (380 lines)
 - `src/pipecat_context_hub/server/tools/search_api.py` (18 lines)
 - `tests/unit/test_ast_extractor.py` (495 lines)
-- `tests/unit/test_source_ingest.py` (512 lines)
+- `tests/unit/test_source_ingest.py` (519 lines)
 
-**Test results:** 474 tests pass (87 new)
+**Test results:** 475 tests pass (88 new)
