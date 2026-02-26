@@ -556,6 +556,7 @@ pipecat-context-hub/
 │               ├── search_examples.py                # T6
 │               ├── get_example.py                    # T6
 │               ├── get_code_snippet.py               # T6
+│               ├── get_hub_status.py                 # v0.0.4
 │               └── search_api.py                     # v0.0.3
 ├── config/
 │   └── clients/
@@ -579,6 +580,7 @@ pipecat-context-hub/
     ├── unit/
     │   ├── __init__.py                               # T0
     │   ├── test_ast_extractor.py                     # v0.0.3
+    │   ├── test_hub_status.py                        # v0.0.4
     │   ├── test_shared_types.py                      # T0
     │   ├── test_docs_crawler.py                      # T1
     │   ├── test_github_ingest.py                     # T2
@@ -665,7 +667,7 @@ pipecat-context-hub refresh
 
 pipecat-context-hub serve
   → IndexStore → EmbeddingService → HybridRetriever
-    → MCP Server (stdio) → 6 tools
+    → MCP Server (stdio) → 7 tools
 ```
 
 #### T8 Review Fixes Applied
@@ -807,3 +809,42 @@ in 4 git worktrees) → T8 (serial integration + review fixes)
 - `tests/unit/test_source_ingest.py` (519 lines)
 
 **Test results:** 475 tests pass (88 new)
+
+### v0.0.4 — Improve Tool Invocation and Add Index Freshness (2026-02-26)
+
+**Motivation:** User feedback from testing the MCP server with Claude Code:
+1. Claude doesn't proactively invoke MCP tools — defaults to reading `.venv`
+   source directly instead of using `search_api`, `search_examples`, etc.
+2. No temporal context — tool responses don't indicate when the index was last
+   refreshed, what pipecat version is indexed, or how many records exist.
+
+**Part A: Improved server instructions and tool descriptions**
+- `_SERVER_INSTRUCTIONS` expanded with tool routing guide: tells Claude which
+  tool to use for each query pattern and explicitly says "always use these
+  tools instead of reading .venv"
+- All 6 existing tool descriptions rewritten to be action-oriented with
+  use-case hints (e.g. `search_docs`: "Use for 'how do I...?' questions")
+
+**Part B: Persistent index metadata and `get_hub_status` tool (7th tool)**
+- New `index_metadata` SQLite table for persisting key-value metadata across
+  server restarts
+- `FTSIndex` gains `set_metadata()`, `get_metadata()`, `get_all_metadata()`,
+  `get_index_stats()` methods; proxied through `IndexStore`
+- CLI `refresh` persists: `last_refresh_at`, `last_refresh_duration_seconds`,
+  `records_upserted`, `error_count`, `content_type_counts`
+- New `get_hub_status` MCP tool returns: server version, last refresh
+  timestamp, duration, record counts by type, commit SHAs, index path
+- `create_server()` accepts optional `index_store` for status tool dispatch
+
+| File | Action |
+|------|--------|
+| `server/main.py` | Edit (instructions, descriptions, register tool, signature) |
+| `server/tools/get_hub_status.py` | Create |
+| `services/index/fts.py` | Edit (metadata table + methods + stats) |
+| `services/index/store.py` | Edit (metadata/stats proxy methods) |
+| `shared/types.py` | Edit (GetHubStatusInput, HubStatusOutput) |
+| `cli.py` | Edit (persist metadata, pass index_store) |
+| `tests/unit/test_hub_status.py` | Create (15 tests) |
+| `tests/unit/test_server.py` | Edit (updated tool count and names) |
+
+**Test results:** 494 tests pass (19 new)

@@ -7,6 +7,7 @@ to the VectorIndex and FTSIndex backends.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.services.index.vector import VectorIndex
@@ -68,6 +69,22 @@ class IndexStore:
     async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
         """Return results ranked by FTS5 keyword relevance."""
         return self._fts.search(query)
+
+    def set_metadata(self, key: str, value: str) -> None:
+        """Store a key-value pair in persistent index metadata."""
+        self._fts.set_metadata(key, value)
+
+    def get_metadata(self, key: str) -> str | None:
+        """Get a metadata value by key, or None if not found."""
+        return self._fts.get_metadata(key)
+
+    def get_all_metadata(self) -> dict[str, str]:
+        """Return all persistent index metadata as a dict."""
+        return self._fts.get_all_metadata()
+
+    def get_index_stats(self) -> dict[str, Any]:
+        """Return index statistics (counts by type, total, commit SHAs)."""
+        return self._fts.get_index_stats()
 
     def close(self) -> None:
         """Close underlying database connections."""

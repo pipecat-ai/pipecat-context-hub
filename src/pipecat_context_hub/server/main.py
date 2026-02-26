@@ -8,11 +8,13 @@ from typing import Any
 import mcp.types as types
 from mcp.server.lowlevel import Server
 
+from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.shared.interfaces import Retriever
 from pipecat_context_hub.shared.types import (
     GetCodeSnippetInput,
     GetDocInput,
     GetExampleInput,
+    GetHubStatusInput,
     SearchApiInput,
     SearchDocsInput,
     SearchExamplesInput,
@@ -20,6 +22,7 @@ from pipecat_context_hub.shared.types import (
 from pipecat_context_hub.server.tools.get_code_snippet import handle_get_code_snippet
 from pipecat_context_hub.server.tools.get_doc import handle_get_doc
 from pipecat_context_hub.server.tools.get_example import handle_get_example
+from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 from pipecat_context_hub.server.tools.search_api import handle_search_api
 from pipecat_context_hub.server.tools.search_docs import handle_search_docs
 from pipecat_context_hub.server.tools.search_examples import handle_search_examples
@@ -30,41 +33,65 @@ logger = logging.getLogger(__name__)
 _TOOL_REGISTRY: list[tuple[str, str, dict[str, Any]]] = [
     (
         "search_docs",
-        "Search Pipecat documentation. Returns ranked doc hits with evidence.",
+        "Search Pipecat documentation for conceptual questions, guides, configuration, and API "
+        "references. Use for 'how do I...?' questions. Returns ranked doc hits with evidence.",
         SearchDocsInput.model_json_schema(),
     ),
     (
         "get_doc",
-        "Retrieve a specific Pipecat documentation page by ID.",
+        "Retrieve a specific Pipecat documentation page by its chunk ID. "
+        "Use after search_docs to get full page content.",
         GetDocInput.model_json_schema(),
     ),
     (
         "search_examples",
-        "Search Pipecat code examples. Filter by repo, tags, or foundational class.",
+        "Find working Pipecat code examples by task, modality, or component. "
+        "Use when the user needs runnable code patterns. "
+        "Filter by repo, capability tags, or foundational class.",
         SearchExamplesInput.model_json_schema(),
     ),
     (
         "get_example",
-        "Retrieve a specific Pipecat example by ID, including source files.",
+        "Retrieve full source files for a specific Pipecat example. "
+        "Use after search_examples to get complete runnable code.",
         GetExampleInput.model_json_schema(),
     ),
     (
         "get_code_snippet",
-        "Get a code snippet by symbol name, intent description, or file path + line range.",
+        "Get a targeted code snippet by symbol name, intent, or file path + line range. "
+        "Use for extracting specific reusable code fragments.",
         GetCodeSnippetInput.model_json_schema(),
     ),
     (
         "search_api",
-        "Search Pipecat framework API source code. Returns class definitions, method signatures, "
-        "base classes, and source snippets. Filter by module, class name, chunk type, or dataclass status.",
+        "Search Pipecat framework internals — class definitions, method signatures, constructors, "
+        "base classes, and frame types. Use when you need implementation details, type information, "
+        "or inheritance hierarchies.",
         SearchApiInput.model_json_schema(),
+    ),
+    (
+        "get_hub_status",
+        "Get index health: last refresh time, record counts by type, indexed pipecat version, "
+        "and commit SHAs. Use to check if the index is fresh before answering questions.",
+        GetHubStatusInput.model_json_schema(),
     ),
 ]
 
 
 _SERVER_INSTRUCTIONS = """\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
-framework documentation and code examples.
+framework documentation, code examples, and API source.
+
+**Always use these tools for Pipecat questions instead of reading .venv or \
+source files directly.**
+
+Tool selection guide:
+- "How do I ...?" / conceptual questions → search_docs
+- "Show me an example of ..." / working code → search_examples, then get_example
+- Class constructors, method signatures, frame types → search_api
+- Specific code span or symbol → get_code_snippet
+- Retrieve a specific doc page → get_doc
+- Index health, freshness, version info → get_hub_status
 
 When suggesting commands for Pipecat projects, always use `uv` as the \
 package manager:
@@ -78,11 +105,11 @@ Pipecat examples use `uv` and include a `pyproject.toml`. Do not suggest \
 """
 
 
-def create_server(retriever: Retriever) -> Server:
+def create_server(retriever: Retriever, index_store: IndexStore | None = None) -> Server:
     """Create and configure the MCP server with all tool handlers."""
     server = Server(
         name="pipecat-context-hub",
-        version="0.0.3",
+        version="0.0.4",
         instructions=_SERVER_INSTRUCTIONS,
     )
 
@@ -102,6 +129,14 @@ def create_server(retriever: Retriever) -> Server:
         name: str, arguments: dict[str, Any] | None
     ) -> list[types.TextContent]:
         args = arguments or {}
+
+        # get_hub_status has a different dispatch signature (needs index_store)
+        if name == "get_hub_status":
+            if index_store is None:
+                raise ValueError("get_hub_status requires index_store")
+            result_json = await handle_get_hub_status(args, index_store)
+            return [types.TextContent(type="text", text=result_json)]
+
         handler_map: dict[str, Any] = {
             "search_docs": handle_search_docs,
             "get_doc": handle_get_doc,
@@ -114,7 +149,7 @@ def create_server(retriever: Retriever) -> Server:
         if handler is None:
             raise ValueError(f"Unknown tool: {name}")
 
-        result_json: str = await handler(args, retriever)
+        result_json = await handler(args, retriever)
         return [types.TextContent(type="text", text=result_json)]
 
     return server

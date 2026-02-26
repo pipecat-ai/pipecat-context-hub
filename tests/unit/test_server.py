@@ -1,7 +1,7 @@
 """Unit tests for the MCP server: tool registration, call dispatch, transport.
 
 Tests cover:
-1. Server registers all 6 tools and tools/list returns them.
+1. Server registers all 7 tools and tools/list returns them.
 2. Tool calls dispatch correctly and return valid JSON.
 3. Unknown tool name raises ValueError.
 4. Transport module is importable and functions exist.
@@ -133,8 +133,8 @@ def mock_retriever():
 
 
 class TestToolRegistration:
-    def test_registry_has_six_tools(self):
-        assert len(_TOOL_REGISTRY) == 6
+    def test_registry_has_seven_tools(self):
+        assert len(_TOOL_REGISTRY) == 7
 
     def test_registry_tool_names(self):
         names = [name for name, _, _ in _TOOL_REGISTRY]
@@ -145,6 +145,7 @@ class TestToolRegistration:
             "get_example",
             "get_code_snippet",
             "search_api",
+            "get_hub_status",
         ]
 
     def test_registry_schemas_are_valid_json_schema(self):

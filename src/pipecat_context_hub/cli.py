@@ -99,7 +99,7 @@ def serve(ctx: click.Context) -> None:
     embedding_svc = EmbeddingService(config.embedding)
     retriever = HybridRetriever(index_store, embedding_svc)
 
-    server = create_server(retriever)
+    server = create_server(retriever, index_store)
     serve_stdio(server)
 
 
@@ -191,5 +191,18 @@ def refresh(ctx: click.Context) -> None:
     if all_errors:
         for err in all_errors:
             logger.warning("  %s", err)
+
+    # Persist refresh metadata for get_hub_status tool
+    from datetime import datetime, timezone
+
+    index_store.set_metadata("last_refresh_at", datetime.now(timezone.utc).isoformat())
+    index_store.set_metadata("last_refresh_duration_seconds", str(duration))
+    index_store.set_metadata("last_refresh_records_upserted", str(total_upserted))
+    index_store.set_metadata("last_refresh_error_count", str(len(all_errors)))
+
+    import json
+
+    stats = index_store.get_index_stats()
+    index_store.set_metadata("content_type_counts", json.dumps(stats["counts_by_type"]))
 
     click.echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")

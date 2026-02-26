@@ -5,6 +5,34 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.0.4] - 2026-02-26
+
+### Added
+
+- **`get_hub_status` MCP tool** (7th tool): returns index health metadata —
+  server version, last refresh timestamp, refresh duration, record counts by
+  content type, distinct commit SHAs, and index data path
+- **Persistent index metadata**: new `index_metadata` SQLite table stores
+  key-value pairs (last refresh time, duration, record counts, error count)
+  that survive across server restarts
+- `FTSIndex.set_metadata()`, `get_metadata()`, `get_all_metadata()`,
+  `get_index_stats()` methods for metadata CRUD and index statistics
+- `IndexStore` proxies all metadata/stats methods to FTS backend
+- New shared types: `GetHubStatusInput`, `HubStatusOutput`
+
+### Changed
+
+- **Server instructions** expanded with tool routing guide — tells Claude
+  which tool to use for each query pattern (conceptual → `search_docs`,
+  examples → `search_examples`, API internals → `search_api`, etc.) and
+  explicitly instructs "always use these tools instead of reading .venv"
+- **Tool descriptions** rewritten to be action-oriented with use-case hints
+  (e.g. `search_docs` now says "Use for 'how do I...?' questions")
+- `create_server()` accepts optional `index_store` parameter for
+  `get_hub_status` dispatch
+- CLI `refresh` command now persists metadata after each run
+- CLI `serve` command passes `index_store` to `create_server`
+
 ## [0.0.3] - 2026-02-21
 
 ### Added
