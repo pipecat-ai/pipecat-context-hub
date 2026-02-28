@@ -6,10 +6,12 @@ Provides ``serve`` (default) and ``refresh`` commands.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -195,9 +197,6 @@ def refresh(ctx: click.Context) -> None:
     # Persist refresh metadata for get_hub_status tool.
     # last_refresh_at is only written on fully successful refreshes (0 errors)
     # so that get_hub_status accurately reports index health.
-    from datetime import datetime, timezone
-    import json
-
     now = datetime.now(timezone.utc).isoformat()
     index_store.set_metadata("last_refresh_duration_seconds", str(duration))
     index_store.set_metadata("last_refresh_records_upserted", str(total_upserted))

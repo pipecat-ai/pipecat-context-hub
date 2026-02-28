@@ -319,10 +319,7 @@ class FTSIndex:
             "SELECT content_type, COUNT(*) FROM chunks GROUP BY content_type"
         )
         counts_by_type: dict[str, int] = dict(cursor.fetchall())
-
-        cursor = self._conn.execute("SELECT COUNT(*) FROM chunks")
-        row = cursor.fetchone()
-        total: int = row[0] if row else 0
+        total: int = sum(counts_by_type.values())
 
         cursor = self._conn.execute(
             "SELECT DISTINCT commit_sha FROM chunks WHERE commit_sha IS NOT NULL"
