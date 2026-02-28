@@ -68,6 +68,9 @@ def _record_to_metadata(
     base_classes = record.metadata.get("base_classes")
     if base_classes and isinstance(base_classes, list):
         meta["base_classes"] = json.dumps(base_classes)
+    imports = record.metadata.get("imports")
+    if imports and isinstance(imports, list):
+        meta["imports"] = json.dumps(imports)
     return meta
 
 

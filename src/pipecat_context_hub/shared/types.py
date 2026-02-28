@@ -452,6 +452,10 @@ class ApiHit(BaseModel):
     snippet: str
     method_signature: str | None = None
     is_dataclass: bool = False
+    imports: list[str] = Field(
+        default_factory=list,
+        description="Pipecat-internal imports in this module.",
+    )
     citation: Citation
     score: float
 
