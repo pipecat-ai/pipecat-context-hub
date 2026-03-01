@@ -20,8 +20,10 @@ _DELIMITERS = re.compile(r"\s+\+\s+|\s+&\s+")
 # Maximum sub-concepts to bound cost.
 MAX_CONCEPTS = 5
 
-# Minimum length for a sub-concept to be valid.
-MIN_CONCEPT_LENGTH = 2
+# Minimum length for a sub-concept to be valid.  Set to 1 so that
+# single-letter language names ("C", "R", "D") are preserved when
+# the user explicitly types ` + ` or ` & `.
+MIN_CONCEPT_LENGTH = 1
 
 
 def decompose_query(query: str) -> list[str] | None:

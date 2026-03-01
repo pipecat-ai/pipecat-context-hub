@@ -724,10 +724,15 @@ class TestDecomposeQuery:
         assert result is not None
         assert len(result) == MAX_CONCEPTS
 
-    def test_short_fragments_filtered(self):
-        """Fragments shorter than MIN_CONCEPT_LENGTH are dropped."""
-        result = decompose_query("TTS + x + STT")
+    def test_empty_fragments_filtered(self):
+        """Empty fragments from leading delimiters are dropped."""
+        result = decompose_query(" + TTS + STT")
         assert result == ["TTS", "STT"]
+
+    def test_single_letter_concepts_preserved(self):
+        """Single-letter concepts like 'C' and 'R' are valid search terms."""
+        assert decompose_query("C + concurrency") == ["C", "concurrency"]
+        assert decompose_query("R + metrics") == ["R", "metrics"]
 
     def test_no_false_positive_natural_language(self):
         assert decompose_query("how to use idle timeout with Gemini") is None
