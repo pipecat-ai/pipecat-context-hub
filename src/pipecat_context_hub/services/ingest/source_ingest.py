@@ -1,8 +1,8 @@
-"""Pipecat framework source ingester using Python AST extraction.
+"""Source ingester using Python AST extraction.
 
-Walks the pipecat framework source tree (from the GitHubRepoIngester's
-clone), extracts API metadata via AST, and produces ChunkedRecord objects
-with content_type="source".
+Walks a cloned repo's ``src/`` packages (from GitHubRepoIngester's clone),
+extracts API metadata via AST, and produces ChunkedRecord objects with
+content_type="source".  One SourceIngester instance per repo slug.
 """
 
 from __future__ import annotations
