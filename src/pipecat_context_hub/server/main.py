@@ -29,7 +29,7 @@ from pipecat_context_hub.server.tools.search_examples import handle_search_examp
 
 logger = logging.getLogger(__name__)
 
-_SERVER_VERSION = "0.0.5"
+_SERVER_VERSION = "0.0.6"
 
 # Tool name → (description, input schema, handler)
 _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
@@ -63,7 +63,8 @@ _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
     (
         "get_code_snippet",
         "Get a targeted code snippet by symbol name, intent, or file path + line range. "
-        "Use for extracting specific reusable code fragments. "
+        "Symbol lookups search framework source (class/method definitions); "
+        "intent lookups search example code. "
         "For multiple topics, use ` + ` or ` & ` delimiters in the intent field.",
         GetCodeSnippetInput.model_json_schema(),
     ),

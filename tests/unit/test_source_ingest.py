@@ -15,9 +15,12 @@ from pipecat_context_hub.services.ingest.source_ingest import (
     _find_python_files,
     _make_chunk_id,
     _make_source_url,
+    _sanitize_slug,
     _SKIP_DIRS,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord
+
+_TEST_REPO_SLUG = "pipecat-ai/pipecat"
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +108,38 @@ class TestFindPythonFiles:
 
 
 # ---------------------------------------------------------------------------
+# _sanitize_slug tests
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeSlug:
+    """Tests for slug sanitization matching GitHubRepoIngester."""
+
+    def test_slash_replaced(self):
+        assert _sanitize_slug("pipecat-ai/pipecat") == "pipecat-ai_pipecat"
+
+    def test_dot_replaced(self):
+        """Dots in repo names are replaced, matching github_ingest sanitization."""
+        assert _sanitize_slug("org/repo.name") == "org_repo_name"
+
+    def test_preserves_hyphens(self):
+        assert _sanitize_slug("vr000m/pipecat-mcp-server") == "vr000m_pipecat-mcp-server"
+
+    def test_matches_github_ingest_regex(self):
+        """Produces identical output to re.sub(r'[^a-zA-Z0-9_-]', '_', slug)."""
+        import re
+        slugs = [
+            "pipecat-ai/pipecat",
+            "org/repo.v2",
+            "user/my_repo",
+            "vr000m/pipecat-mcp-server",
+        ]
+        for slug in slugs:
+            expected = re.sub(r"[^a-zA-Z0-9_-]", "_", slug)
+            assert _sanitize_slug(slug) == expected, f"Mismatch for {slug}"
+
+
+# ---------------------------------------------------------------------------
 # _make_chunk_id tests
 # ---------------------------------------------------------------------------
 
@@ -114,34 +149,40 @@ class TestMakeChunkId:
 
     def test_deterministic(self):
         """Same inputs produce the same ID."""
-        id1 = _make_chunk_id("mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
-        id2 = _make_chunk_id("mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
+        id1 = _make_chunk_id("org/repo", "mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
+        id2 = _make_chunk_id("org/repo", "mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
         assert id1 == id2
 
     def test_different_inputs_different_ids(self):
         """Different inputs produce different IDs."""
-        id1 = _make_chunk_id("mod.a", "class_overview", "A", "", "sha1", line_start=1)
-        id2 = _make_chunk_id("mod.b", "class_overview", "B", "", "sha2", line_start=1)
+        id1 = _make_chunk_id("org/repo", "mod.a", "class_overview", "A", "", "sha1", line_start=1)
+        id2 = _make_chunk_id("org/repo", "mod.b", "class_overview", "B", "", "sha2", line_start=1)
         assert id1 != id2
 
     def test_same_name_different_lines(self):
         """Duplicate class/method names at different lines produce different IDs."""
-        id1 = _make_chunk_id("mod", "class_overview", "Foo", "", "sha", line_start=10)
-        id2 = _make_chunk_id("mod", "class_overview", "Foo", "", "sha", line_start=50)
+        id1 = _make_chunk_id("org/repo", "mod", "class_overview", "Foo", "", "sha", line_start=10)
+        id2 = _make_chunk_id("org/repo", "mod", "class_overview", "Foo", "", "sha", line_start=50)
+        assert id1 != id2
+
+    def test_different_repos_different_ids(self):
+        """Same module in different repos produces different IDs."""
+        id1 = _make_chunk_id("org/repo-a", "mod", "class_overview", "Foo", "", "sha", line_start=10)
+        id2 = _make_chunk_id("org/repo-b", "mod", "class_overview", "Foo", "", "sha", line_start=10)
         assert id1 != id2
 
     def test_format(self):
         """Chunk ID is 24-char hex string."""
-        cid = _make_chunk_id("m", "t", "c", "f", "s", line_start=1)
+        cid = _make_chunk_id("r", "m", "t", "c", "f", "s", line_start=1)
         assert len(cid) == 24
         # Should be valid hex.
         int(cid, 16)
 
     def test_matches_expected_sha256(self):
         """Chunk ID matches the expected SHA-256 prefix."""
-        key = "source:mod.path:module_overview:::abc:1"
+        key = "source:org/repo:mod.path:module_overview:::abc:1"
         expected = hashlib.sha256(key.encode()).hexdigest()[:24]
-        assert _make_chunk_id("mod.path", "module_overview", "", "", "abc", line_start=1) == expected
+        assert _make_chunk_id("org/repo", "mod.path", "module_overview", "", "", "abc", line_start=1) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +195,7 @@ class TestMakeSourceUrl:
 
     def test_url_with_line_range(self):
         """URL includes line range fragment."""
-        url = _make_source_url("pipecat/frames/base.py", "abc123", 10, 50)
+        url = _make_source_url(_TEST_REPO_SLUG, "pipecat/frames/base.py", "abc123", 10, 50)
         assert url == (
             "https://github.com/pipecat-ai/pipecat/blob/abc123"
             "/src/pipecat/frames/base.py#L10-L50"
@@ -162,7 +203,7 @@ class TestMakeSourceUrl:
 
     def test_url_without_line_range(self):
         """URL without line range when start/end are 0."""
-        url = _make_source_url("pipecat/frames/base.py", "abc123", 0, 0)
+        url = _make_source_url(_TEST_REPO_SLUG, "pipecat/frames/base.py", "abc123", 0, 0)
         assert url == (
             "https://github.com/pipecat-ai/pipecat/blob/abc123"
             "/src/pipecat/frames/base.py"
@@ -215,6 +256,7 @@ class TestBuildChunks:
             rel_path="pipecat/processors/my.py",
             commit_sha="deadbeef",
             now=datetime(2026, 2, 21, tzinfo=timezone.utc),
+            repo_slug=_TEST_REPO_SLUG,
         )
 
     def test_module_overview_is_first(self):
@@ -309,6 +351,7 @@ class TestBuildChunks:
             rel_path="pipecat\\services\\tts.py",  # Windows-style
             commit_sha="abc",
             now=datetime(2026, 2, 21, tzinfo=timezone.utc),
+            repo_slug=_TEST_REPO_SLUG,
         )
         # Source URLs should still work (backslashes are fine in URL path)
         # but module_path is derived from module_info, not rel_path, so it
@@ -375,17 +418,16 @@ class TestSourceIngester:
         config.storage.data_dir = tmp_path
         return config
 
-    async def test_ingest_missing_dir(self, tmp_path: Path):
-        """Returns error when pipecat source directory is not found."""
+    async def test_ingest_missing_src_dir(self, tmp_path: Path):
+        """Returns 0 records when repo has no src/ directory."""
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
-        ingester = SourceIngester(config, writer)
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
 
         result = await ingester.ingest()
 
-        assert result.source == "pipecat-source"
-        assert len(result.errors) == 1
-        assert "not found" in result.errors[0]
+        assert result.source == "source:pipecat-ai/pipecat"
+        assert result.errors == []
         assert result.records_upserted == 0
 
     async def test_ingest_with_mock_files(self, tmp_path: Path):
@@ -424,11 +466,11 @@ class TestSourceIngester:
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
-        ingester = SourceIngester(config, writer)
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
 
         result = await ingester.ingest()
 
-        assert result.source == "pipecat-source"
+        assert result.source == "source:pipecat-ai/pipecat"
         assert result.errors == []
         assert result.records_upserted > 0
 
@@ -470,7 +512,7 @@ class TestSourceIngester:
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
-        ingester = SourceIngester(config, writer)
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
 
         result = await ingester.ingest()
 
@@ -498,7 +540,7 @@ class TestSourceIngester:
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
-        ingester = SourceIngester(config, writer)
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
 
         result = await ingester.ingest()
 
@@ -524,7 +566,7 @@ class TestSourceIngester:
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
         writer.upsert = AsyncMock(side_effect=RuntimeError("db error"))
-        ingester = SourceIngester(config, writer)
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
 
         result = await ingester.ingest()
 
@@ -547,7 +589,7 @@ class TestSourceIngester:
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
-        ingester = SourceIngester(config, writer)
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
 
         await ingester.ingest()
         await ingester.ingest()
@@ -574,7 +616,7 @@ class TestSourceIngester:
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
-        ingester = SourceIngester(config, writer)
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
 
         result = await ingester.ingest()
 
@@ -583,3 +625,69 @@ class TestSourceIngester:
         module_paths = {rec.metadata["module_path"] for rec in records}
         # pipecat/frames/__init__.py -> module_path "pipecat.frames" (not "pipecat.frames.__init__")
         assert "pipecat.frames" in module_paths
+
+    async def test_ingest_extra_repo(self, tmp_path: Path):
+        """SourceIngester processes a non-pipecat repo with src/ layout."""
+        clone_dir = tmp_path / "repos" / "org_extra-repo"
+        src_dir = clone_dir / "src" / "my_pkg"
+        src_dir.mkdir(parents=True)
+
+        (src_dir / "__init__.py").write_text('"""My package."""\n')
+        (src_dir / "agent.py").write_text(
+            "class BaseAgent:\n"
+            '    """Base agent class."""\n\n'
+            "    def __init__(self, name: str):\n"
+            "        self.name = name\n"
+            "        self.state = {}\n"
+            "        self.running = False\n\n"
+            "    def run(self):\n"
+            '        """Run the agent."""\n'
+            "        self.running = True\n"
+            "        return self.state\n"
+        )
+
+        _create_git_repo(clone_dir, {
+            "src/my_pkg/__init__.py": '"""My package."""\n',
+            "src/my_pkg/agent.py": (src_dir / "agent.py").read_text(),
+        })
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = SourceIngester(config, writer, "org/extra-repo")
+
+        result = await ingester.ingest()
+
+        assert result.source == "source:org/extra-repo"
+        assert result.errors == []
+        assert result.records_upserted > 0
+
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        for rec in records:
+            assert rec.content_type == "source"
+            assert rec.repo == "org/extra-repo"
+
+        chunk_types = {rec.metadata["chunk_type"] for rec in records}
+        assert "module_overview" in chunk_types
+        assert "class_overview" in chunk_types
+
+        for rec in records:
+            assert rec.source_url.startswith("https://github.com/org/extra-repo/blob/")
+
+    async def test_repo_without_src_dir(self, tmp_path: Path):
+        """Repo without src/ directory returns 0 records, no errors."""
+        clone_dir = tmp_path / "repos" / "org_no-src-repo"
+        clone_dir.mkdir(parents=True)
+        (clone_dir / "README.md").write_text("# No src layout\n")
+
+        _create_git_repo(clone_dir, {"README.md": "# No src layout\n"})
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = SourceIngester(config, writer, "org/no-src-repo")
+
+        result = await ingester.ingest()
+
+        assert result.source == "source:org/no-src-repo"
+        assert result.errors == []
+        assert result.records_upserted == 0
+        writer.upsert.assert_not_called()

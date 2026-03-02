@@ -56,7 +56,8 @@ See [docs/setup/README.md](setup/README.md) for the full setup overview.
 Ingestion:
   DocsCrawler (llms-full.txt)    ──┐
   GitHubRepoIngester (N repos)   ──┤→ EmbeddingIndexWriter → IndexStore
-  TaxonomyBuilder (auto-infer)   ──┘   (sentence-transformers)   (ChromaDB + FTS5)
+  SourceIngester (per-repo AST)  ──┤   (sentence-transformers)   (ChromaDB + FTS5)
+  TaxonomyBuilder (auto-infer)   ──┘
     ↑                                         ↑
     Per-file taxonomy enrichment:             Metadata stored per chunk:
     foundational_class, capability_tags,      language, execution_mode,
@@ -83,6 +84,7 @@ Retrieval:
   - Discovered via root-level directory scanning (no `examples/` dir required)
 - Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var (comma-separated slugs)
   - Supports single-project repos (`src/`-layout, root-level entry scripts)
+  - Repos with `src/` layouts are AST-indexed for `search_api` (class definitions, method signatures)
   - See `.env.example` for usage
 
 ### Technology
