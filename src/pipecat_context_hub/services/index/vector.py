@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "latest"
 
+# ChromaDB limits batch operations to ~5,461 embeddings. Use a safe limit.
+_CHROMA_BATCH_SIZE = 5000
+
 
 def _record_to_metadata(
     record: ChunkedRecord,
@@ -249,12 +252,15 @@ class VectorIndex:
         if not ids:
             return 0
 
-        self._collection.upsert(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        )
+        # ChromaDB limits batch operations to ~5,461 embeddings.
+        for i in range(0, len(ids), _CHROMA_BATCH_SIZE):
+            end = i + _CHROMA_BATCH_SIZE
+            self._collection.upsert(
+                ids=ids[i:end],
+                documents=documents[i:end],
+                metadatas=metadatas[i:end],
+                embeddings=embeddings[i:end],
+            )
         logger.debug("Upserted %d records into vector index", len(ids))
         return len(ids)
 
@@ -262,23 +268,26 @@ class VectorIndex:
         """Delete all records matching a content type. Returns count deleted."""
         where_clause: dict[str, Any] = {"content_type": {"$eq": content_type}}
         existing = self._collection.get(where=where_clause, include=[])
-        count = len(existing["ids"])
+        ids = existing["ids"]
+        count = len(ids)
         if count > 0:
-            self._collection.delete(where=where_clause)
+            # ChromaDB limits batch operations to ~5,000 records.
+            for i in range(0, count, _CHROMA_BATCH_SIZE):
+                batch = ids[i : i + _CHROMA_BATCH_SIZE]
+                self._collection.delete(ids=batch)
             logger.debug("Deleted %d records from vector index for content_type=%s", count, content_type)
         return count
 
     def delete_by_source(self, source_url: str) -> int:
         """Delete all records matching a source URL. Returns count deleted."""
         where_clause: dict[str, Any] = {"source_url": {"$eq": source_url}}
-        # Get IDs first so we can report count
-        existing = self._collection.get(
-            where=where_clause,
-            include=[],
-        )
-        count = len(existing["ids"])
+        existing = self._collection.get(where=where_clause, include=[])
+        ids = existing["ids"]
+        count = len(ids)
         if count > 0:
-            self._collection.delete(where=where_clause)
+            for i in range(0, count, _CHROMA_BATCH_SIZE):
+                batch = ids[i : i + _CHROMA_BATCH_SIZE]
+                self._collection.delete(ids=batch)
             logger.debug("Deleted %d records from vector index for source %s", count, source_url)
         return count
 
