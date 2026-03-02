@@ -396,18 +396,20 @@ class HybridRetriever:
 
     async def get_code_snippet(self, input: GetCodeSnippetInput) -> GetCodeSnippetOutput:
         """Get code snippets by symbol, intent, or path+line_start."""
-        filters: dict[str, Any] = {"content_type": "code"}
-        if input.framework:
-            filters["framework"] = input.framework
-        if input.example_ids:
-            filters["example_ids"] = input.example_ids
+        filters: dict[str, Any] = {}
 
-        # Determine query text based on lookup mode
+        # Determine query text and content_type based on lookup mode.
+        # Symbol lookups target framework source (content_type="source")
+        # where class/method definitions are AST-indexed.
+        # Intent and path lookups target example code (content_type="code").
         if input.symbol:
             query_text = input.symbol
-            filters["symbol"] = input.symbol
+            filters["content_type"] = "source"
+            if input.path is not None:
+                filters["path"] = input.path
         elif input.intent:
             query_text = input.intent
+            filters["content_type"] = "code"
             # path narrows intent search to a specific file
             if input.path is not None:
                 filters["path"] = input.path

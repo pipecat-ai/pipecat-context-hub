@@ -63,7 +63,8 @@ _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
     (
         "get_code_snippet",
         "Get a targeted code snippet by symbol name, intent, or file path + line range. "
-        "Use for extracting specific reusable code fragments. "
+        "Symbol lookups search framework source (class/method definitions); "
+        "intent lookups search example code. "
         "For multiple topics, use ` + ` or ` & ` delimiters in the intent field.",
         GetCodeSnippetInput.model_json_schema(),
     ),

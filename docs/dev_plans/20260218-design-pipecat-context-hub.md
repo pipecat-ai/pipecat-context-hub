@@ -957,21 +957,39 @@ discover `src/` packages in each cloned repo, and loop over all
 
 **Test results:** 527 tests pass, lint clean
 
-### Part 2: `get_code_snippet` Retrieval Fix (in progress)
+### Part 2: `get_code_snippet` Symbol Lookup Fix ✅
 
 **Problem:** `get_code_snippet(symbol="MLXModel")` returns GLSL noise utility
 code instead of the Python enum. Root causes:
 
-1. **Wrong content_type filter:** `get_code_snippet` filters by
+1. **Wrong content_type filter:** `get_code_snippet` always filtered by
    `content_type="code"` (example code), but framework classes like `MLXModel`
    are in `content_type="source"` records from `SourceIngester`.
-2. **`symbol` filter silently dropped:** The retriever adds
-   `filters["symbol"]` but neither vector nor FTS backends handle it — search
-   degrades to pure embedding similarity.
-3. **No `symbol` metadata stored:** Even if the filter worked, ingestion never
-   extracts a `symbol` field. Source records store `class_name`,
-   `method_name`, `module_path` — but `symbol` isn't mapped to these.
-4. **`search_api` results not usable in `get_code_snippet`:** No chunk-ID
-   lookup, and content_type mismatch blocks cross-tool workflows.
+2. **`symbol` filter silently dropped:** The retriever added
+   `filters["symbol"]` but neither vector nor FTS backends handle that key —
+   search degraded to pure embedding similarity with no symbol constraint.
 
-**Solution:** TBD — planning next.
+**Solution:** Route by lookup mode — symbol lookups now search
+`content_type="source"` (framework API definitions), intent lookups keep
+`content_type="code"` (example code). Removed the broken `symbol` filter;
+the symbol name as query text provides sufficient embedding + keyword signal.
+
+#### Design Decisions
+
+- **Symbol → source, intent → code:** Maps to the semantic purpose of each
+  lookup mode. Users searching for a class definition want framework source;
+  users describing what they want to do want example code.
+- **Removed broken filters:** `framework` and `example_ids` filters were also
+  silently dropped by both index backends — removed from symbol path to avoid
+  confusion. These remain as documented-but-unimplemented features.
+- **Path filter in symbol mode:** Now accepted as an optional narrowing filter
+  (e.g., `symbol="MLXModel", path="pipecat/services/whisper/"`)
+
+#### Files
+
+| File | Action |
+|------|--------|
+| `services/retrieval/hybrid.py` | Edit (route content_type by lookup mode) |
+| `tests/unit/test_retrieval.py` | Edit (update symbol test, +4 new tests) |
+
+**Test results:** 530 tests pass, lint clean

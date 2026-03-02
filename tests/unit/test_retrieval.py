@@ -59,7 +59,7 @@ NOW = datetime(2026, 2, 17, tzinfo=timezone.utc)
 def _make_chunk(
     chunk_id: str,
     content: str = "sample content",
-    content_type: Literal["doc", "code", "readme"] = "doc",
+    content_type: Literal["doc", "code", "readme", "source"] = "doc",
     repo: str | None = "pipecat-ai/pipecat",
     path: str = "docs/test.md",
     commit_sha: str | None = "abc123",
@@ -84,7 +84,7 @@ def _make_result(
     score: float = 0.8,
     match_type: Literal["vector", "keyword"] = "vector",
     content: str = "sample content",
-    content_type: Literal["doc", "code", "readme"] = "doc",
+    content_type: Literal["doc", "code", "readme", "source"] = "doc",
     indexed_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
     repo: str | None = "pipecat-ai/pipecat",
@@ -607,21 +607,71 @@ class TestHybridRetrieverGetCodeSnippet:
         assert output.evidence is not None
 
     async def test_by_symbol(self):
-        """get_code_snippet by symbol searches for the symbol."""
+        """get_code_snippet by symbol searches source records."""
         r1 = _make_result(
             "snippet-sym",
-            content="class PipelineRunner:\n    pass",
-            content_type="code",
-            metadata={"line_start": 10, "line_end": 11},
+            content="# Class: MLXModel\nModule: pipecat.services.whisper.stt",
+            content_type="source",
+            metadata={"line_start": 10, "line_end": 11, "chunk_type": "class_overview"},
         )
         mock_reader = _mock_index_reader(vector_results=[r1], keyword_results=[r1])
         retriever = HybridRetriever(mock_reader)
 
         output = await retriever.get_code_snippet(
-            GetCodeSnippetInput(symbol="PipelineRunner")
+            GetCodeSnippetInput(symbol="MLXModel")
         )
 
         assert len(output.snippets) > 0
+
+    async def test_symbol_searches_source_content_type(self):
+        """Symbol mode passes content_type='source' to the index."""
+        mock_reader = _mock_index_reader()
+        retriever = HybridRetriever(mock_reader)
+
+        await retriever.get_code_snippet(
+            GetCodeSnippetInput(symbol="MyClass")
+        )
+
+        # Both vector_search and keyword_search should receive content_type="source"
+        for call in mock_reader.vector_search.call_args_list:
+            query = call[0][0]
+            assert query.filters.get("content_type") == "source"
+        for call in mock_reader.keyword_search.call_args_list:
+            query = call[0][0]
+            assert query.filters.get("content_type") == "source"
+
+    async def test_symbol_with_path_filter(self):
+        """Symbol mode accepts optional path filter."""
+        r1 = _make_result(
+            "snippet-sym-path",
+            content="class MLXModel(str, Enum):\n    TINY = ...",
+            content_type="source",
+            path="pipecat/services/whisper/stt.py",
+            metadata={"line_start": 1, "line_end": 10, "chunk_type": "class_overview"},
+        )
+        mock_reader = _mock_index_reader(vector_results=[r1])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(
+            GetCodeSnippetInput(symbol="MLXModel", path="pipecat/services/whisper/stt.py")
+        )
+
+        assert len(output.snippets) > 0
+        # Verify path was passed as a filter
+        query = mock_reader.vector_search.call_args[0][0]
+        assert query.filters.get("path") == "pipecat/services/whisper/stt.py"
+
+    async def test_intent_still_searches_code(self):
+        """Intent mode still uses content_type='code' (example code)."""
+        mock_reader = _mock_index_reader()
+        retriever = HybridRetriever(mock_reader)
+
+        await retriever.get_code_snippet(
+            GetCodeSnippetInput(intent="create a pipeline")
+        )
+
+        query = mock_reader.vector_search.call_args[0][0]
+        assert query.filters.get("content_type") == "code"
 
     async def test_by_path_and_line(self):
         """get_code_snippet by path+line_start works."""
