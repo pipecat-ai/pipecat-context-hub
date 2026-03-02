@@ -244,20 +244,15 @@ class TestVersionConsistency:
 
     def test_server_version_matches_pyproject(self):
         """_SERVER_VERSION in server/main.py must match pyproject.toml [project].version."""
+        import tomllib
         from pathlib import Path
 
-        # Read pyproject.toml version
         pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        pyproject_version = None
-        for line in pyproject_path.read_text().splitlines():
-            stripped = line.strip()
-            if stripped.startswith("version") and "=" in stripped:
-                pyproject_version = stripped.split("=", 1)[1].strip().strip('"').strip("'")
-                break
+        with pyproject_path.open("rb") as f:
+            pyproject_version = tomllib.load(f)["project"]["version"]
 
         from pipecat_context_hub.server.main import _SERVER_VERSION
 
-        assert pyproject_version is not None, "Could not parse version from pyproject.toml"
         assert _SERVER_VERSION == pyproject_version, (
             f"Version mismatch: _SERVER_VERSION={_SERVER_VERSION!r} "
             f"but pyproject.toml version={pyproject_version!r}. "
