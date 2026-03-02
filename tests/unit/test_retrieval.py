@@ -692,6 +692,18 @@ class TestHybridRetrieverGetCodeSnippet:
         assert len(output.snippets) > 0
         assert output.snippets[0].path == "src/main.py"
 
+    async def test_path_line_scoped_to_code(self):
+        """Path+line_start mode filters by content_type='code'."""
+        mock_reader = _mock_index_reader()
+        retriever = HybridRetriever(mock_reader)
+
+        await retriever.get_code_snippet(
+            GetCodeSnippetInput(path="src/main.py", line_start=10)
+        )
+
+        query = mock_reader.vector_search.call_args[0][0]
+        assert query.filters.get("content_type") == "code"
+
     async def test_max_lines_truncation(self):
         """Snippets exceeding max_lines are truncated."""
         long_code = "\n".join(f"line {i}" for i in range(100))

@@ -415,6 +415,7 @@ class HybridRetriever:
                 filters["path"] = input.path
         elif input.path is not None and input.line_start is not None:
             query_text = input.path
+            filters["content_type"] = "code"
             filters["path"] = input.path
             # line_start/line_end are applied as post-filters below, not
             # passed to index backends which don't support numeric ranges.

@@ -15,6 +15,7 @@ from pipecat_context_hub.services.ingest.source_ingest import (
     _find_python_files,
     _make_chunk_id,
     _make_source_url,
+    _sanitize_slug,
     _SKIP_DIRS,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord
@@ -107,6 +108,38 @@ class TestFindPythonFiles:
 
 
 # ---------------------------------------------------------------------------
+# _sanitize_slug tests
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeSlug:
+    """Tests for slug sanitization matching GitHubRepoIngester."""
+
+    def test_slash_replaced(self):
+        assert _sanitize_slug("pipecat-ai/pipecat") == "pipecat-ai_pipecat"
+
+    def test_dot_replaced(self):
+        """Dots in repo names are replaced, matching github_ingest sanitization."""
+        assert _sanitize_slug("org/repo.name") == "org_repo_name"
+
+    def test_preserves_hyphens(self):
+        assert _sanitize_slug("vr000m/pipecat-mcp-server") == "vr000m_pipecat-mcp-server"
+
+    def test_matches_github_ingest_regex(self):
+        """Produces identical output to re.sub(r'[^a-zA-Z0-9_-]', '_', slug)."""
+        import re
+        slugs = [
+            "pipecat-ai/pipecat",
+            "org/repo.v2",
+            "user/my_repo",
+            "vr000m/pipecat-mcp-server",
+        ]
+        for slug in slugs:
+            expected = re.sub(r"[^a-zA-Z0-9_-]", "_", slug)
+            assert _sanitize_slug(slug) == expected, f"Mismatch for {slug}"
+
+
+# ---------------------------------------------------------------------------
 # _make_chunk_id tests
 # ---------------------------------------------------------------------------
 
@@ -116,34 +149,40 @@ class TestMakeChunkId:
 
     def test_deterministic(self):
         """Same inputs produce the same ID."""
-        id1 = _make_chunk_id("mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
-        id2 = _make_chunk_id("mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
+        id1 = _make_chunk_id("org/repo", "mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
+        id2 = _make_chunk_id("org/repo", "mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
         assert id1 == id2
 
     def test_different_inputs_different_ids(self):
         """Different inputs produce different IDs."""
-        id1 = _make_chunk_id("mod.a", "class_overview", "A", "", "sha1", line_start=1)
-        id2 = _make_chunk_id("mod.b", "class_overview", "B", "", "sha2", line_start=1)
+        id1 = _make_chunk_id("org/repo", "mod.a", "class_overview", "A", "", "sha1", line_start=1)
+        id2 = _make_chunk_id("org/repo", "mod.b", "class_overview", "B", "", "sha2", line_start=1)
         assert id1 != id2
 
     def test_same_name_different_lines(self):
         """Duplicate class/method names at different lines produce different IDs."""
-        id1 = _make_chunk_id("mod", "class_overview", "Foo", "", "sha", line_start=10)
-        id2 = _make_chunk_id("mod", "class_overview", "Foo", "", "sha", line_start=50)
+        id1 = _make_chunk_id("org/repo", "mod", "class_overview", "Foo", "", "sha", line_start=10)
+        id2 = _make_chunk_id("org/repo", "mod", "class_overview", "Foo", "", "sha", line_start=50)
+        assert id1 != id2
+
+    def test_different_repos_different_ids(self):
+        """Same module in different repos produces different IDs."""
+        id1 = _make_chunk_id("org/repo-a", "mod", "class_overview", "Foo", "", "sha", line_start=10)
+        id2 = _make_chunk_id("org/repo-b", "mod", "class_overview", "Foo", "", "sha", line_start=10)
         assert id1 != id2
 
     def test_format(self):
         """Chunk ID is 24-char hex string."""
-        cid = _make_chunk_id("m", "t", "c", "f", "s", line_start=1)
+        cid = _make_chunk_id("r", "m", "t", "c", "f", "s", line_start=1)
         assert len(cid) == 24
         # Should be valid hex.
         int(cid, 16)
 
     def test_matches_expected_sha256(self):
         """Chunk ID matches the expected SHA-256 prefix."""
-        key = "source:mod.path:module_overview:::abc:1"
+        key = "source:org/repo:mod.path:module_overview:::abc:1"
         expected = hashlib.sha256(key.encode()).hexdigest()[:24]
-        assert _make_chunk_id("mod.path", "module_overview", "", "", "abc", line_start=1) == expected
+        assert _make_chunk_id("org/repo", "mod.path", "module_overview", "", "", "abc", line_start=1) == expected
 
 
 # ---------------------------------------------------------------------------

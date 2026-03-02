@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -40,6 +41,15 @@ _SKIP_DIRS: frozenset[str] = frozenset({
 # Minimum body lines for a method/function to get its own chunk.
 _MIN_METHOD_LINES = 3
 
+
+def _sanitize_slug(slug: str) -> str:
+    """Sanitize a repo slug to a safe directory name.
+
+    Must match the sanitization in GitHubRepoIngester._clone_or_fetch
+    so source ingest finds the same clone directory.
+    """
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", slug)
+
 class SourceIngester:
     """Ingests source code from a single repository as API reference chunks."""
 
@@ -55,7 +65,7 @@ class SourceIngester:
         records: list[ChunkedRecord] = []
 
         # 1. Locate the repo clone
-        clone_dir = self._repos_dir / self._repo_slug.replace("/", "_")
+        clone_dir = self._repos_dir / _sanitize_slug(self._repo_slug)
         src_dir = clone_dir / "src"
         if not src_dir.is_dir():
             return IngestResult(source=f"source:{self._repo_slug}")
@@ -163,11 +173,11 @@ def _find_python_files(src_dir: Path) -> list[Path]:
 
 
 def _make_chunk_id(
-    module_path: str, chunk_type: str, class_name: str, method_name: str,
-    commit_sha: str, line_start: int = 0,
+    repo_slug: str, module_path: str, chunk_type: str, class_name: str,
+    method_name: str, commit_sha: str, line_start: int = 0,
 ) -> str:
-    """Deterministic chunk ID."""
-    key = f"source:{module_path}:{chunk_type}:{class_name}:{method_name}:{commit_sha}:{line_start}"
+    """Deterministic chunk ID scoped to repo."""
+    key = f"source:{repo_slug}:{module_path}:{chunk_type}:{class_name}:{method_name}:{commit_sha}:{line_start}"
     return hashlib.sha256(key.encode()).hexdigest()[:24]
 
 
@@ -195,7 +205,7 @@ def _build_chunks(
     # --- Module overview chunk ---
     module_content = _build_module_overview(module_info)
     records.append(ChunkedRecord(
-        chunk_id=_make_chunk_id(mp, "module_overview", "", "", commit_sha, line_start=1),
+        chunk_id=_make_chunk_id(repo_slug, mp, "module_overview", "", "", commit_sha, line_start=1),
         content=module_content,
         content_type="source",
         source_url=_make_source_url(repo_slug, rel_path, commit_sha, 1, len(source.splitlines())),
@@ -215,7 +225,7 @@ def _build_chunks(
             "language": "python",
             "line_start": 1,
             "line_end": len(source.splitlines()),
-            "imports": [i for i in module_info.imports if "pipecat" in i],
+            "imports": module_info.imports,
         },
     ))
 
@@ -224,7 +234,7 @@ def _build_chunks(
         # Class overview
         class_content = _build_class_overview(cls, mp)
         records.append(ChunkedRecord(
-            chunk_id=_make_chunk_id(mp, "class_overview", cls.name, "", commit_sha, line_start=cls.line_start),
+            chunk_id=_make_chunk_id(repo_slug, mp, "class_overview", cls.name, "", commit_sha, line_start=cls.line_start),
             content=class_content,
             content_type="source",
             source_url=_make_source_url(repo_slug, rel_path, commit_sha, cls.line_start, cls.line_end),
@@ -255,7 +265,7 @@ def _build_chunks(
             method_content = _build_method_chunk(cls, method, mp)
             sig = build_signature(method.name, method.parameters, method.return_type)
             records.append(ChunkedRecord(
-                chunk_id=_make_chunk_id(mp, "method", cls.name, method.name, commit_sha, line_start=method.line_start),
+                chunk_id=_make_chunk_id(repo_slug, mp, "method", cls.name, method.name, commit_sha, line_start=method.line_start),
                 content=method_content,
                 content_type="source",
                 source_url=_make_source_url(
@@ -289,7 +299,7 @@ def _build_chunks(
         func_content = _build_function_chunk(func, mp)
         sig = build_signature(func.name, func.parameters, func.return_type)
         records.append(ChunkedRecord(
-            chunk_id=_make_chunk_id(mp, "function", "", func.name, commit_sha, line_start=func.line_start),
+            chunk_id=_make_chunk_id(repo_slug, mp, "function", "", func.name, commit_sha, line_start=func.line_start),
             content=func_content,
             content_type="source",
             source_url=_make_source_url(repo_slug, rel_path, commit_sha, func.line_start, func.line_end),
