@@ -5,6 +5,41 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.0.7] - Unreleased
+
+### Added
+
+- **Incremental refresh**: `refresh` now tracks docs content hash and per-repo
+  commit SHAs. Unchanged sources are skipped entirely, reducing refresh time
+  from ~90s to ~23s when nothing changed
+- **`--force` flag** on `refresh` command to bypass all skip logic and force a
+  full re-ingest
+- **`delete_by_repo()`** on `VectorIndex`, `FTSIndex`, and `IndexStore` for
+  targeted per-repo index cleanup (replaces blanket `delete_by_content_type`
+  for changed repos)
+- **Symbol lookup filter cascade** in `get_code_snippet`: tries exact
+  `class_name` filter, then `method_name` filter, then semantic fallback —
+  gives precise class/method matches before falling back to hybrid search
+- `method_name` filter support in `VectorIndex._build_where_clause`
+
+### Changed
+
+- `refresh` now ingests repos individually for per-repo error tracking instead
+  of batch-ingesting all changed repos at once
+- `clone_or_fetch` and `fetch_llms_txt` made public APIs (called by CLI for
+  incremental hash/SHA comparison before deciding to ingest)
+- CLI passes prefetched data (docs text, repo paths) to ingesters, eliminating
+  redundant network fetches during refresh
+
+### Fixed
+
+- Docs content hash no longer persisted after errored ingest — prevents
+  skipping broken docs on the next run
+- Repo commit SHA no longer persisted after errored ingest — prevents skipping
+  failed repos on the next run
+- FTS `delete_by_repo` wrapped in error guard with divergence logging, matching
+  the `delete_by_content_type` pattern in `IndexStore`
+
 ## [0.0.4] - 2026-02-26
 
 ### Added

@@ -1,7 +1,7 @@
 # Pipecat Context Hub Architecture Plan
 
 ## Header
-- **Status:** In Progress (v0.0.6)
+- **Status:** In Progress (v0.0.7)
 - **Type:** design
 - **Assignee:** vr000m
 - **Priority:** High
@@ -116,6 +116,23 @@ seams (where one component's output feeds another's input) were never tested unt
 `delete_by_source()` existed but wasn't wired into the refresh flow. Updated global
 `/fan-out` and `/dev-plan` skills with integration seam awareness to prevent this class
 of bug in future parallel agent work.
+
+### Phase 5c: Incremental Refresh + Symbol Lookup (v0.0.7)
+- [x] **Incremental refresh:** `refresh` tracks docs content hash (`docs:content_hash`)
+  and per-repo commit SHAs (`repo:{slug}:commit_sha`). Unchanged sources are skipped
+  entirely, reducing refresh time from ~90s to ~23s when nothing changed.
+- [x] **`--force` flag:** Bypasses all skip logic for a full re-ingest.
+- [x] **Per-repo deletion:** New `delete_by_repo()` on VectorIndex, FTSIndex, and
+  IndexStore replaces blanket `delete_by_content_type` for changed repos only.
+- [x] **Symbol lookup filter cascade:** `get_code_snippet(symbol=X)` now tries exact
+  `class_name` filter, then `method_name` filter, then semantic fallback — giving
+  precise matches before falling back to hybrid search.
+- [x] **Error-safe caching:** Docs hash and repo SHAs are only persisted when ingest
+  completes without errors, ensuring failed ingests are retried on the next run.
+- [x] **Prefetched data:** CLI passes already-fetched docs text and repo paths to
+  ingesters, eliminating redundant network fetches (TOCTOU fix).
+- [x] **FTS error guard:** `delete_by_repo` in IndexStore catches FTS failures with
+  divergence logging, matching the `delete_by_content_type` pattern.
 
 ### Phase 6: Composition Layer (v1)
 - [ ] Implement `compose_solution` and `propose_architecture`.
