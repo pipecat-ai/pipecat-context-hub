@@ -333,20 +333,28 @@ class DocsCrawler:
         response.raise_for_status()
         return response.text
 
-    async def ingest(self) -> IngestResult:
-        """Fetch llms-full.txt and ingest all documentation pages."""
+    async def ingest(self, prefetched_text: str | None = None) -> IngestResult:
+        """Fetch llms-full.txt and ingest all documentation pages.
+
+        Args:
+            prefetched_text: Optional pre-fetched llms-full.txt content from a
+                prior ``fetch_llms_txt`` call, avoiding a redundant download.
+        """
         start = time.monotonic()
         errors: list[str] = []
         all_records: list[ChunkedRecord] = []
 
-        try:
-            raw_text = await self.fetch_llms_txt()
-        except Exception as e:
-            return IngestResult(
-                source=self._source.docs_url,
-                errors=[f"Failed to fetch llms-full.txt: {e}"],
-                duration_seconds=time.monotonic() - start,
-            )
+        if prefetched_text is not None:
+            raw_text = prefetched_text
+        else:
+            try:
+                raw_text = await self.fetch_llms_txt()
+            except Exception as e:
+                return IngestResult(
+                    source=self._source.docs_url,
+                    errors=[f"Failed to fetch llms-full.txt: {e}"],
+                    duration_seconds=time.monotonic() - start,
+                )
 
         pages = _split_into_pages(raw_text)
         logger.info("Parsed %d pages from llms-full.txt", len(pages))

@@ -152,7 +152,7 @@ def refresh(ctx: click.Context, force: bool) -> None:
                 logger.info("Docs unchanged (hash=%s…), skipping", content_hash[:8])
             else:
                 await index_store.delete_by_content_type("doc")
-                docs_result = await crawler.ingest()
+                docs_result = await crawler.ingest(prefetched_text=raw_text)
                 total_upserted += docs_result.records_upserted
                 all_errors.extend(docs_result.errors)
                 logger.info(
