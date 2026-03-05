@@ -326,7 +326,7 @@ class DocsCrawler:
             )
         return self._client
 
-    async def _fetch_llms_txt(self) -> str:
+    async def fetch_llms_txt(self) -> str:
         """Fetch the llms-full.txt file from docs.pipecat.ai."""
         client = await self._get_client()
         response = await client.get(self._source.docs_llms_txt_url)
@@ -340,7 +340,7 @@ class DocsCrawler:
         all_records: list[ChunkedRecord] = []
 
         try:
-            raw_text = await self._fetch_llms_txt()
+            raw_text = await self.fetch_llms_txt()
         except Exception as e:
             return IngestResult(
                 source=self._source.docs_url,

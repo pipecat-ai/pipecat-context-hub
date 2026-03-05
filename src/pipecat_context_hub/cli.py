@@ -140,7 +140,7 @@ def refresh(ctx: click.Context, force: bool) -> None:
         # ----- 1. Docs -----
         crawler = DocsCrawler(writer, config.sources, config.chunking)
         try:
-            raw_text = await crawler._fetch_llms_txt()
+            raw_text = await crawler.fetch_llms_txt()
         except Exception as exc:
             all_errors.append(f"Failed to fetch llms-full.txt: {exc}")
             raw_text = None
@@ -167,13 +167,15 @@ def refresh(ctx: click.Context, force: bool) -> None:
         github = GitHubRepoIngester(config, writer)
         changed_repos: list[str] = []
         repo_shas: dict[str, str] = {}
+        prefetched: dict[str, tuple[Path, str]] = {}
 
         for repo_slug in config.sources.effective_repos:
             try:
-                _repo_path, commit_sha = await asyncio.to_thread(
+                repo_path, commit_sha = await asyncio.to_thread(
                     github.clone_or_fetch, repo_slug
                 )
                 repo_shas[repo_slug] = commit_sha
+                prefetched[repo_slug] = (repo_path, commit_sha)
             except Exception as exc:
                 all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
                 continue
@@ -193,8 +195,11 @@ def refresh(ctx: click.Context, force: bool) -> None:
             await index_store.delete_by_repo(repo_slug)
             logger.info("Deleted stale records for %s", repo_slug)
 
+        ingested_repos: set[str] = set()
         if changed_repos:
-            github_result = await github.ingest(repos=changed_repos)
+            github_result = await github.ingest(
+                repos=changed_repos, prefetched=prefetched,
+            )
             total_upserted += github_result.records_upserted
             all_errors.extend(github_result.errors)
             logger.info(
@@ -216,10 +221,12 @@ def refresh(ctx: click.Context, force: bool) -> None:
                         source_result.records_upserted,
                         len(source_result.errors),
                     )
+                ingested_repos.add(repo_slug)
 
-        # Store SHAs for all fetched repos (including unchanged — handles first-run)
+        # Store SHAs: unchanged repos (handles first-run) + successfully ingested repos
         for repo_slug, sha in repo_shas.items():
-            index_store.set_metadata(f"repo:{repo_slug}:commit_sha", sha)
+            if repo_slug not in changed_repos or repo_slug in ingested_repos:
+                index_store.set_metadata(f"repo:{repo_slug}:commit_sha", sha)
 
     asyncio.run(_run_refresh())
 

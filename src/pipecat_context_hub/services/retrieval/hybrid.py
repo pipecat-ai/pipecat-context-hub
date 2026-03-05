@@ -53,6 +53,9 @@ from pipecat_context_hub.shared.types import (
 
 logger = logging.getLogger(__name__)
 
+# Number of candidate results to fetch for code snippet lookups.
+_DEFAULT_SNIPPET_CANDIDATES = 5
+
 
 class HybridRetriever:
     """Hybrid retrieval service implementing the Retriever protocol.
@@ -412,7 +415,6 @@ class HybridRetriever:
             # Filter cascade: class_name → method_name → unstructured fallback.
             # Tries exact metadata filters first for precise symbol matches,
             # then relaxes progressively.
-            _DEFAULT_SNIPPET_CANDIDATES = 5
             for extra_filter in [
                 {"class_name": input.symbol},
                 {"method_name": input.symbol},
@@ -442,7 +444,6 @@ class HybridRetriever:
             query_text = ""
 
         if not input.symbol:
-            _DEFAULT_SNIPPET_CANDIDATES = 5
             results = await self._hybrid_search(query_text, filters, _DEFAULT_SNIPPET_CANDIDATES)
         evidence = assemble_evidence(query_text, results, filters)
 

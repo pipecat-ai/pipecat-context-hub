@@ -412,7 +412,7 @@ class TestChunkMarkdown:
 class TestDocsCrawlerIngest:
     async def test_ingest_calls_writer(self, crawler: DocsCrawler, mock_writer: AsyncMock):
         """Ingest fetches llms-full.txt and upserts records."""
-        with patch.object(crawler, "_fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
+        with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
             result = await crawler.ingest()
 
         assert isinstance(result, IngestResult)
@@ -432,7 +432,7 @@ class TestDocsCrawlerIngest:
         self, crawler: DocsCrawler, mock_writer: AsyncMock,
     ):
         """Records span all pages in the llms-full.txt file."""
-        with patch.object(crawler, "_fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
+        with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
             await crawler.ingest()
 
         records: list[ChunkedRecord] = mock_writer.upsert.call_args[0][0]
@@ -445,7 +445,7 @@ class TestDocsCrawlerIngest:
         self, crawler: DocsCrawler, mock_writer: AsyncMock,
     ):
         """Mintlify tags are cleaned from record content."""
-        with patch.object(crawler, "_fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
+        with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
             await crawler.ingest()
 
         records: list[ChunkedRecord] = mock_writer.upsert.call_args[0][0]
@@ -457,7 +457,7 @@ class TestDocsCrawlerIngest:
     async def test_ingest_handles_fetch_failure(self, crawler: DocsCrawler):
         """Ingest handles fetch exceptions gracefully."""
         with patch.object(
-            crawler, "_fetch_llms_txt", side_effect=httpx.HTTPError("timeout"),
+            crawler, "fetch_llms_txt", side_effect=httpx.HTTPError("timeout"),
         ):
             result = await crawler.ingest()
 
@@ -471,7 +471,7 @@ class TestDocsCrawlerIngest:
         """Ingest handles upsert exceptions."""
         mock_writer.upsert.side_effect = RuntimeError("DB error")
 
-        with patch.object(crawler, "_fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
+        with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
             result = await crawler.ingest()
 
         assert "Upsert failed" in result.errors[0]
@@ -490,18 +490,18 @@ class TestDocsCrawlerProtocol:
 
 class TestDocsCrawlerFetchLlmsTxt:
     async def test_fetch_success(self, crawler: DocsCrawler):
-        """_fetch_llms_txt returns text on success."""
+        """fetch_llms_txt returns text on success."""
         request = httpx.Request("GET", "https://docs.pipecat.ai/llms-full.txt")
         mock_response = httpx.Response(200, text="# Page\nSource: url\n\nBody", request=request)
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
         crawler._client = mock_client
 
-        result = await crawler._fetch_llms_txt()
+        result = await crawler.fetch_llms_txt()
         assert "# Page" in result
 
     async def test_fetch_error_raises(self, crawler: DocsCrawler):
-        """_fetch_llms_txt raises on HTTP errors."""
+        """fetch_llms_txt raises on HTTP errors."""
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(
             side_effect=httpx.ConnectError("connection refused"),
@@ -509,4 +509,4 @@ class TestDocsCrawlerFetchLlmsTxt:
         crawler._client = mock_client
 
         with pytest.raises(httpx.ConnectError):
-            await crawler._fetch_llms_txt()
+            await crawler.fetch_llms_txt()

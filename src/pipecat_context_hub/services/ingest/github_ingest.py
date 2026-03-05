@@ -486,20 +486,29 @@ class GitHubRepoIngester:
 
     # -- Ingester protocol ---------------------------------------------------
 
-    async def ingest(self, repos: list[str] | None = None) -> IngestResult:
+    async def ingest(
+        self,
+        repos: list[str] | None = None,
+        prefetched: dict[str, tuple[Path, str]] | None = None,
+    ) -> IngestResult:
         """Clone (or fetch) repos and ingest their examples.
 
         Args:
             repos: Specific repo slugs to ingest. If None, uses all
                 configured repos from ``effective_repos``.
+            prefetched: Optional mapping of ``{repo_slug: (repo_path, commit_sha)}``
+                from prior ``clone_or_fetch`` calls, avoiding redundant fetches.
         """
         start = time.monotonic()
         all_errors: list[str] = []
         total_upserted = 0
+        prefetched = prefetched or {}
 
         target_repos = repos if repos is not None else self._config.sources.effective_repos
         for repo_slug in target_repos:
-            result = await self._ingest_repo(repo_slug)
+            result = await self._ingest_repo(
+                repo_slug, prefetched=prefetched.get(repo_slug)
+            )
             total_upserted += result.records_upserted
             all_errors.extend(result.errors)
 
@@ -512,19 +521,32 @@ class GitHubRepoIngester:
 
     # -- Internal helpers ----------------------------------------------------
 
-    async def _ingest_repo(self, repo_slug: str) -> IngestResult:
-        """Clone/fetch a single repo and ingest its example directories."""
+    async def _ingest_repo(
+        self,
+        repo_slug: str,
+        prefetched: tuple[Path, str] | None = None,
+    ) -> IngestResult:
+        """Clone/fetch a single repo and ingest its example directories.
+
+        Args:
+            repo_slug: GitHub repo slug (e.g. ``pipecat-ai/pipecat``).
+            prefetched: Optional ``(repo_path, commit_sha)`` from a prior
+                ``clone_or_fetch`` call, avoiding a redundant fetch.
+        """
         errors: list[str] = []
         records: list[ChunkedRecord] = []
 
-        try:
-            repo_path, commit_sha = await asyncio.to_thread(
-                self.clone_or_fetch, repo_slug
-            )
-        except Exception as exc:
-            msg = f"Failed to clone/fetch {repo_slug}: {exc}"
-            logger.error(msg)
-            return IngestResult(source=repo_slug, errors=[msg])
+        if prefetched is not None:
+            repo_path, commit_sha = prefetched
+        else:
+            try:
+                repo_path, commit_sha = await asyncio.to_thread(
+                    self.clone_or_fetch, repo_slug
+                )
+            except Exception as exc:
+                msg = f"Failed to clone/fetch {repo_slug}: {exc}"
+                logger.error(msg)
+                return IngestResult(source=repo_slug, errors=[msg])
 
         # Build taxonomy for this repo to enrich chunk metadata.
         taxonomy_lookup = _build_taxonomy_lookup(repo_path, repo_slug, commit_sha)

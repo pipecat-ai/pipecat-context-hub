@@ -112,7 +112,7 @@ class TestRefreshCommand:
         mock_index_store.close = MagicMock()
 
         mock_crawler = MagicMock()
-        mock_crawler._fetch_llms_txt = AsyncMock(return_value="# Page\nSource: https://example.com\nContent here")
+        mock_crawler.fetch_llms_txt = AsyncMock(return_value="# Page\nSource: https://example.com\nContent here")
         mock_crawler.ingest = AsyncMock(return_value=MagicMock(records_upserted=10, errors=[]))
         mock_crawler.close = AsyncMock()
 

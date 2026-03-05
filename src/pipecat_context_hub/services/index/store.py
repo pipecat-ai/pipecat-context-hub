@@ -66,7 +66,16 @@ class IndexStore:
     async def delete_by_repo(self, repo: str) -> int:
         """Delete records by repo from both indexes. Returns count deleted."""
         vector_count = self._vector.delete_by_repo(repo)
-        self._fts.delete_by_repo(repo)
+        try:
+            fts_count = self._fts.delete_by_repo(repo)
+        except Exception:
+            logger.exception("FTS delete_by_repo failed; indexes may have diverged")
+            fts_count = 0
+        if vector_count != fts_count:
+            logger.warning(
+                "Delete divergence (repo=%s): vector=%d fts=%d",
+                repo, vector_count, fts_count,
+            )
         return vector_count
 
     async def delete_by_source(self, source_url: str) -> int:
