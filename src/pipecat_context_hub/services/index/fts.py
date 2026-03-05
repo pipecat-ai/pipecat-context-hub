@@ -146,6 +146,25 @@ class FTSIndex:
 
         return count
 
+    def delete_by_repo(self, repo: str) -> int:
+        """Delete all records with a given repo. Returns count deleted."""
+        cursor = self._conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE repo = ?",
+            (repo,),
+        )
+        row = cursor.fetchone()
+        count: int = row[0] if row else 0
+
+        if count > 0:
+            self._conn.execute(
+                "DELETE FROM chunks WHERE repo = ?",
+                (repo,),
+            )
+            self._conn.commit()
+            logger.debug("Deleted %d records from FTS index for repo=%s", count, repo)
+
+        return count
+
     def delete_by_source(self, source_url: str) -> int:
         """Delete all records with a given source URL. Returns count deleted."""
         cursor = self._conn.execute(

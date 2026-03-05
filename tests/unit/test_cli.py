@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from pipecat_context_hub.cli import _load_dotenv
+from click.testing import CliRunner
+
+from pipecat_context_hub.cli import _load_dotenv, main
 
 
 class TestLoadDotenv:
@@ -89,3 +92,146 @@ class TestLoadDotenv:
         monkeypatch.delenv("PIPECAT_HUB_EXTRA_REPOS", raising=False)
         _load_dotenv()
         assert os.environ["PIPECAT_HUB_EXTRA_REPOS"] == "org/repo-a,org/repo-b"
+
+
+class TestRefreshCommand:
+    """Tests for the refresh command's incremental skip logic."""
+
+    def _make_mocks(self):
+        """Create shared mock objects for refresh tests."""
+        mock_index_store = MagicMock()
+        mock_index_store.get_metadata = MagicMock(return_value=None)
+        mock_index_store.set_metadata = MagicMock()
+        mock_index_store.delete_by_content_type = AsyncMock(return_value=0)
+        mock_index_store.delete_by_repo = AsyncMock(return_value=0)
+        mock_index_store.get_index_stats = MagicMock(return_value={
+            "counts_by_type": {"doc": 100, "code": 200},
+            "total": 300,
+            "commit_shas": [],
+        })
+        mock_index_store.close = MagicMock()
+
+        mock_crawler = MagicMock()
+        mock_crawler._fetch_llms_txt = AsyncMock(return_value="# Page\nSource: https://example.com\nContent here")
+        mock_crawler.ingest = AsyncMock(return_value=MagicMock(records_upserted=10, errors=[]))
+        mock_crawler.close = AsyncMock()
+
+        mock_github = MagicMock()
+        mock_github.clone_or_fetch = MagicMock(return_value=(Path("/tmp/repo"), "abc123"))
+        mock_github.ingest = AsyncMock(return_value=MagicMock(records_upserted=20, errors=[]))
+
+        mock_source_ingester = MagicMock()
+        mock_source_ingester.ingest = AsyncMock(return_value=MagicMock(records_upserted=5, errors=[]))
+
+        return mock_index_store, mock_crawler, mock_github, mock_source_ingester
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_force_flag_bypasses_skip(
+        self, mock_si_cls, mock_gh_cls, mock_dc_cls,
+        mock_eiw_cls, mock_es_cls, mock_is_cls,
+        tmp_path, monkeypatch,
+    ):
+        """--force bypasses all skip logic even when hashes match."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+
+        # Simulate matching hash/SHA (would skip without --force)
+        import hashlib
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: {
+            "docs:content_hash": content_hash,
+            "repo:pipecat-ai/pipecat:commit_sha": "abc123",
+            "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+        }.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0
+        # With --force, docs should be re-ingested despite matching hash
+        mock_crawler.ingest.assert_called_once()
+        # With --force, repos should be re-ingested despite matching SHA
+        mock_github.ingest.assert_called_once()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_skip_when_sha_matches(
+        self, mock_si_cls, mock_gh_cls, mock_dc_cls,
+        mock_eiw_cls, mock_es_cls, mock_is_cls,
+        tmp_path, monkeypatch,
+    ):
+        """Refresh skips unchanged sources when hashes/SHAs match."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+
+        import hashlib
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: {
+            "docs:content_hash": content_hash,
+            "repo:pipecat-ai/pipecat:commit_sha": "abc123",
+            "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+        }.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0
+        # Docs should be skipped (matching hash)
+        mock_crawler.ingest.assert_not_called()
+        # Repos should be skipped (matching SHA)
+        mock_github.ingest.assert_not_called()
+        mock_source.ingest.assert_not_called()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_full_ingest_when_sha_differs(
+        self, mock_si_cls, mock_gh_cls, mock_dc_cls,
+        mock_eiw_cls, mock_es_cls, mock_is_cls,
+        tmp_path, monkeypatch,
+    ):
+        """Refresh re-ingests when stored SHA differs from current."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+
+        # Stored SHA is old, current is different
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: {
+            "docs:content_hash": "old-hash",
+            "repo:pipecat-ai/pipecat:commit_sha": "old-sha",
+            "repo:pipecat-ai/pipecat-examples:commit_sha": "old-sha",
+        }.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0
+        # Different hash → docs re-ingested
+        mock_crawler.ingest.assert_called_once()
+        # Different SHA → repo re-ingested
+        mock_github.ingest.assert_called_once()

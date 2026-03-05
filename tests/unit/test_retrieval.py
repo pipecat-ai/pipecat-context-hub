@@ -725,6 +725,110 @@ class TestHybridRetrieverGetCodeSnippet:
         assert len(snippet_lines) <= 5
 
 
+class TestSymbolFilterCascade:
+    """Tests for the class_name → method_name → fallback filter cascade."""
+
+    async def test_symbol_tries_class_name_first(self):
+        """When class_name filter finds results, method_name is not tried."""
+        class_result = _make_result(
+            "cls-1",
+            content="# Class: MLXModel\nModule: pipecat.services.whisper.stt",
+            content_type="source",
+            metadata={"class_name": "MLXModel", "chunk_type": "class_overview"},
+        )
+        call_count = 0
+        call_filters: list[dict[str, Any]] = []
+
+        async def mock_vector(query):
+            nonlocal call_count
+            call_count += 1
+            call_filters.append(dict(query.filters))
+            if query.filters.get("class_name") == "MLXModel":
+                return [class_result]
+            return []
+
+        mock_reader = _mock_index_reader()
+        mock_reader.vector_search = mock_vector
+        mock_reader.keyword_search = AsyncMock(return_value=[])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(
+            GetCodeSnippetInput(symbol="MLXModel")
+        )
+
+        assert len(output.snippets) > 0
+        # Should have found result with class_name filter (first cascade step)
+        assert any(f.get("class_name") == "MLXModel" for f in call_filters)
+        # Should NOT have tried method_name filter
+        assert not any("method_name" in f for f in call_filters)
+
+    async def test_symbol_falls_back_to_method_name(self):
+        """When class_name returns empty, method_name filter is tried."""
+        method_result = _make_result(
+            "meth-1",
+            content="# WhisperSTTServiceMLX.run_stt\ndef run_stt(self): ...",
+            content_type="source",
+            metadata={"method_name": "run_stt", "class_name": "WhisperSTTServiceMLX"},
+        )
+        call_filters: list[dict[str, Any]] = []
+
+        async def mock_vector(query):
+            call_filters.append(dict(query.filters))
+            if query.filters.get("method_name") == "run_stt":
+                return [method_result]
+            return []
+
+        mock_reader = _mock_index_reader()
+        mock_reader.vector_search = mock_vector
+        mock_reader.keyword_search = AsyncMock(return_value=[])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(
+            GetCodeSnippetInput(symbol="run_stt")
+        )
+
+        assert len(output.snippets) > 0
+        # First tried class_name, then method_name
+        assert any(f.get("class_name") == "run_stt" for f in call_filters)
+        assert any(f.get("method_name") == "run_stt" for f in call_filters)
+
+    async def test_symbol_falls_back_to_unstructured(self):
+        """When both class_name and method_name fail, unstructured search works."""
+        fallback_result = _make_result(
+            "fallback-1",
+            content="SomeVagueThing mentioned in source",
+            content_type="source",
+            metadata={"chunk_type": "module_overview"},
+        )
+        call_filters: list[dict[str, Any]] = []
+
+        async def mock_vector(query):
+            call_filters.append(dict(query.filters))
+            # Only return results for the unstructured fallback (no class_name or method_name)
+            if "class_name" not in query.filters and "method_name" not in query.filters:
+                return [fallback_result]
+            return []
+
+        mock_reader = _mock_index_reader()
+        mock_reader.vector_search = mock_vector
+        mock_reader.keyword_search = AsyncMock(return_value=[])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(
+            GetCodeSnippetInput(symbol="SomeVagueThing")
+        )
+
+        assert len(output.snippets) > 0
+        # All three cascade steps tried
+        assert any(f.get("class_name") == "SomeVagueThing" for f in call_filters)
+        assert any(f.get("method_name") == "SomeVagueThing" for f in call_filters)
+        # Fallback has neither class_name nor method_name
+        assert any(
+            "class_name" not in f and "method_name" not in f
+            for f in call_filters
+        )
+
+
 class TestHybridRetrieverProtocol:
     """Verify HybridRetriever satisfies the Retriever protocol."""
 

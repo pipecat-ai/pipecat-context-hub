@@ -369,14 +369,14 @@ class TestGitHubRepoIngester:
         writer = _make_mock_writer()
         ingester = GitHubRepoIngester(config, writer)
 
-        # Patch _clone_or_fetch to return our fake repo.
+        # Patch clone_or_fetch to return our fake repo.
         from git import Repo as GitRepo
 
         git_repo = GitRepo(str(repo_dir))
         commit_sha = git_repo.head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -415,7 +415,7 @@ class TestGitHubRepoIngester:
         commit_sha = git_repo.head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             await ingester.ingest()
             await ingester.ingest()
@@ -455,7 +455,7 @@ class TestGitHubRepoIngester:
                 return repo_a, sha_a
             return repo_b, sha_b
 
-        with patch.object(ingester, "_clone_or_fetch", side_effect=mock_clone):
+        with patch.object(ingester, "clone_or_fetch", side_effect=mock_clone):
             result = await ingester.ingest()
 
         assert result.source == "github"
@@ -471,7 +471,7 @@ class TestGitHubRepoIngester:
         ingester = GitHubRepoIngester(config, writer)
 
         with patch.object(
-            ingester, "_clone_or_fetch", side_effect=RuntimeError("network error")
+            ingester, "clone_or_fetch", side_effect=RuntimeError("network error")
         ):
             result = await ingester.ingest()
 
@@ -496,7 +496,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -527,7 +527,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -563,7 +563,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -600,7 +600,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             await ingester.ingest()
 
@@ -638,7 +638,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -673,7 +673,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -720,7 +720,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             await ingester.ingest()
 
@@ -757,7 +757,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -810,7 +810,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -958,7 +958,7 @@ class TestRootLevelFileCapture:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -999,7 +999,7 @@ class TestRootLevelFileCapture:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 
@@ -1036,7 +1036,7 @@ class TestRootLevelFileCapture:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "_clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
         ):
             result = await ingester.ingest()
 

@@ -6,6 +6,7 @@ Provides ``serve`` (default) and ``refresh`` commands.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -106,9 +107,10 @@ def serve(ctx: click.Context) -> None:
 
 
 @main.command()
+@click.option("--force", is_flag=True, help="Force full refresh, ignoring cached state.")
 @click.pass_context
-def refresh(ctx: click.Context) -> None:
-    """Trigger a full index rebuild via the Ingester interface."""
+def refresh(ctx: click.Context, force: bool) -> None:
+    """Rebuild the index, skipping unchanged sources when possible."""
     from pipecat_context_hub.services.embedding import (
         EmbeddingIndexWriter,
         EmbeddingService,
@@ -121,7 +123,7 @@ def refresh(ctx: click.Context) -> None:
     logger = logging.getLogger(__name__)
     config: HubConfig = ctx.obj["config"]
 
-    logger.info("Starting index refresh")
+    logger.info("Starting index refresh (force=%s)", force)
     start = time.monotonic()
 
     # Build the ingestion pipeline
@@ -135,54 +137,89 @@ def refresh(ctx: click.Context) -> None:
     async def _run_refresh() -> None:
         nonlocal total_upserted, all_errors
 
-        # Design decision: each content type is deleted BEFORE its ingester
-        # runs.  If ingestion then fails, that type stays empty until the
-        # next successful refresh.  This is intentional — for an LLM context
-        # server, serving stale/outdated records is worse than serving none,
-        # because stale context silently misleads the model.  A failed
-        # refresh is visible in logs and the CLI exit message.
-
-        # 1. Crawl docs — clear stale doc records first
-        await index_store.delete_by_content_type("doc")
+        # ----- 1. Docs -----
         crawler = DocsCrawler(writer, config.sources, config.chunking)
         try:
-            docs_result = await crawler.ingest()
-            total_upserted += docs_result.records_upserted
-            all_errors.extend(docs_result.errors)
-            logger.info(
-                "Docs crawl: upserted=%d errors=%d",
-                docs_result.records_upserted,
-                len(docs_result.errors),
-            )
-        finally:
-            await crawler.close()
+            raw_text = await crawler._fetch_llms_txt()
+        except Exception as exc:
+            all_errors.append(f"Failed to fetch llms-full.txt: {exc}")
+            raw_text = None
 
-        # 2. Ingest GitHub repos — clear stale code records first
-        await index_store.delete_by_content_type("code")
-        github = GitHubRepoIngester(config, writer)
-        github_result = await github.ingest()
-        total_upserted += github_result.records_upserted
-        all_errors.extend(github_result.errors)
-        logger.info(
-            "GitHub ingest: upserted=%d errors=%d",
-            github_result.records_upserted,
-            len(github_result.errors),
-        )
-
-        # 3. Ingest source API from all repos — clear stale source records first
-        await index_store.delete_by_content_type("source")
-        for repo_slug in config.sources.effective_repos:
-            source_ingester = SourceIngester(config, writer, repo_slug)
-            source_result = await source_ingester.ingest()
-            total_upserted += source_result.records_upserted
-            all_errors.extend(source_result.errors)
-            if source_result.records_upserted > 0:
+        if raw_text is not None:
+            content_hash = hashlib.sha256(raw_text.encode()).hexdigest()
+            stored_hash = index_store.get_metadata("docs:content_hash")
+            if not force and stored_hash == content_hash:
+                logger.info("Docs unchanged (hash=%s…), skipping", content_hash[:8])
+            else:
+                await index_store.delete_by_content_type("doc")
+                docs_result = await crawler.ingest()
+                total_upserted += docs_result.records_upserted
+                all_errors.extend(docs_result.errors)
                 logger.info(
-                    "Source ingest (%s): upserted=%d errors=%d",
-                    repo_slug,
-                    source_result.records_upserted,
-                    len(source_result.errors),
+                    "Docs crawl: upserted=%d errors=%d",
+                    docs_result.records_upserted,
+                    len(docs_result.errors),
                 )
+                index_store.set_metadata("docs:content_hash", content_hash)
+        await crawler.close()
+
+        # ----- 2. Repos (code + source) -----
+        github = GitHubRepoIngester(config, writer)
+        changed_repos: list[str] = []
+        repo_shas: dict[str, str] = {}
+
+        for repo_slug in config.sources.effective_repos:
+            try:
+                _repo_path, commit_sha = await asyncio.to_thread(
+                    github.clone_or_fetch, repo_slug
+                )
+                repo_shas[repo_slug] = commit_sha
+            except Exception as exc:
+                all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
+                continue
+
+            stored_sha = index_store.get_metadata(f"repo:{repo_slug}:commit_sha")
+            if not force and stored_sha == commit_sha:
+                logger.info(
+                    "Repo %s unchanged (sha=%s…), skipping",
+                    repo_slug,
+                    commit_sha[:8],
+                )
+            else:
+                changed_repos.append(repo_slug)
+
+        # Delete and re-ingest only changed repos
+        for repo_slug in changed_repos:
+            await index_store.delete_by_repo(repo_slug)
+            logger.info("Deleted stale records for %s", repo_slug)
+
+        if changed_repos:
+            github_result = await github.ingest(repos=changed_repos)
+            total_upserted += github_result.records_upserted
+            all_errors.extend(github_result.errors)
+            logger.info(
+                "GitHub ingest: upserted=%d errors=%d repos=%s",
+                github_result.records_upserted,
+                len(github_result.errors),
+                changed_repos,
+            )
+
+            for repo_slug in changed_repos:
+                source_ingester = SourceIngester(config, writer, repo_slug)
+                source_result = await source_ingester.ingest()
+                total_upserted += source_result.records_upserted
+                all_errors.extend(source_result.errors)
+                if source_result.records_upserted > 0:
+                    logger.info(
+                        "Source ingest (%s): upserted=%d errors=%d",
+                        repo_slug,
+                        source_result.records_upserted,
+                        len(source_result.errors),
+                    )
+
+        # Store SHAs for all fetched repos (including unchanged — handles first-run)
+        for repo_slug, sha in repo_shas.items():
+            index_store.set_metadata(f"repo:{repo_slug}:commit_sha", sha)
 
     asyncio.run(_run_refresh())
 
@@ -198,8 +235,6 @@ def refresh(ctx: click.Context) -> None:
             logger.warning("  %s", err)
 
     # Persist refresh metadata for get_hub_status tool.
-    # last_refresh_at is only written on fully successful refreshes (0 errors)
-    # so that get_hub_status accurately reports index health.
     now = datetime.now(timezone.utc).isoformat()
     index_store.set_metadata("last_refresh_duration_seconds", str(duration))
     index_store.set_metadata("last_refresh_records_upserted", str(total_upserted))

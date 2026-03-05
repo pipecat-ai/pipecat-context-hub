@@ -397,6 +397,7 @@ class HybridRetriever:
     async def get_code_snippet(self, input: GetCodeSnippetInput) -> GetCodeSnippetOutput:
         """Get code snippets by symbol, intent, or path+line_start."""
         filters: dict[str, Any] = {}
+        results: list[IndexResult] = []
 
         # Determine query text and content_type based on lookup mode.
         # Symbol lookups target framework source (content_type="source")
@@ -404,9 +405,26 @@ class HybridRetriever:
         # Intent and path lookups target example code (content_type="code").
         if input.symbol:
             query_text = input.symbol
-            filters["content_type"] = "source"
+            base_filters: dict[str, Any] = {"content_type": "source"}
             if input.path is not None:
-                filters["path"] = input.path
+                base_filters["path"] = input.path
+
+            # Filter cascade: class_name → method_name → unstructured fallback.
+            # Tries exact metadata filters first for precise symbol matches,
+            # then relaxes progressively.
+            _DEFAULT_SNIPPET_CANDIDATES = 5
+            for extra_filter in [
+                {"class_name": input.symbol},
+                {"method_name": input.symbol},
+                {},
+            ]:
+                cascade_filters = {**base_filters, **extra_filter}
+                results = await self._hybrid_search(
+                    query_text, cascade_filters, _DEFAULT_SNIPPET_CANDIDATES
+                )
+                if results:
+                    break
+            filters = cascade_filters
         elif input.intent:
             query_text = input.intent
             filters["content_type"] = "code"
@@ -423,8 +441,9 @@ class HybridRetriever:
             # Should not happen due to model_validator, but be safe
             query_text = ""
 
-        _DEFAULT_SNIPPET_CANDIDATES = 5
-        results = await self._hybrid_search(query_text, filters, _DEFAULT_SNIPPET_CANDIDATES)
+        if not input.symbol:
+            _DEFAULT_SNIPPET_CANDIDATES = 5
+            results = await self._hybrid_search(query_text, filters, _DEFAULT_SNIPPET_CANDIDATES)
         evidence = assemble_evidence(query_text, results, filters)
 
         snippets: list[CodeSnippet] = []
