@@ -27,7 +27,7 @@ def _random_embedding(seed: int = 0) -> list[float]:
 def _make_record(
     chunk_id: str = "chunk-1",
     content: str = "Pipecat is a framework for building voice agents.",
-    content_type: Literal["doc", "code", "readme"] = "doc",
+    content_type: Literal["doc", "code", "readme", "source"] = "doc",
     source_url: str = "https://docs.pipecat.ai/intro",
     repo: str | None = "pipecat-ai/pipecat",
     path: str = "/docs/intro.md",
@@ -163,6 +163,30 @@ class TestVectorIndex:
         results = vector_index.search(query)
         assert len(results) == 1
         assert results[0].chunk.content_type == "code"
+
+    def test_delete_by_repo(self, vector_index: VectorIndex):
+        records = [
+            _make_record(chunk_id="r1", repo="pipecat-ai/pipecat", content_type="code"),
+            _make_record(chunk_id="r2", repo="pipecat-ai/pipecat", content_type="source"),
+            _make_record(chunk_id="r3", repo="pipecat-ai/pipecat-examples"),
+        ]
+        vector_index.upsert(records)
+
+        deleted = vector_index.delete_by_repo("pipecat-ai/pipecat")
+        assert deleted == 2
+
+        query = IndexQuery(
+            query_text="test",
+            query_embedding=_random_embedding(0),
+            limit=10,
+        )
+        results = vector_index.search(query)
+        assert len(results) == 1
+        assert results[0].chunk.repo == "pipecat-ai/pipecat-examples"
+
+    def test_delete_by_repo_nonexistent(self, vector_index: VectorIndex):
+        deleted = vector_index.delete_by_repo("nonexistent/repo")
+        assert deleted == 0
 
     def test_search_without_embedding(self, vector_index: VectorIndex):
         query = IndexQuery(query_text="test", limit=10)
@@ -460,6 +484,26 @@ class TestFTSIndex:
         assert len(results) == 1
         assert results[0].chunk.content_type == "code"
 
+    def test_delete_by_repo(self, fts_index: FTSIndex):
+        records = [
+            _make_record(chunk_id="r1", repo="pipecat-ai/pipecat", content_type="code", content="pipecat code r1"),
+            _make_record(chunk_id="r2", repo="pipecat-ai/pipecat", content_type="source", content="pipecat source r2"),
+            _make_record(chunk_id="r3", repo="pipecat-ai/pipecat-examples", content="pipecat examples r3"),
+        ]
+        fts_index.upsert(records)
+
+        deleted = fts_index.delete_by_repo("pipecat-ai/pipecat")
+        assert deleted == 2
+
+        query = IndexQuery(query_text="pipecat", limit=10)
+        results = fts_index.search(query)
+        assert len(results) == 1
+        assert results[0].chunk.repo == "pipecat-ai/pipecat-examples"
+
+    def test_delete_by_repo_nonexistent(self, fts_index: FTSIndex):
+        deleted = fts_index.delete_by_repo("nonexistent/repo")
+        assert deleted == 0
+
     def test_search_empty_query(self, fts_index: FTSIndex):
         fts_index.upsert(_make_records(1))
         query = IndexQuery(query_text="", limit=10)
@@ -592,6 +636,17 @@ class TestFTSIndex:
         results = fts_index.search(query)
         assert len(results) == 2
 
+    def test_delete_metadata(self, fts_index: FTSIndex):
+        fts_index.set_metadata("repo:org/repo:commit_sha", "abc123")
+        assert fts_index.get_metadata("repo:org/repo:commit_sha") == "abc123"
+
+        fts_index.delete_metadata("repo:org/repo:commit_sha")
+        assert fts_index.get_metadata("repo:org/repo:commit_sha") is None
+
+    def test_delete_metadata_nonexistent(self, fts_index: FTSIndex):
+        """Deleting a nonexistent key should not raise."""
+        fts_index.delete_metadata("nonexistent:key")
+
 
 # ---------------------------------------------------------------------------
 # Unified IndexStore tests
@@ -683,6 +738,34 @@ class TestIndexStore:
         k_results = await store.keyword_search(kq)
         assert len(k_results) == 1
         assert k_results[0].chunk.chunk_id == "b1"
+
+    @pytest.mark.asyncio
+    async def test_delete_by_repo_both_indexes(self, store: IndexStore):
+        records = [
+            _make_record(chunk_id="r1", repo="pipecat-ai/pipecat", content_type="code", content="pipecat code"),
+            _make_record(chunk_id="r2", repo="pipecat-ai/pipecat", content_type="source", content="pipecat source"),
+            _make_record(chunk_id="r3", repo="pipecat-ai/pipecat-examples", content="pipecat examples"),
+        ]
+        await store.upsert(records)
+
+        deleted = await store.delete_by_repo("pipecat-ai/pipecat")
+        assert deleted == 2
+
+        # Vector search should only find pipecat-examples
+        vq = IndexQuery(
+            query_text="test",
+            query_embedding=_random_embedding(0),
+            limit=10,
+        )
+        v_results = await store.vector_search(vq)
+        assert len(v_results) == 1
+        assert v_results[0].chunk.repo == "pipecat-ai/pipecat-examples"
+
+        # Keyword search should also only find pipecat-examples
+        kq = IndexQuery(query_text="pipecat", limit=10)
+        k_results = await store.keyword_search(kq)
+        assert len(k_results) == 1
+        assert k_results[0].chunk.repo == "pipecat-ai/pipecat-examples"
 
     @pytest.mark.asyncio
     async def test_upsert_idempotent(self, store: IndexStore):

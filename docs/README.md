@@ -33,6 +33,9 @@ uv pip install -e ".[dev]"
 # Populate the local index (crawls docs + clones repos + computes embeddings)
 pipecat-context-hub refresh
 
+# Force full re-ingest, ignoring cached state
+pipecat-context-hub refresh --force
+
 # Start the MCP server
 pipecat-context-hub serve
 ```

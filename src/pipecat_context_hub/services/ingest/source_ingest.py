@@ -45,7 +45,7 @@ _MIN_METHOD_LINES = 3
 def _sanitize_slug(slug: str) -> str:
     """Sanitize a repo slug to a safe directory name.
 
-    Must match the sanitization in GitHubRepoIngester._clone_or_fetch
+    Must match the sanitization in GitHubRepoIngester.clone_or_fetch
     so source ingest finds the same clone directory.
     """
     return re.sub(r"[^a-zA-Z0-9_-]", "_", slug)

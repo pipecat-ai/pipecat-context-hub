@@ -60,13 +60,46 @@ class IndexStore:
     async def delete_by_content_type(self, content_type: str) -> int:
         """Delete records by content type from both indexes. Returns count deleted."""
         vector_count = self._vector.delete_by_content_type(content_type)
-        self._fts.delete_by_content_type(content_type)
+        try:
+            fts_count = self._fts.delete_by_content_type(content_type)
+        except Exception:
+            logger.exception("FTS delete_by_content_type failed; indexes may have diverged")
+            fts_count = 0
+        if vector_count != fts_count:
+            logger.warning(
+                "Delete divergence (content_type=%s): vector=%d fts=%d",
+                content_type, vector_count, fts_count,
+            )
+        return vector_count
+
+    async def delete_by_repo(self, repo: str) -> int:
+        """Delete records by repo from both indexes. Returns count deleted."""
+        vector_count = self._vector.delete_by_repo(repo)
+        try:
+            fts_count = self._fts.delete_by_repo(repo)
+        except Exception:
+            logger.exception("FTS delete_by_repo failed; indexes may have diverged")
+            fts_count = 0
+        if vector_count != fts_count:
+            logger.warning(
+                "Delete divergence (repo=%s): vector=%d fts=%d",
+                repo, vector_count, fts_count,
+            )
         return vector_count
 
     async def delete_by_source(self, source_url: str) -> int:
         """Delete records by source URL from both indexes. Returns count deleted."""
         vector_count = self._vector.delete_by_source(source_url)
-        self._fts.delete_by_source(source_url)
+        try:
+            fts_count = self._fts.delete_by_source(source_url)
+        except Exception:
+            logger.exception("FTS delete_by_source failed; indexes may have diverged")
+            fts_count = 0
+        if vector_count != fts_count:
+            logger.warning(
+                "Delete divergence (source_url=%s): vector=%d fts=%d",
+                source_url, vector_count, fts_count,
+            )
         return vector_count
 
     async def vector_search(self, query: IndexQuery) -> list[IndexResult]:
@@ -84,6 +117,10 @@ class IndexStore:
     def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key, or None if not found."""
         return self._fts.get_metadata(key)
+
+    def delete_metadata(self, key: str) -> None:
+        """Remove a metadata key if it exists."""
+        self._fts.delete_metadata(key)
 
     def get_all_metadata(self) -> dict[str, str]:
         """Return all persistent index metadata as a dict."""

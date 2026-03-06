@@ -153,6 +153,8 @@ def _build_where_clause(filters: dict[str, Any]) -> dict[str, Any] | None:
         conditions.append({"execution_mode": {"$eq": filters["execution_mode"]}})
     if "class_name" in filters:
         conditions.append({"class_name": {"$eq": filters["class_name"]}})
+    if "method_name" in filters:
+        conditions.append({"method_name": {"$eq": filters["method_name"]}})
     if "chunk_type" in filters:
         conditions.append({"chunk_type": {"$eq": filters["chunk_type"]}})
     if "is_dataclass" in filters:
@@ -276,6 +278,19 @@ class VectorIndex:
                 batch = ids[i : i + _CHROMA_BATCH_SIZE]
                 self._collection.delete(ids=batch)
             logger.debug("Deleted %d records from vector index for content_type=%s", count, content_type)
+        return count
+
+    def delete_by_repo(self, repo: str) -> int:
+        """Delete all records matching a repo. Returns count deleted."""
+        where_clause: dict[str, Any] = {"repo": {"$eq": repo}}
+        existing = self._collection.get(where=where_clause, include=[])
+        ids = existing["ids"]
+        count = len(ids)
+        if count > 0:
+            for i in range(0, count, _CHROMA_BATCH_SIZE):
+                batch = ids[i : i + _CHROMA_BATCH_SIZE]
+                self._collection.delete(ids=batch)
+            logger.debug("Deleted %d records from vector index for repo=%s", count, repo)
         return count
 
     def delete_by_source(self, source_url: str) -> int:
