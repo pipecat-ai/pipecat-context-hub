@@ -41,8 +41,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   skipping broken docs on the next run
 - Repo commit SHA no longer persisted after errored ingest — prevents skipping
   failed repos on the next run
-- FTS `delete_by_repo` wrapped in error guard with divergence logging, matching
-  the `delete_by_content_type` pattern in `IndexStore`
+- All `IndexStore` delete methods (`delete_by_content_type`, `delete_by_repo`,
+  `delete_by_source`) now wrap FTS calls in error guards with divergence logging
 - Cached repo SHA invalidated when `--force` ingest fails — prevents the next
   non-force refresh from skipping a repo left empty by a transient failure
 

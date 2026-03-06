@@ -203,13 +203,13 @@ def refresh(ctx: click.Context, force: bool) -> None:
             else:
                 changed_repos.append(repo_slug)
 
-        # Delete and re-ingest only changed repos
+        # Delete and re-ingest each changed repo atomically to minimise
+        # the window where a repo's index is empty (crash-safety).
+        ingested_repos: set[str] = set()
         for repo_slug in changed_repos:
             await index_store.delete_by_repo(repo_slug)
             logger.info("Deleted stale records for %s", repo_slug)
 
-        ingested_repos: set[str] = set()
-        for repo_slug in changed_repos:
             repo_has_errors = False
 
             # Code ingest (per-repo for error tracking)
