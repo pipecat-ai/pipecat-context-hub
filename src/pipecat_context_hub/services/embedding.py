@@ -37,7 +37,7 @@ class EmbeddingService:
             from sentence_transformers import SentenceTransformer
 
             logger.info("Loading embedding model %s", self._model_name)
-            self._model = SentenceTransformer(self._model_name)
+            self._model = SentenceTransformer(self._model_name, device="cpu")
         return self._model
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
