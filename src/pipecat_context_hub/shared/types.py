@@ -366,7 +366,7 @@ class GetCodeSnippetInput(BaseModel):
         description="Override content type: 'source' for framework, 'code' for examples. "
         "Defaults to 'source' for symbol mode, 'code' for intent/path mode.",
     )
-    max_lines: int = Field(default=50, ge=1, le=500)
+    max_lines: int = Field(default=100, ge=1, le=500)
 
     @model_validator(mode="after")
     def validate_lookup_mode(self) -> GetCodeSnippetInput:

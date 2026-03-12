@@ -39,6 +39,10 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `get_code_snippet` `max_lines` default raised from 50 to 100 — covers 97%
+  of method chunks without truncation (P90=56, P95=77 across 4,268 indexed
+  methods).  Large methods like `configure()` (180 lines) still need an
+  explicit `max_lines=200+`
 - `search_docs` `area` filter now maps to a path prefix query (previously
   accepted but silently ignored by both index backends)
 - `get_example` `include_readme` now returns stored `readme_content` from
