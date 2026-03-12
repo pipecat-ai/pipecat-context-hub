@@ -135,9 +135,7 @@ def mock_retriever():
             repo="pipecat-ai/pipecat",
             path="examples/foundational/01-say-one-thing",
         ),
-        files=[
-            ExampleFile(path="bot.py", content="print('hello')", language="python")
-        ],
+        files=[ExampleFile(path="bot.py", content="print('hello')", language="python")],
         citation=_make_citation(),
         detected_symbols=["main"],
         evidence=_make_evidence(),
@@ -247,9 +245,7 @@ class TestGetDoc:
 
 class TestSearchExamples:
     async def test_valid_input_returns_output(self, mock_retriever):
-        result = await handle_search_examples(
-            {"query": "TTS example"}, mock_retriever
-        )
+        result = await handle_search_examples({"query": "TTS example"}, mock_retriever)
         parsed = SearchExamplesOutput.model_validate_json(result)
         assert len(parsed.hits) == 1
         assert parsed.hits[0].example_id == "foundational-01"
@@ -283,9 +279,7 @@ class TestSearchExamples:
 
 class TestGetExample:
     async def test_valid_input_returns_output(self, mock_retriever):
-        result = await handle_get_example(
-            {"example_id": "foundational-01"}, mock_retriever
-        )
+        result = await handle_get_example({"example_id": "foundational-01"}, mock_retriever)
         parsed = GetExampleOutput.model_validate_json(result)
         assert parsed.example_id == "foundational-01"
         assert len(parsed.files) == 1
@@ -313,17 +307,13 @@ class TestGetExample:
 
 class TestGetCodeSnippet:
     async def test_by_intent(self, mock_retriever):
-        result = await handle_get_code_snippet(
-            {"intent": "create a pipeline"}, mock_retriever
-        )
+        result = await handle_get_code_snippet({"intent": "create a pipeline"}, mock_retriever)
         parsed = GetCodeSnippetOutput.model_validate_json(result)
         assert len(parsed.snippets) == 1
         assert parsed.evidence.confidence == 0.9
 
     async def test_by_symbol(self, mock_retriever):
-        result = await handle_get_code_snippet(
-            {"symbol": "Pipeline"}, mock_retriever
-        )
+        result = await handle_get_code_snippet({"symbol": "Pipeline"}, mock_retriever)
         parsed = GetCodeSnippetOutput.model_validate_json(result)
         assert len(parsed.snippets) == 1
 
@@ -360,14 +350,10 @@ class TestGetCodeSnippet:
 
     async def test_max_lines_validation(self, mock_retriever):
         with pytest.raises(ValidationError):
-            await handle_get_code_snippet(
-                {"intent": "test", "max_lines": 0}, mock_retriever
-            )
+            await handle_get_code_snippet({"intent": "test", "max_lines": 0}, mock_retriever)
 
         with pytest.raises(ValidationError):
-            await handle_get_code_snippet(
-                {"intent": "test", "max_lines": 501}, mock_retriever
-            )
+            await handle_get_code_snippet({"intent": "test", "max_lines": 501}, mock_retriever)
 
 
 # ---------------------------------------------------------------------------
@@ -400,9 +386,7 @@ class TestSearchApi:
 
     async def test_invalid_chunk_type_raises(self, mock_retriever):
         with pytest.raises(ValidationError):
-            await handle_search_api(
-                {"query": "test", "chunk_type": "invalid_type"}, mock_retriever
-            )
+            await handle_search_api({"query": "test", "chunk_type": "invalid_type"}, mock_retriever)
 
     async def test_missing_query_raises(self, mock_retriever):
         with pytest.raises(ValidationError):

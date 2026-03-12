@@ -26,12 +26,16 @@ class ChunkedRecord(BaseModel):
         description="Whether this chunk came from documentation, code, a README, or framework source."
     )
     source_url: str = Field(description="Canonical URL for the source.")
-    repo: str | None = Field(default=None, description="GitHub repo slug, e.g. 'pipecat-ai/pipecat'.")
+    repo: str | None = Field(
+        default=None, description="GitHub repo slug, e.g. 'pipecat-ai/pipecat'."
+    )
     path: str = Field(description="File path within the repo or URL path for docs.")
     commit_sha: str | None = Field(default=None, description="Git commit SHA at index time.")
     indexed_at: datetime = Field(description="Timestamp when this record was indexed.")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary extra metadata.")
-    embedding: list[float] | None = Field(default=None, description="Embedding vector, if computed.")
+    embedding: list[float] | None = Field(
+        default=None, description="Embedding vector, if computed."
+    )
 
 
 class IndexQuery(BaseModel):
@@ -92,9 +96,7 @@ class TaxonomyEntry(BaseModel):
     )
     key_files: list[str] = Field(default_factory=list, description="Primary files in this example.")
     summary: str = Field(default="", description="Short auto-generated summary.")
-    readme_content: str | None = Field(
-        default=None, description="README contents if present."
-    )
+    readme_content: str | None = Field(default=None, description="README contents if present.")
     commit_sha: str | None = Field(default=None, description="Git commit SHA at index time.")
     indexed_at: datetime | None = Field(
         default=None, description="Timestamp when this entry was last indexed."
@@ -266,7 +268,8 @@ class SearchExamplesInput(BaseModel):
     repo: str | None = Field(default=None, max_length=256)
     language: str | None = Field(default=None, max_length=64)
     tags: list[Annotated[str, StringConstraints(max_length=64)]] | None = Field(
-        default=None, max_length=20,
+        default=None,
+        max_length=20,
     )
     foundational_class: str | None = Field(default=None, max_length=256)
     execution_mode: str | None = Field(default=None, max_length=64)
@@ -376,11 +379,7 @@ class GetCodeSnippetInput(BaseModel):
         has_symbol = self.symbol is not None
         has_intent = self.intent is not None
         # path+line_start is its own mode only when intent is absent.
-        has_path_range = (
-            self.path is not None
-            and self.line_start is not None
-            and not has_intent
-        )
+        has_path_range = self.path is not None and self.line_start is not None and not has_intent
         modes = [has_symbol, has_intent, has_path_range]
         if sum(modes) == 0:
             raise ValueError(
@@ -389,9 +388,7 @@ class GetCodeSnippetInput(BaseModel):
         if sum(modes) > 1:
             raise ValueError("Only one lookup mode may be set at a time.")
         if not has_symbol and (self.module or self.class_name):
-            raise ValueError(
-                "`module` and `class_name` filters are only supported in symbol mode."
-            )
+            raise ValueError("`module` and `class_name` filters are only supported in symbol mode.")
         return self
 
 
@@ -457,11 +454,13 @@ class SearchApiInput(BaseModel):
 
     query: str = Field(max_length=1000)
     module: str | None = Field(
-        default=None, max_length=256,
+        default=None,
+        max_length=256,
         description="Filter by module path prefix, e.g. 'pipecat.services'.",
     )
     class_name: str | None = Field(
-        default=None, max_length=256,
+        default=None,
+        max_length=256,
         description="Filter by class name, e.g. 'TTSService'.",
     )
     chunk_type: Literal["module_overview", "class_overview", "method", "function"] | None = Field(

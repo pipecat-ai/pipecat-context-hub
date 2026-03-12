@@ -142,7 +142,9 @@ class FTSIndex:
                 (content_type,),
             )
             self._conn.commit()
-            logger.debug("Deleted %d records from FTS index for content_type=%s", count, content_type)
+            logger.debug(
+                "Deleted %d records from FTS index for content_type=%s", count, content_type
+            )
 
         return count
 
@@ -286,8 +288,15 @@ class FTSIndex:
             return []
 
         (
-            cid, content, content_type, source_url,
-            repo, path, commit_sha, indexed_at_str, metadata_json,
+            cid,
+            content,
+            content_type,
+            source_url,
+            repo,
+            path,
+            commit_sha,
+            indexed_at_str,
+            metadata_json,
         ) = row
 
         extra_meta: dict[str, Any] = json.loads(metadata_json) if metadata_json else {}
@@ -321,9 +330,7 @@ class FTSIndex:
 
     def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key, or None if not found."""
-        cursor = self._conn.execute(
-            "SELECT value FROM index_metadata WHERE key = ?", (key,)
-        )
+        cursor = self._conn.execute("SELECT value FROM index_metadata WHERE key = ?", (key,))
         row = cursor.fetchone()
         return row[0] if row else None
 

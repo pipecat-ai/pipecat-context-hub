@@ -29,7 +29,7 @@ from pipecat_context_hub.server.tools.search_examples import handle_search_examp
 
 logger = logging.getLogger(__name__)
 
-_SERVER_VERSION = "0.0.6"
+_SERVER_VERSION = "0.0.7"
 
 # Tool name → (description, input schema, handler)
 _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
@@ -153,9 +153,7 @@ def create_server(retriever: Retriever, index_store: IndexStore | None = None) -
         ]
 
     @server.call_tool()  # type: ignore[untyped-decorator]
-    async def call_tool(
-        name: str, arguments: dict[str, Any] | None
-    ) -> list[types.TextContent]:
+    async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.TextContent]:
         args = arguments or {}
 
         # get_hub_status has a different dispatch signature (needs index_store)

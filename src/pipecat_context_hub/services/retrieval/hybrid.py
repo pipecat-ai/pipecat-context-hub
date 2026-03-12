@@ -110,9 +110,7 @@ class HybridRetriever:
         """Run vector + keyword search for a single query, merge with RRF."""
         query_embedding: list[float] | None = None
         if self._embedding is not None:
-            query_embedding = await asyncio.to_thread(
-                self._embedding.embed_query, query_text
-            )
+            query_embedding = await asyncio.to_thread(self._embedding.embed_query, query_text)
 
         query = IndexQuery(
             query_text=query_text,
@@ -121,7 +119,9 @@ class HybridRetriever:
             limit=limit,
         )
 
-        logger.debug("Single-concept search: query=%r filters=%r limit=%d", query_text, filters, limit)
+        logger.debug(
+            "Single-concept search: query=%r filters=%r limit=%d", query_text, filters, limit
+        )
 
         vector_results, keyword_results = await asyncio.gather(
             self._index.vector_search(query),
@@ -159,9 +159,7 @@ class HybridRetriever:
         # per-concept searches would over-fetch.  Fall back to a single
         # search using the full (joined) query.
         if limit < n:
-            return await self._single_concept_search(
-                " ".join(concepts), filters, limit
-            )
+            return await self._single_concept_search(" ".join(concepts), filters, limit)
 
         per_concept = -(-limit // n)  # ceiling division
 
@@ -362,9 +360,7 @@ class HybridRetriever:
             capabilities=[],  # Raw tag names are in capability_tags
             key_files=key_files,
             summary=chunk.content[:200],
-            readme_content=chunk.metadata.get("readme_content")
-            if input.include_readme
-            else None,
+            readme_content=chunk.metadata.get("readme_content") if input.include_readme else None,
             commit_sha=chunk.commit_sha,
             indexed_at=chunk.indexed_at,
         )
