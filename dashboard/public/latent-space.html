@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipecat Context Hub — Latent Space Explorer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
+
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    padding: 1rem 1.5rem;
+    background: linear-gradient(to bottom, rgba(13,17,23,0.95), rgba(13,17,23,0));
+    pointer-events: none; z-index: 10;
+  }
+  #hud h1 { font-size: 1.1rem; font-weight: 600; }
+  #hud .subtitle { font-size: 0.8rem; color: #8b949e; }
+
+  #controls {
+    position: fixed; top: 4rem; left: 1.5rem;
+    background: rgba(22,27,34,0.92);
+    border: 1px solid #30363d; border-radius: 8px;
+    padding: 1rem; font-size: 0.8rem; z-index: 10;
+    max-width: 280px; backdrop-filter: blur(8px);
+  }
+  #controls label {
+    display: flex; align-items: center; gap: 0.5rem;
+    margin-bottom: 0.4rem; cursor: pointer; color: #8b949e;
+  }
+  #controls label:hover { color: #e6edf3; }
+  #controls input[type="checkbox"] { accent-color: #58a6ff; }
+  .control-section { margin-bottom: 0.75rem; }
+  .control-section h3 {
+    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #484f58; margin-bottom: 0.4rem;
+  }
+  .color-dot {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; vertical-align: middle;
+  }
+  #search-box {
+    width: 100%; padding: 0.4rem 0.6rem;
+    background: #0d1117; border: 1px solid #30363d; border-radius: 4px;
+    color: #e6edf3; font-size: 0.8rem; outline: none; margin-bottom: 0.5rem;
+  }
+  #search-box:focus { border-color: #58a6ff; }
+  #search-count { font-size: 0.7rem; color: #8b949e; margin-bottom: 0.5rem; }
+  input[type="range"] { width: 100%; accent-color: #58a6ff; }
+  #back-btn {
+    display: none; width: 100%; padding: 0.4rem;
+    background: #21262d; border: 1px solid #30363d; border-radius: 4px;
+    color: #58a6ff; font-size: 0.8rem; cursor: pointer; margin-bottom: 0.5rem;
+  }
+  #back-btn:hover { background: #30363d; }
+  #view-mode { font-size: 0.7rem; color: #58a6ff; margin-bottom: 0.5rem; }
+
+  #tooltip {
+    position: fixed;
+    background: rgba(22,27,34,0.95);
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 0.75rem; font-size: 0.75rem;
+    max-width: 380px; pointer-events: none;
+    display: none; z-index: 20;
+    backdrop-filter: blur(8px); line-height: 1.4;
+  }
+  .tt-type {
+    display: inline-block; padding: 0.1rem 0.4rem;
+    border-radius: 3px; font-size: 0.65rem; font-weight: 600;
+    margin-bottom: 0.3rem;
+  }
+  .tt-path { color: #8b949e; word-break: break-all; }
+  .tt-preview { color: #c9d1d9; margin-top: 0.3rem; }
+  .tt-label { color: #e6edf3; font-weight: 600; font-size: 0.9rem; }
+  .tt-count { color: #8b949e; }
+  .tt-breakdown { color: #8b949e; margin-top: 0.25rem; font-size: 0.7rem; }
+  .tt-repos { color: #8b949e; margin-top: 0.15rem; font-size: 0.7rem; }
+  .tt-class { color: #bc8cff; font-weight: 600; }
+  .tt-method { color: #3fb950; }
+  .tt-hint { color: #484f58; font-size: 0.65rem; margin-top: 0.4rem; font-style: italic; }
+
+  #loading {
+    position: fixed; inset: 0; background: #0d1117;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 1rem; z-index: 100;
+    transition: opacity 0.5s;
+  }
+  #loading.hidden { opacity: 0; pointer-events: none; }
+  .spinner {
+    width: 40px; height: 40px;
+    border: 3px solid #30363d; border-top-color: #58a6ff;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #status-bar {
+    position: fixed; bottom: 1rem; right: 1.5rem;
+    font-size: 0.7rem; color: #484f58; z-index: 10; text-align: right;
+  }
+  .blend-legend {
+    display: flex; gap: 0.3rem; align-items: center;
+    margin-top: 0.5rem; font-size: 0.7rem; color: #484f58;
+  }
+  .blend-swatch {
+    width: 16px; height: 16px; border-radius: 3px; border: 1px solid #30363d;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div id="loading-text">Loading clusters...</div>
+</div>
+
+<div id="hud">
+  <h1>Pipecat Context Hub — Latent Space</h1>
+  <div class="subtitle">20,055 chunks in 384D embedding space, projected to 3D via UMAP (cosine metric)</div>
+</div>
+
+<div id="controls">
+  <input type="text" id="search-box" placeholder="Search chunks..." autocomplete="off">
+  <div id="search-count"></div>
+  <button id="back-btn">Back to clusters</button>
+  <div id="view-mode">Showing 200 clusters — click to expand</div>
+
+  <div class="control-section">
+    <h3>Content Type</h3>
+    <label><input type="checkbox" data-filter="ct" value="doc" checked>
+      <span class="color-dot" style="background:#58a6ff"></span> doc (3,722)</label>
+    <label><input type="checkbox" data-filter="ct" value="code" checked>
+      <span class="color-dot" style="background:#3fb950"></span> code (6,160)</label>
+    <label><input type="checkbox" data-filter="ct" value="source" checked>
+      <span class="color-dot" style="background:#bc8cff"></span> source (6,402)</label>
+    <div class="blend-legend">
+      <div class="blend-swatch" style="background:linear-gradient(135deg,#58a6ff,#3fb950)"></div>
+      <span>doc+code overlap</span>
+      <div class="blend-swatch" style="background:linear-gradient(135deg,#58a6ff,#bc8cff)"></div>
+      <span>doc+source</span>
+      <div class="blend-swatch" style="background:linear-gradient(135deg,#3fb950,#bc8cff)"></div>
+      <span>code+source</span>
+    </div>
+  </div>
+
+  <div class="control-section">
+    <h3>View Mode</h3>
+    <label><input type="checkbox" id="show-all-toggle">
+      Show all 20,055 points (no clusters)</label>
+  </div>
+
+  <div class="control-section">
+    <h3>Point Size</h3>
+    <input type="range" id="point-size-slider" min="1" max="12" step="0.5" value="3">
+  </div>
+
+  <div class="control-section">
+    <h3>Labels</h3>
+    <label><input type="checkbox" id="show-labels-toggle"> Show labels (expanded view only)</label>
+  </div>
+
+  <div class="control-section">
+    <h3>Opacity</h3>
+    <input type="range" id="opacity-slider" min="0.05" max="0.6" step="0.025" value="0.2">
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<canvas id="canvas"></canvas>
+
+<div id="status-bar"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── Constants ──
+var C_DOC = new THREE.Color(0x58a6ff);
+var C_CODE = new THREE.Color(0x3fb950);
+var C_SOURCE = new THREE.Color(0xbc8cff);
+var C_README = new THREE.Color(0xd29922);
+var C_UNKNOWN = new THREE.Color(0x484f58);
+
+var COLOR_MAP = { doc: C_DOC, code: C_CODE, source: C_SOURCE, readme: C_README, unknown: C_UNKNOWN };
+var TYPE_CSS = { doc: '#58a6ff', code: '#3fb950', source: '#bc8cff', readme: '#d29922' };
+var HIGHLIGHT_COLOR = new THREE.Color(0xf0f6fc);
+var DIM_ALPHA = 0.03;
+var baseOpacity = 0.2;
+
+// ── State ──
+var mode = 'clusters';
+var expandedClusterId = null;
+var clusterData = null;
+var allMembersData = null;
+var currentPoints = [];
+var labelSprites = [];
+var scene, camera, renderer, controls, pointsMesh, geometry;
+var positions, colors, alphas, sizes;
+var raycaster = new THREE.Raycaster();
+var mouse = new THREE.Vector2();
+var hoveredIndex = -1;
+var visibleContentTypes = new Set(['doc', 'code', 'source', 'readme']);
+var searchQuery = '';
+
+// ── Scene ──
+var canvas = document.getElementById('canvas');
+renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x0d1117);
+
+scene = new THREE.Scene();
+camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(0, 0, 30);
+
+controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.rotateSpeed = 0.6;
+controls.zoomSpeed = 1.2;
+
+// ── Shaders — additive blending for translucent overlap ──
+var vertexShader = [
+  'attribute float alpha;',
+  'attribute float size;',
+  'varying float vAlpha;',
+  'varying vec3 vColor;',
+  'uniform float uPointSize;',
+  'void main() {',
+  '  vAlpha = alpha;',
+  '  vColor = color;',
+  '  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
+  '  gl_PointSize = size * uPointSize * (200.0 / -mvPosition.z);',
+  '  gl_Position = projectionMatrix * mvPosition;',
+  '}',
+].join('\n');
+
+var fragmentShader = [
+  'varying float vAlpha;',
+  'varying vec3 vColor;',
+  'void main() {',
+  '  float d = length(gl_PointCoord - vec2(0.5));',
+  '  if (d > 0.5) discard;',
+  '  float edge = smoothstep(0.35, 0.5, d);',
+  '  float a = vAlpha * (1.0 - edge);',
+  '  gl_FragColor = vec4(vColor * a, a);',
+  '}',
+].join('\n');
+
+var material = new THREE.ShaderMaterial({
+  vertexShader: vertexShader,
+  fragmentShader: fragmentShader,
+  vertexColors: true,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  uniforms: { uPointSize: { value: 3.0 } },
+});
+
+// ── Coordinate helpers ──
+var globalScale = 1, globalCx = 0, globalCy = 0, globalCz = 0;
+
+function computeScale(pts) {
+  var minX = Infinity, maxX = -Infinity;
+  var minY = Infinity, maxY = -Infinity;
+  var minZ = Infinity, maxZ = -Infinity;
+  for (var i = 0; i < pts.length; i++) {
+    var p = pts[i];
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+  }
+  var range = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
+  return { scale: 20 / range, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, cz: (minZ + maxZ) / 2 };
+}
+
+function worldX(p) { return (p.x - globalCx) * globalScale; }
+function worldY(p) { return (p.y - globalCy) * globalScale; }
+function worldZ(p) { return (p.z - globalCz) * globalScale; }
+
+// ── Blended color for mixed-type clusters ──
+function blendedColor(contentTypes) {
+  var total = 0;
+  var r = 0, g = 0, b = 0;
+  var entries = Object.entries(contentTypes);
+  for (var i = 0; i < entries.length; i++) {
+    var ct = entries[i][0];
+    var n = entries[i][1];
+    var c = COLOR_MAP[ct] || C_UNKNOWN;
+    r += c.r * n;
+    g += c.g * n;
+    b += c.b * n;
+    total += n;
+  }
+  if (total === 0) return C_UNKNOWN;
+  return new THREE.Color(r / total, g / total, b / total);
+}
+
+// ── Text sprite ──
+function makeTextSprite(text, color, sizeFactor) {
+  var c2 = document.createElement('canvas');
+  var fs = 48;
+  var ctx = c2.getContext('2d');
+  ctx.font = 'bold ' + fs + 'px -apple-system, sans-serif';
+  var tw = ctx.measureText(text).width;
+  c2.width = tw + 20;
+  c2.height = fs + 16;
+  ctx.font = 'bold ' + fs + 'px -apple-system, sans-serif';
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.8;
+  ctx.fillText(text, 10, fs);
+  var tex = new THREE.CanvasTexture(c2);
+  tex.minFilter = THREE.LinearFilter;
+  var mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+  var sprite = new THREE.Sprite(mat);
+  sprite.scale.set(c2.width / c2.height * sizeFactor, sizeFactor, 1);
+  return sprite;
+}
+
+function clearLabels() {
+  for (var i = 0; i < labelSprites.length; i++) scene.remove(labelSprites[i]);
+  labelSprites = [];
+}
+
+// ── Build point cloud ──
+function buildPointCloud(pts, sizeArr, colorArr) {
+  if (pointsMesh) { scene.remove(pointsMesh); geometry.dispose(); }
+  clearLabels();
+
+  var N = pts.length;
+  positions = new Float32Array(N * 3);
+  colors = new Float32Array(N * 3);
+  alphas = new Float32Array(N);
+  sizes = new Float32Array(N);
+
+  for (var i = 0; i < N; i++) {
+    var p = pts[i];
+    positions[i * 3] = worldX(p);
+    positions[i * 3 + 1] = worldY(p);
+    positions[i * 3 + 2] = worldZ(p);
+
+    var c = colorArr ? colorArr[i] : (COLOR_MAP[p.content_type] || C_UNKNOWN);
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+
+    alphas[i] = baseOpacity;
+    sizes[i] = sizeArr ? sizeArr[i] : 1.0;
+  }
+
+  geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
+  geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+  pointsMesh = new THREE.Points(geometry, material);
+  scene.add(pointsMesh);
+  currentPoints = pts;
+  raycaster.params.Points.threshold = mode === 'clusters' ? 0.6 : 0.25;
+}
+
+// ── Cluster view ──
+function showClusters() {
+  mode = 'clusters';
+  expandedClusterId = null;
+  var clusters = clusterData.clusters;
+
+  var s = computeScale(clusters);
+  globalScale = s.scale; globalCx = s.cx; globalCy = s.cy; globalCz = s.cz;
+
+  var maxCount = 0;
+  for (var i = 0; i < clusters.length; i++) {
+    if (clusters[i].count > maxCount) maxCount = clusters[i].count;
+  }
+
+  var sizeArr = [];
+  var colorArr = [];
+  var pts = [];
+
+  for (var i = 0; i < clusters.length; i++) {
+    var c = clusters[i];
+    sizeArr.push(0.5 + 2.5 * Math.sqrt(c.count / maxCount));
+    // Blend color from content type proportions — shows overlap as mixed hues
+    colorArr.push(blendedColor(c.content_types));
+    pts.push(Object.assign({}, c, {
+      dominant_type: Object.keys(c.content_types).reduce(function(a, b) {
+        return (c.content_types[a] || 0) > (c.content_types[b] || 0) ? a : b;
+      }, 'unknown')
+    }));
+  }
+
+  buildPointCloud(pts, sizeArr, colorArr);
+
+  // No labels in cluster view — hover tooltip is sufficient
+
+  camera.position.set(0, 0, 30);
+  controls.target.set(0, 0, 0);
+  controls.update();
+
+  document.getElementById('back-btn').style.display = 'none';
+  document.getElementById('view-mode').textContent = 'Showing 200 clusters \u2014 click to expand';
+  document.getElementById('status-bar').textContent = '200 clusters \u00b7 20,055 total points';
+  updateVisibility();
+}
+
+// ── Ensure all members are loaded ──
+async function ensureMembersLoaded() {
+  if (!allMembersData) {
+    var resp = await fetch('cluster_members.json');
+    allMembersData = await resp.json();
+  }
+}
+
+// ── Shared label builder for expanded/all-points views ──
+function addPointLabels(members, labelSize) {
+  if (labelSize <= 0) return;
+
+  // Group points by best available label key
+  var groups = {};
+  for (var i = 0; i < members.length; i++) {
+    var m = members[i];
+    var key = m.class_name || m.module_path || '';
+    // For code/doc chunks without class_name/module_path, use parent dir
+    if (!key && m.path) {
+      var parts = m.path.replace(/^\//, '').split('/');
+      key = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+    }
+    if (!key) continue;
+    if (!groups[key]) groups[key] = { idxs: [], ct: m.content_type };
+    groups[key].idxs.push(i);
+  }
+
+  // Sort by group size, label all groups with 2+ members
+  var sorted = Object.entries(groups).sort(function(a, b) { return b[1].idxs.length - a[1].idxs.length; });
+  for (var j = 0; j < sorted.length; j++) {
+    var name = sorted[j][0];
+    var grp = sorted[j][1];
+    if (grp.idxs.length < 2) break; // sorted desc, so all remaining are smaller
+    // Compute centroid of group
+    var gx = 0, gy = 0, gz = 0;
+    for (var k = 0; k < grp.idxs.length; k++) {
+      var ii = grp.idxs[k];
+      gx += positions[ii * 3]; gy += positions[ii * 3 + 1]; gz += positions[ii * 3 + 2];
+    }
+    gx /= grp.idxs.length; gy /= grp.idxs.length; gz /= grp.idxs.length;
+    var col = TYPE_CSS[grp.ct] || '#8b949e';
+    var short = name.split('.').slice(-2).join('.');
+    var scaleFactor = mode === 'all' ? labelSize * 0.4 : labelSize * 0.6;
+    var sp = makeTextSprite(short, col, scaleFactor);
+    sp.position.set(gx, gy + 0.2, gz);
+    scene.add(sp);
+    labelSprites.push(sp);
+  }
+}
+
+// ── Expanded cluster view ──
+async function expandCluster(clusterId) {
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('loading-text').textContent = 'Loading cluster points...';
+
+  await ensureMembersLoaded();
+
+  var members = allMembersData[String(clusterId)] || [];
+  if (members.length === 0) {
+    document.getElementById('loading').classList.add('hidden');
+    return;
+  }
+
+  mode = 'expanded';
+  expandedClusterId = clusterId;
+
+  var s = computeScale(members);
+  globalScale = s.scale; globalCx = s.cx; globalCy = s.cy; globalCz = s.cz;
+
+  buildPointCloud(members, null, null);
+
+  if (document.getElementById('show-labels-toggle').checked) {
+    addPointLabels(members, 0.6);
+  }
+
+  // Fly to cluster center
+  var cx = 0, cy = 0, cz = 0;
+  for (var i = 0; i < members.length; i++) {
+    cx += positions[i * 3]; cy += positions[i * 3 + 1]; cz += positions[i * 3 + 2];
+  }
+  cx /= members.length; cy /= members.length; cz /= members.length;
+  camera.position.set(cx, cy, cz + 20);
+  controls.target.set(cx, cy, cz);
+  controls.update();
+
+  var cluster = clusterData.clusters.find(function(c) { return c.id === clusterId; });
+  document.getElementById('back-btn').style.display = 'block';
+  document.getElementById('view-mode').textContent = 'Cluster "' + (cluster ? cluster.label : clusterId) + '" \u2014 ' + members.length + ' points';
+  document.getElementById('status-bar').textContent = members.length + ' points in cluster #' + clusterId;
+  document.getElementById('loading').classList.add('hidden');
+  updateVisibility();
+}
+
+// ── Show all points (no clustering) ──
+async function showAllPoints() {
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('loading-text').textContent = 'Loading all 20,055 points...';
+
+  await ensureMembersLoaded();
+
+  // Flatten all members into one array
+  var allPoints = [];
+  var keys = Object.keys(allMembersData);
+  for (var i = 0; i < keys.length; i++) {
+    var members = allMembersData[keys[i]];
+    for (var j = 0; j < members.length; j++) {
+      allPoints.push(members[j]);
+    }
+  }
+
+  mode = 'all';
+  expandedClusterId = null;
+
+  var s = computeScale(allPoints);
+  globalScale = s.scale; globalCx = s.cx; globalCy = s.cy; globalCz = s.cz;
+
+  buildPointCloud(allPoints, null, null);
+
+  if (document.getElementById('show-labels-toggle').checked) {
+    addPointLabels(allPoints, 0.4);
+  }
+
+  camera.position.set(0, 0, 30);
+  controls.target.set(0, 0, 0);
+  controls.update();
+
+  document.getElementById('back-btn').style.display = 'block';
+  document.getElementById('view-mode').textContent = 'All ' + allPoints.length.toLocaleString() + ' points';
+  document.getElementById('status-bar').textContent = allPoints.length.toLocaleString() + ' points loaded';
+  document.getElementById('loading').classList.add('hidden');
+  updateVisibility();
+}
+
+// ── Visibility ──
+function matchesSearch(p) {
+  if (!searchQuery) return true;
+  var q = searchQuery;
+  return (p.preview && p.preview.toLowerCase().indexOf(q) >= 0)
+    || (p.class_name && p.class_name.toLowerCase().indexOf(q) >= 0)
+    || (p.method_name && p.method_name.toLowerCase().indexOf(q) >= 0)
+    || (p.module_path && p.module_path.toLowerCase().indexOf(q) >= 0)
+    || (p.path && p.path.toLowerCase().indexOf(q) >= 0)
+    || (p.repo && p.repo.toLowerCase().indexOf(q) >= 0)
+    || (p.label && p.label.toLowerCase().indexOf(q) >= 0);
+}
+
+function updateVisibility() {
+  if (!geometry) return;
+  var alphaAttr = geometry.getAttribute('alpha');
+  var N = currentPoints.length;
+  var hasSearch = searchQuery.length > 0;
+  var matchCount = 0;
+
+  for (var i = 0; i < N; i++) {
+    var p = currentPoints[i];
+    var ct = p.dominant_type || p.content_type || 'unknown';
+    var typeVisible = mode === 'clusters'
+      ? true  // cluster view: blended colors, always show
+      : visibleContentTypes.has(p.content_type || 'unknown');
+
+    // In cluster mode, hide if dominant type is filtered
+    if (mode === 'clusters') {
+      var cts = p.content_types || {};
+      var hasVisible = false;
+      for (var t in cts) { if (visibleContentTypes.has(t)) { hasVisible = true; break; } }
+      typeVisible = hasVisible;
+    }
+
+    if (!typeVisible) {
+      alphaAttr.array[i] = 0;
+    } else if (hasSearch && !matchesSearch(p)) {
+      alphaAttr.array[i] = DIM_ALPHA;
+    } else if (hasSearch) {
+      alphaAttr.array[i] = Math.min(baseOpacity + 0.3, 1.0);
+      matchCount++;
+    } else {
+      alphaAttr.array[i] = baseOpacity;
+    }
+  }
+
+  alphaAttr.needsUpdate = true;
+  document.getElementById('search-count').textContent = hasSearch ? matchCount + ' matches' : '';
+}
+
+// ── Event handlers ──
+document.querySelectorAll('[data-filter="ct"]').forEach(function(cb) {
+  cb.addEventListener('change', function() {
+    if (this.checked) visibleContentTypes.add(this.value);
+    else visibleContentTypes.delete(this.value);
+    updateVisibility();
+  });
+});
+
+var searchTimeout;
+document.getElementById('search-box').addEventListener('input', function(e) {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(function() {
+    searchQuery = e.target.value.toLowerCase().trim();
+    updateVisibility();
+  }, 150);
+});
+
+document.getElementById('point-size-slider').addEventListener('input', function(e) {
+  material.uniforms.uPointSize.value = parseFloat(e.target.value);
+});
+
+document.getElementById('show-labels-toggle').addEventListener('change', function() {
+  if (this.checked) {
+    // Add labels for current view
+    if (mode === 'expanded' && expandedClusterId !== null) {
+      var members = allMembersData[String(expandedClusterId)] || [];
+      addPointLabels(members, 0.6);
+    } else if (mode === 'all') {
+      var allPts = [];
+      var keys = Object.keys(allMembersData);
+      for (var i = 0; i < keys.length; i++) {
+        var m = allMembersData[keys[i]];
+        for (var j = 0; j < m.length; j++) allPts.push(m[j]);
+      }
+      addPointLabels(allPts, 0.4);
+    }
+  } else {
+    clearLabels();
+  }
+});
+
+document.getElementById('opacity-slider').addEventListener('input', function(e) {
+  baseOpacity = parseFloat(e.target.value);
+  updateVisibility();
+});
+
+document.getElementById('show-all-toggle').addEventListener('change', function() {
+  if (this.checked) {
+    showAllPoints();
+  } else {
+    showClusters();
+  }
+});
+
+document.getElementById('back-btn').addEventListener('click', function() {
+  searchQuery = '';
+  document.getElementById('search-box').value = '';
+  document.getElementById('search-count').textContent = '';
+  document.getElementById('show-all-toggle').checked = false;
+  showClusters();
+});
+
+// Click to expand
+canvas.addEventListener('click', function(event) {
+  if (mode !== 'clusters') return;
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  var intersects = raycaster.intersectObject(pointsMesh);
+  if (intersects.length > 0) {
+    var idx = intersects[0].index;
+    if (alphas[idx] > DIM_ALPHA) {
+      expandCluster(currentPoints[idx].id);
+    }
+  }
+});
+
+// Double-click to go back
+canvas.addEventListener('dblclick', function() {
+  if (mode === 'expanded' || mode === 'all') {
+    searchQuery = '';
+    document.getElementById('search-box').value = '';
+    document.getElementById('show-all-toggle').checked = false;
+    showClusters();
+  }
+});
+
+// Hover
+var tooltip = document.getElementById('tooltip');
+
+function escHtml(s) {
+  var div = document.createElement('div');
+  div.appendChild(document.createTextNode(s));
+  return div.innerHTML;
+}
+
+canvas.addEventListener('mousemove', function(event) {
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  var intersects = raycaster.intersectObject(pointsMesh);
+
+  var found = -1;
+  for (var k = 0; k < intersects.length; k++) {
+    if (alphas[intersects[k].index] > DIM_ALPHA) { found = intersects[k].index; break; }
+  }
+
+  if (found >= 0 && found !== hoveredIndex) {
+    // Restore previous
+    if (hoveredIndex >= 0) restoreColor(hoveredIndex);
+
+    hoveredIndex = found;
+    var colorAttr = geometry.getAttribute('color');
+    colorAttr.array[found * 3] = HIGHLIGHT_COLOR.r;
+    colorAttr.array[found * 3 + 1] = HIGHLIGHT_COLOR.g;
+    colorAttr.array[found * 3 + 2] = HIGHLIGHT_COLOR.b;
+    colorAttr.needsUpdate = true;
+
+    // Build tooltip
+    var p = currentPoints[found];
+    var el;
+    while (tooltip.firstChild) tooltip.removeChild(tooltip.firstChild);
+
+    if (mode === 'clusters') {
+      var cts = p.content_types || {};
+      el = document.createElement('div'); el.className = 'tt-label';
+      el.textContent = p.label; tooltip.appendChild(el);
+
+      el = document.createElement('div'); el.className = 'tt-count';
+      el.textContent = p.count + ' chunks'; tooltip.appendChild(el);
+
+      el = document.createElement('div'); el.className = 'tt-breakdown';
+      el.textContent = Object.entries(cts).map(function(e) { return e[0] + ': ' + e[1]; }).join(', ');
+      tooltip.appendChild(el);
+
+      if (p.top_repos) {
+        var repoStr = Object.entries(p.top_repos).map(function(e) {
+          return e[0].split('/')[1] + ' (' + e[1] + ')';
+        }).join(', ');
+        if (repoStr) {
+          el = document.createElement('div'); el.className = 'tt-repos';
+          el.textContent = repoStr; tooltip.appendChild(el);
+        }
+      }
+
+      el = document.createElement('div'); el.className = 'tt-hint';
+      el.textContent = 'Click to expand'; tooltip.appendChild(el);
+    } else {
+      var ct = p.content_type || 'unknown';
+      var typeLabel = ct;
+      if (p.chunk_type) typeLabel += ' / ' + p.chunk_type;
+      el = document.createElement('span'); el.className = 'tt-type';
+      el.style.background = TYPE_CSS[ct] || '#484f58'; el.style.color = '#0d1117';
+      el.textContent = typeLabel; tooltip.appendChild(el);
+
+      if (p.class_name) {
+        el = document.createElement('div'); el.className = 'tt-class';
+        el.textContent = p.class_name; tooltip.appendChild(el);
+      }
+      if (p.method_name) {
+        el = document.createElement('div'); el.className = 'tt-method';
+        el.textContent = '.' + p.method_name + '()'; tooltip.appendChild(el);
+      }
+      el = document.createElement('div'); el.className = 'tt-path';
+      el.textContent = (p.repo ? p.repo + '/' : '') + p.path; tooltip.appendChild(el);
+
+      if (p.preview) {
+        el = document.createElement('div'); el.className = 'tt-preview';
+        el.textContent = p.preview; tooltip.appendChild(el);
+      }
+    }
+
+    tooltip.style.display = 'block';
+    var tx = event.clientX + 16, ty = event.clientY - 16;
+    if (tx + 380 > window.innerWidth) tx = event.clientX - 396;
+    if (ty + 200 > window.innerHeight) ty = window.innerHeight - 200;
+    tooltip.style.left = tx + 'px'; tooltip.style.top = ty + 'px';
+    canvas.style.cursor = mode === 'clusters' ? 'pointer' : 'crosshair';
+
+  } else if (found < 0 && hoveredIndex >= 0) {
+    restoreColor(hoveredIndex);
+    hoveredIndex = -1;
+    tooltip.style.display = 'none';
+    canvas.style.cursor = 'grab';
+  }
+});
+
+function restoreColor(idx) {
+  var p = currentPoints[idx];
+  var c;
+  if (mode === 'clusters' && p.content_types) {
+    c = blendedColor(p.content_types);
+  } else {
+    c = COLOR_MAP[p.content_type] || C_UNKNOWN;
+  }
+  var colorAttr = geometry.getAttribute('color');
+  colorAttr.array[idx * 3] = c.r;
+  colorAttr.array[idx * 3 + 1] = c.g;
+  colorAttr.array[idx * 3 + 2] = c.b;
+  colorAttr.needsUpdate = true;
+}
+
+// Resize
+window.addEventListener('resize', function() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Animate
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// ── Load and start ──
+var resp = await fetch('clusters.json');
+clusterData = await resp.json();
+document.getElementById('loading').classList.add('hidden');
+showClusters();
+animate();
+</script>
+</body>
+</html>

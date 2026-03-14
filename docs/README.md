@@ -98,7 +98,46 @@ Retrieval:
 - **Reranking:** Reciprocal Rank Fusion + code-intent heuristics
 - **Transport:** stdio (MCP JSON-RPC)
 
+## Dashboard
+
+The project includes an interactive dashboard for understanding the index — what's
+in it, how chunks distribute across repos and content types, and how concepts
+relate in embedding space. We built it because tuning retrieval quality requires
+seeing the data: which repos dominate, where docs and source code overlap
+semantically, and whether cluster boundaries match our intuition about concept
+groupings.
+
+- **Index Explorer** (`dashboard/public/index.html`) — treemap of repo × content
+  type distribution, content type doughnut, AST chunk type breakdown, method
+  length histogram, and chunk size comparison. All data loaded from
+  `dashboard_data.json` (generated, not hardcoded).
+- **Latent Space Explorer** (`dashboard/public/latent-space.html`) — 3D
+  point cloud of all chunks projected from 384D embeddings to 3D via UMAP
+  (cosine metric). Supports rotate/zoom/pan, content type filtering, search
+  highlighting, and cluster expansion with labels. Uses Three.js with
+  additive blending so overlapping content types produce mixed colours.
+
+```bash
+# Rebuild dashboard data from the current index
+just dashboard-build
+
+# Or refresh the index first, then rebuild
+just dashboard-refresh
+
+# Serve on localhost:8765
+just dashboard-serve
+```
+
 ## Development
+
+A `justfile` provides common tasks. Run `just` to see all recipes.
+
+```bash
+just check    # lint + format check + typecheck
+just test     # run tests
+```
+
+Or use `uv` directly:
 
 ```bash
 # Install dev dependencies
@@ -144,4 +183,13 @@ src/pipecat_context_hub/
     ├── main.py                     # MCP server with 7 tools
     ├── transport.py                # stdio transport
     └── tools/                      # Per-tool handler modules
+
+dashboard/
+├── public/                         # Served by `just dashboard-serve`
+│   ├── index.html                  # Stats dashboard (loads dashboard_data.json)
+│   └── latent-space.html           # 3D embedding space explorer (Three.js)
+└── scripts/                        # Data extraction pipeline
+    ├── extract_embeddings.py       # ChromaDB → UMAP 3D projection
+    ├── compute_clusters.py         # K-means clustering for LOD
+    └── extract_dashboard.py        # Index stats extraction
 ```

@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipecat Context Hub — Index Explorer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 2rem;
+  }
+  h1 { font-size: 1.75rem; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; font-size: 0.95rem; }
+  .stats-bar {
+    display: flex; gap: 1.5rem; flex-wrap: wrap;
+    margin-bottom: 2rem;
+  }
+  .stat-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1rem 1.5rem; min-width: 160px;
+  }
+  .stat-card .value { font-size: 1.75rem; font-weight: 600; color: var(--accent); }
+  .stat-card .label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+  }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .chart-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1.25rem;
+  }
+  .chart-card h2 { font-size: 1rem; margin-bottom: 0.25rem; }
+  .chart-card .desc { font-size: 0.8rem; color: var(--muted); margin-bottom: 1rem; }
+  .chart-card canvas { max-height: 320px; }
+  .full-width { grid-column: 1 / -1; }
+  .treemap-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 3px;
+  }
+  .treemap-cell {
+    border-radius: 4px; padding: 0.5rem; font-size: 0.7rem;
+    display: flex; flex-direction: column; justify-content: space-between;
+    min-height: 60px; cursor: default; transition: opacity 0.15s;
+    position: relative; overflow: hidden;
+  }
+  .treemap-cell:hover { opacity: 0.85; }
+  .treemap-cell .repo { font-weight: 600; word-break: break-all; }
+  .treemap-cell .count { font-size: 1.1rem; font-weight: 700; }
+  .legend { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+  .annotation {
+    font-size: 0.75rem; color: var(--muted);
+    border-left: 2px solid var(--border);
+    padding-left: 0.75rem; margin-top: 1rem;
+  }
+  .loading { text-align: center; padding: 4rem; color: var(--muted); }
+  footer {
+    text-align: center; color: var(--muted); font-size: 0.8rem;
+    margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border);
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<h1>Pipecat Context Hub — Index Explorer</h1>
+<p class="subtitle" id="subtitle">Loading...</p>
+
+<div class="stats-bar" id="stats-bar"></div>
+
+<div class="grid" id="charts-grid">
+
+  <!-- Treemap: Repo x Content Type -->
+  <div class="chart-card full-width">
+    <h2>Chunk Distribution by Repo x Content Type</h2>
+    <p class="desc">Each cell is sized proportionally. Hover for details.</p>
+    <div class="legend" id="treemap-legend"></div>
+    <div class="treemap-container" id="treemap"></div>
+  </div>
+
+  <!-- Content Type Breakdown -->
+  <div class="chart-card">
+    <h2>Content Types</h2>
+    <p class="desc">Three index layers: documentation, example code, and AST-extracted framework source.</p>
+    <canvas id="contentTypeChart"></canvas>
+  </div>
+
+  <!-- Source Chunk Types -->
+  <div class="chart-card">
+    <h2>AST Source Chunk Types</h2>
+    <p class="desc">Python AST extraction produces four chunk types from framework source code.</p>
+    <canvas id="sourceTypeChart"></canvas>
+  </div>
+
+  <!-- Method Line Distribution -->
+  <div class="chart-card">
+    <h2>Method Length Distribution</h2>
+    <p class="desc" id="method-desc">Loading...</p>
+    <canvas id="methodLinesChart"></canvas>
+    <div class="annotation" id="method-annotation"></div>
+  </div>
+
+  <!-- Chunk Size Distribution -->
+  <div class="chart-card">
+    <h2>Chunk Size by Content Type</h2>
+    <p class="desc">Average character length per chunk. Code chunks are largest (full file fragments).</p>
+    <canvas id="chunkSizeChart"></canvas>
+  </div>
+
+</div>
+
+<footer>
+  Pipecat Context Hub v0.0.7 · <a href="https://github.com/pipecat-ai/pipecat-context-hub">github.com/pipecat-ai/pipecat-context-hub</a> · Data from local index
+</footer>
+
+<script>
+// -- Shared chart config --
+Chart.defaults.color = '#8b949e';
+Chart.defaults.borderColor = '#30363d';
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+
+var COLORS = {
+  doc:    { bg: 'rgba(88,166,255,0.75)', border: '#58a6ff' },
+  code:   { bg: 'rgba(63,185,80,0.75)',  border: '#3fb950' },
+  source: { bg: 'rgba(188,140,255,0.75)', border: '#bc8cff' },
+};
+
+function fmt(n) { return n.toLocaleString(); }
+
+function addStat(container, value, label) {
+  var card = document.createElement('div');
+  card.className = 'stat-card';
+  var valDiv = document.createElement('div');
+  valDiv.className = 'value';
+  valDiv.textContent = value;
+  var lblDiv = document.createElement('div');
+  lblDiv.className = 'label';
+  lblDiv.textContent = label;
+  card.appendChild(valDiv);
+  card.appendChild(lblDiv);
+  container.appendChild(card);
+}
+
+function buildTreemap(data, total) {
+  var treemap = document.getElementById('treemap');
+  var legend = document.getElementById('treemap-legend');
+
+  // Legend
+  [{ type: 'doc', label: 'Documentation' },
+   { type: 'code', label: 'Example Code' },
+   { type: 'source', label: 'AST Source' }
+  ].forEach(function(item) {
+    var el = document.createElement('div');
+    el.className = 'legend-item';
+    var dot = document.createElement('div');
+    dot.className = 'legend-dot';
+    dot.style.background = COLORS[item.type].border;
+    var label = document.createElement('span');
+    label.textContent = item.label;
+    el.appendChild(dot);
+    el.appendChild(label);
+    legend.appendChild(el);
+  });
+
+  // Cells
+  data.forEach(function(d) {
+    var colors = COLORS[d.type] || COLORS.code;
+    var cell = document.createElement('div');
+    cell.className = 'treemap-cell';
+    var pct = (d.count / total * 100);
+    var span = pct > 20 ? 4 : pct > 10 ? 3 : pct > 5 ? 2 : 1;
+    cell.style.gridColumn = 'span ' + span;
+    cell.style.minHeight = pct > 10 ? '90px' : '60px';
+    cell.style.background = colors.bg;
+    cell.style.border = '1px solid ' + colors.border;
+
+    var shortRepo = d.repo.indexOf('/') !== -1 ? d.repo.split('/')[1] : d.repo;
+
+    var repoSpan = document.createElement('span');
+    repoSpan.className = 'repo';
+    repoSpan.textContent = shortRepo;
+
+    var countSpan = document.createElement('span');
+    countSpan.className = 'count';
+    countSpan.textContent = fmt(d.count);
+
+    cell.appendChild(repoSpan);
+    cell.appendChild(countSpan);
+    cell.title = d.repo + ' (' + d.type + '): ' + fmt(d.count) + ' chunks (' + pct.toFixed(1) + '%)';
+    treemap.appendChild(cell);
+  });
+}
+
+function render(d) {
+  var docCount = d.content_types.doc || 0;
+  var codeCount = d.content_types.code || 0;
+  var sourceCount = d.content_types.source || 0;
+
+  // Subtitle
+  document.getElementById('subtitle').textContent =
+    fmt(d.total) + ' chunks across ' + d.repos + ' repos \u00b7 3 content types \u00b7 4 AST chunk types';
+
+  // Stats bar
+  var bar = document.getElementById('stats-bar');
+  addStat(bar, fmt(d.total), 'Total Chunks');
+  addStat(bar, fmt(d.repos), 'Repos Indexed');
+  addStat(bar, fmt(d.source_chunks), 'AST Source Chunks');
+  addStat(bar, fmt(d.methods), 'Methods Extracted');
+  addStat(bar, fmt(d.docs), 'Doc Pages');
+
+  // Treemap
+  buildTreemap(d.treemap, d.total);
+
+  // Content Type Doughnut
+  new Chart(document.getElementById('contentTypeChart'), {
+    type: 'doughnut',
+    data: {
+      labels: [
+        'Documentation (' + fmt(docCount) + ')',
+        'Example Code (' + fmt(codeCount) + ')',
+        'AST Source (' + fmt(sourceCount) + ')'
+      ],
+      datasets: [{
+        data: [docCount, codeCount, sourceCount],
+        backgroundColor: [COLORS.doc.bg, COLORS.code.bg, COLORS.source.bg],
+        borderColor: [COLORS.doc.border, COLORS.code.border, COLORS.source.border],
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'bottom', labels: { padding: 16 } } }
+    }
+  });
+
+  // Source Chunk Types
+  var ct = d.chunk_types;
+  new Chart(document.getElementById('sourceTypeChart'), {
+    type: 'bar',
+    data: {
+      labels: ['method', 'class_overview', 'module_overview', 'function'],
+      datasets: [{
+        label: 'Chunks',
+        data: [ct.method || 0, ct.class_overview || 0, ct.module_overview || 0, ct['function'] || 0],
+        backgroundColor: [
+          'rgba(188,140,255,0.8)',
+          'rgba(139,148,158,0.6)',
+          'rgba(88,166,255,0.6)',
+          'rgba(63,185,80,0.6)'
+        ],
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: '#21262d' } },
+        y: { grid: { display: false } }
+      }
+    }
+  });
+
+  // Method Lines Histogram
+  var mh = d.method_histogram;
+  document.getElementById('method-desc').textContent =
+    'Line counts across ' + fmt(d.methods) + ' extracted methods. ' +
+    mh.pct_under_100 + '% fit under 100 lines.';
+  document.getElementById('method-annotation').textContent =
+    mh.pct_under_10 + '% of methods are \u226410 lines \u00b7 ' +
+    mh.pct_under_100 + '% fit under 100 lines \u00b7 ' +
+    'max_lines default raised from 50\u2192100 in v0.0.7';
+
+  var totalMethods = d.methods;
+  new Chart(document.getElementById('methodLinesChart'), {
+    type: 'bar',
+    data: {
+      labels: mh.labels,
+      datasets: [{
+        label: 'Methods',
+        data: mh.data,
+        backgroundColor: function(ctx) {
+          return ctx.dataIndex <= 4
+            ? 'rgba(63,185,80,0.7)'
+            : ctx.dataIndex <= 6
+              ? 'rgba(210,153,34,0.7)'
+              : 'rgba(248,81,73,0.7)';
+        },
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            afterLabel: function(ctx) {
+              return 'Cumulative: ' + (mh.cumulative[ctx.dataIndex] / totalMethods * 100).toFixed(1) + '%';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { title: { display: true, text: 'Lines of code' }, grid: { color: '#21262d' } },
+        y: { title: { display: true, text: 'Number of methods' }, grid: { color: '#21262d' } }
+      }
+    }
+  });
+
+  // Chunk Size Grouped Bar
+  var cs = d.chunk_sizes;
+  new Chart(document.getElementById('chunkSizeChart'), {
+    type: 'bar',
+    data: {
+      labels: ['doc', 'code', 'source'],
+      datasets: [
+        {
+          label: 'Min',
+          data: [cs.doc.min, cs.code.min, cs.source.min],
+          backgroundColor: 'rgba(139,148,158,0.3)',
+          borderRadius: 4
+        },
+        {
+          label: 'Average',
+          data: [cs.doc.avg, cs.code.avg, cs.source.avg],
+          backgroundColor: 'rgba(88,166,255,0.7)',
+          borderRadius: 4
+        },
+        {
+          label: 'Max',
+          data: [cs.doc.max, cs.code.max, cs.source.max],
+          backgroundColor: 'rgba(248,81,73,0.5)',
+          borderRadius: 4
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'bottom' } },
+      scales: {
+        x: { grid: { display: false } },
+        y: {
+          type: 'logarithmic',
+          title: { display: true, text: 'Characters (log scale)' },
+          grid: { color: '#21262d' }
+        }
+      }
+    }
+  });
+}
+
+// Load data and render
+fetch('dashboard_data.json')
+  .then(function(r) { return r.json(); })
+  .then(render)
+  .catch(function(err) {
+    document.getElementById('subtitle').textContent = 'Error loading dashboard_data.json: ' + err.message;
+  });
+</script>
+</body>
+</html>

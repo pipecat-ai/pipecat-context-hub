@@ -19,6 +19,16 @@ uv run pipecat-context-hub refresh  # rebuild index
 uv run pipecat-context-hub serve    # start MCP server
 ```
 
+A `justfile` is also available as a task runner:
+
+```bash
+just check              # lint + format check + typecheck
+just test               # run tests
+just dashboard-refresh  # refresh index + rebuild all dashboard data
+just dashboard-build    # rebuild dashboard data without re-indexing
+just dashboard-serve    # serve dashboard on localhost:8765
+```
+
 ## MCP Tools — Multi-Concept Queries
 
 When calling search tools (`search_docs`, `search_examples`, `search_api`, `get_code_snippet`), use ` + ` or ` & ` to search for multiple concepts at once:
@@ -54,4 +64,13 @@ src/pipecat_context_hub/
 └── server/
     ├── main.py               # MCP server setup (_SERVER_VERSION here)
     └── tools/                # Per-tool handler modules
+
+dashboard/
+├── public/                   # Served by `just dashboard-serve`
+│   ├── index.html            # Stats dashboard (loads dashboard_data.json)
+│   └── latent-space.html     # 3D embedding space explorer (Three.js)
+└── scripts/                  # Data extraction pipeline
+    ├── extract_embeddings.py # ChromaDB → UMAP 3D → embeddings_3d.json
+    ├── compute_clusters.py   # K-means clustering → clusters.json
+    └── extract_dashboard.py  # Index stats → dashboard_data.json
 ```
