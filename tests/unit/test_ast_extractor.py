@@ -842,3 +842,61 @@ class TestNestedFunctionBoundary:
         assert "start" in run_method.calls
         assert "handle_event" not in run_method.calls
         assert run_method.yields == []
+
+    def test_lambda_calls_excluded(self):
+        """Lambda body calls should not leak to the enclosing method."""
+        source = textwrap.dedent('''\
+            class Svc:
+                def setup(self):
+                    self.start()
+                    cb = lambda: self.push_frame(Frame())
+                    return cb
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.name == "setup"
+        assert "start" in method.calls
+        assert "push_frame" not in method.calls
+
+    def test_lambda_yields_excluded(self):
+        """Lambda body yields should not leak to the enclosing function."""
+        source = textwrap.dedent('''\
+            def outer():
+                gen = lambda: (yield AudioFrame())
+                return gen
+        ''')
+        info = extract_module_info(source, "test_mod")
+        func = info.functions[0]
+        assert func.yields == []
+
+
+class TestCallExtractionOrder:
+    """Verify calls/yields preserve source order."""
+
+    def test_calls_in_source_order(self):
+        """Calls should appear in the order they first occur in source."""
+        source = textwrap.dedent('''\
+            class Proc:
+                def run(self):
+                    self.first()
+                    if True:
+                        self.second()
+                    self.third()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.calls == ["first", "second", "third"]
+
+    def test_yields_in_source_order(self):
+        """Yields should appear in the order they first occur in source."""
+        source = textwrap.dedent('''\
+            class Gen:
+                def run(self):
+                    yield AlphaFrame()
+                    if True:
+                        yield BetaFrame()
+                    yield GammaFrame()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.yields == ["AlphaFrame", "BetaFrame", "GammaFrame"]

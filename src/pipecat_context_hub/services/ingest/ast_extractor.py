@@ -6,7 +6,6 @@ No I/O, no imports of pipecat code. Uses only the Python standard library.
 from __future__ import annotations
 
 import ast
-from collections import deque
 from dataclasses import dataclass, field
 
 
@@ -189,24 +188,28 @@ def _is_dataclass(decorators: list[str]) -> bool:
 
 
 def _walk_shallow(node: ast.AST) -> list[ast.AST]:
-    """Walk an AST subtree but stop at nested function/class boundaries.
+    """Walk an AST subtree in source order, stopping at scope boundaries.
 
     Unlike ``ast.walk()``, this does NOT descend into nested
-    ``FunctionDef``, ``AsyncFunctionDef``, or ``ClassDef`` nodes.
-    This ensures that yields/calls extracted from an outer function
-    do not include those belonging to inner helpers or closures.
+    ``FunctionDef``, ``AsyncFunctionDef``, ``ClassDef``, or ``Lambda``
+    nodes.  This ensures that yields/calls extracted from an outer
+    function do not include those belonging to inner helpers, closures,
+    or lambda bodies.
 
-    Uses a FIFO queue (not a stack) to preserve source order.
+    Uses recursive DFS to preserve source order (children are visited
+    before siblings' subtrees).
     """
     nodes: list[ast.AST] = []
-    queue: deque[ast.AST] = deque([node])
-    while queue:
-        current = queue.popleft()
-        nodes.append(current)
-        for child in ast.iter_child_nodes(current):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+    _SCOPE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+    def _visit(n: ast.AST) -> None:
+        nodes.append(n)
+        for child in ast.iter_child_nodes(n):
+            if isinstance(child, _SCOPE_TYPES):
                 continue
-            queue.append(child)
+            _visit(child)
+
+    _visit(node)
     return nodes
 
 
