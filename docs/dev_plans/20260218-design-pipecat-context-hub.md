@@ -28,9 +28,10 @@
   method B which yields frame C." Current chunks are isolated definitions with no
   links between them. Scope:
   1. ~~**Extract yield types** from method bodies~~ ✅ Done (`ast_extractor._extract_yields`,
-     `_walk_shallow` for nested-function boundary). Stored as `yields: [...]` on
-     method/function chunks. Uses shallow AST walk to avoid leaking inner function
-     yields to outer scope.
+     `_walk_body_shallow` for scope boundary). Stored as `yields: [...]` on
+     method/function chunks. Only `ast.Yield` (not `YieldFrom` — generator
+     delegation names aren't frame types). Walks only executable body,
+     excluding decorators, defaults, annotations, nested defs, and lambdas.
   2. ~~**Extract method calls** from method bodies~~ ✅ Done (`ast_extractor._extract_calls`).
      Patterns: `self.method()` → `"method"`, `ClassName.method()` → `"ClassName.method"`,
      `super().method()` → `"super().method"`. Lowercase attribute chains excluded.
