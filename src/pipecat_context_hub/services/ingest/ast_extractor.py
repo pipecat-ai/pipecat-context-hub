@@ -6,6 +6,7 @@ No I/O, no imports of pipecat code. Uses only the Python standard library.
 from __future__ import annotations
 
 import ast
+from collections import deque
 from dataclasses import dataclass, field
 
 
@@ -197,18 +198,13 @@ def _walk_shallow(node: ast.AST) -> list[ast.AST]:
 
     Uses a FIFO queue (not a stack) to preserve source order.
     """
-    from collections import deque
-
     nodes: list[ast.AST] = []
     queue: deque[ast.AST] = deque([node])
     while queue:
         current = queue.popleft()
         nodes.append(current)
         for child in ast.iter_child_nodes(current):
-            # Skip nested function/class definitions (but not the root node)
-            if child is not node and isinstance(
-                child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-            ):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
             queue.append(child)
     return nodes

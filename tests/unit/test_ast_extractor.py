@@ -766,6 +766,20 @@ class TestCallExtraction:
         method = info.classes[0].methods[0]
         assert method.calls == ["push"]
 
+    def test_private_method_call(self):
+        """self._private_method() is captured."""
+        source = textwrap.dedent('''\
+            class Svc:
+                def run(self):
+                    self._setup()
+                    self.__internal()
+                    return None
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "_setup" in method.calls
+        assert "__internal" in method.calls
+
     def test_top_level_function_calls(self):
         """Top-level functions also extract calls."""
         source = textwrap.dedent('''\
