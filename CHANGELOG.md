@@ -18,8 +18,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   directly instead of falling back to `.venv` source reads
 - **`yields` and `calls` fields** on `ApiHit` output — structured lists
   surfaced through MCP tool responses
-- **Pipecat-internal import propagation** to class overview and method chunks
-  (module overview retains full imports list)
+- **Pipecat-internal import propagation** to class overview and method chunks,
+  including relative imports (`from .utils import X`) — module overview retains
+  full imports list
 - **`## Yields` / `## Calls` sections** appended to method chunk text content
   for FTS keyword searchability
 - `_walk_body_shallow()` iterative DFS walker that restricts extraction to
@@ -34,6 +35,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   values and closing `]` to prevent cross-field false positives
 - Vector `yields`/`calls` filters use list membership post-filter (not substring
   matching on JSON dumps) for exact-match semantics
+- `_extract_imports` preserves relative import dots (`from .utils` no longer
+  stripped to `from utils`) via `node.level`
 - `needs_post_filter` in `VectorIndex.search()` updated to include `yields`
   and `calls` for over-fetch when post-filtering
 

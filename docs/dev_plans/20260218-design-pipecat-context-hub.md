@@ -36,8 +36,9 @@
      Patterns: `self.method()` → `"method"`, `ClassName.method()` → `"ClassName.method"`,
      `super().method()` → `"super().method"`. Lowercase attribute chains excluded.
   3. ~~**Propagate imports to class/method chunks**~~ ✅ Done (`source_ingest._build_chunks`).
-     Pipecat-internal imports propagated to class_overview and method chunks.
-     Module overview retains full imports list.
+     Pipecat-internal imports (absolute + relative) propagated to class_overview
+     and method chunks. Relative import dots preserved via `node.level` in
+     `_extract_imports`. Module overview retains full imports list.
   4. ~~**Make filterable**~~ ✅ Done. FTS: `_build_filter_sql()` with JSON-key-anchored
      LIKE patterns. Vector: `_apply_post_filters()` with list membership checks
      (post-filter, not push-down — yields/calls are JSON strings in ChromaDB).
