@@ -642,8 +642,8 @@ class TestYieldExtraction:
         method = info.classes[0].methods[0]
         assert method.yields == []
 
-    def test_yield_from_call(self):
-        """``yield from gen()`` extracts the call target."""
+    def test_yield_from_excluded(self):
+        """``yield from gen()`` is excluded — generator name is not a frame type."""
         source = textwrap.dedent('''\
             class Proc:
                 def gen(self):
@@ -652,8 +652,7 @@ class TestYieldExtraction:
         ''')
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
-        assert "generate_frames" in method.yields
-        assert "FrameFactory.create" in method.yields
+        assert method.yields == []
 
     def test_no_yields_empty_list(self):
         """Methods without yields have an empty yields list."""
@@ -904,6 +903,50 @@ class TestNestedFunctionBoundary:
         assert "get_transport" in method.calls
         # .send() is chained (func.value is a Call, not Name) — excluded.
         assert "send" not in method.calls
+
+
+class TestDecoratorAndDefaultExclusion:
+    """Regression: calls/yields in decorators, defaults, and annotations must not leak."""
+
+    def test_decorator_calls_excluded(self):
+        """Calls in decorators should not appear in method calls."""
+        source = textwrap.dedent('''\
+            class Svc:
+                @Router.route("/path")
+                def handle(self):
+                    self.process()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "process" in method.calls
+        assert "Router.route" not in method.calls
+        assert "route" not in method.calls
+
+    def test_default_value_calls_excluded(self):
+        """Calls in parameter defaults should not appear in method calls."""
+        source = textwrap.dedent('''\
+            class Svc:
+                def run(self, config=Config.default()):
+                    self.start()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "start" in method.calls
+        assert "Config.default" not in method.calls
+
+    def test_return_annotation_excluded(self):
+        """Calls in return annotations should not appear in method calls."""
+        source = textwrap.dedent('''\
+            class Svc:
+                def run(self) -> Optional[Frame]:
+                    self.start()
+                    return None
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "start" in method.calls
+        # Optional[Frame] is an annotation, not a runtime call
+        assert method.calls == ["start"]
 
 
 class TestCallExtractionOrder:
