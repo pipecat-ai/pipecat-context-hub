@@ -187,18 +187,46 @@ def _is_dataclass(decorators: list[str]) -> bool:
     return any("dataclass" in d for d in decorators)
 
 
+def _walk_shallow(node: ast.AST) -> list[ast.AST]:
+    """Walk an AST subtree but stop at nested function/class boundaries.
+
+    Unlike ``ast.walk()``, this does NOT descend into nested
+    ``FunctionDef``, ``AsyncFunctionDef``, or ``ClassDef`` nodes.
+    This ensures that yields/calls extracted from an outer function
+    do not include those belonging to inner helpers or closures.
+
+    Uses a FIFO queue (not a stack) to preserve source order.
+    """
+    from collections import deque
+
+    nodes: list[ast.AST] = []
+    queue: deque[ast.AST] = deque([node])
+    while queue:
+        current = queue.popleft()
+        nodes.append(current)
+        for child in ast.iter_child_nodes(current):
+            # Skip nested function/class definitions (but not the root node)
+            if child is not node and isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                continue
+            queue.append(child)
+    return nodes
+
+
 def _extract_yields(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     """Extract frame class names from yield/yield-from expressions in a function body.
 
-    Walks the AST body for ``ast.Yield`` and ``ast.YieldFrom`` nodes whose
-    value is a constructor call (``ast.Call``).  Returns deduplicated class
-    names in order of first appearance.  Bare ``yield variable`` (no Call
-    wrapper) is skipped because it carries no useful type information.
+    Walks the AST body (excluding nested function/class bodies) for
+    ``ast.Yield`` and ``ast.YieldFrom`` nodes whose value is a constructor
+    call (``ast.Call``).  Returns deduplicated class names in order of first
+    appearance.  Bare ``yield variable`` (no Call wrapper) is skipped because
+    it carries no useful type information.
     """
     seen: set[str] = set()
     result: list[str] = []
 
-    for child in ast.walk(node):
+    for child in _walk_shallow(node):
         if not isinstance(child, (ast.Yield, ast.YieldFrom)):
             continue
         value = child.value
@@ -221,6 +249,10 @@ def _extract_yields(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
 def _extract_calls(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     """Extract method call names from a function body.
 
+    Walks the AST body (excluding nested function/class bodies) so that
+    calls inside inner helpers or closures are not attributed to the outer
+    function.
+
     Recognised patterns:
     - ``self.method()`` → ``"method"``
     - ``ClassName.method()`` (uppercase first char) → ``"ClassName.method"``
@@ -233,7 +265,7 @@ def _extract_calls(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
 
-    for child in ast.walk(node):
+    for child in _walk_shallow(node):
         if not isinstance(child, ast.Call):
             continue
         func = child.func

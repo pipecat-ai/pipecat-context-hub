@@ -427,12 +427,13 @@ class FTSIndex:
             val = "true" if filters["is_dataclass"] else "false"
             clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")
             params.append(f'%"is_dataclass": {val}%')
-        # Call-graph metadata filters (substring match on JSON list values)
+        # Call-graph metadata filters — match against the specific JSON key
+        # to avoid false positives from other fields (e.g. method_name).
         if "yields" in filters:
             clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")
-            params.append(f"%{esc(filters['yields'])}%")
+            params.append(f'%"yields": %{esc(filters["yields"])}%')
         if "calls" in filters:
             clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")
-            params.append(f"%{esc(filters['calls'])}%")
+            params.append(f'%"calls": %{esc(filters["calls"])}%')
 
         return clauses, params

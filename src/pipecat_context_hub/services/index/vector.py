@@ -214,10 +214,10 @@ def _apply_post_filters(
 
     if "yields" in filters:
         val = filters["yields"]
-        filtered = [r for r in filtered if val in json.dumps(r.chunk.metadata.get("yields", []))]
+        filtered = [r for r in filtered if val in r.chunk.metadata.get("yields", [])]
     if "calls" in filters:
         val = filters["calls"]
-        filtered = [r for r in filtered if val in json.dumps(r.chunk.metadata.get("calls", []))]
+        filtered = [r for r in filtered if val in r.chunk.metadata.get("calls", [])]
 
     return filtered
 

@@ -776,3 +776,55 @@ class TestCallExtraction:
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert "Manager.process" in func.calls
+
+
+class TestNestedFunctionBoundary:
+    """Regression: yields/calls from nested functions must not leak to the outer function."""
+
+    SOURCE = textwrap.dedent('''\
+        class Processor:
+            def outer(self):
+                """Outer method — only calls self.setup()."""
+                self.setup()
+
+                def inner_helper():
+                    """Nested helper — calls self.push_frame() and yields AudioFrame."""
+                    self.push_frame(AudioFrame())
+                    yield AudioFrame(data=b"x")
+
+                return inner_helper
+    ''')
+
+    def test_outer_calls_exclude_inner(self):
+        """outer() should have calls=['setup'], not push_frame from inner."""
+        info = extract_module_info(self.SOURCE, "test_mod")
+        outer = info.classes[0].methods[0]
+        assert outer.name == "outer"
+        assert "setup" in outer.calls
+        assert "push_frame" not in outer.calls
+
+    def test_outer_yields_exclude_inner(self):
+        """outer() should have yields=[], not AudioFrame from inner."""
+        info = extract_module_info(self.SOURCE, "test_mod")
+        outer = info.classes[0].methods[0]
+        assert outer.yields == []
+
+    def test_nested_async_excluded(self):
+        """Nested async def should not leak calls to outer."""
+        source = textwrap.dedent('''\
+            class Svc:
+                async def run(self):
+                    self.start()
+
+                    async def on_event():
+                        await self.handle_event()
+                        yield EventFrame()
+
+                    return on_event
+        ''')
+        info = extract_module_info(source, "test_mod")
+        run_method = info.classes[0].methods[0]
+        assert run_method.name == "run"
+        assert "start" in run_method.calls
+        assert "handle_event" not in run_method.calls
+        assert run_method.yields == []
