@@ -605,3 +605,174 @@ class TestFunctionSourceExtraction:
         func = info.functions[0]
         assert func.line_start == 1
         assert func.line_end == 3
+
+
+# ---------------------------------------------------------------------------
+# Yield extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestYieldExtraction:
+    """Verify yield/yield-from frame type extraction."""
+
+    SOURCE = textwrap.dedent('''\
+        class TTSService:
+            async def run_tts(self, text: str):
+                """Generate TTS audio."""
+                audio = self._synthesize(text)
+                yield TTSAudioRawFrame(audio=audio, sample_rate=16000)
+                yield TTSStoppedFrame()
+    ''')
+
+    def test_yields_extracted(self):
+        info = extract_module_info(self.SOURCE, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.yields == ["TTSAudioRawFrame", "TTSStoppedFrame"]
+
+    def test_bare_yield_skipped(self):
+        """Bare ``yield variable`` without Call wrapper is skipped."""
+        source = textwrap.dedent('''\
+            class Proc:
+                def gen(self):
+                    frame = make_frame()
+                    yield frame
+                    yield None
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.yields == []
+
+    def test_yield_from_call(self):
+        """``yield from gen()`` extracts the call target."""
+        source = textwrap.dedent('''\
+            class Proc:
+                def gen(self):
+                    yield from generate_frames()
+                    yield from FrameFactory.create()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "generate_frames" in method.yields
+        assert "FrameFactory.create" in method.yields
+
+    def test_no_yields_empty_list(self):
+        """Methods without yields have an empty yields list."""
+        source = textwrap.dedent('''\
+            class Proc:
+                def process(self, x):
+                    return x + 1
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.yields == []
+
+    def test_duplicate_yields_deduplicated(self):
+        """Same frame type yielded multiple times appears once."""
+        source = textwrap.dedent('''\
+            class Proc:
+                def gen(self):
+                    yield AudioFrame(data=b"a")
+                    yield AudioFrame(data=b"b")
+                    yield StopFrame()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.yields == ["AudioFrame", "StopFrame"]
+
+
+# ---------------------------------------------------------------------------
+# Call extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestCallExtraction:
+    """Verify method call extraction from function bodies."""
+
+    SOURCE = textwrap.dedent('''\
+        class MyProcessor(FrameProcessor):
+            async def process_frame(self, frame):
+                await super().process_frame(frame)
+                result = self.transform(frame)
+                await self.push_frame(OutputFrame(data=result))
+                logger.info("done")
+    ''')
+
+    def test_self_calls(self):
+        info = extract_module_info(self.SOURCE, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "transform" in method.calls
+        assert "push_frame" in method.calls
+
+    def test_super_call(self):
+        info = extract_module_info(self.SOURCE, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "super().process_frame" in method.calls
+
+    def test_lowercase_attribute_excluded(self):
+        """logger.info() should NOT be captured (lowercase first char)."""
+        info = extract_module_info(self.SOURCE, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "info" not in method.calls
+        assert "logger.info" not in method.calls
+
+    def test_class_method_call(self):
+        """ClassName.method() pattern is captured."""
+        source = textwrap.dedent('''\
+            class Foo:
+                def bar(self):
+                    result = Helper.convert(data)
+                    return result
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "Helper.convert" in method.calls
+
+    def test_await_self_call(self):
+        """``await self.method()`` is captured (ast.walk traverses into Await)."""
+        source = textwrap.dedent('''\
+            class Svc:
+                async def run(self):
+                    await self.start()
+                    await self.push_frame(Frame())
+                    return None
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert "start" in method.calls
+        assert "push_frame" in method.calls
+
+    def test_no_calls_empty_list(self):
+        """Methods without relevant calls have an empty list."""
+        source = textwrap.dedent('''\
+            class Foo:
+                def bar(self):
+                    x = len([1, 2, 3])
+                    return x
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.calls == []
+
+    def test_duplicate_calls_deduplicated(self):
+        """Same method called multiple times appears once."""
+        source = textwrap.dedent('''\
+            class Foo:
+                def bar(self):
+                    self.push(1)
+                    self.push(2)
+                    self.push(3)
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.calls == ["push"]
+
+    def test_top_level_function_calls(self):
+        """Top-level functions also extract calls."""
+        source = textwrap.dedent('''\
+            def helper():
+                result = Manager.process(data)
+                return result
+        ''')
+        info = extract_module_info(source, "test_mod")
+        func = info.functions[0]
+        assert "Manager.process" in func.calls

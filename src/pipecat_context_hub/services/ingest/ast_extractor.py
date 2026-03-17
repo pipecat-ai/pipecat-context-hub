@@ -36,6 +36,8 @@ class MethodInfo:
     line_start: int = 0
     line_end: int = 0
     source: str = ""
+    yields: list[str] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -64,6 +66,8 @@ class FunctionInfo:
     line_start: int = 0
     line_end: int = 0
     source: str = ""
+    yields: list[str] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -183,6 +187,81 @@ def _is_dataclass(decorators: list[str]) -> bool:
     return any("dataclass" in d for d in decorators)
 
 
+def _extract_yields(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Extract frame class names from yield/yield-from expressions in a function body.
+
+    Walks the AST body for ``ast.Yield`` and ``ast.YieldFrom`` nodes whose
+    value is a constructor call (``ast.Call``).  Returns deduplicated class
+    names in order of first appearance.  Bare ``yield variable`` (no Call
+    wrapper) is skipped because it carries no useful type information.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for child in ast.walk(node):
+        if not isinstance(child, (ast.Yield, ast.YieldFrom)):
+            continue
+        value = child.value
+        if not isinstance(value, ast.Call):
+            continue
+        # Extract the callable name from the Call node
+        func = value.func
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = ast.unparse(func)
+        else:
+            continue
+        if name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
+def _extract_calls(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Extract method call names from a function body.
+
+    Recognised patterns:
+    - ``self.method()`` → ``"method"``
+    - ``ClassName.method()`` (uppercase first char) → ``"ClassName.method"``
+    - ``super().method()`` → ``"super().method"``
+
+    Plain function calls (``len()``, ``isinstance()``) and lowercase
+    attribute chains (``logger.info()``) are skipped.  Returns deduplicated
+    names in order of first appearance.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        func = child.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        attr_name = func.attr
+        value = func.value
+
+        name: str | None = None
+
+        if isinstance(value, ast.Name):
+            if value.id == "self":
+                # self.method()
+                name = attr_name
+            elif value.id[0:1].isupper():
+                # ClassName.method()
+                name = f"{value.id}.{attr_name}"
+        elif isinstance(value, ast.Call):
+            # super().method()
+            if isinstance(value.func, ast.Name) and value.func.id == "super":
+                name = f"super().{attr_name}"
+
+        if name is not None and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
 def _extract_method(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     source_lines: list[str],
@@ -207,6 +286,8 @@ def _extract_method(
         line_start=line_start,
         line_end=line_end,
         source=source,
+        yields=_extract_yields(node),
+        calls=_extract_calls(node),
     )
 
 
@@ -259,6 +340,8 @@ def _extract_function(
         line_start=line_start,
         line_end=line_end,
         source=source,
+        yields=_extract_yields(node),
+        calls=_extract_calls(node),
     )
 
 

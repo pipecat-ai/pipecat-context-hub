@@ -23,6 +23,34 @@
 - Optional scheduled auto-refresh and richer local observability.
 - Decide and document refresh failure policy: **empty-on-failure** (current v0 behavior — stale data is worse than missing data for LLM context) vs **retain-previous-on-failure** (keep last-known-good records when ingestion fails). May require snapshot/swap semantics in IndexStore.
 - Version-pinned ingestion: allow pinning to a specific pipecat release tag instead of always ingesting HEAD. Track index-level metadata (pipecat version, docs fetch timestamp) so users building against older pipecat versions get matching context. Warn when the indexed pipecat version diverges from the user's installed version.
+- **Call-graph metadata for dependency tracing** (requirement #9 gap): The biggest
+  reason agents fall back to `.venv` reads is tracing call chains — "method A calls
+  method B which yields frame C." Current chunks are isolated definitions with no
+  links between them. Scope:
+  1. **Extract yield types** from method bodies — walk `ast.Yield`/`ast.YieldFrom`
+     nodes for frame class names. Store as `yields: ["TTSAudioRawFrame", ...]` on
+     method chunks. Covers the #1 Pipecat-specific tracing need (processor → frame
+     type mapping).
+  2. **Extract method calls** from method bodies — walk `ast.Call` nodes for
+     `self.method_name()` and `ClassName.method()` patterns. Store as
+     `calls: ["process_frame", "push_frame", ...]`. Does not need full type
+     resolution, just names.
+  3. **Propagate imports to class/method chunks** — currently only module_overview
+     chunks carry the `imports` field. Propagating filtered imports (e.g. only
+     pipecat-internal) to child chunks enables "what does this method depend on?"
+     queries without a second lookup.
+  4. **Make filterable** — add `yields` and `calls` to FTS `_build_filter_sql()`
+     and vector `_build_where_clause()` so agents can query "methods that yield
+     AudioRawFrame" or "methods that call push_frame" directly.
+  5. **Populate `dependency_notes` and `companion_snippets`** — these fields exist
+     on `CodeSnippet` output type but are never populated for source chunks. Use
+     the call/yield metadata to auto-generate them.
+  - **Non-goal:** Full type-resolved call graph. Name-based extraction is sufficient
+    for the retrieval use case and avoids the complexity of cross-module type
+    inference.
+  - **Evidence:** Agent session logs show repeated `.venv` reads for
+    `BaseTransport`, `FrameProcessor`, and `PipelineTask` — all cases where the
+    agent found the class definition but couldn't trace what it calls or yields.
 
 ## Context
 Pipecat developers need grounded context for coding and ideation based on rapidly changing docs and examples. A static prompt-only approach drifts quickly and does not provide verifiable citations or reproducible outputs.
