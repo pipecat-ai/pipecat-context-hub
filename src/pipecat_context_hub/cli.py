@@ -152,6 +152,12 @@ def refresh(ctx: click.Context, force: bool) -> None:
         except Exception as exc:
             all_errors.append(f"Failed to fetch llms-full.txt: {exc}")
             raw_text = None
+            source_status[docs_key] = {
+                "status": "error",
+                "sha": "—",
+                "existing": pre_counts.get(docs_key, 0),
+                "updated": "—",
+            }
 
         if raw_text is not None:
             content_hash = hashlib.sha256(raw_text.encode()).hexdigest()
@@ -366,10 +372,14 @@ def _print_refresh_summary(
         if isinstance(updated, int):
             total_updated += updated
             updated_str = f"{updated:,}"
-        else:
-            # Skipped repos carry forward their existing count to the total
+        elif status == "skipped":
+            # Skipped repos carry forward their existing count —
+            # their chunks are still in the index unchanged.
             total_updated += existing_int
-            updated_str = str(updated)
+            updated_str = "—"
+        else:
+            # Error repos: don't carry forward (chunks may have been deleted).
+            updated_str = "—"
 
         existing_str = f"{existing_int:,}" if existing_int else "—"
 
