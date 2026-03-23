@@ -965,10 +965,8 @@ class TestCodeSnippetEnrichment:
 
         assert len(output.snippets) == 1
         s = output.snippets[0]
-        assert s.dependency_notes == [
-            "pipecat.frames.AudioFrame",
-            "pipecat.services.base.BaseService",
-        ]
+        # dependency_notes empty until per-method import extraction
+        assert s.dependency_notes == []
         assert "TTSService._process_audio" in s.companion_snippets
         assert "TTSService.emit" in s.companion_snippets
         assert "Yields: AudioRawFrame, TTSStartedFrame" in s.interface_expectations
@@ -1036,7 +1034,7 @@ class TestCodeSnippetEnrichment:
         output = await retriever.get_code_snippet(GetCodeSnippetInput(symbol="MyClass.bar"))
 
         s = output.snippets[0]
-        assert s.dependency_notes == ["mod_a", "mod_b"]
+        assert s.dependency_notes == []
         assert "MyClass.helper" in s.companion_snippets
         assert "Yields: FrameA" in s.interface_expectations
         assert "Implements: Base" in s.interface_expectations
@@ -1119,7 +1117,7 @@ class TestCodeSnippetEnrichment:
 
         assert len(output.snippets) == 1
         s = output.snippets[0]
-        assert s.dependency_notes == ["pipecat.frames.AudioFrame"]
+        assert s.dependency_notes == []
         assert "Svc.push_frame" in s.companion_snippets
         assert "Yields: AudioRawFrame" in s.interface_expectations
 
@@ -1151,7 +1149,7 @@ class TestCodeSnippetEnrichment:
         s = output.snippets[0]
         assert s.content == "line1\nline2"
         # Enrichment preserved — truncation is from max_lines, not explicit slicing
-        assert s.dependency_notes == ["pipecat.frames.AudioFrame"]
+        assert s.dependency_notes == []
         assert "Svc.push_frame" in s.companion_snippets
         assert "Yields: AudioRawFrame" in s.interface_expectations
 
@@ -1210,7 +1208,7 @@ class TestCodeSnippetEnrichment:
         # Content is truncated to 2 lines...
         assert s.content == "line1\nline2"
         # ...but enrichment is preserved (describes the full method)
-        assert s.dependency_notes == ["pipecat.frames.AudioFrame"]
+        assert s.dependency_notes == []
         assert "Svc.push_frame" in s.companion_snippets
         assert "Yields: AudioRawFrame" in s.interface_expectations
 
