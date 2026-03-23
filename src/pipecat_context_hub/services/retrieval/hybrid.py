@@ -473,6 +473,7 @@ class HybridRetriever:
 
             # When path+line_start lookup was requested, extract the
             # requested sub-range from within this chunk.
+            sliced = False
             if input.path is not None and input.line_start is not None:
                 req_start = input.line_start
                 req_end = input.line_end or (req_start + input.max_lines - 1)
@@ -487,31 +488,42 @@ class HybridRetriever:
                 chunk_line_start = max(req_start, chunk_line_start)
                 chunk_line_end = chunk_line_start + len(all_lines) - 1
                 content = "\n".join(all_lines)
+                sliced = True
 
             # Respect max_lines
             if len(all_lines) > input.max_lines:
                 all_lines = all_lines[: input.max_lines]
                 content = "\n".join(all_lines)
                 chunk_line_end = chunk_line_start + len(all_lines) - 1
+                sliced = True
 
             # -- Enrich from call-graph metadata --
-            imports_raw = _parse_metadata_list(r.chunk.metadata, "imports")
-            calls_raw = _parse_metadata_list(r.chunk.metadata, "calls")
-            class_name = r.chunk.metadata.get("class_name", "")
-            companion = [
-                f"{class_name}.{c}"
-                if class_name and "." not in c and not c.startswith("super()")
-                else c
-                for c in calls_raw
-            ]
+            # Skip enrichment when the snippet was sliced to a sub-range,
+            # because the metadata describes the full chunk and would be
+            # misleading for a partial view.
+            chunk_type = r.chunk.metadata.get("chunk_type", "")
+            if sliced or chunk_type == "module_overview":
+                imports_raw: list[str] = []
+                companion: list[str] = []
+                expectations: list[str] = []
+            else:
+                imports_raw = _parse_metadata_list(r.chunk.metadata, "imports")
+                calls_raw = _parse_metadata_list(r.chunk.metadata, "calls")
+                class_name = r.chunk.metadata.get("class_name", "")
+                companion = [
+                    f"{class_name}.{c}"
+                    if class_name and "." not in c and not c.startswith("super()")
+                    else c
+                    for c in calls_raw
+                ]
 
-            yields_raw = _parse_metadata_list(r.chunk.metadata, "yields")
-            base_classes = _parse_metadata_list(r.chunk.metadata, "base_classes")
-            expectations: list[str] = []
-            if yields_raw:
-                expectations.append(f"Yields: {', '.join(yields_raw)}")
-            if base_classes:
-                expectations.append(f"Implements: {', '.join(base_classes)}")
+                yields_raw = _parse_metadata_list(r.chunk.metadata, "yields")
+                base_classes = _parse_metadata_list(r.chunk.metadata, "base_classes")
+                expectations = []
+                if yields_raw:
+                    expectations.append(f"Yields: {', '.join(yields_raw)}")
+                if base_classes:
+                    expectations.append(f"Implements: {', '.join(base_classes)}")
 
             snippets.append(
                 CodeSnippet(
