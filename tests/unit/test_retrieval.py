@@ -1123,6 +1123,65 @@ class TestCodeSnippetEnrichment:
         assert "Svc.push_frame" in s.companion_snippets
         assert "Yields: AudioRawFrame" in s.interface_expectations
 
+    async def test_enrichment_kept_when_path_line_start_with_max_lines(self):
+        """path + line_start + max_lines (no line_end) keeps enrichment when
+        line_start aligns with chunk start — truncation is from max_lines only."""
+        r1 = _make_result(
+            "enrich-path-maxlines",
+            content="line1\nline2\nline3\nline4\nline5",
+            content_type="source",
+            metadata={
+                "line_start": 10,
+                "line_end": 14,
+                "class_name": "Svc",
+                "imports": '["pipecat.frames.AudioFrame"]',
+                "calls": '["push_frame"]',
+                "yields": '["AudioRawFrame"]',
+            },
+        )
+        mock_reader = _mock_index_reader(vector_results=[r1])
+        retriever = HybridRetriever(mock_reader)
+
+        # path + line_start at chunk start, no line_end, max_lines truncates
+        output = await retriever.get_code_snippet(
+            GetCodeSnippetInput(path="docs/test.md", line_start=10, max_lines=2)
+        )
+
+        assert len(output.snippets) == 1
+        s = output.snippets[0]
+        assert s.content == "line1\nline2"
+        # Enrichment preserved — truncation is from max_lines, not explicit slicing
+        assert s.dependency_notes == ["pipecat.frames.AudioFrame"]
+        assert "Svc.push_frame" in s.companion_snippets
+        assert "Yields: AudioRawFrame" in s.interface_expectations
+
+    async def test_enrichment_skipped_when_path_line_start_mid_chunk(self):
+        """path + line_start into the middle of a chunk is real slicing."""
+        r1 = _make_result(
+            "enrich-midchunk",
+            content="line1\nline2\nline3\nline4\nline5",
+            content_type="source",
+            metadata={
+                "line_start": 10,
+                "line_end": 14,
+                "class_name": "Svc",
+                "imports": '["pipecat.frames.AudioFrame"]',
+                "calls": '["push_frame"]',
+            },
+        )
+        mock_reader = _mock_index_reader(vector_results=[r1])
+        retriever = HybridRetriever(mock_reader)
+
+        # line_start=12 cuts into chunk starting at 10 — real slice
+        output = await retriever.get_code_snippet(
+            GetCodeSnippetInput(path="docs/test.md", line_start=12, max_lines=100)
+        )
+
+        assert len(output.snippets) == 1
+        s = output.snippets[0]
+        assert s.dependency_notes == []
+        assert s.companion_snippets == []
+
     async def test_enrichment_kept_when_truncated_by_max_lines(self):
         """Enrichment is preserved on max_lines truncation — metadata describes
         the full method and helps agents decide whether to re-fetch with more lines."""

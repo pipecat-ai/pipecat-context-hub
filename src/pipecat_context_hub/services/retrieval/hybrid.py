@@ -485,8 +485,14 @@ class HybridRetriever:
                 offset_start = max(0, req_start - chunk_line_start)
                 offset_end = min(len(all_lines), req_end - chunk_line_start + 1)
                 new_lines = all_lines[offset_start:offset_end]
-                # Only mark as sliced if we actually narrowed the range
-                if len(new_lines) < len(all_lines):
+                # Mark as sliced only when the user explicitly narrowed
+                # the range via line_end, or when line_start cuts into
+                # the chunk (offset_start > 0). When the narrowing comes
+                # solely from max_lines (no line_end, line_start at chunk
+                # start), enrichment should be preserved.
+                if len(new_lines) < len(all_lines) and (
+                    input.line_end is not None or offset_start > 0
+                ):
                     line_sliced = True
                 all_lines = new_lines
                 chunk_line_start = max(req_start, chunk_line_start)
