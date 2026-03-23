@@ -1041,6 +1041,30 @@ class TestCodeSnippetEnrichment:
         assert "Yields: FrameA" in s.interface_expectations
         assert "Implements: Base" in s.interface_expectations
 
+    async def test_enrichment_no_class_name(self):
+        """Calls are not prefixed with a leading dot when class_name is absent."""
+        r1 = _make_result(
+            "enrich-no-class",
+            content="def standalone(): helper()",
+            content_type="source",
+            metadata={
+                "line_start": 1,
+                "line_end": 1,
+                "calls": '["helper", "other.qualified"]',
+            },
+        )
+        mock_reader = _mock_index_reader(vector_results=[r1], keyword_results=[r1])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(GetCodeSnippetInput(symbol="standalone"))
+
+        s = output.snippets[0]
+        # Without class_name, bare calls should stay unqualified (no leading dot)
+        assert "helper" in s.companion_snippets
+        assert ".helper" not in s.companion_snippets
+        # Dotted calls pass through as-is
+        assert "other.qualified" in s.companion_snippets
+
 
 class TestHybridRetrieverProtocol:
     """Verify HybridRetriever satisfies the Retriever protocol."""

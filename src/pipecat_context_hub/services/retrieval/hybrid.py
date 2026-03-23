@@ -495,41 +495,18 @@ class HybridRetriever:
                 chunk_line_end = chunk_line_start + len(all_lines) - 1
 
             # -- Enrich from call-graph metadata --
-            imports_raw = r.chunk.metadata.get("imports", [])
-            if isinstance(imports_raw, str):
-                try:
-                    imports_raw = json.loads(imports_raw)
-                except (ValueError, TypeError):
-                    imports_raw = []
-
-            calls_raw = r.chunk.metadata.get("calls", [])
-            if isinstance(calls_raw, str):
-                try:
-                    calls_raw = json.loads(calls_raw)
-                except (ValueError, TypeError):
-                    calls_raw = []
+            imports_raw = _parse_metadata_list(r.chunk.metadata, "imports")
+            calls_raw = _parse_metadata_list(r.chunk.metadata, "calls")
             class_name = r.chunk.metadata.get("class_name", "")
-            companion = (
-                [
-                    f"{class_name}.{c}" if "." not in c and not c.startswith("super()") else c
-                    for c in calls_raw
-                ]
-                if calls_raw
-                else []
-            )
+            companion = [
+                f"{class_name}.{c}"
+                if class_name and "." not in c and not c.startswith("super()")
+                else c
+                for c in calls_raw
+            ]
 
-            yields_raw = r.chunk.metadata.get("yields", [])
-            if isinstance(yields_raw, str):
-                try:
-                    yields_raw = json.loads(yields_raw)
-                except (ValueError, TypeError):
-                    yields_raw = []
-            base_classes = r.chunk.metadata.get("base_classes", [])
-            if isinstance(base_classes, str):
-                try:
-                    base_classes = json.loads(base_classes)
-                except (ValueError, TypeError):
-                    base_classes = []
+            yields_raw = _parse_metadata_list(r.chunk.metadata, "yields")
+            base_classes = _parse_metadata_list(r.chunk.metadata, "base_classes")
             expectations: list[str] = []
             if yields_raw:
                 expectations.append(f"Yields: {', '.join(yields_raw)}")
@@ -579,30 +556,10 @@ class HybridRetriever:
         hits: list[ApiHit] = []
         for r in results:
             citation = build_citation(r)
-            base_classes_raw = r.chunk.metadata.get("base_classes", [])
-            if isinstance(base_classes_raw, str):
-                try:
-                    base_classes_raw = json.loads(base_classes_raw)
-                except (ValueError, TypeError):
-                    base_classes_raw = base_classes_raw.split(",") if base_classes_raw else []
-            imports_raw = r.chunk.metadata.get("imports", [])
-            if isinstance(imports_raw, str):
-                try:
-                    imports_raw = json.loads(imports_raw)
-                except (ValueError, TypeError):
-                    imports_raw = []
-            yields_raw = r.chunk.metadata.get("yields", [])
-            if isinstance(yields_raw, str):
-                try:
-                    yields_raw = json.loads(yields_raw)
-                except (ValueError, TypeError):
-                    yields_raw = []
-            calls_raw = r.chunk.metadata.get("calls", [])
-            if isinstance(calls_raw, str):
-                try:
-                    calls_raw = json.loads(calls_raw)
-                except (ValueError, TypeError):
-                    calls_raw = []
+            base_classes_raw = _parse_metadata_list(r.chunk.metadata, "base_classes")
+            imports_raw = _parse_metadata_list(r.chunk.metadata, "imports")
+            yields_raw = _parse_metadata_list(r.chunk.metadata, "yields")
+            calls_raw = _parse_metadata_list(r.chunk.metadata, "calls")
             hits.append(
                 ApiHit(
                     chunk_id=r.chunk.chunk_id,
@@ -629,6 +586,25 @@ class HybridRetriever:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _parse_metadata_list(metadata: dict[str, Any], key: str) -> list[str]:
+    """Extract a list-of-strings field from chunk metadata.
+
+    Handles three storage formats:
+    - Native list (in-memory / mock): returned as-is.
+    - JSON-encoded string (ChromaDB): decoded via json.loads.
+    - Malformed / missing: returns [].
+    """
+    raw = metadata.get(key, [])
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    return raw
 
 
 def _epoch() -> datetime:

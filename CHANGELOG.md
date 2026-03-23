@@ -9,6 +9,12 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Snippet enrichment for `get_code_snippet`** — `CodeSnippet` responses now
+  populate three previously-empty fields from call-graph metadata:
+  `dependency_notes` (pipecat-internal imports), `companion_snippets`
+  (qualified method names called by this snippet), and
+  `interface_expectations` (frame types yielded + base classes implemented).
+  Computed at retrieval time — no index changes required
 - **Refresh summary table** — `refresh` command prints a per-source table
   showing status (updated/skipped/error), commit SHA, existing chunk count,
   and updated chunk count. Both columns sum to totals for at-a-glance
