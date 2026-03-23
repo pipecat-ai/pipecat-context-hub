@@ -937,6 +937,111 @@ class TestSymbolFilterCascade:
             GetCodeSnippetInput(intent="how to do X", class_name="SomeClass")
 
 
+class TestCodeSnippetEnrichment:
+    """Tests for dependency_notes, companion_snippets, interface_expectations population."""
+
+    async def test_enrichment_from_metadata(self):
+        """CodeSnippet fields are populated from chunk call-graph metadata."""
+        r1 = _make_result(
+            "enrich-1",
+            content="async def run_tts(self, text):\n    yield AudioFrame(text)",
+            content_type="source",
+            metadata={
+                "line_start": 10,
+                "line_end": 11,
+                "language": "python",
+                "chunk_type": "method",
+                "class_name": "TTSService",
+                "imports": '["pipecat.frames.AudioFrame", "pipecat.services.base.BaseService"]',
+                "calls": '["_process_audio", "emit"]',
+                "yields": '["AudioRawFrame", "TTSStartedFrame"]',
+                "base_classes": '["BaseService", "AIService"]',
+            },
+        )
+        mock_reader = _mock_index_reader(vector_results=[r1], keyword_results=[r1])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(GetCodeSnippetInput(symbol="TTSService.run_tts"))
+
+        assert len(output.snippets) == 1
+        s = output.snippets[0]
+        assert s.dependency_notes == [
+            "pipecat.frames.AudioFrame",
+            "pipecat.services.base.BaseService",
+        ]
+        assert "TTSService._process_audio" in s.companion_snippets
+        assert "TTSService.emit" in s.companion_snippets
+        assert "Yields: AudioRawFrame, TTSStartedFrame" in s.interface_expectations
+        assert "Implements: BaseService, AIService" in s.interface_expectations
+
+    async def test_enrichment_with_dotted_calls(self):
+        """Calls that already contain dots are not re-qualified with class_name."""
+        r1 = _make_result(
+            "enrich-dot",
+            content="def foo(self): self.bar.baz()",
+            content_type="source",
+            metadata={
+                "line_start": 1,
+                "line_end": 1,
+                "class_name": "Foo",
+                "calls": '["self.bar.baz", "local_fn"]',
+            },
+        )
+        mock_reader = _mock_index_reader(vector_results=[r1], keyword_results=[r1])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(GetCodeSnippetInput(symbol="Foo.foo"))
+
+        s = output.snippets[0]
+        assert "self.bar.baz" in s.companion_snippets
+        assert "Foo.local_fn" in s.companion_snippets
+
+    async def test_enrichment_empty_metadata(self):
+        """Enrichment fields default to empty lists when metadata is absent."""
+        r1 = _make_result(
+            "enrich-empty",
+            content="x = 1",
+            content_type="source",
+            metadata={"line_start": 1, "line_end": 1},
+        )
+        mock_reader = _mock_index_reader(vector_results=[r1], keyword_results=[r1])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(GetCodeSnippetInput(symbol="x"))
+
+        s = output.snippets[0]
+        assert s.dependency_notes == []
+        assert s.companion_snippets == []
+        assert s.interface_expectations == []
+
+    async def test_enrichment_with_native_list_metadata(self):
+        """Metadata that is already a list (not JSON string) is handled correctly."""
+        r1 = _make_result(
+            "enrich-list",
+            content="def bar(): pass",
+            content_type="source",
+            metadata={
+                "line_start": 1,
+                "line_end": 1,
+                "imports": ["mod_a", "mod_b"],
+                "calls": ["helper"],
+                "yields": ["FrameA"],
+                "base_classes": ["Base"],
+                "class_name": "MyClass",
+            },
+        )
+        mock_reader = _mock_index_reader(vector_results=[r1], keyword_results=[r1])
+        retriever = HybridRetriever(mock_reader)
+
+        output = await retriever.get_code_snippet(GetCodeSnippetInput(symbol="MyClass.bar"))
+
+        s = output.snippets[0]
+        assert s.dependency_notes == ["mod_a", "mod_b"]
+        assert "MyClass.helper" in s.companion_snippets
+        assert "Yields: FrameA" in s.interface_expectations
+        assert "Implements: Base" in s.interface_expectations
+
+
 class TestHybridRetrieverProtocol:
     """Verify HybridRetriever satisfies the Retriever protocol."""
 

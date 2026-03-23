@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-03-22 | feature | Snippet Enrichment (dependency_notes, companion_snippets, interface_expectations) | In Progress | vr000m | `feature/snippet-enrichment` | `20260218-design-pipecat-context-hub.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

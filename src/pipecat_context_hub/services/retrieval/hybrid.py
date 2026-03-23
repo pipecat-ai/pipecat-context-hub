@@ -494,6 +494,48 @@ class HybridRetriever:
                 content = "\n".join(all_lines)
                 chunk_line_end = chunk_line_start + len(all_lines) - 1
 
+            # -- Enrich from call-graph metadata --
+            imports_raw = r.chunk.metadata.get("imports", [])
+            if isinstance(imports_raw, str):
+                try:
+                    imports_raw = json.loads(imports_raw)
+                except (ValueError, TypeError):
+                    imports_raw = []
+
+            calls_raw = r.chunk.metadata.get("calls", [])
+            if isinstance(calls_raw, str):
+                try:
+                    calls_raw = json.loads(calls_raw)
+                except (ValueError, TypeError):
+                    calls_raw = []
+            class_name = r.chunk.metadata.get("class_name", "")
+            companion = (
+                [
+                    f"{class_name}.{c}" if "." not in c and not c.startswith("super()") else c
+                    for c in calls_raw
+                ]
+                if calls_raw
+                else []
+            )
+
+            yields_raw = r.chunk.metadata.get("yields", [])
+            if isinstance(yields_raw, str):
+                try:
+                    yields_raw = json.loads(yields_raw)
+                except (ValueError, TypeError):
+                    yields_raw = []
+            base_classes = r.chunk.metadata.get("base_classes", [])
+            if isinstance(base_classes, str):
+                try:
+                    base_classes = json.loads(base_classes)
+                except (ValueError, TypeError):
+                    base_classes = []
+            expectations: list[str] = []
+            if yields_raw:
+                expectations.append(f"Yields: {', '.join(yields_raw)}")
+            if base_classes:
+                expectations.append(f"Implements: {', '.join(base_classes)}")
+
             snippets.append(
                 CodeSnippet(
                     content=content,
@@ -502,9 +544,9 @@ class HybridRetriever:
                     line_end=chunk_line_end,
                     language=r.chunk.metadata.get("language"),
                     citation=citation,
-                    dependency_notes=r.chunk.metadata.get("dependency_notes", []),
-                    companion_snippets=r.chunk.metadata.get("companion_snippets", []),
-                    interface_expectations=r.chunk.metadata.get("interface_expectations", []),
+                    dependency_notes=imports_raw,
+                    companion_snippets=companion,
+                    interface_expectations=expectations,
                 )
             )
 

@@ -405,7 +405,7 @@ class CodeSnippet(BaseModel):
         default_factory=list, description="Imports or setup required by this snippet."
     )
     companion_snippets: list[str] = Field(
-        default_factory=list, description="IDs of related snippets needed alongside this one."
+        default_factory=list, description="Qualified method names called by this snippet."
     )
     interface_expectations: list[str] = Field(
         default_factory=list, description="Interfaces this snippet expects from callers."
