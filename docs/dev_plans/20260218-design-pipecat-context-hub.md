@@ -5,7 +5,7 @@
 - **Type:** design
 - **Assignee:** vr000m
 - **Priority:** High
-- **Working Branch:** feature/pipecat-context-hub
+- **Working Branch:** main (individual features on topic branches; see Completed Tasks in README.md)
 - **Created:** 2026-02-18
 - **Target Completion:** 2026-03-06
 - **Objective:** Design and implement a local-first MCP platform that provides fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed.

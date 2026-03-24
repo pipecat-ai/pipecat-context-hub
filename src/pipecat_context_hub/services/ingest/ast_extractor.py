@@ -443,37 +443,62 @@ def _extract_imports(node: ast.Import | ast.ImportFrom) -> list[str]:
 def _build_import_name_map(
     import_nodes: list[ast.Import | ast.ImportFrom],
 ) -> dict[str, str]:
-    """Build a mapping from bare names to full import strings.
+    """Build a mapping from bare names to per-alias import strings.
 
     Works from raw AST nodes to correctly handle aliases.  Each importable
-    name (or its alias) is mapped to the full import string that introduces it.
+    name (or its alias) is mapped to a minimal import string for that name
+    only — multi-name ``from X import A, B`` is split so each name gets its
+    own string, avoiding over-reporting when only one is used.
 
     Examples::
 
-        from pipecat.frames import A, B  →  {"A": "from pipecat.frames import A, B",
-                                              "B": "from pipecat.frames import A, B"}
+        from pipecat.frames import A, B  →  {"A": "from pipecat.frames import A",
+                                              "B": "from pipecat.frames import B"}
         from X import Y as Z             →  {"Z": "from X import Y as Z"}
         import pipecat.services.tts      →  {"pipecat": "import pipecat.services.tts"}
     """
     name_map: dict[str, str] = {}
     for node in import_nodes:
-        # Build the string representation (same logic as _extract_imports)
-        import_strs = _extract_imports(node)
-        if not import_strs:
-            continue
-        import_str = import_strs[0]  # _extract_imports returns one string for ImportFrom
-
         if isinstance(node, ast.Import):
-            for idx, alias in enumerate(node.names):
-                # For `import X.Y.Z`, the bare name in code is `X` (leftmost)
+            for alias in node.names:
                 bare = alias.asname or alias.name.split(".")[0]
-                # Each alias in `import X, Y` gets its own string from _extract_imports
-                name_map[bare] = import_strs[idx] if idx < len(import_strs) else import_str
+                if alias.asname:
+                    name_map[bare] = f"import {alias.name} as {alias.asname}"
+                else:
+                    name_map[bare] = f"import {alias.name}"
         elif isinstance(node, ast.ImportFrom):
+            dots = "." * (node.level or 0)
+            module = node.module or ""
             for alias in node.names:
                 bare = alias.asname or alias.name
-                name_map[bare] = import_str
+                if alias.asname:
+                    name_map[bare] = f"from {dots}{module} import {alias.name} as {alias.asname}"
+                else:
+                    name_map[bare] = f"from {dots}{module} import {alias.name}"
     return name_map
+
+
+def _collect_local_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Collect names locally bound in a function (parameters, assignments, etc.).
+
+    These shadow module-level imports and should not be counted as import
+    references.  Only collects from the function's own scope — nested
+    function/class bodies are excluded (matching ``_walk_body_shallow``).
+    """
+    locals_: set[str] = set()
+    # Parameters (including *args, **kwargs)
+    for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
+        locals_.add(arg.arg)
+    if node.args.vararg:
+        locals_.add(node.args.vararg.arg)
+    if node.args.kwarg:
+        locals_.add(node.args.kwarg.arg)
+
+    # Walk body for assignment/for/with targets (same scope boundary as _walk_body_shallow)
+    for child in _walk_body_shallow(node):
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+            locals_.add(child.id)
+    return locals_
 
 
 def _extract_used_imports(
@@ -484,19 +509,25 @@ def _extract_used_imports(
 
     Walks the body with ``_walk_body_shallow`` (respecting scope boundaries),
     collects ``ast.Name.id`` references, and cross-references against the
-    name map.  Returns deduplicated import strings in order of first use,
-    filtered to pipecat-internal imports only.
+    name map.  Locally bound names (parameters, assignments) are excluded to
+    avoid false positives from shadowing.
+
+    Returns deduplicated import strings in order of first use, filtered to
+    pipecat-internal imports only.
 
     Known limitations (documented, not bugs):
     - Imports used only in parameter/return type annotations are not captured
       (``_walk_body_shallow`` excludes those by design — runtime deps only).
     - ``import X.Y.Z`` only matches the leftmost name ``X``.
     """
+    local_names = _collect_local_names(node)
     seen_imports: set[str] = set()
     result: list[str] = []
 
     for child in _walk_body_shallow(node):
         if not isinstance(child, ast.Name):
+            continue
+        if child.id in local_names:
             continue
         import_str = name_map.get(child.id)
         if import_str is None:

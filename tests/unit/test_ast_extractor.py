@@ -991,14 +991,13 @@ class TestBuildImportNameMap:
     """Tests for _build_import_name_map."""
 
     def test_from_import_multi_name(self):
-        """Multi-name from-import maps each name to the full string."""
+        """Multi-name from-import maps each name to its own per-alias string."""
         import ast
         tree = ast.parse("from pipecat.frames import A, B")
         nodes = [n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
         result = _build_import_name_map(nodes)
-        assert "A" in result
-        assert "B" in result
-        assert "pipecat.frames" in result["A"]
+        assert result["A"] == "from pipecat.frames import A"
+        assert result["B"] == "from pipecat.frames import B"
 
     def test_from_import_alias(self):
         """Aliased import maps the alias, not the original name."""
@@ -1154,3 +1153,47 @@ class TestPerMethodImports:
         method = info.classes[0].methods[0]
         assert len(method.imports) == 1
         assert "AudioFrame" in method.imports[0]
+
+
+class TestPerMethodImportEdgeCases:
+    """Regression tests for import extraction edge cases."""
+
+    def test_multi_name_import_only_used_name(self):
+        """from X import A, B where only A is used reports only A's import."""
+        source = textwrap.dedent('''\
+            from pipecat.frames import AudioFrame, VideoFrame
+
+            def process():
+                return AudioFrame()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        func = info.functions[0]
+        assert len(func.imports) == 1
+        assert func.imports[0] == "from pipecat.frames import AudioFrame"
+        assert "VideoFrame" not in func.imports[0]
+
+    def test_shadowed_parameter_excluded(self):
+        """Parameter that shadows an import name is not counted as import usage."""
+        source = textwrap.dedent('''\
+            from pipecat.frames import AudioFrame
+
+            class Processor:
+                def handle(self, AudioFrame):
+                    return AudioFrame
+        ''')
+        info = extract_module_info(source, "test_mod")
+        method = info.classes[0].methods[0]
+        assert method.imports == []
+
+    def test_shadowed_assignment_excluded(self):
+        """Local assignment that shadows an import is not counted."""
+        source = textwrap.dedent('''\
+            from pipecat.frames import AudioFrame
+
+            def process():
+                AudioFrame = "not a frame"
+                return AudioFrame
+        ''')
+        info = extract_module_info(source, "test_mod")
+        func = info.functions[0]
+        assert func.imports == []

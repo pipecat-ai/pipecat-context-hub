@@ -498,7 +498,7 @@ class ApiHit(BaseModel):
     is_dataclass: bool = False
     imports: list[str] = Field(
         default_factory=list,
-        description="Pipecat-internal imports relevant to this chunk (per-method for method/function chunks, module-level for class/module overview).",
+        description="Pipecat-internal imports. Precision varies by chunk_type: method/function chunks list only imports the method body references; class_overview lists all pipecat imports in the module (upper bound); module_overview lists all imports including stdlib.",
     )
     yields: list[str] = Field(
         default_factory=list,
