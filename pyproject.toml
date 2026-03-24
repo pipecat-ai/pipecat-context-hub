@@ -37,7 +37,7 @@ packages = ["src/pipecat_context_hub"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = ["benchmark: latency benchmarks (deselect with -m 'not benchmark')"]
+markers = ["benchmark: latency and retrieval-quality benchmarks (deselect with -m 'not benchmark')"]
 
 [tool.ruff]
 target-version = "py311"
