@@ -92,6 +92,7 @@ def serve(ctx: click.Context) -> None:
     from pipecat_context_hub.server.transport import serve_stdio
     from pipecat_context_hub.services.embedding import EmbeddingService
     from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
 
     config: HubConfig = ctx.obj["config"]
@@ -100,7 +101,27 @@ def serve(ctx: click.Context) -> None:
 
     index_store = IndexStore(config.storage)
     embedding_svc = EmbeddingService(config.embedding)
-    retriever = HybridRetriever(index_store, embedding_svc)
+
+    # Optional cross-encoder reranker (env var or config)
+    cross_encoder: CrossEncoderReranker | None = None
+    if config.reranker.effective_enabled:
+        model_name = config.reranker.cross_encoder_model
+        # Check cache at startup — disable if model not downloaded
+        if CrossEncoderReranker.is_model_cached(model_name):
+            cross_encoder = CrossEncoderReranker(
+                model_name=model_name,
+                top_n=config.reranker.top_n,
+                enabled=True,
+            )
+            logger.info("Cross-encoder reranker enabled: %s", model_name)
+        else:
+            logger.warning(
+                "Cross-encoder enabled but model '%s' not cached — disabling. "
+                "Run 'pipecat-context-hub refresh' to pre-download.",
+                model_name,
+            )
+
+    retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
 
     server = create_server(retriever, index_store)
     serve_stdio(server)
@@ -130,6 +151,16 @@ def refresh(ctx: click.Context, force: bool) -> None:
     index_store = IndexStore(config.storage)
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
+
+    # Pre-download cross-encoder model if enabled (env var or config)
+    if config.reranker.effective_enabled:
+        from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
+
+        ce = CrossEncoderReranker(
+            model_name=config.reranker.cross_encoder_model,
+            enabled=True,
+        )
+        ce.ensure_model()
 
     total_upserted = 0
     all_errors: list[str] = []

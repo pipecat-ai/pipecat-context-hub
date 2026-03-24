@@ -19,7 +19,7 @@
 
 ### v1 Follow-up (post-MVP)
 - Higher-order tools: `compose_solution`, `propose_architecture`.
-- More advanced reranking and guardrail inference.
+- ~~More advanced reranking and guardrail inference.~~ → See item 7 below.
 - Optional scheduled auto-refresh and richer local observability.
 - Decide and document refresh failure policy: **empty-on-failure** (current v0 behavior — stale data is worse than missing data for LLM context) vs **retain-previous-on-failure** (keep last-known-good records when ingestion fails). May require snapshot/swap semantics in IndexStore.
 - Version-pinned ingestion: allow pinning to a specific pipecat release tag instead of always ingesting HEAD. Track index-level metadata (pipecat version, docs fetch timestamp) so users building against older pipecat versions get matching context. Warn when the indexed pipecat version diverges from the user's installed version.
@@ -128,6 +128,163 @@
   - **Evidence:** Agent session logs show repeated `.venv` reads for
     `BaseTransport`, `FrameProcessor`, and `PipelineTask` — all cases where the
     agent found the class definition but couldn't trace what it calls or yields.
+  7. **Advanced reranking & retrieval quality** — Branch: `feature/advanced-reranking`.
+     Current retrieval uses RRF (vector + keyword merge) with two heuristics
+     (symbol boost +0.15, staleness penalty -0.05). Deep pipeline exploration
+     identified 8 quality bottlenecks and 8 unused signals.
+
+     **Phase 1: Cross-encoder reranker** (highest ROI)
+     - **Async design:** `rerank()` stays sync (all existing tests unchanged).
+       New `CrossEncoderReranker` service class owns model lifecycle and
+       thread offload. `HybridRetriever` holds an optional instance. Call
+       site in `_single_concept_search`: sync `rerank()` → async
+       `await cross_encoder.rerank(candidates, query)` → `[:limit]`.
+     - `CrossEncoderReranker` (new file `services/retrieval/cross_encoder.py`):
+       - `__init__(config: RerankerConfig)` — stores config, model=None
+       - `async def rerank(candidates, query, top_n) -> list[IndexResult]` —
+         lazy-loads model on first call, runs `asyncio.to_thread(self._score, ...)`
+       - `_score(candidates, query)` — sync, calls `CrossEncoder.predict()`
+       - `ensure_model()` — pre-download, called from `refresh` CLI when enabled
+     - Model: `cross-encoder/ms-marco-MiniLM-L-6-v2` (~22M params, ~80MB download)
+     - Config: new `RerankerConfig` in `config.py` with `cross_encoder_model`,
+       `enabled` (default `False`), `top_n` (default 20). Add as field on
+       `HubConfig`. Plumb through `cli.py` / `server/main.py` →
+       `HybridRetriever.__init__`.
+     - **Model download / offline policy:**
+       - `refresh --force` pre-downloads when enabled (alongside embedding model)
+       - `serve` startup: if enabled but model not cached, log warning and
+         disable cross-encoder (fall back to RRF-only). No query-time download.
+       - Offline: works without cross-encoder. Degraded, not broken.
+
+     **Phase 2: Result diversity**
+     - **Repo diversity:** MMR-style penalty for consecutive results from same repo
+     - **File diversity:** penalty for results from same file path
+     - **Chunk-type preference for `search_api`:** method > class_overview >
+       module_overview — **only when `chunk_type` filter is not explicitly set**.
+       If the user requests a specific chunk_type, no preference is applied.
+     - Implement as `_apply_diversity()` in `rerank.py` (sync, called from
+       inside `rerank()` after heuristics). Diversity runs before cross-encoder
+       since cross-encoder is async and lives in `hybrid.py`.
+
+     **Phase 3: Confidence-based guardrails**
+     - **Low-confidence flag:** add `low_confidence: bool = False` to
+       `EvidenceReport` — set `True` when `confidence < 0.3`. Default `False`
+       preserves backward compatibility with existing construction sites.
+     - **Graduate count contribution:** replace `min(count/10, 0.1)` cap with
+       `min(count/15, 0.15)` for high-score tier
+     - **Cross-tool suggestions:** derive from `content_type` filter in
+       `_generate_next_queries`. When `content_type == "doc"` and 0 results →
+       suggest `search_examples`; when `content_type == "source"` and 0 results
+       → suggest `search_docs`. Keeps it in `evidence.py` without coupling to
+       tool-level concerns.
+     - **Confidence floor:** below 0.15 overall confidence, insert an
+       `UnknownItem` explaining "The index has no strong matches for this query"
+
+     **Phase 4: Heuristic fixes**
+     - **UPPERCASE symbol detection:** extend `_extract_query_symbols` to
+       recognize 2+ letter ALL-CAPS tokens (TTS, STT, VAD, RTVI, LLM) as
+       code symbols
+     - **Dual-hit bonus:** +0.10 when a chunk appears in both vector AND
+       keyword results. Detected during RRF fusion (chunk_id appears in
+       multiple ranked lists).
+     - **Graduated staleness:** replace binary 90-day threshold with linear
+       decay: `penalty = min(0.10, age_days / 365 * 0.10)` — gentle ramp,
+       max -0.10 at 1 year
+     - **BM25/vector dedup clarification:** the current raw-score comparison
+       in dedup (`rerank.py:183`) has no meaningful impact on final ordering
+       since `apply_code_intent_heuristics` overwrites `result.score` with
+       the RRF-derived score. Change to use RRF scores for the dedup winner
+       selection for consistency, but note this is a cleanup, not a behavior fix.
+     - **Event loop fix (read path):** wrap the inner sync calls inside
+       `IndexStore.vector_search` (`self._vector.search(query)`) and
+       `IndexStore.keyword_search` (`self._fts.search(query)`) with
+       `asyncio.to_thread`. No changes to method signatures or the
+       `IndexReader` protocol — the wrapping is internal to `store.py`.
+       Write-path methods (`upsert`, `delete_*`) are explicitly deferred —
+       they run during `refresh` (CLI, blocking by design).
+
+     **Config plumbing:**
+     1. Add `RerankerConfig` to `config.py` (model, enabled, top_n)
+     2. Add `reranker: RerankerConfig` field to `HubConfig`
+     3. `cli.py` → pass config to `CrossEncoderReranker` + `HybridRetriever`
+     4. `HybridRetriever.__init__` accepts optional `CrossEncoderReranker`
+     5. `_single_concept_search`: sync `rerank()` → async cross-encoder → limit
+
+     **Files to modify:**
+     | File | Changes |
+     |------|---------|
+     | `services/retrieval/cross_encoder.py` | **New file.** `CrossEncoderReranker` service class |
+     | `services/retrieval/rerank.py` | Diversity stage, all heuristic fixes (stays sync) |
+     | `services/retrieval/hybrid.py` | Optional `CrossEncoderReranker`, async call after `rerank()` |
+     | `services/retrieval/evidence.py` | Guardrail improvements, confidence formula, cross-tool suggestions |
+     | `shared/config.py` | `RerankerConfig`, add to `HubConfig` |
+     | `shared/types.py` | `low_confidence: bool = False` on `EvidenceReport` |
+     | `services/index/store.py` | `asyncio.to_thread` wrapping inside read methods |
+     | `cli.py` | Plumb reranker config, pre-download model on refresh |
+     | `server/main.py` | Pass `CrossEncoderReranker` to `HybridRetriever` |
+     | `docs/README.md` | Update reranking description in Technology section |
+     | `CLAUDE.md` | Note cross-encoder config option |
+
+     **Testing plan (per-phase):**
+     - **Phase 1 tests:** `CrossEncoderReranker` with mock model (enabled/disabled),
+       lazy loading, thread offload, offline fallback. Regression: disabled →
+       output identical to current `rerank()` pipeline.
+     - **Phase 2 tests:** `_apply_diversity()` with repo/file/chunk-type scenarios.
+       Guard: chunk_type preference skipped when filter is set.
+     - **Phase 3 tests:** `low_confidence` flag set/unset, graduated count formula,
+       cross-tool suggestions from `content_type`, confidence floor `UnknownItem`.
+     - **Phase 4 tests:** UPPERCASE symbol detection, dual-hit bonus, graduated
+       staleness curve, RRF-score dedup, `asyncio.to_thread` wrapping (verify
+       event loop not blocked).
+     - **Latency benchmark:** cross-encoder adds <100ms on CPU for top-20 candidates.
+
+     **Acceptance criteria:**
+     - [ ] Cross-encoder enabled: measurable improvement in top-3 result relevance
+       on a representative query set (manual evaluation)
+     - [ ] Cross-encoder disabled: all existing tests pass, output unchanged
+     - [ ] `low_confidence` flag appears in MCP responses when confidence < 0.3
+     - [ ] Diversity: no more than 3 consecutive results from same repo/file
+     - [ ] UPPERCASE symbols (TTS, STT, VAD) receive symbol boost
+     - [ ] Event loop: index queries don't block concurrent MCP tool calls
+     - [ ] docs/README.md and CLAUDE.md updated
+     - [ ] `uv run pytest tests/ -v` all pass
+     - [ ] `uv run ruff check src/ tests/` clean
+
+     **Known limitations (accepted):**
+     - Cross-encoder adds latency (~50-100ms per query on CPU). Optional via config.
+     - Multi-concept search runs cross-encoder per-concept, not on the final
+       interleaved result. A second pass on interleaved results is deferred.
+     - Diversity penalty is position-based, not semantic dedup.
+     - `_extract_query_symbols` still won't detect single-letter symbols.
+     - Write-path `asyncio.to_thread` deferred (refresh runs blocking by design).
+     - Offline: cross-encoder silently disabled if model not cached. RRF-only fallback.
+  8. **Language and domain filtering for example retrieval** (v0.0.10 target) —
+     `search_examples` returns noisy results because all `code` chunks are in
+     one undifferentiated bucket. Frontend React components and Python pipeline
+     bots compete for the same slots. Two ingestion-time improvements:
+     - **Language metadata from file extension:** Set `language` on code chunks
+       during ingestion (`.py` → `python`, `.ts`/`.tsx` → `typescript`,
+       `.yaml` → `yaml`, `.json` → `json`). The `language` param already exists
+       on `SearchExamplesInput` but is rarely populated on chunks. Agents can
+       then filter: `search_examples(query="TTS", language="python")`.
+     - **Domain tag:** Add a `domain` metadata field to code chunks:
+       `backend` (Python in `src/`, `bot.py`, pipeline code),
+       `frontend` (`.tsx`/`.ts`/`.jsx` in `client/`, `components/`),
+       `config` (`.yaml`, `.toml`, `docker-compose.yml`),
+       `infra` (Dockerfile, CI, deploy). Infer from file path + extension
+       heuristics in `github_ingest.py`. Expose as a new filter param on
+       `SearchExamplesInput`. Agents building Pipecat pipelines use
+       `domain="backend"`, agents wiring RTVI frontends use `domain="frontend"`.
+     - **Why this matters:** gradient-bang alone has ~4,600 code chunks, mostly
+       frontend React/TypeScript. Without domain filtering, these dominate
+       `search_examples` for any query mentioning "function calling", "timeout",
+       or other terms that appear in both frontend and backend code. The
+       cross-encoder helps (scores irrelevant results lower) but can't filter
+       out results that weren't in the initial candidate set.
+     - **Files:** `services/ingest/github_ingest.py` (set language + domain),
+       `shared/types.py` (add domain filter to `SearchExamplesInput`),
+       `services/retrieval/hybrid.py` (pass domain filter through),
+       `services/index/vector.py` + `fts.py` (filter push-down).
 
 ## Context
 Pipecat developers need grounded context for coding and ideation based on rapidly changing docs and examples. A static prompt-only approach drifts quickly and does not provide verifiable citations or reproducible outputs.

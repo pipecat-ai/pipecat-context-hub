@@ -95,8 +95,15 @@ Retrieval:
 - **Embeddings:** `all-MiniLM-L6-v2` via sentence-transformers (local, no API key)
 - **Vector store:** ChromaDB with cosine distance
 - **Keyword index:** SQLite FTS5 with porter tokenizer
-- **Reranking:** Reciprocal Rank Fusion + code-intent heuristics
+- **Reranking:** Reciprocal Rank Fusion + code-intent heuristics + cross-encoder (enabled by default) + result diversity
 - **Transport:** stdio (MCP JSON-RPC)
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
+| `PIPECAT_HUB_RERANKER_ENABLED` | `1` (enabled) | Set to `0` to disable cross-encoder reranking |
 
 ## Dashboard
 
@@ -135,6 +142,7 @@ A `justfile` provides common tasks. Run `just` to see all recipes.
 ```bash
 just check    # lint + format check + typecheck
 just test     # run tests
+just benchmark-quality   # live retrieval-quality benchmark on the local index
 ```
 
 Or use `uv` directly:
@@ -152,6 +160,45 @@ uv run mypy src/ tests/
 # Lint
 uv run ruff check
 ```
+
+## Benchmarking
+
+Two benchmark modes exist:
+
+- `tests/benchmarks/test_latency.py` measures component and end-to-end latency on a seeded local corpus.
+- `tests/benchmarks/test_retrieval_quality.py` measures retrieval quality against the current local index.
+
+The retrieval-quality benchmark is intended for the default corpus:
+
+- Pipecat docs
+- `pipecat-ai/pipecat`
+- `pipecat-ai/pipecat-examples`
+- No `PIPECAT_HUB_EXTRA_REPOS`
+
+Run it after `pipecat-context-hub refresh`:
+
+```bash
+just benchmark-quality
+```
+
+To persist a versioned report for later comparison:
+
+```bash
+PIPECAT_HUB_BENCHMARK_OUTPUT=artifacts/benchmarks/retrieval-quality-0.0.9.json just benchmark-quality
+```
+
+Each JSON report includes:
+
+- `schema_version` and `matrix_version` so query-set changes are explicit
+- `server_version`
+- `last_refresh_at`
+- `docs_content_hash`
+- `repo_shas` and `repo_counts`
+- per-case scores and top hits
+
+That metadata is the version-to-version trail. If a score changes, you can first check whether the retrieval logic changed, the indexed repo SHAs changed, the docs content hash changed, or the benchmark matrix itself changed.
+
+If extra repos are present, the benchmark still runs and writes a scorecard, but threshold failures are downgraded to warnings because the corpus is no longer comparable to the default baseline.
 
 ## Project Structure
 

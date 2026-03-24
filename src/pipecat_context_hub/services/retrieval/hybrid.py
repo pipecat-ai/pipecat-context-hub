@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pipecat_context_hub.services.embedding import EmbeddingService
 
+from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
 from pipecat_context_hub.services.retrieval.evidence import (
     assemble_evidence,
     build_citation,
@@ -71,17 +72,20 @@ class HybridRetriever:
         rrf_k: int = 60,
         vector_weight: float = 0.6,
         keyword_weight: float = 0.4,
+        cross_encoder: CrossEncoderReranker | None = None,
     ) -> None:
         self._index = index_reader
         self._embedding = embedding_service
         self._rrf_k = rrf_k
         self._vector_weight = vector_weight
         self._keyword_weight = keyword_weight
+        self._cross_encoder = cross_encoder
         logger.debug(
-            "HybridRetriever init: rrf_k=%d vector_weight=%.2f keyword_weight=%.2f",
+            "HybridRetriever init: rrf_k=%d vector_weight=%.2f keyword_weight=%.2f cross_encoder=%s",
             rrf_k,
             vector_weight,
             keyword_weight,
+            "enabled" if cross_encoder and cross_encoder.enabled else "disabled",
         )
 
     async def _hybrid_search(
@@ -142,7 +146,12 @@ class HybridRetriever:
             keyword_results=keyword_results,
             query=query_text,
             rrf_k=self._rrf_k,
+            filters=filters,
         )
+
+        # Optional cross-encoder reranking (async, runs in thread)
+        if self._cross_encoder and self._cross_encoder.enabled:
+            reranked = await self._cross_encoder.rerank(reranked, query_text)
 
         return reranked[:limit]
 

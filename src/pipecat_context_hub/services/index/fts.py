@@ -70,7 +70,7 @@ class FTSIndex:
     def __init__(self, sqlite_path: Path) -> None:
         self._sqlite_path = sqlite_path
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(sqlite_path))
+        self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA_SQL)
         self._conn.commit()
@@ -384,12 +384,17 @@ class FTSIndex:
     def _sanitize_fts_query(query_text: str) -> str:
         """Sanitize user query for FTS5 MATCH.
 
-        Wraps each token in double quotes to prevent FTS5 syntax errors
-        from special characters. Tokens are implicitly AND-ed.
+        Strips double quotes from tokens before wrapping in double quotes
+        to prevent FTS5 syntax injection. Tokens are implicitly AND-ed.
         """
         tokens = query_text.split()
-        # Quote each token and join with spaces (implicit AND in FTS5)
-        return " ".join(f'"{token}"' for token in tokens if token.strip())
+        # Strip quotes from each token to prevent FTS5 syntax breakout,
+        # then wrap in double quotes (implicit AND in FTS5).
+        return " ".join(
+            f'"{token.replace(chr(34), "")}"'
+            for token in tokens
+            if token.strip() and token.replace('"', "").strip()
+        )
 
     @staticmethod
     def _escape_like(value: str) -> str:

@@ -13,6 +13,10 @@ default:
 test *args:
     uv run pytest tests/ -v {{args}}
 
+# Run the live retrieval-quality benchmark against the local default index
+benchmark-quality:
+    PIPECAT_HUB_ENABLE_QUALITY_BENCHMARK=1 uv run pytest tests/benchmarks/test_retrieval_quality.py -m benchmark -v -s
+
 # Lint with ruff
 lint:
     uv run ruff check src/ tests/
