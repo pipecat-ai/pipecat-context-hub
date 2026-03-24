@@ -6,6 +6,7 @@ No I/O, no imports of pipecat code. Uses only the Python standard library.
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -312,7 +313,7 @@ def _extract_calls(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
 def _extract_method(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     source_lines: list[str],
-    name_map: dict[str, str],
+    name_map: Mapping[str, str],
 ) -> MethodInfo:
     """Extract method information from an AST node."""
     decorators = _extract_decorators(node)
@@ -343,7 +344,7 @@ def _extract_method(
 def _extract_class(
     node: ast.ClassDef,
     source_lines: list[str],
-    name_map: dict[str, str],
+    name_map: Mapping[str, str],
 ) -> ClassInfo:
     """Extract class information from an AST node."""
     decorators = _extract_decorators(node)
@@ -373,7 +374,7 @@ def _extract_class(
 def _extract_function(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     source_lines: list[str],
-    name_map: dict[str, str],
+    name_map: Mapping[str, str],
 ) -> FunctionInfo:
     """Extract top-level function information from an AST node."""
     decorators = _extract_decorators(node)
@@ -463,11 +464,10 @@ def _build_import_name_map(
         import_str = import_strs[0]  # _extract_imports returns one string for ImportFrom
 
         if isinstance(node, ast.Import):
-            for alias in node.names:
+            for idx, alias in enumerate(node.names):
                 # For `import X.Y.Z`, the bare name in code is `X` (leftmost)
                 bare = alias.asname or alias.name.split(".")[0]
                 # Each alias in `import X, Y` gets its own string from _extract_imports
-                idx = node.names.index(alias)
                 name_map[bare] = import_strs[idx] if idx < len(import_strs) else import_str
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
@@ -478,7 +478,7 @@ def _build_import_name_map(
 
 def _extract_used_imports(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
-    name_map: dict[str, str],
+    name_map: Mapping[str, str],
 ) -> list[str]:
     """Extract the pipecat-internal imports actually used by a method/function body.
 

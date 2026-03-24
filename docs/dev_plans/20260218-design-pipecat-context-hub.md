@@ -55,7 +55,7 @@
      `companion_snippets` updated from "IDs of related snippets" to "Qualified method
      names called by this snippet." Tests in `test_retrieval.py` (4 cases) and
      `test_mcp_tools.py` (yields/calls filter validation).
-  6. **Per-method import extraction for `dependency_notes`** — `dependency_notes`
+  6. ~~**Per-method import extraction for `dependency_notes`**~~ ✅ Done. `dependency_notes`
      is currently empty because chunk metadata stores module-level `pipecat_imports`
      (every method in a file gets the same list). Branch: `feature/per-method-imports`.
      - **Approach:** Walk each method/function body with `_walk_body_shallow`,
