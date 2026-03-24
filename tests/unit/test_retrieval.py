@@ -264,6 +264,43 @@ class TestCodeIntentHeuristics:
         assert "A" not in symbols_single
 
 
+class TestCrossEncoderReranker:
+    """Tests for the CrossEncoderReranker service."""
+
+    def test_disabled_returns_candidates_unchanged(self):
+        """When disabled, rerank returns candidates as-is."""
+        from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
+
+        ce = CrossEncoderReranker(enabled=False)
+        r1 = _make_result("a", score=0.5)
+        r2 = _make_result("b", score=0.8)
+
+        import asyncio
+        result = asyncio.run(ce.rerank([r1, r2], "query"))
+        assert len(result) == 2
+        assert result[0].chunk.chunk_id == "a"
+        assert result[1].chunk.chunk_id == "b"
+
+    def test_enabled_property(self):
+        """Enabled property reflects both config and availability."""
+        from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
+
+        ce_off = CrossEncoderReranker(enabled=False)
+        assert not ce_off.enabled
+
+        ce_on = CrossEncoderReranker(enabled=True)
+        assert ce_on.enabled  # available until model load fails
+
+    def test_empty_candidates(self):
+        """Empty candidates list returns empty."""
+        from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
+
+        ce = CrossEncoderReranker(enabled=True)
+        import asyncio
+        result = asyncio.run(ce.rerank([], "query"))
+        assert result == []
+
+
 class TestRerank:
     """Tests for the full rerank() pipeline."""
 

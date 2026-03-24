@@ -61,6 +61,25 @@ class StorageConfig(BaseModel):
         return self.data_dir / self.chroma_dirname
 
 
+class RerankerConfig(BaseModel):
+    """Cross-encoder reranking settings."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable cross-encoder reranking (adds ~50-100ms latency).",
+    )
+    cross_encoder_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        description="Cross-encoder model name from sentence-transformers.",
+    )
+    top_n: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Number of top candidates to score with cross-encoder.",
+    )
+
+
 class ServerConfig(BaseModel):
     """MCP server settings."""
 
@@ -116,3 +135,4 @@ class HubConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     sources: SourceConfig = Field(default_factory=SourceConfig)
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
