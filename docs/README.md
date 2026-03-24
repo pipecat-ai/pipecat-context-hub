@@ -95,8 +95,15 @@ Retrieval:
 - **Embeddings:** `all-MiniLM-L6-v2` via sentence-transformers (local, no API key)
 - **Vector store:** ChromaDB with cosine distance
 - **Keyword index:** SQLite FTS5 with porter tokenizer
-- **Reranking:** Reciprocal Rank Fusion + code-intent heuristics + optional cross-encoder + result diversity
+- **Reranking:** Reciprocal Rank Fusion + code-intent heuristics + cross-encoder (enabled by default) + result diversity
 - **Transport:** stdio (MCP JSON-RPC)
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
+| `PIPECAT_HUB_RERANKER_ENABLED` | `1` (enabled) | Set to `0` to disable cross-encoder reranking |
 
 ## Dashboard
 

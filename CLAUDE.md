@@ -74,3 +74,15 @@ dashboard/
     ├── compute_clusters.py   # K-means clustering → clusters.json
     └── extract_dashboard.py  # Index stats → dashboard_data.json
 ```
+
+## Cross-Encoder Reranking
+
+Cross-encoder reranking is **enabled by default**. It scores query-result pairs
+for semantic relevance after RRF merge, significantly improving result quality
+(especially for `search_examples` and multi-concept queries).
+
+- **First run:** `pipecat-context-hub refresh` downloads the model (~80MB)
+- **Disable:** `PIPECAT_HUB_RERANKER_ENABLED=0` env var
+- **Model:** `cross-encoder/ms-marco-MiniLM-L-6-v2` (configurable via `RerankerConfig`)
+- **Latency:** ~50-100ms per query on CPU
+- **Offline:** gracefully disabled if model not cached (falls back to RRF-only)

@@ -72,19 +72,25 @@ class RerankerConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable cross-encoder reranking (adds ~50-100ms latency). "
-        "Set PIPECAT_HUB_RERANKER_ENABLED=1 to enable via env var.",
+        "Set PIPECAT_HUB_RERANKER_ENABLED=0 to disable via env var.",
     )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def effective_enabled(self) -> bool:
-        """Check both the field and the environment variable."""
-        if self.enabled:
-            return True
+        """Check both the field and the environment variable.
+
+        The env var overrides the field in both directions:
+        ``PIPECAT_HUB_RERANKER_ENABLED=0`` disables even if ``enabled=True``.
+        """
         env = os.environ.get(_RERANKER_ENABLED_ENV, "").strip().lower()
-        return env in ("1", "true", "yes")
+        if env in ("0", "false", "no"):
+            return False
+        if env in ("1", "true", "yes"):
+            return True
+        return self.enabled
     cross_encoder_model: str = Field(
         default="cross-encoder/ms-marco-MiniLM-L-6-v2",
         description="Cross-encoder model name from sentence-transformers.",
