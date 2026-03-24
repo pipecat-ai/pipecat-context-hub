@@ -55,6 +55,73 @@
      `companion_snippets` updated from "IDs of related snippets" to "Qualified method
      names called by this snippet." Tests in `test_retrieval.py` (4 cases) and
      `test_mcp_tools.py` (yields/calls filter validation).
+  6. **Per-method import extraction for `dependency_notes`** — `dependency_notes`
+     is currently empty because chunk metadata stores module-level `pipecat_imports`
+     (every method in a file gets the same list). Branch: `feature/per-method-imports`.
+     - **Approach:** Walk each method/function body with `_walk_body_shallow`,
+       collect `ast.Name.id` references, cross-reference against a name map built
+       from `module_info.imports`, store only the matched pipecat-internal subset.
+     - **Two-pass extraction in `extract_module_info`:** Imports, classes, and
+       functions are currently extracted in a single source-order loop. Since a
+       class can appear before an import in source, the name map must be built
+       first. Solution: pass 1 collects all `ast.Import`/`ast.ImportFrom` nodes;
+       pass 2 extracts classes/functions with the completed name map.
+     - **AST changes (`ast_extractor.py`):**
+       - Add `_build_import_name_map(raw_imports: list[ast.Import | ast.ImportFrom]) -> dict[str, str]`
+         — builds mapping from AST nodes (not parsed strings) to handle aliases
+         correctly. Maps `{bare_name_or_alias: full_import_string}`. For
+         `from X import Y as Z` → `{"Z": "from X import Y as Z"}`. For
+         multi-name `from X import A, B` → `{"A": "from X import A, B",
+         "B": "from X import A, B"}`. For `import X.Y.Z` → `{"X": "import X.Y.Z"}`
+         (leftmost component only, matching `ast.Name.id` resolution).
+       - Add `_extract_used_imports(node, name_map, pipecat_filter) -> list[str]`
+         — walks body with `_walk_body_shallow`, collects `ast.Name.id` refs,
+         cross-references against name map, returns only pipecat-internal matches
+         (deduplicated, order of first use).
+       - Add `imports: list[str]` field to `MethodInfo` and `FunctionInfo`
+       - Thread name map: `extract_module_info` builds it after pass 1, passes
+         to `_extract_class(node, source_lines, name_map)` →
+         `_extract_method(node, source_lines, name_map)` and to
+         `_extract_function(node, source_lines, name_map)`.
+       - Fix `_extract_imports` to preserve aliases: use `alias.asname or alias.name`
+         in the output string so `from X import Y as Z` produces
+         `"from X import Y as Z"` (currently drops `asname`).
+     - **Ingestion changes (`source_ingest.py`):** method/function chunks use
+       `method.imports` / `func.imports` instead of `pipecat_imports`. Class
+       overview keeps module-level `pipecat_imports`. Module overview keeps full list.
+     - **Retrieval changes (`hybrid.py`):** re-enable `dependency_notes` from
+       `_parse_metadata_list(r.chunk.metadata, "imports")` (remove `[]` stub).
+       Same suppression rules as other enrichment fields (skip when `line_sliced`
+       or `chunk_type == "module_overview"`).
+     - **`search_api` behavior change:** `ApiHit.imports` will shift from
+       module-level to per-method for method/function chunks. This is more
+       correct — a method result should show what it needs, not the whole file.
+       Update `ApiHit.imports` field description accordingly.
+     - **Tests:**
+       - `test_ast_extractor.py`: `_build_import_name_map` (multi-name, alias,
+         relative, dotted), `_extract_used_imports` (used subset, unused excluded,
+         scope boundary respected)
+       - `test_source_ingest.py`: update `test_method_chunk_has_pipecat_imports_only`
+         — method should now have only imports it actually uses
+       - `test_retrieval.py`: update `TestCodeSnippetEnrichment` — re-enable
+         `dependency_notes` assertions for non-sliced, non-module_overview cases
+         (tests: `test_enrichment_from_metadata`, `test_enrichment_with_native_list_metadata`,
+         `test_enrichment_kept_when_path_covers_full_chunk`,
+         `test_enrichment_kept_when_path_line_start_with_max_lines`,
+         `test_enrichment_kept_when_truncated_by_max_lines`). Tests that assert
+         `[]` stay unchanged: `test_enrichment_empty_metadata`,
+         `test_enrichment_skipped_when_sliced_by_path_line`,
+         `test_enrichment_skipped_when_path_line_start_mid_chunk`,
+         `test_enrichment_skipped_for_module_overview`.
+       - `test_mcp_tools.py`: no changes (uses mock retriever)
+     - **Doc updates:** Update `CodeSnippet.dependency_notes` description in
+       `types.py`, `ApiHit.imports` description, `CHANGELOG.md`, dev plan status.
+     - **Known limitations (documented, not fixed):**
+       - Imports used only in parameter/return type annotations won't be captured
+         (`_walk_body_shallow` excludes decorators, defaults, annotations by design).
+         Acceptable for v0 — `dependency_notes` targets runtime dependencies.
+       - `import X.Y.Z` only matches the leftmost name `X` via `ast.Name.id`.
+         Full dotted `ast.Attribute` chain resolution is out of scope.
   - **Non-goal:** Full type-resolved call graph. Name-based extraction is sufficient
     for the retrieval use case and avoids the complexity of cross-module type
     inference.

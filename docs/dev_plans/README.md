@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-03-23 | feature | Per-method import extraction for dependency_notes | Not Started | vr000m | `feature/per-method-imports` | `20260218-design-pipecat-context-hub.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
