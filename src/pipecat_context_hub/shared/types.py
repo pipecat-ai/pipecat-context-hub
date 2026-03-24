@@ -270,7 +270,16 @@ class SearchExamplesInput(BaseModel):
 
     query: str = Field(max_length=1000)
     repo: str | None = Field(default=None, max_length=256)
-    language: str | None = Field(default=None, max_length=64)
+    language: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Filter by programming language (e.g. 'python', 'typescript').",
+    )
+    domain: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Filter by domain: 'backend' (Python pipeline/bot code), 'frontend' (JS/TS client code), 'config' (YAML/TOML/JSON), 'infra' (Docker/CI).",
+    )
     tags: list[Annotated[str, StringConstraints(max_length=64)]] | None = Field(
         default=None,
         max_length=20,

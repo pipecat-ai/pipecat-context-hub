@@ -460,6 +460,45 @@ def _infer_execution_mode(capability_tags: list[str]) -> str:
     return "local"
 
 
+def _infer_domain(rel_path: str, language: str | None) -> str:
+    """Infer a domain tag from file path and language.
+
+    Categories:
+    - ``backend`` — Python files (bot code, pipeline logic, server code)
+    - ``frontend`` — JavaScript/TypeScript files in client-like paths
+    - ``config`` — YAML, TOML, JSON config files, docker-compose
+    - ``infra`` — Dockerfiles, CI, deploy configs
+    """
+    path_lower = rel_path.lower()
+    name = path_lower.rsplit("/", 1)[-1] if "/" in path_lower else path_lower
+
+    # Infra: Dockerfiles, CI, deploy configs
+    if name.startswith("dockerfile") or name in (
+        ".github", "makefile", "justfile", "procfile",
+    ) or "ci/" in path_lower or ".github/" in path_lower:
+        return "infra"
+
+    # Config files by name or extension
+    if language in ("yaml", "toml", "json") or name in (
+        "docker-compose.yml", "docker-compose.yaml",
+        "pcc-deploy.toml", ".env.example", "config.yaml",
+        "config.example.yaml", "requirements.txt", "pyproject.toml",
+        "package.json", "tsconfig.json",
+    ):
+        return "config"
+
+    # Frontend: JS/TS files, especially in client-like directories
+    if language in ("javascript", "typescript"):
+        return "frontend"
+
+    # Backend: Python files (default for pipeline/bot code)
+    if language == "python":
+        return "backend"
+
+    # Fallback
+    return "config" if language in ("json", "yaml", "toml") else "backend"
+
+
 def _build_chunk_metadata(
     *,
     repo_slug: str,
@@ -468,12 +507,14 @@ def _build_chunk_metadata(
     language: str | None,
     line_start: int,
     line_end: int,
+    rel_path: str = "",
     taxonomy_entry: TaxonomyEntry | None,
 ) -> dict[str, object]:
     """Build enriched metadata dict for a ChunkedRecord.
 
     Merges basic provenance fields with taxonomy-derived fields
-    (foundational_class, capability_tags, key_files, execution_mode).
+    (foundational_class, capability_tags, key_files, execution_mode)
+    and inferred domain tag (backend/frontend/config/infra).
     """
     meta: dict[str, object] = {
         "repo": repo_slug,
@@ -484,6 +525,7 @@ def _build_chunk_metadata(
     }
     if language is not None:
         meta["language"] = language
+    meta["domain"] = _infer_domain(rel_path, language)
 
     if taxonomy_entry is not None:
         if taxonomy_entry.foundational_class is not None:
@@ -693,6 +735,7 @@ class GitHubRepoIngester:
                         language=language,
                         line_start=line_start,
                         line_end=line_end,
+                        rel_path=rel_path,
                         taxonomy_entry=taxonomy_entry,
                     )
 
@@ -761,6 +804,7 @@ class GitHubRepoIngester:
                         language=language,
                         line_start=line_start,
                         line_end=line_end,
+                        rel_path=rel_path,
                         taxonomy_entry=taxonomy_entry,
                     )
                     records.append(
