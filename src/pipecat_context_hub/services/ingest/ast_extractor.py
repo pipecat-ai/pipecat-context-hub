@@ -494,10 +494,18 @@ def _collect_local_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[st
     if node.args.kwarg:
         locals_.add(node.args.kwarg.arg)
 
-    # Walk body for assignment/for/with targets (same scope boundary as _walk_body_shallow)
+    # Walk body for assignment targets and local imports
+    # (same scope boundary as _walk_body_shallow)
     for child in _walk_body_shallow(node):
         if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
             locals_.add(child.id)
+        # Local import statements shadow module-level imports
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                locals_.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(child, ast.ImportFrom):
+            for alias in child.names:
+                locals_.add(alias.asname or alias.name)
     return locals_
 
 

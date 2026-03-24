@@ -1197,3 +1197,29 @@ class TestPerMethodImportEdgeCases:
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert func.imports == []
+
+    def test_local_from_import_shadows_module_import(self):
+        """Local from-import inside function body shadows the module-level import."""
+        source = textwrap.dedent('''\
+            from pipecat.frames import AudioFrame
+
+            def process():
+                from local import AudioFrame
+                return AudioFrame()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        func = info.functions[0]
+        assert func.imports == []
+
+    def test_local_import_as_shadows_module_import(self):
+        """Local import-as inside function body shadows the module-level import."""
+        source = textwrap.dedent('''\
+            from pipecat.frames import AudioFrame
+
+            def process():
+                import local as AudioFrame
+                return AudioFrame()
+        ''')
+        info = extract_module_info(source, "test_mod")
+        func = info.functions[0]
+        assert func.imports == []
