@@ -6,6 +6,7 @@ No I/O, no imports of pipecat code. Uses only the Python standard library.
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -38,6 +39,7 @@ class MethodInfo:
     source: str = ""
     yields: list[str] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
+    imports: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -68,6 +70,7 @@ class FunctionInfo:
     source: str = ""
     yields: list[str] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
+    imports: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -310,6 +313,7 @@ def _extract_calls(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
 def _extract_method(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     source_lines: list[str],
+    name_map: Mapping[str, str],
 ) -> MethodInfo:
     """Extract method information from an AST node."""
     decorators = _extract_decorators(node)
@@ -333,10 +337,15 @@ def _extract_method(
         source=source,
         yields=_extract_yields(node),
         calls=_extract_calls(node),
+        imports=_extract_used_imports(node, name_map),
     )
 
 
-def _extract_class(node: ast.ClassDef, source_lines: list[str]) -> ClassInfo:
+def _extract_class(
+    node: ast.ClassDef,
+    source_lines: list[str],
+    name_map: Mapping[str, str],
+) -> ClassInfo:
     """Extract class information from an AST node."""
     decorators = _extract_decorators(node)
     base_classes = [ast.unparse(b) for b in node.bases]
@@ -345,7 +354,7 @@ def _extract_class(node: ast.ClassDef, source_lines: list[str]) -> ClassInfo:
     methods: list[MethodInfo] = []
     for item in node.body:
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            methods.append(_extract_method(item, source_lines))
+            methods.append(_extract_method(item, source_lines, name_map))
 
     line_start = node.lineno
     line_end = node.end_lineno or node.lineno
@@ -365,6 +374,7 @@ def _extract_class(node: ast.ClassDef, source_lines: list[str]) -> ClassInfo:
 def _extract_function(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     source_lines: list[str],
+    name_map: Mapping[str, str],
 ) -> FunctionInfo:
     """Extract top-level function information from an AST node."""
     decorators = _extract_decorators(node)
@@ -387,6 +397,7 @@ def _extract_function(
         source=source,
         yields=_extract_yields(node),
         calls=_extract_calls(node),
+        imports=_extract_used_imports(node, name_map),
     )
 
 
@@ -404,18 +415,138 @@ def _extract_all_exports(node: ast.Assign) -> list[str] | None:
 
 
 def _extract_imports(node: ast.Import | ast.ImportFrom) -> list[str]:
-    """Extract import strings from an import node."""
+    """Extract import strings from an import node.
+
+    Preserves aliases: ``from X import Y as Z`` produces ``"from X import Y as Z"``.
+    """
     results: list[str] = []
     if isinstance(node, ast.Import):
         for alias in node.names:
-            results.append(f"import {alias.name}")
+            if alias.asname:
+                results.append(f"import {alias.name} as {alias.asname}")
+            else:
+                results.append(f"import {alias.name}")
     elif isinstance(node, ast.ImportFrom):
         # Preserve relative import dots (e.g. from .utils → level=1, from ..core → level=2)
         dots = "." * (node.level or 0)
         module = node.module or ""
-        names = ", ".join(alias.name for alias in node.names)
-        results.append(f"from {dots}{module} import {names}")
+        name_parts: list[str] = []
+        for alias in node.names:
+            if alias.asname:
+                name_parts.append(f"{alias.name} as {alias.asname}")
+            else:
+                name_parts.append(alias.name)
+        results.append(f"from {dots}{module} import {', '.join(name_parts)}")
     return results
+
+
+def _build_import_name_map(
+    import_nodes: list[ast.Import | ast.ImportFrom],
+) -> dict[str, str]:
+    """Build a mapping from bare names to per-alias import strings.
+
+    Works from raw AST nodes to correctly handle aliases.  Each importable
+    name (or its alias) is mapped to a minimal import string for that name
+    only — multi-name ``from X import A, B`` is split so each name gets its
+    own string, avoiding over-reporting when only one is used.
+
+    Examples::
+
+        from pipecat.frames import A, B  →  {"A": "from pipecat.frames import A",
+                                              "B": "from pipecat.frames import B"}
+        from X import Y as Z             →  {"Z": "from X import Y as Z"}
+        import pipecat.services.tts      →  {"pipecat": "import pipecat.services.tts"}
+    """
+    name_map: dict[str, str] = {}
+    for node in import_nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bare = alias.asname or alias.name.split(".")[0]
+                if alias.asname:
+                    name_map[bare] = f"import {alias.name} as {alias.asname}"
+                else:
+                    name_map[bare] = f"import {alias.name}"
+        elif isinstance(node, ast.ImportFrom):
+            dots = "." * (node.level or 0)
+            module = node.module or ""
+            for alias in node.names:
+                bare = alias.asname or alias.name
+                if alias.asname:
+                    name_map[bare] = f"from {dots}{module} import {alias.name} as {alias.asname}"
+                else:
+                    name_map[bare] = f"from {dots}{module} import {alias.name}"
+    return name_map
+
+
+def _collect_local_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Collect names locally bound in a function (parameters, assignments, etc.).
+
+    These shadow module-level imports and should not be counted as import
+    references.  Only collects from the function's own scope — nested
+    function/class bodies are excluded (matching ``_walk_body_shallow``).
+    """
+    locals_: set[str] = set()
+    # Parameters (including *args, **kwargs)
+    for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
+        locals_.add(arg.arg)
+    if node.args.vararg:
+        locals_.add(node.args.vararg.arg)
+    if node.args.kwarg:
+        locals_.add(node.args.kwarg.arg)
+
+    # Walk body for assignment targets and local imports
+    # (same scope boundary as _walk_body_shallow)
+    for child in _walk_body_shallow(node):
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+            locals_.add(child.id)
+        # Local import statements shadow module-level imports
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                locals_.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(child, ast.ImportFrom):
+            for alias in child.names:
+                locals_.add(alias.asname or alias.name)
+    return locals_
+
+
+def _extract_used_imports(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    name_map: Mapping[str, str],
+) -> list[str]:
+    """Extract the pipecat-internal imports actually used by a method/function body.
+
+    Walks the body with ``_walk_body_shallow`` (respecting scope boundaries),
+    collects ``ast.Name.id`` references, and cross-references against the
+    name map.  Locally bound names (parameters, assignments) are excluded to
+    avoid false positives from shadowing.
+
+    Returns deduplicated import strings in order of first use, filtered to
+    pipecat-internal imports only.
+
+    Known limitations (documented, not bugs):
+    - Imports used only in parameter/return type annotations are not captured
+      (``_walk_body_shallow`` excludes those by design — runtime deps only).
+    - ``import X.Y.Z`` only matches the leftmost name ``X``.
+    """
+    local_names = _collect_local_names(node)
+    seen_imports: set[str] = set()
+    result: list[str] = []
+
+    for child in _walk_body_shallow(node):
+        if not isinstance(child, ast.Name):
+            continue
+        if child.id in local_names:
+            continue
+        import_str = name_map.get(child.id)
+        if import_str is None:
+            continue
+        # Pipecat-internal filter
+        if "pipecat" not in import_str and not import_str.startswith("from ."):
+            continue
+        if import_str not in seen_imports:
+            seen_imports.add(import_str)
+            result.append(import_str)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -438,25 +569,32 @@ def extract_module_info(source: str, module_path: str) -> ModuleInfo:
 
     tree = ast.parse(source)
     source_lines = source.splitlines()
-
-    classes: list[ClassInfo] = []
-    functions: list[FunctionInfo] = []
-    all_exports: list[str] = []
-    imports: list[str] = []
-
     docstring = ast.get_docstring(tree)
 
+    # Pass 1: collect all imports and __all__ exports first, so the name
+    # map is complete before any class/function extraction needs it.
+    import_nodes: list[ast.Import | ast.ImportFrom] = []
+    imports: list[str] = []
+    all_exports: list[str] = []
     for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.ClassDef):
-            classes.append(_extract_class(node, source_lines))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            functions.append(_extract_function(node, source_lines))
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            import_nodes.append(node)
+            imports.extend(_extract_imports(node))
         elif isinstance(node, ast.Assign):
             exports = _extract_all_exports(node)
             if exports is not None:
                 all_exports.extend(exports)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            imports.extend(_extract_imports(node))
+
+    name_map = _build_import_name_map(import_nodes)
+
+    # Pass 2: extract classes and functions with the completed name map.
+    classes: list[ClassInfo] = []
+    functions: list[FunctionInfo] = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef):
+            classes.append(_extract_class(node, source_lines, name_map))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.append(_extract_function(node, source_lines, name_map))
 
     return ModuleInfo(
         module_path=module_path,

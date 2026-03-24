@@ -403,7 +403,7 @@ class CodeSnippet(BaseModel):
     citation: Citation
     dependency_notes: list[str] = Field(
         default_factory=list,
-        description="Imports required by this snippet. Currently empty — per-method import extraction is planned.",
+        description="Pipecat-internal imports used by the containing method. Extracted per-method from AST — only includes imports this method actually references. May cover more than the visible lines when content is truncated by max_lines.",
     )
     companion_snippets: list[str] = Field(
         default_factory=list,
@@ -498,7 +498,7 @@ class ApiHit(BaseModel):
     is_dataclass: bool = False
     imports: list[str] = Field(
         default_factory=list,
-        description="Pipecat-internal imports in this module.",
+        description="Pipecat-internal imports. Precision varies by chunk_type: method/function chunks list only imports the method body references; class_overview lists all pipecat imports in the module (upper bound); module_overview lists all imports including stdlib.",
     )
     yields: list[str] = Field(
         default_factory=list,
