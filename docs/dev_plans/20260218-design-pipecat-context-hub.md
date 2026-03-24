@@ -258,6 +258,33 @@
      - `_extract_query_symbols` still won't detect single-letter symbols.
      - Write-path `asyncio.to_thread` deferred (refresh runs blocking by design).
      - Offline: cross-encoder silently disabled if model not cached. RRF-only fallback.
+  8. **Language and domain filtering for example retrieval** (v0.0.10 target) —
+     `search_examples` returns noisy results because all `code` chunks are in
+     one undifferentiated bucket. Frontend React components and Python pipeline
+     bots compete for the same slots. Two ingestion-time improvements:
+     - **Language metadata from file extension:** Set `language` on code chunks
+       during ingestion (`.py` → `python`, `.ts`/`.tsx` → `typescript`,
+       `.yaml` → `yaml`, `.json` → `json`). The `language` param already exists
+       on `SearchExamplesInput` but is rarely populated on chunks. Agents can
+       then filter: `search_examples(query="TTS", language="python")`.
+     - **Domain tag:** Add a `domain` metadata field to code chunks:
+       `backend` (Python in `src/`, `bot.py`, pipeline code),
+       `frontend` (`.tsx`/`.ts`/`.jsx` in `client/`, `components/`),
+       `config` (`.yaml`, `.toml`, `docker-compose.yml`),
+       `infra` (Dockerfile, CI, deploy). Infer from file path + extension
+       heuristics in `github_ingest.py`. Expose as a new filter param on
+       `SearchExamplesInput`. Agents building Pipecat pipelines use
+       `domain="backend"`, agents wiring RTVI frontends use `domain="frontend"`.
+     - **Why this matters:** gradient-bang alone has ~4,600 code chunks, mostly
+       frontend React/TypeScript. Without domain filtering, these dominate
+       `search_examples` for any query mentioning "function calling", "timeout",
+       or other terms that appear in both frontend and backend code. The
+       cross-encoder helps (scores irrelevant results lower) but can't filter
+       out results that weren't in the initial candidate set.
+     - **Files:** `services/ingest/github_ingest.py` (set language + domain),
+       `shared/types.py` (add domain filter to `SearchExamplesInput`),
+       `services/retrieval/hybrid.py` (pass domain filter through),
+       `services/index/vector.py` + `fts.py` (filter push-down).
 
 ## Context
 Pipecat developers need grounded context for coding and ideation based on rapidly changing docs and examples. A static prompt-only approach drifts quickly and does not provide verifiable citations or reproducible outputs.
