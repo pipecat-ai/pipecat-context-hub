@@ -111,6 +111,7 @@ class TestRefreshCommand:
             "total": 300,
             "commit_shas": [],
         })
+        mock_index_store.reset = MagicMock()
         mock_index_store.close = MagicMock()
 
         mock_crawler = MagicMock()
@@ -412,3 +413,40 @@ class TestRefreshCommand:
         # The removed repo should be cleaned up
         mock_store.delete_by_repo.assert_any_call("old-org/removed-repo")
         mock_store.delete_metadata.assert_any_call("repo:old-org/removed-repo:commit_sha")
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_reset_index_forces_full_rebuild(
+        self, mock_si_cls, mock_gh_cls, mock_dc_cls,
+        mock_eiw_cls, mock_es_cls, mock_is_cls,
+        tmp_path, monkeypatch,
+    ):
+        """--reset-index should wipe state and force a full re-ingest."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+
+        import hashlib
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: {
+            "docs:content_hash": content_hash,
+            "repo:pipecat-ai/pipecat:commit_sha": "abc123",
+            "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+        }.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 0
+        mock_store.reset.assert_called_once()
+        mock_crawler.ingest.assert_called_once()
+        assert mock_github.ingest.call_count == 2
+        mock_store.close.assert_called_once()

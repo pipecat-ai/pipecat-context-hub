@@ -86,6 +86,18 @@ class FTSIndex:
         self._conn.commit()
         logger.info("FTSIndex cleared")
 
+    def clear_metadata(self) -> None:
+        """Delete all persisted index metadata."""
+        self._conn.execute("DELETE FROM index_metadata")
+        self._conn.commit()
+        logger.info("FTSIndex metadata cleared")
+
+    def reset(self) -> None:
+        """Delete all indexed content and cached metadata."""
+        self.clear()
+        self.clear_metadata()
+        logger.info("FTSIndex reset")
+
     def upsert(self, records: list[ChunkedRecord]) -> int:
         """Upsert records into the FTS index. Returns count written."""
         if not records:

@@ -36,6 +36,9 @@ pipecat-context-hub refresh
 # Force full re-ingest, ignoring cached state
 pipecat-context-hub refresh --force
 
+# Recover from an unhealthy local Chroma index and rebuild from scratch
+pipecat-context-hub refresh --force --reset-index
+
 # Start the MCP server
 pipecat-context-hub serve
 ```
@@ -186,6 +189,12 @@ Run it after `pipecat-context-hub refresh`:
 
 ```bash
 just benchmark-quality
+```
+
+If the benchmark reports an unhealthy local vector index, rebuild it with:
+
+```bash
+pipecat-context-hub refresh --force --reset-index
 ```
 
 To persist a versioned report for later comparison:
