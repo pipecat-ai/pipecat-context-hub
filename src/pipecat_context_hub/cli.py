@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -68,6 +69,11 @@ def _configure_logging(level: str) -> None:
     )
 
 
+def _delete_local_index_storage(data_dir: Path) -> None:
+    """Delete the persisted local index directory for a clean rebuild."""
+    shutil.rmtree(data_dir, ignore_errors=True)
+
+
 @click.group(invoke_without_command=True)
 @click.option("--log-level", default="INFO", help="Logging level.")
 @click.pass_context
@@ -124,13 +130,21 @@ def serve(ctx: click.Context) -> None:
     retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
 
     server = create_server(retriever, index_store)
-    serve_stdio(server)
+    try:
+        serve_stdio(server)
+    finally:
+        index_store.close()
 
 
 @main.command()
 @click.option("--force", is_flag=True, help="Force full refresh, ignoring cached state.")
+@click.option(
+    "--reset-index",
+    is_flag=True,
+    help="Delete local index state before rebuilding. Use this when the persisted Chroma index is unhealthy.",
+)
 @click.pass_context
-def refresh(ctx: click.Context, force: bool) -> None:
+def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
     """Rebuild the index, skipping unchanged sources when possible."""
     from pipecat_context_hub.services.embedding import (
         EmbeddingIndexWriter,
@@ -144,8 +158,13 @@ def refresh(ctx: click.Context, force: bool) -> None:
     logger = logging.getLogger(__name__)
     config: HubConfig = ctx.obj["config"]
 
-    logger.info("Starting index refresh (force=%s)", force)
+    logger.info("Starting index refresh (force=%s reset_index=%s)", force, reset_index)
     start = time.monotonic()
+
+    if reset_index:
+        logger.warning("Deleting local index storage before refresh")
+        _delete_local_index_storage(config.storage.data_dir)
+        force = True
 
     # Build the ingestion pipeline
     index_store = IndexStore(config.storage)
@@ -334,35 +353,38 @@ def refresh(ctx: click.Context, force: bool) -> None:
             else:
                 index_store.delete_metadata(f"repo:{repo_slug}:commit_sha")
 
-    asyncio.run(_run_refresh())
+    try:
+        asyncio.run(_run_refresh())
 
-    duration = round(time.monotonic() - start, 1)
-    logger.info(
-        "Refresh complete: upserted=%d errors=%d duration=%.1fs",
-        total_upserted,
-        len(all_errors),
-        duration,
-    )
-    if all_errors:
-        for err in all_errors:
-            logger.warning("  %s", err)
+        duration = round(time.monotonic() - start, 1)
+        logger.info(
+            "Refresh complete: upserted=%d errors=%d duration=%.1fs",
+            total_upserted,
+            len(all_errors),
+            duration,
+        )
+        if all_errors:
+            for err in all_errors:
+                logger.warning("  %s", err)
 
-    # Persist refresh metadata for get_hub_status tool.
-    now = datetime.now(timezone.utc).isoformat()
-    index_store.set_metadata("last_refresh_duration_seconds", str(duration))
-    index_store.set_metadata("last_refresh_records_upserted", str(total_upserted))
-    index_store.set_metadata("last_refresh_error_count", str(len(all_errors)))
+        # Persist refresh metadata for get_hub_status tool.
+        now = datetime.now(timezone.utc).isoformat()
+        index_store.set_metadata("last_refresh_duration_seconds", str(duration))
+        index_store.set_metadata("last_refresh_records_upserted", str(total_upserted))
+        index_store.set_metadata("last_refresh_error_count", str(len(all_errors)))
 
-    stats = index_store.get_index_stats()
-    index_store.set_metadata("content_type_counts", json.dumps(stats["counts_by_type"]))
+        stats = index_store.get_index_stats()
+        index_store.set_metadata("content_type_counts", json.dumps(stats["counts_by_type"]))
 
-    if not all_errors:
-        index_store.set_metadata("last_refresh_at", now)
-    else:
-        index_store.set_metadata("last_refresh_errored_at", now)
+        if not all_errors:
+            index_store.set_metadata("last_refresh_at", now)
+        else:
+            index_store.set_metadata("last_refresh_errored_at", now)
 
-    # ----- Summary table -----
-    _print_refresh_summary(source_status, total_upserted, len(all_errors), duration)
+        # ----- Summary table -----
+        _print_refresh_summary(source_status, total_upserted, len(all_errors), duration)
+    finally:
+        index_store.close()
 
 
 def _print_refresh_summary(

@@ -66,17 +66,34 @@ class SourceIngester:
 
         # 1. Locate the repo clone
         clone_dir = self._repos_dir / _sanitize_slug(self._repo_slug)
+
+        # 2. Check for .pyi stubs at repo root BEFORE src/ check.
+        # Root-only glob (not recursive) — stubs are at repo root for known
+        # targets like daily-python. .pyi files are NOT in _CODE_EXTENSIONS
+        # to avoid duplicate indexing by GitHubRepoIngester.
+        pyi_files: list[Path] = sorted(
+            f for f in clone_dir.glob("*.pyi")
+            if f.is_file() and not f.is_symlink()
+        )
+
+        # 3. Discover Python packages under src/
         src_dir = clone_dir / "src"
-        if not src_dir.is_dir():
+        pkg_dirs: list[Path] = []
+        if src_dir.is_dir():
+            pkg_dirs = sorted(
+                d for d in src_dir.iterdir()
+                if d.is_dir() and (d / "__init__.py").is_file()
+            )
+
+        # Nothing to index
+        if not pkg_dirs and not pyi_files:
             return IngestResult(source=f"source:{self._repo_slug}")
 
-        # 2. Discover Python packages under src/
-        pkg_dirs = sorted(
-            d for d in src_dir.iterdir()
-            if d.is_dir() and (d / "__init__.py").is_file()
-        )
-        if not pkg_dirs:
-            return IngestResult(source=f"source:{self._repo_slug}")
+        if pyi_files and not pkg_dirs:
+            logger.info(
+                "No Python packages in src/, found %d .pyi stubs at root (%s)",
+                len(pyi_files), self._repo_slug,
+            )
 
         # 3. Get commit SHA
         commit_sha = _get_commit_sha(clone_dir)
@@ -94,14 +111,20 @@ class SourceIngester:
             )
 
             for py_file in py_files:
+                # Skip symlinks and files that resolve outside the repo
+                if py_file.is_symlink():
+                    continue
                 try:
+                    py_file.resolve().relative_to(clone_dir.resolve())
                     source = py_file.read_text(encoding="utf-8", errors="replace")
                 except Exception as exc:
-                    errors.append(f"Error reading {py_file}: {exc}")
+                    rel = py_file.relative_to(clone_dir).as_posix()
+                    errors.append(f"Error reading {rel}: {exc}")
                     continue
 
-                rel_path = py_file.relative_to(src_dir).as_posix()
-                module_path = rel_path.replace("/", ".").removesuffix(".py")
+                rel_path_from_src = py_file.relative_to(src_dir).as_posix()
+                rel_path = f"src/{rel_path_from_src}"
+                module_path = rel_path_from_src.replace("/", ".").removesuffix(".py")
                 # Handle __init__.py: module path is the parent package
                 if module_path.endswith(".__init__"):
                     module_path = module_path.removesuffix(".__init__")
@@ -124,6 +147,38 @@ class SourceIngester:
                     repo_slug=self._repo_slug,
                 )
                 records.extend(file_records)
+
+        # 4b. Index .pyi stubs (fallback path for repos without Python packages)
+        for pyi_file in pyi_files:
+            total_files += 1
+            try:
+                pyi_file.resolve().relative_to(clone_dir.resolve())
+                source = pyi_file.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                errors.append(f"Error reading {pyi_file.name}: {exc}")
+                continue
+
+            rel_path = pyi_file.name  # e.g., "daily.pyi"
+            module_path = pyi_file.stem  # e.g., "daily"
+
+            try:
+                module_info = extract_module_info(source, module_path)
+            except SyntaxError as exc:
+                errors.append(f"SyntaxError in {rel_path}: {exc}")
+                continue
+            except Exception as exc:
+                errors.append(f"AST error in {rel_path}: {exc}")
+                continue
+
+            file_records = _build_chunks(
+                module_info=module_info,
+                source=source,
+                rel_path=rel_path,
+                commit_sha=commit_sha,
+                now=now,
+                repo_slug=self._repo_slug,
+            )
+            records.extend(file_records)
 
         # 5. Batch upsert
         upserted = 0
@@ -182,8 +237,12 @@ def _make_chunk_id(
 
 
 def _make_source_url(repo_slug: str, rel_path: str, commit_sha: str, line_start: int, line_end: int) -> str:
-    """Build GitHub source URL with line range."""
-    base = f"https://github.com/{repo_slug}/blob/{commit_sha}/src/{rel_path}"
+    """Build GitHub source URL with line range.
+
+    ``rel_path`` must be relative to the repo root (e.g. ``src/pipecat/foo.py``
+    or ``daily.pyi``), not relative to ``src/``.
+    """
+    base = f"https://github.com/{repo_slug}/blob/{commit_sha}/{rel_path}"
     if line_start and line_end:
         return f"{base}#L{line_start}-L{line_end}"
     return base

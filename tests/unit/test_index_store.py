@@ -71,7 +71,9 @@ def _make_records(count: int, source_url: str = "https://docs.pipecat.ai/intro")
 class TestVectorIndex:
     @pytest.fixture()
     def vector_index(self, tmp_path: Path) -> VectorIndex:
-        return VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma")
+        yield index
+        index.close()
 
     def test_upsert_and_search(self, vector_index: VectorIndex):
         records = _make_records(3)
@@ -293,6 +295,30 @@ class TestVectorIndex:
         assert len(results) == 1
         assert results[0].chunk.chunk_id == "new-1"
 
+    def test_reset_then_upsert(self, vector_index: VectorIndex):
+        """reset() should rebuild persisted storage and allow reuse."""
+        vector_index.upsert(_make_records(3))
+        vector_index.reset()
+        assert vector_index._collection.count() == 0
+
+        new_record = _make_record(chunk_id="reset-1", content="fresh reset data")
+        vector_index.upsert([new_record])
+        query = IndexQuery(
+            query_text="test",
+            query_embedding=new_record.embedding,
+            limit=10,
+        )
+        results = vector_index.search(query)
+        assert len(results) == 1
+        assert results[0].chunk.chunk_id == "reset-1"
+
+    def test_close_is_idempotent(self, vector_index: VectorIndex):
+        """close() can be called more than once."""
+        vector_index.close()
+        vector_index.close()
+        assert vector_index._client is None
+        assert vector_index._collection is None
+
     def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new VectorIndex on the same path."""
         chroma_path = tmp_path / "chroma"
@@ -309,6 +335,8 @@ class TestVectorIndex:
         )
         results = idx2.search(query)
         assert len(results) == 2
+        idx2.close()
+        idx1.close()
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +356,9 @@ class TestVectorIndexBatchStress:
 
     @pytest.fixture()
     def vector_index(self, tmp_path: Path) -> VectorIndex:
-        return VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma")
+        yield index
+        index.close()
 
     @pytest.mark.benchmark
     def test_upsert_above_batch_size(self, vector_index: VectorIndex):
@@ -419,7 +449,9 @@ class TestVectorIndexBatchStress:
 class TestFTSIndex:
     @pytest.fixture()
     def fts_index(self, tmp_path: Path) -> FTSIndex:
-        return FTSIndex(tmp_path / "metadata.db")
+        index = FTSIndex(tmp_path / "metadata.db")
+        yield index
+        index.close()
 
     def test_upsert_and_search(self, fts_index: FTSIndex):
         records = _make_records(3)
@@ -647,6 +679,11 @@ class TestFTSIndex:
         """Deleting a nonexistent key should not raise."""
         fts_index.delete_metadata("nonexistent:key")
 
+    def test_close_is_idempotent(self, fts_index: FTSIndex):
+        """close() can be called more than once."""
+        fts_index.close()
+        fts_index.close()
+
 
 # ---------------------------------------------------------------------------
 # Unified IndexStore tests
@@ -657,7 +694,9 @@ class TestIndexStore:
     @pytest.fixture()
     def store(self, tmp_path: Path) -> IndexStore:
         config = StorageConfig(data_dir=tmp_path / "hub-data")
-        return IndexStore(config)
+        store = IndexStore(config)
+        yield store
+        store.close()
 
     @pytest.mark.asyncio
     async def test_upsert_and_vector_search(self, store: IndexStore):
@@ -829,6 +868,54 @@ class TestIndexStore:
         kq = IndexQuery(query_text="pipecat", limit=10)
         k_results = await store.keyword_search(kq)
         assert len(k_results) == 1
+
+    @pytest.mark.asyncio
+    async def test_reset_clears_records_and_metadata(self, store: IndexStore):
+        """reset() should wipe both backends and cached metadata."""
+        await store.upsert(_make_records(3))
+        store.set_metadata("docs:content_hash", "abc123")
+
+        store.reset()
+
+        vq = IndexQuery(
+            query_text="test",
+            query_embedding=_random_embedding(0),
+            limit=10,
+        )
+        assert await store.vector_search(vq) == []
+        assert await store.keyword_search(IndexQuery(query_text="pipecat", limit=10)) == []
+        assert store.get_all_metadata() == {}
+
+        new_record = _make_record(chunk_id="reset-store-1", content="fresh pipecat data")
+        await store.upsert([new_record])
+        v_results = await store.vector_search(
+            IndexQuery(
+                query_text="test",
+                query_embedding=new_record.embedding,
+                limit=10,
+            )
+        )
+        assert len(v_results) == 1
+        assert v_results[0].chunk.chunk_id == "reset-store-1"
+
+    def test_reset_attempts_fts_even_if_vector_reset_fails(self, store: IndexStore, monkeypatch):
+        """reset() should still clear FTS state after a vector reset failure."""
+        calls: list[str] = []
+
+        def fail_vector_reset() -> None:
+            calls.append("vector")
+            raise RuntimeError("vector reset failed")
+
+        def run_fts_reset() -> None:
+            calls.append("fts")
+
+        monkeypatch.setattr(store._vector, "reset", fail_vector_reset)
+        monkeypatch.setattr(store._fts, "reset", run_fts_reset)
+
+        with pytest.raises(RuntimeError, match="vector reset failed"):
+            store.reset()
+
+        assert calls == ["vector", "fts"]
 
     def test_satisfies_writer_protocol(self, store: IndexStore):
         """Verify IndexStore has all IndexWriter methods."""
@@ -1024,6 +1111,7 @@ class TestVectorCallGraphFilters:
         ids = {r.chunk.chunk_id for r in results}
         assert "v1" in ids
         assert "v2" not in ids
+        vi.close()
 
     def test_calls_post_filter(self, tmp_path: Path):
         """Vector search with calls filter returns only matching records."""
@@ -1054,3 +1142,4 @@ class TestVectorCallGraphFilters:
         ids = {r.chunk.chunk_id for r in results}
         assert "v1" in ids
         assert "v2" not in ids
+        vi.close()

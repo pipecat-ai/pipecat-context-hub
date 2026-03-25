@@ -36,6 +36,9 @@ pipecat-context-hub refresh
 # Force full re-ingest, ignoring cached state
 pipecat-context-hub refresh --force
 
+# Recover from an unhealthy local Chroma index and rebuild from scratch
+pipecat-context-hub refresh --force --reset-index
+
 # Start the MCP server
 pipecat-context-hub serve
 ```
@@ -88,6 +91,7 @@ Retrieval:
 - Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var (comma-separated slugs)
   - Supports single-project repos (`src/`-layout, root-level entry scripts)
   - Repos with `src/` layouts are AST-indexed for `search_api` (class definitions, method signatures)
+  - Repos with `.pyi` stubs at root (no Python in `src/`) are also AST-indexed
   - See `.env.example` for usage
 
 ### Technology
@@ -104,6 +108,12 @@ Retrieval:
 |----------|---------|-------------|
 | `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
 | `PIPECAT_HUB_RERANKER_ENABLED` | `1` (enabled) | Set to `0` to disable cross-encoder reranking |
+
+**Recommended extra repos:**
+```bash
+# Daily Python SDK — indexes CallClient, EventHandler, types via .pyi stub
+PIPECAT_HUB_EXTRA_REPOS="daily-co/daily-python"
+```
 
 ## Dashboard
 
@@ -179,6 +189,12 @@ Run it after `pipecat-context-hub refresh`:
 
 ```bash
 just benchmark-quality
+```
+
+If the benchmark reports an unhealthy local vector index, rebuild it with:
+
+```bash
+pipecat-context-hub refresh --force --reset-index
 ```
 
 To persist a versioned report for later comparison:

@@ -9,6 +9,16 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Chroma index recovery** — `refresh --reset-index` wipes and rebuilds the
+  local index when persisted Chroma state is unhealthy. `IndexStore.close()`
+  shuts down both backends cleanly. Benchmark health probe detects wedged
+  vector state in ~16s instead of hanging for minutes.
+- **`.pyi` stub file support** — `SourceIngester` now falls back to `.pyi`
+  files at repo root when no Python packages exist in `src/`. Enables AST
+  indexing of Rust+Python binding repos (e.g., `daily-co/daily-python` via
+  `PIPECAT_HUB_EXTRA_REPOS`). `.pyi` files are only indexed by
+  `SourceIngester` (not as code examples) to prevent duplicate chunks.
+  Symlinks rejected + resolved-path containment checks at all file read sites.
 - **Domain filtering for `search_examples`** — new `domain` filter param:
   `backend` (Python pipeline/bot code), `frontend` (JS/TS client code),
   `config` (YAML/TOML/JSON), `infra` (Docker/CI). Inferred from file path

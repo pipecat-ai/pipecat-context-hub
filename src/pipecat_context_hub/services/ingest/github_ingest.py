@@ -703,10 +703,15 @@ class GitHubRepoIngester:
             else:
                 code_files = _iter_code_files(ex_dir)
             for code_file in code_files:
+                # Skip symlinks to prevent reading files outside the repo
+                if code_file.is_symlink():
+                    continue
                 try:
+                    # Verify resolved path stays within the repo root
+                    code_file.resolve().relative_to(repo_path.resolve())
                     content = code_file.read_text(encoding="utf-8", errors="replace")
                 except Exception as exc:
-                    errors.append(f"Error reading {code_file}: {exc}")
+                    errors.append(f"Error reading {code_file.relative_to(repo_path)}: {exc}")
                     continue
 
                 rel_path = str(code_file.relative_to(repo_path))
@@ -778,10 +783,14 @@ class GitHubRepoIngester:
 
             root_files = _iter_root_level_code_files(repo_path)
             for code_file in root_files:
+                if code_file.is_symlink():
+                    continue
                 try:
+                    # Verify resolved path stays within the repo root
+                    code_file.resolve().relative_to(repo_path.resolve())
                     content = code_file.read_text(encoding="utf-8", errors="replace")
                 except Exception as exc:
-                    errors.append(f"Error reading {code_file}: {exc}")
+                    errors.append(f"Error reading {code_file.relative_to(repo_path)}: {exc}")
                     continue
 
                 rel_path = str(code_file.relative_to(repo_path))

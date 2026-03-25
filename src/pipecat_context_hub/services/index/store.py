@@ -44,6 +44,26 @@ class IndexStore:
         self._fts.clear()
         logger.info("IndexStore cleared")
 
+    def reset(self) -> None:
+        """Delete all persisted search data and cached metadata."""
+        vector_error: Exception | None = None
+        fts_error: Exception | None = None
+        try:
+            self._vector.reset()
+        except Exception as exc:
+            vector_error = exc
+        try:
+            self._fts.reset()
+        except Exception as exc:
+            fts_error = exc
+        if vector_error is not None and fts_error is not None:
+            raise vector_error from fts_error
+        if fts_error is not None:
+            raise fts_error
+        if vector_error is not None:
+            raise vector_error
+        logger.info("IndexStore reset")
+
     async def upsert(self, records: list[ChunkedRecord]) -> int:
         """Insert or update records in both indexes. Returns count written."""
         vector_count = self._vector.upsert(records)
@@ -145,4 +165,7 @@ class IndexStore:
 
     def close(self) -> None:
         """Close underlying database connections."""
-        self._fts.close()
+        try:
+            self._vector.close()
+        finally:
+            self._fts.close()

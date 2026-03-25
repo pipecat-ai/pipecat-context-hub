@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import chromadb
 
@@ -240,15 +242,96 @@ class VectorIndex:
     so indexes survive process restarts.
     """
 
+    _client_refcounts: ClassVar[dict[str, int]] = {}
+    _client_refcounts_lock: ClassVar[threading.Lock] = threading.Lock()
+
     def __init__(self, chroma_path: Path) -> None:
         self._chroma_path = chroma_path
+        self._client: Any = None
+        self._collection: Any = None
+        self._client_identifier: str | None = None
+        self._closed = True
+        self._open_client()
+
+    def _open_client(self) -> None:
+        """Open the persistent Chroma client and register a local reference."""
         self._chroma_path.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(chroma_path))
+        self._client = chromadb.PersistentClient(path=str(self._chroma_path))
         self._collection = self._client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
-        logger.info("VectorIndex initialized at %s", chroma_path)
+        identifier = str(getattr(self._client, "_identifier", self._chroma_path))
+        with self._client_refcounts_lock:
+            self._client_refcounts[identifier] = self._client_refcounts.get(identifier, 0) + 1
+        self._client_identifier = identifier
+        self._closed = False
+        logger.info("VectorIndex initialized at %s", self._chroma_path)
+
+    def _release_client(self, *, clear_cache: bool = False) -> None:
+        """Release this client's Chroma resources.
+
+        ChromaDB 0.6.3 does not expose a public close API. We stop its
+        internal shared system only when this is the last in-process client
+        for the persistence path. When resetting storage, the system cache
+        must be cleared after stop(); clearing it first removes the shared
+        system mapping that stop() relies on.
+        """
+        if self._closed:
+            return
+
+        client = self._client
+        identifier = self._client_identifier
+        stop_system = False
+        if identifier is not None:
+            with self._client_refcounts_lock:
+                remaining = self._client_refcounts.get(identifier, 0)
+                if remaining <= 1:
+                    self._client_refcounts.pop(identifier, None)
+                    stop_system = True
+                else:
+                    self._client_refcounts[identifier] = remaining - 1
+
+        if stop_system and client is not None:
+            try:
+                # Verified against ChromaDB 0.6.3 internals: there is still
+                # no public client.close(), so shutdown goes through _system.
+                client._system.stop()
+                if clear_cache:
+                    client.clear_system_cache()
+            except Exception:
+                logger.exception("Failed to stop Chroma system at %s", self._chroma_path)
+
+        self._client_identifier = None
+        self._collection = None
+        self._client = None
+        self._closed = True
+
+    def close(self) -> None:
+        """Release this client's Chroma resources."""
+        self._release_client(clear_cache=False)
+
+    def reset(self) -> None:
+        """Delete persisted Chroma state and recreate the collection.
+
+        Reset is intended for exclusive maintenance flows such as
+        ``refresh --reset-index``. Refuse to run when another in-process
+        client is still using the same persistence path.
+        """
+        identifier = self._client_identifier
+        if identifier is not None:
+            with self._client_refcounts_lock:
+                # Best-effort guard only: reset is reserved for exclusive
+                # maintenance flows and is not safe for concurrent clients.
+                if self._client_refcounts.get(identifier, 0) > 1:
+                    raise RuntimeError(
+                        "Cannot reset Chroma storage while another client is using it."
+                    )
+
+        self._release_client(clear_cache=True)
+        shutil.rmtree(self._chroma_path, ignore_errors=True)
+        self._open_client()
+        logger.info("VectorIndex reset at %s", self._chroma_path)
 
     def clear(self) -> None:
         """Drop all records by deleting and recreating the collection."""

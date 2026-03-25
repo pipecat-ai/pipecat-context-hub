@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +44,8 @@ _OUTPUT_ENV = "PIPECAT_HUB_BENCHMARK_OUTPUT"
 _SCHEMA_VERSION = 1
 _MATRIX_VERSION = "default-v1"
 _DEFAULT_REPOS = ("pipecat-ai/pipecat", "pipecat-ai/pipecat-examples")
+_VECTOR_HEALTH_TIMEOUT_SECONDS = 15
+_RECOVERY_COMMAND = "pipecat-context-hub refresh --force --reset-index"
 
 
 @dataclass(frozen=True)
@@ -172,6 +176,62 @@ def _coverage_score(
 def _mean(values: list[float]) -> float:
     """Return the average of non-empty values."""
     return sum(values) / len(values) if values else 0.0
+
+
+def _probe_error_detail(stderr: str | bytes | None) -> str:
+    """Return the last non-empty stderr line from a health probe."""
+    if not stderr:
+        return "no stderr captured"
+    text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else stderr
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else "no stderr captured"
+
+
+def _assert_vector_index_healthy(config: HubConfig) -> None:
+    """Fail fast when the local Chroma index cannot complete a trivial query."""
+    probe_code = (
+        "import asyncio, sys; "
+        "from pathlib import Path; "
+        "from pipecat_context_hub.shared.config import StorageConfig; "
+        "from pipecat_context_hub.services.index.store import IndexStore; "
+        "from pipecat_context_hub.shared.types import IndexQuery; "
+        "store = IndexStore(StorageConfig(data_dir=Path(sys.argv[1]))); "
+        "query = IndexQuery(query_text='healthcheck', query_embedding=[0.0] * int(sys.argv[2]), filters={'content_type': 'doc'}, limit=1); "
+        "ns = {'asyncio': asyncio, 'store': store, 'query': query}; "
+        "exec('async def _m():\\n    try:\\n        await store.vector_search(query)\\n    finally:\\n        store.close()', ns); "
+        "asyncio.run(ns['_m']())"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                probe_code,
+                str(config.storage.data_dir),
+                str(config.embedding.dimension),
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_VECTOR_HEALTH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        detail = _probe_error_detail(exc.stderr)
+        pytest.fail(
+            "Local Chroma vector index health probe timed out after "
+            f"{_VECTOR_HEALTH_TIMEOUT_SECONDS}s. "
+            f"Run `{_RECOVERY_COMMAND}` and rerun the benchmark. "
+            f"Last probe output: {detail}"
+        )
+
+    if completed.returncode != 0:
+        detail = _probe_error_detail(completed.stderr)
+        pytest.fail(
+            "Local Chroma vector index health probe failed before the benchmark started. "
+            f"Run `{_RECOVERY_COMMAND}` and rerun the benchmark. "
+            f"Last probe output: {detail}"
+        )
 
 
 def _evaluate_search_docs(case: QualityCase, output: SearchDocsOutput) -> dict[str, Any]:
@@ -370,6 +430,8 @@ def live_quality_context() -> dict[str, Any]:
     _require_opt_in()
 
     config = HubConfig()
+    _assert_vector_index_healthy(config)
+
     store = IndexStore(config.storage)
     stats = store.get_index_stats()
     if stats["total"] == 0:
