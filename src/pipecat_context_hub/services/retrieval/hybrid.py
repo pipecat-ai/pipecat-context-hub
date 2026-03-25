@@ -295,6 +295,8 @@ class HybridRetriever:
             filters["repo"] = input.repo
         if input.language:
             filters["language"] = input.language
+        if input.domain:
+            filters["domain"] = input.domain
         if input.tags:
             filters["capability_tags"] = input.tags
         if input.foundational_class:

@@ -9,6 +9,11 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Domain filtering for `search_examples`** — new `domain` filter param:
+  `backend` (Python pipeline/bot code), `frontend` (JS/TS client code),
+  `config` (YAML/TOML/JSON), `infra` (Docker/CI). Inferred from file path
+  and language at ingestion time. Agents building Pipecat pipelines can use
+  `search_examples(query="TTS", domain="backend")` to exclude frontend noise
 - **Optional cross-encoder reranker** — `CrossEncoderReranker` service with
   lazy model loading, thread-safe inference via `asyncio.to_thread`, graceful
   offline degradation. Disabled by default; enable via `RerankerConfig.enabled`

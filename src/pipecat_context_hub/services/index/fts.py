@@ -432,7 +432,7 @@ class FTSIndex:
                 clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")
                 params.append(f"%{esc(tags)}%")
         # Metadata JSON filters for fields stored in the JSON blob
-        for key in ("foundational_class", "language", "execution_mode"):
+        for key in ("foundational_class", "language", "domain", "execution_mode"):
             if key in filters:
                 clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")
                 params.append(f'%"{key}": "{esc(filters[key])}"%')

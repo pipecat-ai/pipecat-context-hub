@@ -49,7 +49,7 @@ def _record_to_metadata(
     if tags and isinstance(tags, list):
         meta["capability_tags"] = ",".join(str(t) for t in tags)
     # Persist additional metadata fields used by filters
-    for key in ("foundational_class", "language", "execution_mode"):
+    for key in ("foundational_class", "language", "domain", "execution_mode"):
         val = record.metadata.get(key)
         if val is not None:
             meta[key] = str(val)
@@ -94,7 +94,7 @@ def _metadata_to_record_fields(
     if capability_tags_str:
         extra_meta["capability_tags"] = capability_tags_str.split(",")
     # Round-trip optional metadata fields
-    for key in ("foundational_class", "language", "execution_mode"):
+    for key in ("foundational_class", "language", "domain", "execution_mode"):
         val = meta.get(key)
         if val is not None:
             extra_meta[key] = val
@@ -167,6 +167,8 @@ def _build_where_clause(filters: dict[str, Any]) -> dict[str, Any] | None:
         conditions.append({"foundational_class": {"$eq": filters["foundational_class"]}})
     if "language" in filters:
         conditions.append({"language": {"$eq": filters["language"]}})
+    if "domain" in filters:
+        conditions.append({"domain": {"$eq": filters["domain"]}})
     if "execution_mode" in filters:
         conditions.append({"execution_mode": {"$eq": filters["execution_mode"]}})
     if "class_name" in filters:
