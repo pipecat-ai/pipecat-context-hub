@@ -5,7 +5,7 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.0.10] - 2026-03-25
 
 ### Added
 
@@ -15,8 +15,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   vector state in ~16s instead of hanging for minutes.
 - **`.pyi` stub file support** — `SourceIngester` now falls back to `.pyi`
   files at repo root when no Python packages exist in `src/`. Enables AST
-  indexing of Rust+Python binding repos (e.g., `daily-co/daily-python` via
-  `PIPECAT_HUB_EXTRA_REPOS`). `.pyi` files are only indexed by
+  indexing of Rust+Python binding repos (e.g., `daily-co/daily-python`).
+  `.pyi` files are only indexed by
   `SourceIngester` (not as code examples) to prevent duplicate chunks.
   Symlinks rejected + resolved-path containment checks at all file read sites.
 - **Domain filtering for `search_examples`** — new `domain` filter param:
@@ -26,7 +26,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   `search_examples(query="TTS", domain="backend")` to exclude frontend noise
 - **Optional cross-encoder reranker** — `CrossEncoderReranker` service with
   lazy model loading, thread-safe inference via `asyncio.to_thread`, graceful
-  offline degradation. Disabled by default; enable via `RerankerConfig.enabled`
+  offline degradation. Enabled by default; disable via
+  `PIPECAT_HUB_RERANKER_ENABLED=0`
 - **Result diversity** — repo/file diversity penalties and chunk-type
   preference for `search_api` (method > function > class > module)
 - **Confidence guardrails** — `low_confidence: bool` on `EvidenceReport`,
