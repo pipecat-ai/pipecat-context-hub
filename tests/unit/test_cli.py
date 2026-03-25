@@ -154,6 +154,7 @@ class TestRefreshCommand:
             "docs:content_hash": content_hash,
             "repo:pipecat-ai/pipecat:commit_sha": "abc123",
             "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+            "repo:daily-co/daily-python:commit_sha": "abc123",
         }.get(key))
 
         monkeypatch.chdir(tmp_path)
@@ -164,8 +165,8 @@ class TestRefreshCommand:
         # With --force, docs should be re-ingested despite matching hash
         mock_crawler.ingest.assert_called_once()
         # With --force, repos should be re-ingested despite matching SHA
-        # Ingest is called once per changed repo (2 default repos)
-        assert mock_github.ingest.call_count == 2
+        # Ingest is called once per changed repo (3 default repos)
+        assert mock_github.ingest.call_count == 3
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -192,6 +193,7 @@ class TestRefreshCommand:
             "docs:content_hash": content_hash,
             "repo:pipecat-ai/pipecat:commit_sha": "abc123",
             "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+            "repo:daily-co/daily-python:commit_sha": "abc123",
         }.get(key))
 
         monkeypatch.chdir(tmp_path)
@@ -228,6 +230,7 @@ class TestRefreshCommand:
             "docs:content_hash": "old-hash",
             "repo:pipecat-ai/pipecat:commit_sha": "old-sha",
             "repo:pipecat-ai/pipecat-examples:commit_sha": "old-sha",
+            "repo:daily-co/daily-python:commit_sha": "old-sha",
         }.get(key))
 
         monkeypatch.chdir(tmp_path)
@@ -238,7 +241,7 @@ class TestRefreshCommand:
         # Different hash → docs re-ingested
         mock_crawler.ingest.assert_called_once()
         # Different SHA → repos re-ingested (once per changed repo)
-        assert mock_github.ingest.call_count == 2
+        assert mock_github.ingest.call_count == 3
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -266,6 +269,7 @@ class TestRefreshCommand:
         mock_store.get_metadata = MagicMock(side_effect=lambda key: {
             "repo:pipecat-ai/pipecat:commit_sha": "abc123",
             "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+            "repo:daily-co/daily-python:commit_sha": "abc123",
         }.get(key))
 
         monkeypatch.chdir(tmp_path)
@@ -320,12 +324,14 @@ class TestRefreshCommand:
         }
         assert "repo:pipecat-ai/pipecat:commit_sha" not in set_calls
         assert "repo:pipecat-ai/pipecat-examples:commit_sha" not in set_calls
+        assert "repo:daily-co/daily-python:commit_sha" not in set_calls
         # Failed repos should have their cached SHA deleted (P1)
         delete_calls = {
             call.args[0] for call in mock_store.delete_metadata.call_args_list
         }
         assert "repo:pipecat-ai/pipecat:commit_sha" in delete_calls
         assert "repo:pipecat-ai/pipecat-examples:commit_sha" in delete_calls
+        assert "repo:daily-co/daily-python:commit_sha" in delete_calls
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -357,6 +363,7 @@ class TestRefreshCommand:
             "docs:content_hash": content_hash,
             "repo:pipecat-ai/pipecat:commit_sha": "abc123",
             "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+            "repo:daily-co/daily-python:commit_sha": "abc123",
         }.get(key))
 
         monkeypatch.chdir(tmp_path)
@@ -370,6 +377,7 @@ class TestRefreshCommand:
         }
         assert "repo:pipecat-ai/pipecat:commit_sha" in delete_calls
         assert "repo:pipecat-ai/pipecat-examples:commit_sha" in delete_calls
+        assert "repo:daily-co/daily-python:commit_sha" in delete_calls
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -442,6 +450,7 @@ class TestRefreshCommand:
             "docs:content_hash": content_hash,
             "repo:pipecat-ai/pipecat:commit_sha": "abc123",
             "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+            "repo:daily-co/daily-python:commit_sha": "abc123",
         }.get(key))
 
         monkeypatch.chdir(tmp_path)
@@ -453,5 +462,5 @@ class TestRefreshCommand:
         assert events[:2] == ["delete", "store"]
         mock_store.reset.assert_not_called()
         mock_crawler.ingest.assert_called_once()
-        assert mock_github.ingest.call_count == 2
+        assert mock_github.ingest.call_count == 3
         mock_store.close.assert_called_once()
