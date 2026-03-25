@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -66,6 +67,11 @@ def _configure_logging(level: str) -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
         stream=sys.stderr,
     )
+
+
+def _delete_local_index_storage(data_dir: Path) -> None:
+    """Delete the persisted local index directory for a clean rebuild."""
+    shutil.rmtree(data_dir, ignore_errors=True)
 
 
 @click.group(invoke_without_command=True)
@@ -154,6 +160,11 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
 
     logger.info("Starting index refresh (force=%s reset_index=%s)", force, reset_index)
     start = time.monotonic()
+
+    if reset_index:
+        logger.warning("Deleting local index storage before refresh")
+        _delete_local_index_storage(config.storage.data_dir)
+        force = True
 
     # Build the ingestion pipeline
     index_store = IndexStore(config.storage)
@@ -343,11 +354,6 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
                 index_store.delete_metadata(f"repo:{repo_slug}:commit_sha")
 
     try:
-        if reset_index:
-            logger.warning("Resetting local index before refresh")
-            index_store.reset()
-            force = True
-
         asyncio.run(_run_refresh())
 
         duration = round(time.monotonic() - start, 1)
