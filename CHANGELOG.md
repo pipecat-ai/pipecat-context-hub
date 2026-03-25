@@ -35,6 +35,10 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`daily-co/daily-python` is now a default repo** — promoted from optional
+  `PIPECAT_HUB_EXTRA_REPOS` to default sources. First-time refreshes now index
+  Daily Python SDK (CallClient, EventHandler, 87 types) alongside Pipecat
+  framework and examples.
 - **Graduated staleness** — linear decay (max -0.10 at 365 days) replaces
   binary -0.05 at 90 days
 - **UPPERCASE symbol detection** — TTS, STT, VAD, RTVI, LLM now receive

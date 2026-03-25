@@ -324,12 +324,14 @@ class TestRefreshCommand:
         }
         assert "repo:pipecat-ai/pipecat:commit_sha" not in set_calls
         assert "repo:pipecat-ai/pipecat-examples:commit_sha" not in set_calls
+        assert "repo:daily-co/daily-python:commit_sha" not in set_calls
         # Failed repos should have their cached SHA deleted (P1)
         delete_calls = {
             call.args[0] for call in mock_store.delete_metadata.call_args_list
         }
         assert "repo:pipecat-ai/pipecat:commit_sha" in delete_calls
         assert "repo:pipecat-ai/pipecat-examples:commit_sha" in delete_calls
+        assert "repo:daily-co/daily-python:commit_sha" in delete_calls
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -361,6 +363,7 @@ class TestRefreshCommand:
             "docs:content_hash": content_hash,
             "repo:pipecat-ai/pipecat:commit_sha": "abc123",
             "repo:pipecat-ai/pipecat-examples:commit_sha": "abc123",
+            "repo:daily-co/daily-python:commit_sha": "abc123",
         }.get(key))
 
         monkeypatch.chdir(tmp_path)
@@ -374,6 +377,7 @@ class TestRefreshCommand:
         }
         assert "repo:pipecat-ai/pipecat:commit_sha" in delete_calls
         assert "repo:pipecat-ai/pipecat-examples:commit_sha" in delete_calls
+        assert "repo:daily-co/daily-python:commit_sha" in delete_calls
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
