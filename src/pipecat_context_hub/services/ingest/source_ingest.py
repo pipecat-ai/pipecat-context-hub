@@ -66,24 +66,29 @@ class SourceIngester:
 
         # 1. Locate the repo clone
         clone_dir = self._repos_dir / _sanitize_slug(self._repo_slug)
-        src_dir = clone_dir / "src"
-        if not src_dir.is_dir():
-            return IngestResult(source=f"source:{self._repo_slug}")
 
-        # 2. Discover Python packages under src/
-        pkg_dirs = sorted(
-            d for d in src_dir.iterdir()
-            if d.is_dir() and (d / "__init__.py").is_file()
+        # 2. Check for .pyi stubs at repo root BEFORE src/ check.
+        # This covers repos without src/ (or with non-Python src/) where
+        # the Python API surface is in type stubs (e.g., daily-python).
+        pyi_files: list[Path] = sorted(
+            f for f in clone_dir.glob("*.pyi")
+            if f.is_file() and not f.is_symlink()
         )
 
-        # 2b. Fallback: if no Python packages in src/, check for .pyi stubs
-        # at the repo root. This covers Rust+Python binding repos (e.g.,
-        # daily-python) where the Python API surface is in type stubs.
-        pyi_files: list[Path] = []
-        if not pkg_dirs:
-            pyi_files = sorted(clone_dir.glob("*.pyi"))
-            if not pyi_files:
-                return IngestResult(source=f"source:{self._repo_slug}")
+        # 3. Discover Python packages under src/
+        src_dir = clone_dir / "src"
+        pkg_dirs: list[Path] = []
+        if src_dir.is_dir():
+            pkg_dirs = sorted(
+                d for d in src_dir.iterdir()
+                if d.is_dir() and (d / "__init__.py").is_file()
+            )
+
+        # Nothing to index
+        if not pkg_dirs and not pyi_files:
+            return IngestResult(source=f"source:{self._repo_slug}")
+
+        if pyi_files and not pkg_dirs:
             logger.info(
                 "No Python packages in src/, found %d .pyi stubs at root (%s)",
                 len(pyi_files), self._repo_slug,
@@ -105,10 +110,14 @@ class SourceIngester:
             )
 
             for py_file in py_files:
+                # Skip symlinks to prevent reading files outside the repo
+                if py_file.is_symlink():
+                    continue
                 try:
                     source = py_file.read_text(encoding="utf-8", errors="replace")
                 except Exception as exc:
-                    errors.append(f"Error reading {py_file}: {exc}")
+                    rel = py_file.relative_to(clone_dir).as_posix()
+                    errors.append(f"Error reading {rel}: {exc}")
                     continue
 
                 rel_path_from_src = py_file.relative_to(src_dir).as_posix()
@@ -143,7 +152,7 @@ class SourceIngester:
             try:
                 source = pyi_file.read_text(encoding="utf-8", errors="replace")
             except Exception as exc:
-                errors.append(f"Error reading {pyi_file}: {exc}")
+                errors.append(f"Error reading {pyi_file.name}: {exc}")
                 continue
 
             rel_path = pyi_file.name  # e.g., "daily.pyi"
