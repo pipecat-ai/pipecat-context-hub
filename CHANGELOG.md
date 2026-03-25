@@ -9,6 +9,10 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Chroma index recovery** — `refresh --reset-index` wipes and rebuilds the
+  local index when persisted Chroma state is unhealthy. `IndexStore.close()`
+  shuts down both backends cleanly. Benchmark health probe detects wedged
+  vector state in ~16s instead of hanging for minutes.
 - **`.pyi` stub file support** — `SourceIngester` now falls back to `.pyi`
   files at repo root when no Python packages exist in `src/`. Enables AST
   indexing of Rust+Python binding repos (e.g., `daily-co/daily-python` via
