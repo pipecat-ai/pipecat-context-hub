@@ -52,7 +52,7 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
 - [x] Add automated audit commands and CI workflows for `ruff`, `mypy`, `pytest`, dependency audit, static security scan, and SBOM generation.
 - [x] Normalize the local dependency workflow so lockfile-based setup is explicit and reproducible, then replace lockfile-bypassing install guidance with the supported `uv` commands.
 - [x] Add upstream taint-handling policy and enforcement for compromised repos, releases, tags, or commits, including a documented local skip path.
-- [ ] Add a soak/leak test path for repeated `refresh`/`serve` flows and concurrent retrieval calls, with observable RSS/thread/file-descriptor reporting.
+- [x] Add a soak/leak test path for repeated `refresh`/`serve` flows and concurrent retrieval calls, with observable RSS/thread/file-descriptor reporting.
 - [ ] Perform a manual code and architecture review of the high-risk modules listed in this plan and record findings and remediations.
 - [ ] Run a duplication and complexity audit and only consolidate code where the duplication creates real maintenance or correctness risk.
 - [ ] Re-run the full review gate, update docs, and run `/deep-review` before merge.
@@ -129,7 +129,9 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
   - `uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-4539`
   - `uv run cyclonedx-py environment --output-reproducible --of JSON -o /tmp/pipecat-audit/sbom.json`
   - `just --dry-run sbom /tmp/pipecat-audit-just/sbom.json`
+  - `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK=1 uv run pytest tests/benchmarks/test_runtime_stability.py -q -s`
   - `pip-audit` initially surfaced `requests 2.32.5`, `pyjwt 2.11.0`, and `pygments 2.19.2`; the first two were remediated by pinning fixed versions, while `pygments` is recorded as an accepted risk because `pip-audit` does not currently report a fixed PyPI release.
+  - The new runtime benchmark initially reproduced a concurrent `search_docs` crash under opt-in load; the fix serialized access to the shared sentence-transformers model, Chroma client, and SQLite connection.
 
 ## Issues & Solutions
 
@@ -143,6 +145,8 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
   Solution: add the harness and commands in-repo, then capture local/CI artifacts as part of the review record.
 - `pip-audit` initially failed on transitive runtime/dev dependencies.
   Solution: pin fixed `requests` and `pyjwt` versions in the project dependency set, and document the remaining `pygments` advisory as an explicit accepted risk until upstream publishes a fix.
+- The first version of the runtime stability benchmark exposed a real concurrency crash during parallel retrieval.
+  Solution: add per-process locks around the shared embedding model, Chroma client, and SQLite connection so async fan-out no longer drives unsafe concurrent native calls.
 
 ## Acceptance Criteria
 
@@ -150,7 +154,7 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
 - [x] The repo contains an automated review gate for quality, security, and supply-chain checks.
 - [ ] Install and update documentation use a reproducible, lockfile-based workflow.
 - [ ] Refresh can skip or denylist a tainted upstream repo or specific upstream ref by local policy.
-- [ ] The project has repeatable soak/leak validation for the long-lived server and refresh paths.
+- [x] The project has repeatable soak/leak validation for the long-lived server and refresh paths.
 - [ ] Critical and high-severity findings are fixed or explicitly accepted and documented.
 - [ ] README, AGENTS, and the active dev plan reflect the final review process and residual risks.
 - [ ] `/deep-review` completes with no unresolved critical or high-severity findings.
@@ -163,8 +167,9 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
   - lockfile-based install workflow in docs
   - written MCP server threat model in `docs/security/threat-model.md`
   - repo-local CI workflow plus `just` audit/SBOM commands
+  - opt-in runtime stability benchmark for repeated `refresh` / `serve` cycles and concurrent retrieval rounds
+  - concurrency hardening for shared embedding, Chroma, and SQLite access after the benchmark reproduced a crash under load
   - repo-wide quality/security gate now passes with one documented `pip-audit` ignore for `pygments` (`CVE-2026-4539`) pending an upstream fixed release
 - Remaining slices:
-  - soak/leak harness
   - manual high-risk module review and duplication audit
   - final `/deep-review` before merge

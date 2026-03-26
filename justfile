@@ -17,6 +17,14 @@ test *args:
 benchmark-quality:
     PIPECAT_HUB_ENABLE_QUALITY_BENCHMARK=1 uv run pytest tests/benchmarks/test_retrieval_quality.py -m benchmark -v -s
 
+# Run the runtime stability benchmark for repeated refresh/serve/search cycles
+benchmark-stability:
+    PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK=1 uv run pytest tests/benchmarks/test_runtime_stability.py -m benchmark -v -s
+
+# Run the runtime stability benchmark and persist a JSON report
+benchmark-stability-report out="artifacts/benchmarks/runtime-stability.json":
+    PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK=1 PIPECAT_HUB_STABILITY_OUTPUT={{out}} uv run pytest tests/benchmarks/test_runtime_stability.py -m benchmark -v -s
+
 # Lint with ruff
 lint:
     uv run ruff check src/ tests/

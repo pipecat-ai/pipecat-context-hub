@@ -121,11 +121,13 @@ Current controls:
 - cross-encoder models are allowlisted
 - embedding and reranker load locally on CPU
 - reranker can be disabled by config or env
+- runtime stability is covered by an opt-in benchmark for repeated refresh,
+  serve, and concurrent retrieval rounds
 
 Residual risks:
 
 - embedding model name is configurable and not currently allowlisted
-- no soak test yet proves stable memory behavior across repeated cycles
+- the runtime benchmark is opt-in and not yet wired into CI artifact capture
 
 ### Boundary 4: Local persistence and destructive operations
 
@@ -149,11 +151,13 @@ Current controls:
 - reset/rebuild flow is explicit through CLI flags
 - store close/reset lifecycle exists
 - read-path search calls are offloaded to threads to avoid blocking the event loop
+- shared Chroma and SQLite clients are now serialized with per-process locks
+  so concurrent MCP requests do not drive unsafe native access
 
 Follow-up checks:
 
-- add soak testing for repeated refresh/serve cycles
-- add explicit metrics or harness output for RSS, threads, and file descriptors
+- extend the stability benchmark duration or artifact capture if long-run growth
+  appears in real-world use
 
 ### Boundary 5: MCP stdio server to local agent
 
@@ -175,11 +179,13 @@ Current controls:
 - tool descriptions instruct agents to treat the hub as retrieval context, not
   executable content
 - read paths use async thread offload for blocking backends
+- concurrent retrieval now serializes access to the shared embedding model and
+  local index backends to avoid unsafe native concurrency
 
 Residual risks:
 
 - response content is still untrusted input to the downstream agent
-- no dedicated concurrency soak test exists yet
+- the concurrency benchmark is opt-in and currently runs only on demand
 
 ## Assumptions
 
@@ -217,5 +223,6 @@ Current exception:
 ## Next Hardening Steps
 
 - add CI workflows for the review gates
-- add soak/leak validation for repeated `refresh` and concurrent `serve` calls
+- decide whether to run the runtime stability benchmark in scheduled CI or only
+  on demand
 - decide whether to add optional ref pinning in addition to denylisting

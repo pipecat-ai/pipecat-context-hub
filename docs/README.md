@@ -191,6 +191,7 @@ Two benchmark modes exist:
 
 - `tests/benchmarks/test_latency.py` measures component and end-to-end latency on a seeded local corpus.
 - `tests/benchmarks/test_retrieval_quality.py` measures retrieval quality against the current local index.
+- `tests/benchmarks/test_runtime_stability.py` measures repeated `refresh` / `serve` lifecycle stability and concurrent retrieval growth in RSS, thread count, and open file descriptors.
 
 The retrieval-quality benchmark is intended for the default corpus:
 
@@ -205,6 +206,12 @@ Run it after `pipecat-context-hub refresh`:
 just benchmark-quality
 ```
 
+Run the runtime stability benchmark when you want an opt-in soak/leak pass:
+
+```bash
+just benchmark-stability
+```
+
 If the benchmark reports an unhealthy local vector index, rebuild it with:
 
 ```bash
@@ -215,6 +222,7 @@ To persist a versioned report for later comparison:
 
 ```bash
 PIPECAT_HUB_BENCHMARK_OUTPUT=artifacts/benchmarks/retrieval-quality-0.0.9.json just benchmark-quality
+just benchmark-stability-report
 ```
 
 Each JSON report includes:
