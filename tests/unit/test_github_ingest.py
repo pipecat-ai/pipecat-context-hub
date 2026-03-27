@@ -57,6 +57,9 @@ def _create_fake_repo(tmp_path: Path, repo_name: str, files: dict[str, str]) -> 
         fpath.write_text(content, encoding="utf-8")
 
     git_repo = GitRepo.init(str(repo_dir))
+    with git_repo.config_writer() as config:
+        config.set_value("user", "name", "Test User")
+        config.set_value("user", "email", "test@example.com")
     git_repo.index.add([str(repo_dir / p) for p in files])
     git_repo.index.commit("initial commit")
     return repo_dir
@@ -98,7 +101,7 @@ def _commit_and_push(
     repo.index.add([str(file_path)])
     repo.index.commit("update")
     if tag is not None:
-        repo.create_tag(tag, message=f"tag {tag}")
+        repo.git.update_ref(f"refs/tags/{tag}", "HEAD")
     branch = repo.active_branch.name
     repo.git.push("origin", branch, "--tags")
     return repo.head.commit.hexsha
@@ -249,7 +252,7 @@ class TestRepoRefIsTainted:
         from git import Repo as GitRepo
 
         git_repo = GitRepo(str(repo_dir))
-        git_repo.create_tag("v1.2.3", message="test tag")
+        git_repo.git.update_ref("refs/tags/v1.2.3", "HEAD")
         commit_sha = git_repo.head.commit.hexsha
         assert repo_ref_is_tainted(repo_dir, commit_sha, {"v1.2.3"})
 
