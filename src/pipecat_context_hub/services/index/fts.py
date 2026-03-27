@@ -222,6 +222,10 @@ class FTSIndex:
             if "chunk_id" in query.filters:
                 return self._get_by_chunk_id(query.filters["chunk_id"])
 
+            # Filter-only lookup (no FTS MATCH) — used by get_doc path lookup
+            if query.filters.get("_filter_only"):
+                return self._filter_only_search(query)
+
             if not query.query_text.strip():
                 return []
 
@@ -339,6 +343,48 @@ class FTSIndex:
             metadata=extra_meta,
         )
         return [IndexResult(chunk=record, score=1.0, match_type="keyword")]
+
+    def _filter_only_search(self, query: IndexQuery) -> list[IndexResult]:
+        """Search by metadata filters only, bypassing FTS MATCH.
+
+        Used for direct lookups like get_doc by path where the query text
+        is a path string, not a keyword search term.
+        """
+        filters = {k: v for k, v in query.filters.items() if k != "_filter_only"}
+        filter_clauses, filter_params = self._build_filter_sql(filters)
+        if not filter_clauses:
+            return []
+
+        sql = "\n".join([
+            "SELECT chunk_id, content, content_type, source_url,",
+            "       repo, path, commit_sha, indexed_at, metadata_json",
+            "FROM chunks",
+            "WHERE " + " AND ".join(filter_clauses),
+            "LIMIT ?",
+        ])
+        filter_params.append(query.limit)
+
+        cursor = self._conn.execute(sql, filter_params)
+        rows = cursor.fetchall()
+
+        items: list[IndexResult] = []
+        for row in rows:
+            (cid, content, content_type, source_url, repo, path,
+             commit_sha, indexed_at_str, metadata_json) = row
+            extra_meta: dict[str, Any] = json.loads(metadata_json) if metadata_json else {}
+            record = ChunkedRecord(
+                chunk_id=cid,
+                content=content,
+                content_type=content_type,
+                source_url=source_url,
+                repo=repo,
+                path=path,
+                commit_sha=commit_sha,
+                indexed_at=datetime.fromisoformat(indexed_at_str),
+                metadata=extra_meta,
+            )
+            items.append(IndexResult(chunk=record, score=1.0, match_type="keyword"))
+        return items
 
     def set_metadata(self, key: str, value: str) -> None:
         """Upsert a key-value pair in the index_metadata table."""

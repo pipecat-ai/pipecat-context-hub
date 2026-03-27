@@ -252,11 +252,11 @@ class HybridRetriever:
             )
             results = await self._index.keyword_search(query)
         elif input.path:
-            # Path-based lookup: find doc chunks matching this path prefix
+            # Path-based lookup: filter-only (no FTS MATCH — paths aren't keywords)
             lookup_key = input.path
-            filters = {"content_type": "doc", "path": input.path}
+            filters = {"content_type": "doc", "path": input.path, "_filter_only": True}
             query = IndexQuery(
-                query_text=input.path,
+                query_text="",
                 filters=filters,
                 limit=1,
             )
