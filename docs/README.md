@@ -15,7 +15,7 @@ IDE/Agent  ←stdio→  pipecat-context-hub serve  ←→  Local index (~/.pipec
 | Tool | Purpose |
 |------|---------|
 | `search_docs` | Search Pipecat documentation for conceptual questions and guides |
-| `get_doc` | Fetch a specific doc page by chunk ID |
+| `get_doc` | Fetch a specific doc page by chunk ID or path (e.g. `/guides/learn/transports`) |
 | `search_examples` | Find working code examples by task, modality, or component. Filter by `language` (python, typescript), `domain` (backend, frontend, config, infra), `tags`, or `repo` |
 | `get_example` | Retrieve full example with source files and metadata |
 | `get_code_snippet` | Get targeted code spans by intent, symbol, or path. Returns enriched output with dependencies (`dependency_notes`), called methods (`companion_snippets`), and interface contracts (`interface_expectations`) |

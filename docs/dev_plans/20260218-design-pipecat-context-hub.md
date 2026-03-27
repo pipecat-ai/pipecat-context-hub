@@ -672,8 +672,9 @@ All of T1–T7 depend only on T0. T8 depends on all of T1–T7.
 - **Output:** Ranked hits with `doc_id`, `title`, `section`, snippet text, and citation metadata.
 
 2. `get_doc`
-- **Purpose:** Fetch a canonical doc page/section by identifier.
-- **Input:** `doc_id`, optional `section`.
+- **Purpose:** Fetch a canonical doc page/section by identifier or path.
+- **Input:** `doc_id` or `path` (at least one required), optional `section`.
+  - `path` allows direct lookup by docs path prefix (e.g. `/guides/learn/transports`) without a prior `search_docs` call.
 - **Output:** Full normalized markdown for that page/section plus source URL and indexed timestamp.
 
 3. `search_examples`
@@ -695,7 +696,7 @@ All of T1–T7 depend only on T0. T8 depends on all of T1–T7.
 
 6. `search_api` *(added v0.0.3)*
 - **Purpose:** Search pipecat framework source API — classes, methods, constructors, frame types.
-- **Input:** `query`, optional `module` (prefix filter), optional `class_name`, optional `chunk_type` (`module_overview`|`class_overview`|`method`|`function`), optional `is_dataclass`, optional `limit`.
+- **Input:** `query`, optional `module` (prefix filter), optional `class_name` (prefix filter — e.g. `DailyTransport` matches `DailyTransportClient`), optional `chunk_type` (`module_overview`|`class_overview`|`method`|`function`), optional `is_dataclass`, optional `limit`.
 - **Output:** Ranked `ApiHit` records with `module_path`, `class_name`, `method_name`, `base_classes`, `chunk_type`, `snippet`, `method_signature`, `is_dataclass`, citation, and score.
 
 ### MCP Tool Contracts (v1 deferred)
@@ -1044,9 +1045,9 @@ but not the pipecat framework API itself.
 **Index backend updates:**
 - ChromaDB: Added `module_path`, `class_name`, `chunk_type`, `is_dataclass`,
   `is_abstract`, `base_classes` to metadata serialization; native `$eq` filters
-  for `class_name`, `chunk_type`, `is_dataclass`; `module_path` prefix post-filter
-- SQLite FTS5: Added LIKE clauses for `class_name`, `chunk_type`, `module_path`,
-  `method_name`; boolean `is_dataclass` filter on metadata_json
+  for `chunk_type`, `is_dataclass`; `module_path` and `class_name` prefix post-filters
+- SQLite FTS5: Added LIKE clauses for `class_name` (prefix), `chunk_type` (exact),
+  `module_path` (prefix), `method_name` (exact); boolean `is_dataclass` filter on metadata_json
 
 **Execution model:** T0 (serial: types + interfaces) → T1–T4 (parallel fan-out
 in 4 git worktrees) → T8 (serial integration + review fixes)
@@ -1296,3 +1297,43 @@ Four findings from Codex review, all fixed:
 - Documented versioning convention in `CLAUDE.md`
 
 **Final test results:** 541 tests (526 core + 15 benchmarks), lint clean
+
+## Retrieval UX Improvements (2026-03-26) ✅
+
+Based on feedback from Claude instances using the context hub in real coding
+sessions. Two recurring friction points addressed:
+
+### Part 1: Path-Based `get_doc` Lookup ✅
+
+Users called `search_docs` just to get a `doc_id`, then called `get_doc` with it.
+When they already knew the path (e.g. `/guides/learn/transports`), the extra
+round-trip was unnecessary.
+
+- Added `path` field to `GetDocInput` as alternative to `doc_id`
+- Model validator requires at least one of `doc_id` or `path`
+- `HybridRetriever.get_doc` routes to FTS path-prefix lookup when `path` is
+  provided and `doc_id` is empty
+- Tool description updated to document both lookup modes
+
+### Part 2: `class_name` Prefix Matching ✅
+
+`search_api("send_dtmf", class_name="DailyTransport")` returned nothing because
+the method lives on `DailyTransportClient`. Users don't always know the exact
+subclass name.
+
+- FTS: changed `class_name` from exact JSON LIKE pattern (`%"class_name": "X"%`)
+  to prefix pattern (`%"class_name": "X%`) — omits closing quote
+- Vector: moved `class_name` from ChromaDB `$eq` push-down to post-filter with
+  `.startswith()`, added to `needs_post_filter` set for 3× over-fetch
+- Both backends now match consistently: `DailyTransport` finds
+  `DailyTransport`, `DailyTransportClient`, `DailyTransportParams`
+- Field descriptions on `SearchApiInput` and `GetCodeSnippetInput` updated
+
+### Fast Follow (not in this PR)
+
+- **Daily SDK dict schemas** — `.pyi` uses `Mapping[str, Any]` which hides
+  parameter details (e.g. `send_dtmf` settings dict fields like `tones`,
+  `duration`, `digitDurationMs`). Would need Daily RST doc parsing or
+  manual annotation layer.
+
+**Test results:** 680 passed, 0 failed, lint clean
