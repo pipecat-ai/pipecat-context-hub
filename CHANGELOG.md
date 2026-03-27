@@ -26,6 +26,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   updated consistently.
 - **Pre-merge live MCP smoke test** — 10-item checklist in AGENTS.md for
   verifying retrieval correctness against the live local index before merging
+- **Security policy** — `SECURITY.md` added with vulnerability reporting
+  instructions and supported-version table
 - **Curated `.env.example` repo bundles** — copy-ready
   `PIPECAT_HUB_EXTRA_REPOS` examples are now grouped by SDKs/transports, UI,
   flows, cloud/dev tools, quickstarts, and demos to make targeted local index
@@ -55,6 +57,7 @@ This project uses [Semantic Versioning](https://semver.org/).
   local dev tool should not phone home
 - Integration tests now validate docs citations with parsed URL hostname checks
   instead of substring-style prefix matching
+- Bumped `cryptography` to 46.0.6 to resolve upstream security advisory
 
 ## [0.0.10] - 2026-03-25
 
