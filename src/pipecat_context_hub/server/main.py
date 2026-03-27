@@ -69,7 +69,7 @@ _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
         "Symbol lookups search framework source (class/method definitions); "
         "intent lookups search example code. "
         "Use `module` to scope symbol lookups (e.g. module='pipecat.runner.daily' with symbol='configure'). "
-        "Use `class_name` to scope to a specific class. "
+        "Use `class_name` to scope to a specific class (prefix match, e.g. 'DailyTransport' matches DailyTransportClient). "
         "Use `content_type='source'` with intent to search framework code instead of examples. "
         "For multiple topics, use ` + ` or ` & ` delimiters.",
         GetCodeSnippetInput.model_json_schema(),
@@ -79,7 +79,7 @@ _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
         "Search Pipecat framework internals — class definitions, method signatures, constructors, "
         "base classes, and frame types. Use when you need implementation details, type information, "
         "or inheritance hierarchies. "
-        "Filter by `module` (path prefix, e.g. 'pipecat.services'), `class_name`, "
+        "Filter by `module` (path prefix, e.g. 'pipecat.services'), `class_name` (prefix match, e.g. 'DailyTransport' matches DailyTransportClient), "
         "`chunk_type` ('module_overview', 'class_overview', 'method', 'function'), or `is_dataclass`. "
         "For multiple topics, use ` + ` or ` & ` delimiters (e.g. 'BaseTransport + WebSocketTransport').",
         SearchApiInput.model_json_schema(),

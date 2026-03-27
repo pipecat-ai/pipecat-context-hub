@@ -242,7 +242,7 @@ class HybridRetriever:
         """Get a specific document by ID or path (direct lookup)."""
         lookup_key = input.doc_id or input.path or ""
 
-        if input.doc_id is not None:
+        if input.doc_id is not None and input.doc_id.strip():
             # Direct chunk_id lookup
             filters: dict[str, Any] = {"chunk_id": input.doc_id}
             query = IndexQuery(
