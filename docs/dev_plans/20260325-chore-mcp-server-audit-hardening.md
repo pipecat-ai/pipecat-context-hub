@@ -1,7 +1,7 @@
 # MCP Server Audit & Hardening
 
 ## Header
-- **Status:** In Progress
+- **Status:** Complete
 - **Type:** chore
 - **Assignee:** vr000m
 - **Priority:** High
@@ -53,9 +53,9 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
 - [x] Normalize the local dependency workflow so lockfile-based setup is explicit and reproducible, then replace lockfile-bypassing install guidance with the supported `uv` commands.
 - [x] Add upstream taint-handling policy and enforcement for compromised repos, releases, tags, or commits, including a documented local skip path.
 - [x] Add a soak/leak test path for repeated `refresh`/`serve` flows and concurrent retrieval calls, with observable RSS/thread/file-descriptor reporting.
-- [ ] Perform a manual code and architecture review of the high-risk modules listed in this plan and record findings and remediations.
-- [ ] Run a duplication and complexity audit and only consolidate code where the duplication creates real maintenance or correctness risk.
-- [ ] Re-run the full review gate, update docs, and run `/deep-review` before merge.
+- [x] Perform a manual code and architecture review of the high-risk modules listed in this plan and record findings and remediations.
+- [x] Run a duplication and complexity audit and only consolidate code where the duplication creates real maintenance or correctness risk.
+- [x] Re-run the full review gate, update docs, and run `/deep-review` before merge.
 
 ## Technical Specifications
 
@@ -130,6 +130,8 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
   - `uv run cyclonedx-py environment --output-reproducible --of JSON -o /tmp/pipecat-audit/sbom.json`
   - `just --dry-run sbom /tmp/pipecat-audit-just/sbom.json`
   - `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK=1 uv run pytest tests/benchmarks/test_runtime_stability.py -q -s`
+  - final closeout gate on `c4291ad`: `uv sync --frozen --extra dev --group dev`, `uv run ruff check src/ tests/`, `uv run mypy src/ tests/`, `uv run bandit -r src`, `uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-4539`, `uv run pytest tests/ -q`, and `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK=1 uv run pytest tests/benchmarks/test_runtime_stability.py -q -s`
+  - final `/deep-review` rerun completed clean on the full branch diff with no unresolved critical or high-severity findings
   - `pip-audit` initially surfaced `requests 2.32.5`, `pyjwt 2.11.0`, and `pygments 2.19.2`; the first two were remediated by pinning fixed versions, while `pygments` is recorded as an accepted risk because `pip-audit` does not currently report a fixed PyPI release.
   - The new runtime benchmark initially reproduced a concurrent `search_docs` crash under opt-in load; the fix serialized access to the shared sentence-transformers model, Chroma client, and SQLite connection.
 
@@ -157,13 +159,13 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
 - [x] Install and update documentation use a reproducible, lockfile-based workflow.
 - [x] Refresh can skip or denylist a tainted upstream repo or specific upstream ref by local policy.
 - [x] The project has repeatable soak/leak validation for the long-lived server and refresh paths.
-- [ ] Critical and high-severity findings are fixed or explicitly accepted and documented.
-- [ ] README, AGENTS, and the active dev plan reflect the final review process and residual risks.
-- [ ] `/deep-review` completes with no unresolved critical or high-severity findings.
+- [x] Critical and high-severity findings are fixed or explicitly accepted and documented.
+- [x] README, AGENTS, and the active dev plan reflect the final review process and residual risks.
+- [x] `/deep-review` completes with no unresolved critical or high-severity findings.
 
 ## Final Results
 
-- In progress.
+- Complete.
 - Completed slices:
   - local tainted-upstream denylisting for repos and refs, with pre-checkout enforcement
   - tainted-ref refresh now preserves last-known-good SHA state instead of writing blocked upstream SHAs into index metadata
@@ -175,6 +177,6 @@ This plan is intentionally scoped to the MCP server and refresh/runtime surfaces
   - concurrency hardening for shared embedding, Chroma, and SQLite access after the benchmark reproduced a crash under load
   - bounded streaming fetch for `llms-full.txt` so remote docs ingestion now enforces a maximum payload size
   - repo-wide quality/security gate now passes with one documented `pip-audit` ignore for `pygments` (`CVE-2026-4539`) pending an upstream fixed release
-- Remaining slices:
-  - manual high-risk module review and duplication audit
-  - final `/deep-review` before merge
+  - final manual review of the high-risk server, ingest, index, and retrieval modules completed with no unresolved critical or high-severity findings
+  - final `/deep-review` rerun and full verification gate completed clean on the branch head
+  - docs updated to reflect benchmark env vars, taint controls, accepted risks, and the final review workflow

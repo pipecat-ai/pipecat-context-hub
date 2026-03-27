@@ -5,6 +5,37 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **MCP audit and hardening workflow** — committed CI quality/security jobs,
+  a written MCP threat model, `just audit`, `just sbom`, and an opt-in
+  runtime stability benchmark for repeated `refresh` / `serve` cycles and
+  concurrent retrieval rounds
+- **Local upstream taint controls** — `PIPECAT_HUB_TAINTED_REPOS` and
+  `PIPECAT_HUB_TAINTED_REFS` let operators skip compromised repos, tags, or
+  commit SHAs locally without waiting for upstream removal
+
+### Changed
+
+- **Locked developer setup** — install and update guidance now uses
+  `uv sync --extra dev --group dev` instead of lockfile-bypassing editable
+  install commands
+- **Concurrent retrieval safety** — shared embedding, ChromaDB, and SQLite
+  access is now serialized under load after the runtime stability benchmark
+  reproduced a parallel `search_docs` crash
+- **GitHub refresh safety** — repo slugs are validated before clone URLs are
+  built, fetched refs are checked for taint before checkout, and tainted refs
+  no longer advance local working trees
+
+### Fixed
+
+- Tainted upstream SHAs no longer overwrite last-known-good indexed metadata
+  when refresh skips a compromised ref
+- `llms-full.txt` is now streamed with a fixed size cap so an unexpectedly
+  large upstream docs payload cannot grow refresh memory without bound
+
 ## [0.0.10] - 2026-03-25
 
 ### Added
