@@ -53,7 +53,7 @@ class IndexQuery(BaseModel):
         default=False,
         description="When True, bypass text search (FTS MATCH) and return results by metadata filters only.",
     )
-    limit: int = Field(default=10, ge=1, le=100, description="Max results to return.")
+    limit: int = Field(default=10, ge=1, le=500, description="Max results to return.")
 
 
 class IndexResult(BaseModel):
