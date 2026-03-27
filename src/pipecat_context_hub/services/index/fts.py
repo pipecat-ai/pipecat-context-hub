@@ -223,7 +223,7 @@ class FTSIndex:
                 return self._get_by_chunk_id(query.filters["chunk_id"])
 
             # Filter-only lookup (no FTS MATCH) — used by get_doc path lookup
-            if query.filters.get("_filter_only"):
+            if query.filter_only:
                 return self._filter_only_search(query)
 
             if not query.query_text.strip():
@@ -350,8 +350,7 @@ class FTSIndex:
         Used for direct lookups like get_doc by path where the query text
         is a path string, not a keyword search term.
         """
-        filters = {k: v for k, v in query.filters.items() if k != "_filter_only"}
-        filter_clauses, filter_params = self._build_filter_sql(filters)
+        filter_clauses, filter_params = self._build_filter_sql(query.filters)
         if not filter_clauses:
             return []
 

@@ -240,9 +240,9 @@ class HybridRetriever:
 
     async def get_doc(self, input: GetDocInput) -> GetDocOutput:
         """Get a specific document by ID or path (direct lookup)."""
-        lookup_key = input.doc_id or ""
+        lookup_key = input.doc_id or input.path or ""
 
-        if input.doc_id:
+        if input.doc_id is not None:
             # Direct chunk_id lookup
             filters: dict[str, Any] = {"chunk_id": input.doc_id}
             query = IndexQuery(
@@ -251,13 +251,14 @@ class HybridRetriever:
                 limit=1,
             )
             results = await self._index.keyword_search(query)
-        elif input.path:
+        elif input.path is not None:
             # Path-based lookup: filter-only (no FTS MATCH — paths aren't keywords)
             lookup_key = input.path
-            filters = {"content_type": "doc", "path": input.path, "_filter_only": True}
+            filters = {"content_type": "doc", "path": input.path}
             query = IndexQuery(
                 query_text="",
                 filters=filters,
+                filter_only=True,
                 limit=1,
             )
             results = await self._index.keyword_search(query)

@@ -49,6 +49,10 @@ class IndexQuery(BaseModel):
         default_factory=dict,
         description="Metadata filters (repo, content_type, path prefix, capability_tags).",
     )
+    filter_only: bool = Field(
+        default=False,
+        description="When True, bypass text search (FTS MATCH) and return results by metadata filters only.",
+    )
     limit: int = Field(default=10, ge=1, le=100, description="Max results to return.")
 
 
@@ -240,8 +244,8 @@ class SearchDocsOutput(BaseModel):
 class GetDocInput(BaseModel):
     """Input for the get_doc MCP tool."""
 
-    doc_id: str = Field(
-        default="",
+    doc_id: str | None = Field(
+        default=None,
         max_length=256,
         description="Chunk ID from a previous search_docs result. Either doc_id or path must be provided.",
     )
@@ -258,7 +262,7 @@ class GetDocInput(BaseModel):
 
     @model_validator(mode="after")
     def _require_doc_id_or_path(self) -> "GetDocInput":
-        if not self.doc_id and not self.path:
+        if self.doc_id is None and self.path is None:
             raise ValueError("Either doc_id or path must be provided.")
         return self
 
