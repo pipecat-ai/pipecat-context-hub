@@ -251,6 +251,7 @@ class VectorIndex:
         self._collection: Any = None
         self._client_identifier: str | None = None
         self._closed = True
+        self._op_lock = threading.RLock()
         self._open_client()
 
     def _open_client(self) -> None:
@@ -309,7 +310,8 @@ class VectorIndex:
 
     def close(self) -> None:
         """Release this client's Chroma resources."""
-        self._release_client(clear_cache=False)
+        with self._op_lock:
+            self._release_client(clear_cache=False)
 
     def reset(self) -> None:
         """Delete persisted Chroma state and recreate the collection.
@@ -328,19 +330,21 @@ class VectorIndex:
                         "Cannot reset Chroma storage while another client is using it."
                     )
 
-        self._release_client(clear_cache=True)
-        shutil.rmtree(self._chroma_path, ignore_errors=True)
-        self._open_client()
-        logger.info("VectorIndex reset at %s", self._chroma_path)
+        with self._op_lock:
+            self._release_client(clear_cache=True)
+            shutil.rmtree(self._chroma_path, ignore_errors=True)
+            self._open_client()
+            logger.info("VectorIndex reset at %s", self._chroma_path)
 
     def clear(self) -> None:
         """Drop all records by deleting and recreating the collection."""
-        self._client.delete_collection(COLLECTION_NAME)
-        self._collection = self._client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
-        logger.info("VectorIndex cleared")
+        with self._op_lock:
+            self._client.delete_collection(COLLECTION_NAME)
+            self._collection = self._client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+            logger.info("VectorIndex cleared")
 
     def upsert(self, records: list[ChunkedRecord]) -> int:
         """Upsert records into ChromaDB. Returns count of records written."""
@@ -364,57 +368,61 @@ class VectorIndex:
         if not ids:
             return 0
 
-        # ChromaDB limits batch operations to ~5,461 embeddings.
-        for i in range(0, len(ids), _CHROMA_BATCH_SIZE):
-            end = i + _CHROMA_BATCH_SIZE
-            self._collection.upsert(
-                ids=ids[i:end],
-                documents=documents[i:end],
-                metadatas=metadatas[i:end],
-                embeddings=embeddings[i:end],
-            )
+        with self._op_lock:
+            # ChromaDB limits batch operations to ~5,461 embeddings.
+            for i in range(0, len(ids), _CHROMA_BATCH_SIZE):
+                end = i + _CHROMA_BATCH_SIZE
+                self._collection.upsert(
+                    ids=ids[i:end],
+                    documents=documents[i:end],
+                    metadatas=metadatas[i:end],
+                    embeddings=embeddings[i:end],
+                )
         logger.debug("Upserted %d records into vector index", len(ids))
         return len(ids)
 
     def delete_by_content_type(self, content_type: str) -> int:
         """Delete all records matching a content type. Returns count deleted."""
-        where_clause: dict[str, Any] = {"content_type": {"$eq": content_type}}
-        existing = self._collection.get(where=where_clause, include=[])
-        ids = existing["ids"]
-        count = len(ids)
-        if count > 0:
-            # ChromaDB limits batch operations to ~5,000 records.
-            for i in range(0, count, _CHROMA_BATCH_SIZE):
-                batch = ids[i : i + _CHROMA_BATCH_SIZE]
-                self._collection.delete(ids=batch)
-            logger.debug("Deleted %d records from vector index for content_type=%s", count, content_type)
-        return count
+        with self._op_lock:
+            where_clause: dict[str, Any] = {"content_type": {"$eq": content_type}}
+            existing = self._collection.get(where=where_clause, include=[])
+            ids = existing["ids"]
+            count = len(ids)
+            if count > 0:
+                # ChromaDB limits batch operations to ~5,000 records.
+                for i in range(0, count, _CHROMA_BATCH_SIZE):
+                    batch = ids[i : i + _CHROMA_BATCH_SIZE]
+                    self._collection.delete(ids=batch)
+                logger.debug("Deleted %d records from vector index for content_type=%s", count, content_type)
+            return count
 
     def delete_by_repo(self, repo: str) -> int:
         """Delete all records matching a repo. Returns count deleted."""
-        where_clause: dict[str, Any] = {"repo": {"$eq": repo}}
-        existing = self._collection.get(where=where_clause, include=[])
-        ids = existing["ids"]
-        count = len(ids)
-        if count > 0:
-            for i in range(0, count, _CHROMA_BATCH_SIZE):
-                batch = ids[i : i + _CHROMA_BATCH_SIZE]
-                self._collection.delete(ids=batch)
-            logger.debug("Deleted %d records from vector index for repo=%s", count, repo)
-        return count
+        with self._op_lock:
+            where_clause: dict[str, Any] = {"repo": {"$eq": repo}}
+            existing = self._collection.get(where=where_clause, include=[])
+            ids = existing["ids"]
+            count = len(ids)
+            if count > 0:
+                for i in range(0, count, _CHROMA_BATCH_SIZE):
+                    batch = ids[i : i + _CHROMA_BATCH_SIZE]
+                    self._collection.delete(ids=batch)
+                logger.debug("Deleted %d records from vector index for repo=%s", count, repo)
+            return count
 
     def delete_by_source(self, source_url: str) -> int:
         """Delete all records matching a source URL. Returns count deleted."""
-        where_clause: dict[str, Any] = {"source_url": {"$eq": source_url}}
-        existing = self._collection.get(where=where_clause, include=[])
-        ids = existing["ids"]
-        count = len(ids)
-        if count > 0:
-            for i in range(0, count, _CHROMA_BATCH_SIZE):
-                batch = ids[i : i + _CHROMA_BATCH_SIZE]
-                self._collection.delete(ids=batch)
-            logger.debug("Deleted %d records from vector index for source %s", count, source_url)
-        return count
+        with self._op_lock:
+            where_clause: dict[str, Any] = {"source_url": {"$eq": source_url}}
+            existing = self._collection.get(where=where_clause, include=[])
+            ids = existing["ids"]
+            count = len(ids)
+            if count > 0:
+                for i in range(0, count, _CHROMA_BATCH_SIZE):
+                    batch = ids[i : i + _CHROMA_BATCH_SIZE]
+                    self._collection.delete(ids=batch)
+                logger.debug("Deleted %d records from vector index for source %s", count, source_url)
+            return count
 
     def search(self, query: IndexQuery) -> list[IndexResult]:
         """Search by embedding similarity. Returns results ranked by score."""
@@ -422,27 +430,28 @@ class VectorIndex:
             logger.warning("vector_search called without query_embedding")
             return []
 
-        needs_post_filter = any(k in query.filters for k in ("path", "capability_tags", "module_path", "yields", "calls"))
-        where = _build_where_clause(query.filters)
+        with self._op_lock:
+            needs_post_filter = any(k in query.filters for k in ("path", "capability_tags", "module_path", "yields", "calls"))
+            where = _build_where_clause(query.filters)
 
-        # Clamp n_results to collection size to prevent ChromaDB crash
-        collection_count = self._collection.count()
-        if collection_count == 0:
-            return []
+            # Clamp n_results to collection size to prevent ChromaDB crash
+            collection_count = self._collection.count()
+            if collection_count == 0:
+                return []
 
-        # Over-fetch when post-filtering to ensure enough results survive.
-        n_results = query.limit * 3 if needs_post_filter else query.limit
-        n_results = min(n_results, collection_count)
+            # Over-fetch when post-filtering to ensure enough results survive.
+            n_results = query.limit * 3 if needs_post_filter else query.limit
+            n_results = min(n_results, collection_count)
 
-        kwargs: dict[str, Any] = {
-            "query_embeddings": [query.query_embedding],
-            "n_results": n_results,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where is not None:
-            kwargs["where"] = where
+            kwargs: dict[str, Any] = {
+                "query_embeddings": [query.query_embedding],
+                "n_results": n_results,
+                "include": ["documents", "metadatas", "distances"],
+            }
+            if where is not None:
+                kwargs["where"] = where
 
-        results = self._collection.query(**kwargs)
+            results = self._collection.query(**kwargs)
 
         items: list[IndexResult] = []
         result_ids = results["ids"][0] if results["ids"] else []

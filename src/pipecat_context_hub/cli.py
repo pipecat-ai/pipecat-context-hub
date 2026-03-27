@@ -152,7 +152,10 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
     )
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
-    from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+    from pipecat_context_hub.services.ingest.github_ingest import (
+        GitHubRepoIngester,
+        repo_ref_is_tainted,
+    )
     from pipecat_context_hub.services.ingest.source_ingest import SourceIngester
 
     logger = logging.getLogger(__name__)
@@ -245,23 +248,29 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
         changed_repos: list[str] = []
         repo_shas: dict[str, str] = {}
         prefetched: dict[str, tuple[Path, str]] = {}
+        frozen_sha_repos: set[str] = set()
 
         # Clean up repos removed from configuration (P2: stale data from
         # repos no longer in effective_repos would persist indefinitely).
         configured = set(config.sources.effective_repos)
+        tainted_repos = set(config.sources.tainted_repos)
         all_meta = index_store.get_all_metadata()
         for meta_key in all_meta:
             if meta_key.startswith("repo:") and meta_key.endswith(":commit_sha"):
                 slug = meta_key[len("repo:"):-len(":commit_sha")]
                 if slug not in configured:
-                    logger.info("Repo %s no longer configured, cleaning up", slug)
+                    if slug in tainted_repos:
+                        logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
+                    else:
+                        logger.info("Repo %s no longer configured, cleaning up", slug)
                     await index_store.delete_by_repo(slug)
                     index_store.delete_metadata(meta_key)
 
         for repo_slug in config.sources.effective_repos:
+            stored_sha_key = f"repo:{repo_slug}:commit_sha"
             try:
                 repo_path, commit_sha = await asyncio.to_thread(
-                    github.clone_or_fetch, repo_slug
+                    github.clone_or_fetch, repo_slug, False
                 )
                 repo_shas[repo_slug] = commit_sha
                 prefetched[repo_slug] = (repo_path, commit_sha)
@@ -275,7 +284,39 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
                 }
                 continue
 
-            stored_sha = index_store.get_metadata(f"repo:{repo_slug}:commit_sha")
+            stored_sha = index_store.get_metadata(stored_sha_key)
+            tainted_refs = set(config.sources.tainted_refs_by_repo.get(repo_slug, []))
+            if tainted_refs and repo_ref_is_tainted(repo_path, commit_sha, tainted_refs):
+                logger.warning(
+                    "Repo %s resolved to tainted ref (sha=%s), skipping refresh",
+                    repo_slug,
+                    commit_sha[:8],
+                )
+                if stored_sha and repo_ref_is_tainted(repo_path, stored_sha, tainted_refs):
+                    logger.warning(
+                        "Indexed ref for %s is also tainted; removing local records",
+                        repo_slug,
+                    )
+                    await index_store.delete_by_repo(repo_slug)
+                    index_store.delete_metadata(stored_sha_key)
+                    source_status[repo_slug] = {
+                        "status": "tainted",
+                        "sha": commit_sha[:8],
+                        "existing": pre_counts.get(repo_slug, 0),
+                        "updated": 0,
+                    }
+                else:
+                    source_status[repo_slug] = {
+                        "status": "tainted",
+                        "sha": commit_sha[:8],
+                        "existing": pre_counts.get(repo_slug, 0),
+                        "updated": "—",
+                    }
+                # Preserve the last known-good SHA (or lack of one) until this
+                # repo is ingested successfully at a non-tainted ref.
+                frozen_sha_repos.add(repo_slug)
+                continue
+
             if not force and stored_sha == commit_sha:
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
@@ -295,6 +336,21 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
         # the window where a repo's index is empty (crash-safety).
         ingested_repos: set[str] = set()
         for repo_slug in changed_repos:
+            repo_path, commit_sha = prefetched[repo_slug]
+            try:
+                await asyncio.to_thread(github.checkout_commit, repo_path, commit_sha)
+            except Exception as exc:
+                msg = f"Failed to checkout fetched ref for {repo_slug}: {exc}"
+                all_errors.append(msg)
+                logger.error(msg)
+                source_status[repo_slug] = {
+                    "status": "error",
+                    "sha": commit_sha[:8],
+                    "existing": pre_counts.get(repo_slug, 0),
+                    "updated": "—",
+                }
+                continue
+
             await index_store.delete_by_repo(repo_slug)
             logger.info("Deleted stale records for %s", repo_slug)
 
@@ -348,6 +404,8 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
         # retries them (P1: --force deletes records before ingest, so a failure
         # leaves the repo empty; keeping the old SHA would skip it next time).
         for repo_slug, sha in repo_shas.items():
+            if repo_slug in frozen_sha_repos:
+                continue
             if repo_slug not in changed_repos or repo_slug in ingested_repos:
                 index_store.set_metadata(f"repo:{repo_slug}:commit_sha", sha)
             else:

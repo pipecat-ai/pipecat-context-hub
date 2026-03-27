@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from git import Repo as GitRepo
+from git.exc import BadObject, GitCommandError
 
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
@@ -84,10 +85,73 @@ _BOUNDARY_RE = re.compile(
     re.MULTILINE,
 )
 
+_HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_REPO_SLUG_RE = re.compile(
+    r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+)
+
 
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: ~4 chars per token."""
     return len(text) // 4
+
+
+def repo_ref_is_tainted(repo_path: Path, commit_sha: str, tainted_refs: set[str]) -> bool:
+    """Return True when *commit_sha* matches a tainted commit-ish or tag name.
+
+    Hex refs are treated as commit SHA prefixes. Non-hex refs are matched
+    against local tag names fetched for the repository.
+    """
+    if not tainted_refs:
+        return False
+
+    sha = commit_sha.lower()
+    for ref in tainted_refs:
+        normalized = ref.strip()
+        if normalized and _HEX_SHA_RE.fullmatch(normalized) and sha.startswith(normalized.lower()):
+            return True
+
+    named_refs = [ref.strip() for ref in tainted_refs if ref.strip() and not _HEX_SHA_RE.fullmatch(ref.strip())]
+    if not named_refs:
+        return False
+
+    try:
+        git_repo = GitRepo(str(repo_path))
+    except Exception:
+        logger.warning(
+            "Failed to open repo for tainted-ref check at %s; treating named refs as tainted",
+            repo_path,
+        )
+        return True
+
+    tags_by_name = {tag.name: tag for tag in git_repo.tags if tag.name in named_refs}
+    for ref in named_refs:
+        tag = tags_by_name.get(ref)
+        if tag is None:
+            continue
+        try:
+            if tag.commit.hexsha.lower() == sha:
+                return True
+        except (AttributeError, BadObject, GitCommandError, ValueError):
+            logger.warning(
+                "Failed to resolve tainted tag %s in %s; treating ref as tainted",
+                ref,
+                repo_path,
+            )
+            return True
+
+    return False
+
+
+def _resolve_origin_head_commit(git_repo: GitRepo) -> str:
+    """Resolve the current commit for the remote default branch."""
+    try:
+        return git_repo.commit("origin/HEAD").hexsha
+    except Exception:
+        origin = git_repo.remotes.origin
+        if not origin.refs:
+            raise ValueError("Remote origin has no refs to resolve")
+        return origin.refs[0].commit.hexsha
 
 
 def _chunk_code(
@@ -641,6 +705,12 @@ class GitHubRepoIngester:
 
         if prefetched is not None:
             repo_path, commit_sha = prefetched
+            try:
+                await asyncio.to_thread(self.ensure_checkout, repo_path, commit_sha)
+            except Exception as exc:
+                msg = f"Failed to checkout prefetched ref for {repo_slug}: {exc}"
+                logger.error(msg)
+                return IngestResult(source=repo_slug, errors=[msg])
         else:
             try:
                 repo_path, commit_sha = await asyncio.to_thread(self.clone_or_fetch, repo_slug)
@@ -845,11 +915,13 @@ class GitHubRepoIngester:
             errors=errors,
         )
 
-    def clone_or_fetch(self, repo_slug: str) -> tuple[Path, str]:
+    def clone_or_fetch(self, repo_slug: str, checkout: bool = True) -> tuple[Path, str]:
         """Clone repo if not present, otherwise fetch latest.
 
         Returns (repo_path, HEAD commit SHA).
         """
+        if not _REPO_SLUG_RE.fullmatch(repo_slug):
+            raise ValueError(f"Invalid repo slug: {repo_slug}")
         # Sanitize slug to prevent path traversal
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", repo_slug)
         repo_path = self._repos_dir / safe_name
@@ -859,15 +931,32 @@ class GitHubRepoIngester:
 
         if (repo_path / ".git").is_dir():
             git_repo = GitRepo(str(repo_path))
-            origin = git_repo.remotes.origin
-            origin.fetch()
-            # Update working tree to match fetched remote HEAD
-            remote_ref = origin.refs[0]
-            git_repo.head.reset(remote_ref.commit, index=True, working_tree=True)
+            git_repo.git.fetch("origin", "--tags")
+            commit_sha = _resolve_origin_head_commit(git_repo)
+            if checkout:
+                self.checkout_commit(repo_path, commit_sha)
         else:
-            repo_path.mkdir(parents=True, exist_ok=True)
             clone_url = f"https://github.com/{repo_slug}.git"
-            git_repo = GitRepo.clone_from(clone_url, str(repo_path))
+            git_repo = GitRepo.clone_from(
+                clone_url,
+                str(repo_path),
+                no_checkout=not checkout,
+            )
+            commit_sha = git_repo.head.commit.hexsha
 
-        commit_sha = git_repo.head.commit.hexsha
         return repo_path, commit_sha
+
+    def checkout_commit(self, repo_path: Path, commit_sha: str) -> None:
+        """Reset the local working tree to a specific commit."""
+        git_repo = GitRepo(str(repo_path))
+        git_repo.head.reset(git_repo.commit(commit_sha), index=True, working_tree=True)
+
+    def ensure_checkout(self, repo_path: Path, commit_sha: str) -> None:
+        """Ensure the working tree matches *commit_sha* before reading files."""
+        git_repo = GitRepo(str(repo_path))
+        try:
+            if git_repo.head.commit.hexsha.lower() == commit_sha.lower():
+                return
+        except Exception:
+            logger.debug("HEAD lookup failed for %s; forcing checkout", repo_path, exc_info=True)
+        git_repo.head.reset(git_repo.commit(commit_sha), index=True, working_tree=True)

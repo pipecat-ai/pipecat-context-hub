@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from pipecat_context_hub.services.ingest.github_ingest import (
     GitHubRepoIngester,
@@ -19,6 +21,8 @@ from pipecat_context_hub.services.ingest.github_ingest import (
     _iter_code_files,
     _iter_root_level_code_files,
     _make_chunk_id,
+    _resolve_origin_head_commit,
+    repo_ref_is_tainted,
 )
 from pipecat_context_hub.shared.config import HubConfig, StorageConfig
 from pipecat_context_hub.shared.types import ChunkedRecord
@@ -53,9 +57,54 @@ def _create_fake_repo(tmp_path: Path, repo_name: str, files: dict[str, str]) -> 
         fpath.write_text(content, encoding="utf-8")
 
     git_repo = GitRepo.init(str(repo_dir))
+    with git_repo.config_writer() as config:
+        config.set_value("user", "name", "Test User")
+        config.set_value("user", "email", "test@example.com")
     git_repo.index.add([str(repo_dir / p) for p in files])
     git_repo.index.commit("initial commit")
     return repo_dir
+
+
+def _create_remote_and_clone(tmp_path: Path, repo_slug: str, files: dict[str, str]) -> tuple[Path, Path]:
+    """Create a source repo with a bare origin and return the local clone path."""
+    from git import Repo as GitRepo
+
+    source_dir = _create_fake_repo(tmp_path, "source_repo", files)
+    source_repo = GitRepo(str(source_dir))
+    bare_remote = tmp_path / "origin.git"
+    GitRepo.clone_from(str(source_dir), str(bare_remote), bare=True)
+    source_repo.create_remote("origin", str(bare_remote))
+    branch = source_repo.active_branch.name
+    source_repo.git.push("origin", branch, "--tags")
+
+    safe_name = repo_slug.replace("/", "_")
+    clone_dir = tmp_path / "data" / "repos" / safe_name
+    clone_dir.parent.mkdir(parents=True, exist_ok=True)
+    GitRepo.clone_from(str(bare_remote), str(clone_dir))
+    return source_dir, clone_dir
+
+
+def _commit_and_push(
+    source_dir: Path,
+    rel_path: str,
+    content: str,
+    *,
+    tag: str | None = None,
+) -> str:
+    """Commit a change in the source repo and push it to origin."""
+    from git import Repo as GitRepo
+
+    repo = GitRepo(str(source_dir))
+    file_path = source_dir / rel_path
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(content, encoding="utf-8")
+    repo.index.add([str(file_path)])
+    repo.index.commit("update")
+    if tag is not None:
+        repo.git.update_ref(f"refs/tags/{tag}", "HEAD")
+    branch = repo.active_branch.name
+    repo.git.push("origin", branch, "--tags")
+    return repo.head.commit.hexsha
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +237,125 @@ class TestMakeChunkId:
         key = "repo:path.py:sha:0"
         expected = hashlib.sha256(key.encode()).hexdigest()[:24]
         assert _make_chunk_id("repo", "path.py", "sha", 0) == expected
+
+
+class TestRepoRefIsTainted:
+    def test_matches_commit_prefix(self, tmp_path: Path):
+        repo_dir = _create_fake_repo(tmp_path, "repo", {"main.py": "print('ok')\n"})
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+        assert repo_ref_is_tainted(repo_dir, commit_sha, {commit_sha[:8]})
+
+    def test_matches_tag_name(self, tmp_path: Path):
+        repo_dir = _create_fake_repo(tmp_path, "repo", {"main.py": "print('ok')\n"})
+        from git import Repo as GitRepo
+
+        git_repo = GitRepo(str(repo_dir))
+        git_repo.git.update_ref("refs/tags/v1.2.3", "HEAD")
+        commit_sha = git_repo.head.commit.hexsha
+        assert repo_ref_is_tainted(repo_dir, commit_sha, {"v1.2.3"})
+
+    def test_non_matching_tag_returns_false(self, tmp_path: Path):
+        repo_dir = _create_fake_repo(tmp_path, "repo", {"main.py": "print('ok')\n"})
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+        assert not repo_ref_is_tainted(repo_dir, commit_sha, {"v9.9.9"})
+
+    def test_repo_open_failure_fails_closed_for_named_refs(self, tmp_path: Path):
+        missing_repo = tmp_path / "missing-repo"
+        assert repo_ref_is_tainted(missing_repo, "deadbeef", {"v1.2.3"})
+
+
+class TestCloneOrFetchCheckoutControl:
+    def test_invalid_repo_slug_rejected(self, tmp_path: Path):
+        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+
+        with pytest.raises(ValueError, match="Invalid repo slug"):
+            ingester.clone_or_fetch("../evil")
+
+    def test_checkout_false_keeps_existing_worktree_and_fetches_tags(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        repo_slug = "test-org/test-repo"
+        source_dir, clone_dir = _create_remote_and_clone(
+            tmp_path,
+            repo_slug,
+            {"main.py": "print('old')\n"},
+        )
+        config = HubConfig(
+            storage=StorageConfig(data_dir=tmp_path / "data"),
+            sources=HubConfig().sources.model_copy(update={"repos": [repo_slug]}),
+        )
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        local_repo = GitRepo(str(clone_dir))
+        old_sha = local_repo.head.commit.hexsha
+        new_sha = _commit_and_push(
+            source_dir,
+            "main.py",
+            "print('new')\n",
+            tag="v1.2.3",
+        )
+
+        repo_path, fetched_sha = ingester.clone_or_fetch(repo_slug, checkout=False)
+
+        assert repo_path == clone_dir
+        assert fetched_sha == new_sha
+        assert GitRepo(str(clone_dir)).head.commit.hexsha == old_sha
+        assert repo_ref_is_tainted(clone_dir, fetched_sha, {"v1.2.3"})
+
+        ingester.checkout_commit(clone_dir, fetched_sha)
+        assert GitRepo(str(clone_dir)).head.commit.hexsha == new_sha
+
+    async def test_ingest_prefetched_repo_ensures_advertised_checkout(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        repo_slug = "test-org/test-repo"
+        source_dir, clone_dir = _create_remote_and_clone(
+            tmp_path,
+            repo_slug,
+            {"main.py": "print('old')\n"},
+        )
+        new_sha = _commit_and_push(
+            source_dir,
+            "main.py",
+            "print('new')\n",
+        )
+        config = HubConfig(
+            storage=StorageConfig(data_dir=tmp_path / "data"),
+            sources=HubConfig().sources.model_copy(update={"repos": [repo_slug]}),
+        )
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        repo_path, prefetched_sha = ingester.clone_or_fetch(repo_slug, checkout=False)
+
+        result = await ingester.ingest(
+            repos=[repo_slug],
+            prefetched={repo_slug: (repo_path, prefetched_sha)},
+        )
+
+        assert result.errors == []
+        upserted_records = writer.upsert.call_args.args[0]
+        assert upserted_records
+        assert any("print('new')" in record.content for record in upserted_records)
+        assert GitRepo(str(clone_dir)).head.commit.hexsha == new_sha
+
+
+class TestResolveOriginHeadCommit:
+    def test_empty_origin_refs_raise_clear_error(self):
+        origin = MagicMock()
+        origin.refs = []
+        git_repo = MagicMock()
+        git_repo.commit.side_effect = ValueError("origin/HEAD missing")
+        git_repo.remotes.origin = origin
+
+        with pytest.raises(ValueError, match="Remote origin has no refs"):
+            _resolve_origin_head_commit(git_repo)
 
 
 # ---------------------------------------------------------------------------

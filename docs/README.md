@@ -27,20 +27,20 @@ All responses include an `EvidenceReport` with `known`/`unknown` items, confiden
 ## Quick Start
 
 ```bash
-# Install (editable, with dev deps)
-uv pip install -e ".[dev]"
+# Install the project and dev tooling from the lockfile
+uv sync --extra dev --group dev
 
 # Populate the local index (crawls docs + clones repos + computes embeddings)
-pipecat-context-hub refresh
+uv run pipecat-context-hub refresh
 
 # Force full re-ingest, ignoring cached state
-pipecat-context-hub refresh --force
+uv run pipecat-context-hub refresh --force
 
 # Recover from an unhealthy local Chroma index and rebuild from scratch
-pipecat-context-hub refresh --force --reset-index
+uv run pipecat-context-hub refresh --force --reset-index
 
 # Start the MCP server
-pipecat-context-hub serve
+uv run pipecat-context-hub serve
 ```
 
 ## Client Setup
@@ -55,6 +55,18 @@ Add the server to your IDE's MCP config. Pre-built templates are in `config/clie
 | Zed | [docs/setup/zed.md](setup/zed.md) | `config/clients/zed.json` |
 
 See [docs/setup/README.md](setup/README.md) for the full setup overview.
+
+## Security
+
+The MCP server threat model and trust-boundary review live in
+[docs/security/threat-model.md](security/threat-model.md).
+
+Local upstream denylisting is available when a repo or release is suspected to
+be tainted:
+
+- `PIPECAT_HUB_TAINTED_REPOS` skips a repo entirely
+- `PIPECAT_HUB_TAINTED_REFS` skips specific `org/repo@ref` entries where `ref`
+  is a tag or commit SHA/prefix
 
 ## Architecture
 
@@ -110,7 +122,13 @@ Retrieval:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
+| `PIPECAT_HUB_TAINTED_REPOS` | *(empty)* | Comma-separated repo slugs to skip entirely and remove from the active refresh set |
+| `PIPECAT_HUB_TAINTED_REFS` | *(empty)* | Comma-separated `org/repo@ref` entries. `ref` may be a tag or commit SHA/prefix; refresh skips a repo when fetched HEAD matches one of these refs |
 | `PIPECAT_HUB_RERANKER_ENABLED` | `1` (enabled) | Set to `0` to disable cross-encoder reranking |
+| `PIPECAT_HUB_ENABLE_QUALITY_BENCHMARK` | *(empty)* | Set to `1` to opt into the retrieval-quality benchmark when running it directly with `pytest` |
+| `PIPECAT_HUB_BENCHMARK_OUTPUT` | *(empty)* | Optional JSON output path for the retrieval-quality benchmark report |
+| `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK` | *(empty)* | Set to `1` to opt into the runtime stability benchmark when running it directly with `pytest` |
+| `PIPECAT_HUB_STABILITY_OUTPUT` | *(empty)* | Optional JSON output path for the runtime stability benchmark report |
 
 
 ## Dashboard
@@ -150,6 +168,8 @@ A `justfile` provides common tasks. Run `just` to see all recipes.
 ```bash
 just check    # lint + format check + typecheck
 just test     # run tests
+just audit    # pip-audit on the frozen env + bandit
+just sbom     # generate a reproducible CycloneDX SBOM
 just benchmark-quality   # live retrieval-quality benchmark on the local index
 ```
 
@@ -157,7 +177,7 @@ Or use `uv` directly:
 
 ```bash
 # Install dev dependencies
-uv pip install -e ".[dev]"
+uv sync --extra dev --group dev
 
 # Run tests
 uv run pytest tests/ -v
@@ -175,6 +195,7 @@ Two benchmark modes exist:
 
 - `tests/benchmarks/test_latency.py` measures component and end-to-end latency on a seeded local corpus.
 - `tests/benchmarks/test_retrieval_quality.py` measures retrieval quality against the current local index.
+- `tests/benchmarks/test_runtime_stability.py` measures repeated `refresh` / `serve` lifecycle stability and concurrent retrieval growth in RSS, thread count, and open file descriptors.
 
 The retrieval-quality benchmark is intended for the default corpus:
 
@@ -183,22 +204,29 @@ The retrieval-quality benchmark is intended for the default corpus:
 - `pipecat-ai/pipecat-examples`
 - No `PIPECAT_HUB_EXTRA_REPOS`
 
-Run it after `pipecat-context-hub refresh`:
+Run it after `uv run pipecat-context-hub refresh`:
 
 ```bash
 just benchmark-quality
 ```
 
+Run the runtime stability benchmark when you want an opt-in soak/leak pass:
+
+```bash
+just benchmark-stability
+```
+
 If the benchmark reports an unhealthy local vector index, rebuild it with:
 
 ```bash
-pipecat-context-hub refresh --force --reset-index
+uv run pipecat-context-hub refresh --force --reset-index
 ```
 
 To persist a versioned report for later comparison:
 
 ```bash
 PIPECAT_HUB_BENCHMARK_OUTPUT=artifacts/benchmarks/retrieval-quality-0.0.9.json just benchmark-quality
+just benchmark-stability-report
 ```
 
 Each JSON report includes:

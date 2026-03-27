@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
 
 from pipecat_context_hub.shared.config import EmbeddingConfig
@@ -31,22 +32,25 @@ class EmbeddingService:
         self._model_name = cfg.model_name
         self._dimension = cfg.dimension
         self._model: SentenceTransformer | None = None
+        self._model_lock = threading.RLock()
 
     def _get_model(self) -> SentenceTransformer:
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer
+        with self._model_lock:
+            if self._model is None:
+                from sentence_transformers import SentenceTransformer
 
-            logger.info("Loading embedding model %s", self._model_name)
-            self._model = SentenceTransformer(self._model_name, device="cpu")
-        return self._model
+                logger.info("Loading embedding model %s", self._model_name)
+                self._model = SentenceTransformer(self._model_name, device="cpu")
+            return self._model
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Compute embeddings for a batch of texts."""
         if not texts:
             return []
-        model = self._get_model()
-        embeddings: Any = model.encode(texts, show_progress_bar=False)
-        return embeddings.tolist()  # type: ignore[no-any-return]
+        with self._model_lock:
+            model = self._get_model()
+            embeddings: Any = model.encode(texts, show_progress_bar=False)
+            return embeddings.tolist()  # type: ignore[no-any-return]
 
     def embed_query(self, query: str) -> list[float]:
         """Compute embedding for a single query string."""

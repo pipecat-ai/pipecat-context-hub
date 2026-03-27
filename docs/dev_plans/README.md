@@ -7,6 +7,7 @@
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-03-25 | chore | MCP Server Audit & Hardening | Complete | vr000m | `chore/mcp-server-audit` | `20260325-chore-mcp-server-audit-hardening.md` |
 | 2026-03-24 | bug | Chroma Index Recovery & Benchmark Hardening | Complete | vr000m | `feature/daily-python-indexing` | `20260324-bug-chroma-index-recovery.md` |
 | 2026-03-24 | feature | Language & Domain Filtering for search_examples | Complete | vr000m | `feature/language-domain-filtering` | `20260218-design-pipecat-context-hub.md` |
 | 2026-03-24 | feature | Advanced Reranking & Retrieval Quality | Complete | vr000m | `feature/advanced-reranking` | `20260218-design-pipecat-context-hub.md` |
