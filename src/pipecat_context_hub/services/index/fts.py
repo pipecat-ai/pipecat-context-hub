@@ -356,9 +356,9 @@ class FTSIndex:
             return []
 
         sql = "\n".join([
-            "SELECT chunk_id, content, content_type, source_url,",
-            "       repo, path, commit_sha, indexed_at, metadata_json",
-            "FROM chunks",
+            "SELECT c.chunk_id, c.content, c.content_type, c.source_url,",
+            "       c.repo, c.path, c.commit_sha, c.indexed_at, c.metadata_json",
+            "FROM chunks c",
             "WHERE " + " AND ".join(filter_clauses),
             "LIMIT ?",
         ])
