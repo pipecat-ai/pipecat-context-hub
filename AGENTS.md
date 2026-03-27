@@ -33,6 +33,17 @@ surface against real indexed data.
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
+## Pre-Merge Quality Gate
+
+Run the full CI gate locally before merging any PR. Do not rely on tests
+alone — mypy and ruff catch issues that only surface in CI.
+
+```bash
+uv run ruff check src/ tests/
+uv run mypy src/ tests/
+uv run pytest tests/ -q
+```
+
 ## Review Checklist
 
 Findings that have been reviewed and deliberately accepted. Do not re-flag these
