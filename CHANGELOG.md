@@ -26,6 +26,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   updated consistently.
 - **Pre-merge live MCP smoke test** — 10-item checklist in AGENTS.md for
   verifying retrieval correctness against the live local index before merging
+- **Curated `.env.example` repo bundles** — copy-ready
+  `PIPECAT_HUB_EXTRA_REPOS` examples are now grouped by SDKs/transports, UI,
+  flows, cloud/dev tools, quickstarts, and demos to make targeted local index
+  expansion easier
 
 ### Changed
 
@@ -38,6 +42,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 - **GitHub refresh safety** — repo slugs are validated before clone URLs are
   built, fetched refs are checked for taint before checkout, and tainted refs
   no longer advance local working trees
+- **Least-privilege CI token scope** — the GitHub Actions workflow now declares
+  explicit `GITHUB_TOKEN` permissions instead of relying on repository defaults
 
 ### Fixed
 
@@ -47,6 +53,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   large upstream docs payload cannot grow refresh memory without bound
 - Chroma product telemetry disabled via `NoOpProductTelemetryClient` —
   local dev tool should not phone home
+- Integration tests now validate docs citations with parsed URL hostname checks
+  instead of substring-style prefix matching
 
 ## [0.0.10] - 2026-03-25
 
