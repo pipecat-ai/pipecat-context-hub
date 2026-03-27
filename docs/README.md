@@ -107,7 +107,7 @@ Retrieval:
   - Supports single-project repos (`src/`-layout, root-level entry scripts)
   - Repos with `src/` layouts are AST-indexed for `search_api` (class definitions, method signatures)
   - Repos with `.pyi` stubs at root (no Python in `src/`) are also AST-indexed
-  - See `.env.example` for usage
+  - See `.env.example` for usage and copy-ready curated repo bundles
 
 ### Technology
 
