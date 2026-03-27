@@ -133,11 +133,7 @@ Retrieval:
 
 ## Dashboard
 
-<h1><div align="left">
- <img alt="pipecat" width="400px" height="auto" src="./dashboard-example.jpg">
-</div></h1>
-
-The project includes an interactive dashboard for understanding the index —  what's
+The project includes an interactive dashboard for understanding the index — what's
 in it, how chunks distribute across repos and content types, and how concepts
 relate in embedding space. We built it because tuning retrieval quality requires
 seeing the data: which repos dominate, where docs and source code overlap
@@ -148,16 +144,18 @@ groupings.
   type distribution, content type doughnut, AST chunk type breakdown, method
   length histogram, and chunk size comparison. All data loaded from
   `dashboard_data.json` (generated, not hardcoded).
+
+  ![Index Explorer](sshot-dashboard-index.jpg)
+
 - **Latent Space Explorer** (`dashboard/public/latent-space.html`) — 3D
   point cloud of all chunks projected from 384D embeddings to 3D via UMAP
   (cosine metric). Supports rotate/zoom/pan, content type filtering, search
   highlighting, and cluster expansion with labels. Uses Three.js with
   additive blending so overlapping content types produce mixed colours.
 
-```bash
-# Install just
-uv pip install rust-just
+  ![Latent Space Explorer](sshot-dashboard-latent-space.png)
 
+```bash
 # Rebuild dashboard data from the current index
 just dashboard-build
 
