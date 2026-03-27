@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import chromadb
+from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryEvent
+from overrides import override
 
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
@@ -26,6 +28,14 @@ COLLECTION_NAME = "latest"
 
 # ChromaDB limits batch operations to ~5,461 embeddings. Use a safe limit.
 _CHROMA_BATCH_SIZE = 5000
+
+
+class NoOpProductTelemetryClient(ProductTelemetryClient):
+    """Disable Chroma product telemetry cleanly for local clients."""
+
+    @override
+    def capture(self, event: ProductTelemetryEvent) -> None:
+        return
 
 
 def _record_to_metadata(
@@ -173,8 +183,7 @@ def _build_where_clause(filters: dict[str, Any]) -> dict[str, Any] | None:
         conditions.append({"domain": {"$eq": filters["domain"]}})
     if "execution_mode" in filters:
         conditions.append({"execution_mode": {"$eq": filters["execution_mode"]}})
-    if "class_name" in filters:
-        conditions.append({"class_name": {"$eq": filters["class_name"]}})
+    # class_name is handled as a post-filter (prefix match) — see _apply_post_filters
     if "method_name" in filters:
         conditions.append({"method_name": {"$eq": filters["method_name"]}})
     if "chunk_type" in filters:
@@ -211,6 +220,10 @@ def _apply_post_filters(
             for r in filtered
             if _record_has_tags(r, tags_to_match)
         ]
+
+    if "class_name" in filters:
+        prefix = filters["class_name"]
+        filtered = [r for r in filtered if r.chunk.metadata.get("class_name", "").startswith(prefix)]
 
     if "module_path" in filters:
         prefix = filters["module_path"]
@@ -257,7 +270,15 @@ class VectorIndex:
     def _open_client(self) -> None:
         """Open the persistent Chroma client and register a local reference."""
         self._chroma_path.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(self._chroma_path))
+        self._client = chromadb.PersistentClient(
+            path=str(self._chroma_path),
+            settings=chromadb.Settings(
+                anonymized_telemetry=False,
+                chroma_product_telemetry_impl=(
+                    "pipecat_context_hub.services.index.vector.NoOpProductTelemetryClient"
+                ),
+            ),
+        )
         self._collection = self._client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
@@ -431,7 +452,7 @@ class VectorIndex:
             return []
 
         with self._op_lock:
-            needs_post_filter = any(k in query.filters for k in ("path", "capability_tags", "module_path", "yields", "calls"))
+            needs_post_filter = any(k in query.filters for k in ("path", "capability_tags", "class_name", "module_path", "yields", "calls"))
             where = _build_where_clause(query.filters)
 
             # Clamp n_results to collection size to prevent ChromaDB crash

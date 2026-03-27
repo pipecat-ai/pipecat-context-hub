@@ -222,6 +222,10 @@ class FTSIndex:
             if "chunk_id" in query.filters:
                 return self._get_by_chunk_id(query.filters["chunk_id"])
 
+            # Filter-only lookup (no FTS MATCH) — used by get_doc path lookup
+            if query.filter_only:
+                return self._filter_only_search(query)
+
             if not query.query_text.strip():
                 return []
 
@@ -339,6 +343,48 @@ class FTSIndex:
             metadata=extra_meta,
         )
         return [IndexResult(chunk=record, score=1.0, match_type="keyword")]
+
+    def _filter_only_search(self, query: IndexQuery) -> list[IndexResult]:
+        """Search by metadata filters only, bypassing FTS MATCH.
+
+        Used for direct lookups like get_doc by path where the query text
+        is a path string, not a keyword search term.
+        """
+        filter_clauses, filter_params = self._build_filter_sql(query.filters)
+        if not filter_clauses:
+            return []
+
+        sql = "\n".join([
+            "SELECT c.chunk_id, c.content, c.content_type, c.source_url,",
+            "       c.repo, c.path, c.commit_sha, c.indexed_at, c.metadata_json",
+            "FROM chunks c",
+            "WHERE " + " AND ".join(filter_clauses),
+            "ORDER BY c.rowid",
+            "LIMIT ?",
+        ])
+        filter_params.append(query.limit)
+
+        cursor = self._conn.execute(sql, filter_params)
+        rows = cursor.fetchall()
+
+        items: list[IndexResult] = []
+        for row in rows:
+            (cid, content, content_type, source_url, repo, path,
+             commit_sha, indexed_at_str, metadata_json) = row
+            extra_meta: dict[str, Any] = json.loads(metadata_json) if metadata_json else {}
+            record = ChunkedRecord(
+                chunk_id=cid,
+                content=content,
+                content_type=content_type,
+                source_url=source_url,
+                repo=repo,
+                path=path,
+                commit_sha=commit_sha,
+                indexed_at=datetime.fromisoformat(indexed_at_str),
+                metadata=extra_meta,
+            )
+            items.append(IndexResult(chunk=record, score=1.0, match_type="keyword"))
+        return items
 
     def set_metadata(self, key: str, value: str) -> None:
         """Upsert a key-value pair in the index_metadata table."""
@@ -470,10 +516,15 @@ class FTSIndex:
                 clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")
                 params.append(f'%"{key}": "{esc(filters[key])}"%')
         # Source API metadata filters (exact match)
-        for key in ("class_name", "chunk_type", "method_name"):
+        for key in ("chunk_type", "method_name"):
             if key in filters:
                 clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")
                 params.append(f'%"{key}": "{esc(filters[key])}"%')
+        # class_name is a prefix filter so "DailyTransport" matches
+        # "DailyTransport", "DailyTransportClient", "DailyTransportParams"
+        if "class_name" in filters:
+            clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")
+            params.append(f'%"class_name": "{esc(filters["class_name"])}%')
         # module_path is a prefix filter (e.g. "pipecat.services" matches "pipecat.services.tts")
         if "module_path" in filters:
             clauses.append("c.metadata_json LIKE ? ESCAPE '\\'")

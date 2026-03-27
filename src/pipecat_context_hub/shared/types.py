@@ -49,7 +49,11 @@ class IndexQuery(BaseModel):
         default_factory=dict,
         description="Metadata filters (repo, content_type, path prefix, capability_tags).",
     )
-    limit: int = Field(default=10, ge=1, le=100, description="Max results to return.")
+    filter_only: bool = Field(
+        default=False,
+        description="When True, bypass text search (FTS MATCH) and return results by metadata filters only.",
+    )
+    limit: int = Field(default=10, ge=1, le=500, description="Max results to return.")
 
 
 class IndexResult(BaseModel):
@@ -240,12 +244,29 @@ class SearchDocsOutput(BaseModel):
 class GetDocInput(BaseModel):
     """Input for the get_doc MCP tool."""
 
-    doc_id: str = Field(max_length=256)
+    doc_id: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Chunk ID from a previous search_docs result. Either doc_id or path must be provided.",
+    )
+    path: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Doc path prefix (e.g. '/guides/learn/transports'). Looks up by path when doc_id is not known.",
+    )
     section: str | None = Field(
         default=None,
         max_length=256,
         description="Extract a specific section by heading. Falls back to full document if not found.",
     )
+
+    @model_validator(mode="after")
+    def _require_doc_id_or_path(self) -> "GetDocInput":
+        has_doc_id = self.doc_id is not None and self.doc_id.strip()
+        has_path = self.path is not None and self.path.strip()
+        if not has_doc_id and not has_path:
+            raise ValueError("Either doc_id or path must be provided.")
+        return self
 
 
 class GetDocOutput(BaseModel):
@@ -372,7 +393,7 @@ class GetCodeSnippetInput(BaseModel):
     class_name: str | None = Field(
         default=None,
         max_length=256,
-        description="Filter by class name, e.g. 'DailyTransport'. Symbol mode only.",
+        description="Filter by class name prefix, e.g. 'DailyTransport' matches DailyTransport, DailyTransportClient, etc. Symbol mode only.",
     )
     content_type: Literal["code", "source"] | None = Field(
         default=None,
@@ -477,7 +498,7 @@ class SearchApiInput(BaseModel):
     class_name: str | None = Field(
         default=None,
         max_length=256,
-        description="Filter by class name, e.g. 'TTSService'.",
+        description="Filter by class name prefix, e.g. 'DailyTransport' matches DailyTransport, DailyTransportClient, etc.",
     )
     chunk_type: Literal["module_overview", "class_overview", "method", "function"] | None = Field(
         default=None,

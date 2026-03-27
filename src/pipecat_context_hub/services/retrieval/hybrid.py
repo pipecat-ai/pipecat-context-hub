@@ -239,22 +239,43 @@ class HybridRetriever:
     # -----------------------------------------------------------------
 
     async def get_doc(self, input: GetDocInput) -> GetDocOutput:
-        """Get a specific document by ID (direct lookup)."""
-        filters: dict[str, Any] = {"chunk_id": input.doc_id}
-        query = IndexQuery(
-            query_text=input.doc_id,
-            filters=filters,
-            limit=1,
-        )
+        """Get a specific document by ID or path (direct lookup)."""
+        lookup_key = input.doc_id or input.path or ""
 
-        results = await self._index.keyword_search(query)
+        if input.doc_id is not None and input.doc_id.strip():
+            # Direct chunk_id lookup
+            filters: dict[str, Any] = {"chunk_id": input.doc_id}
+            query = IndexQuery(
+                query_text=input.doc_id,
+                filters=filters,
+                limit=1,
+            )
+            results = await self._index.keyword_search(query)
+        elif input.path is not None:
+            # Path-based lookup: get ALL chunks for this path and concatenate
+            # into a full page. Use a high limit to capture multi-chunk pages.
+            lookup_key = input.path
+            filters = {"content_type": "doc", "path": input.path}
+            query = IndexQuery(
+                query_text="",
+                filters=filters,
+                filter_only=True,
+                limit=200,
+            )
+            results = await self._index.keyword_search(query)
+            # Filter to exact path match (not prefix) to avoid pulling
+            # chunks from sibling pages like /transports-overview
+            results = [r for r in results if r.chunk.path == input.path]
+        else:
+            results = []
+
         result = results[0] if results else None
-        evidence = build_single_item_evidence(result, input.doc_id, "document")
+        evidence = build_single_item_evidence(result, lookup_key, "document")
 
         if result is None:
-            logger.debug("get_doc: doc_id=%r not found", input.doc_id)
+            logger.debug("get_doc: %r not found", lookup_key)
             return GetDocOutput(
-                doc_id=input.doc_id,
+                doc_id=lookup_key,
                 title="Not Found",
                 content="",
                 source_url="",
@@ -263,17 +284,27 @@ class HybridRetriever:
                 evidence=evidence,
             )
 
+        # For path-based lookups, concatenate all chunks into the full page
+        if input.path is not None and len(results) > 1:
+            content = "\n\n".join(r.chunk.content for r in results)
+            # Collect sections from all chunks
+            all_sections: list[str] = []
+            for r in results:
+                all_sections.extend(r.chunk.metadata.get("sections", []))
+            sections = all_sections
+        else:
+            sections = result.chunk.metadata.get("sections", [])
+            content = result.chunk.content
+
         chunk = result.chunk
-        sections: list[str] = chunk.metadata.get("sections", [])
-        content = chunk.content
 
         # If a specific section was requested, try to extract it
-        if input.section and sections:
+        if input.section:
             section_content = _extract_section(content, input.section)
             if section_content:
                 content = section_content
 
-        logger.debug("get_doc: doc_id=%r found, sections=%d", input.doc_id, len(sections))
+        logger.debug("get_doc: %r found, sections=%d", lookup_key, len(sections))
         return GetDocOutput(
             doc_id=chunk.chunk_id,
             title=chunk.metadata.get("title", chunk.path),

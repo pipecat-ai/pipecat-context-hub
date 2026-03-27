@@ -126,7 +126,7 @@ class TestIndexQuery:
         with pytest.raises(Exception):
             IndexQuery(query_text="x", limit=0)
         with pytest.raises(Exception):
-            IndexQuery(query_text="x", limit=101)
+            IndexQuery(query_text="x", limit=501)
 
 
 class TestIndexResult:
