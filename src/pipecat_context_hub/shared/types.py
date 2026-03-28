@@ -546,6 +546,10 @@ class ApiHit(BaseModel):
         default_factory=list,
         description="Methods called by this method (self.X, Class.X).",
     )
+    related_types: list[str] = Field(
+        default_factory=list,
+        description="RST type definition names for this method's parameters. Look up with search_api(query=name, chunk_type='type_definition').",
+    )
     citation: Citation
     score: float
 

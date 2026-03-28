@@ -631,6 +631,7 @@ class HybridRetriever:
             imports_raw = _parse_metadata_list(r.chunk.metadata, "imports")
             yields_raw = _parse_metadata_list(r.chunk.metadata, "yields")
             calls_raw = _parse_metadata_list(r.chunk.metadata, "calls")
+            related_types_raw = _parse_metadata_list(r.chunk.metadata, "related_types")
             hits.append(
                 ApiHit(
                     chunk_id=r.chunk.chunk_id,
@@ -645,6 +646,7 @@ class HybridRetriever:
                     imports=imports_raw,
                     yields=yields_raw,
                     calls=calls_raw,
+                    related_types=related_types_raw,
                     citation=citation,
                     score=r.score,
                 )
