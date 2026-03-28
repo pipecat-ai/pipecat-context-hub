@@ -241,6 +241,9 @@ class SourceIngester:
                         for f in typedef.fields
                     ]
                 elif typedef.alternatives:
+                    # Flatten all alternative fields into a single list for search.
+                    # Alternative grouping is intentionally discarded — the index
+                    # treats all fields as equally valid keys for this type.
                     # Flatten all alternative fields for search
                     all_fields: list[dict[str, str]] = []
                     for alt in typedef.alternatives:

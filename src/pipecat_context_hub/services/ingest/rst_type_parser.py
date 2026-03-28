@@ -105,7 +105,7 @@ def _extract_rst_refs(text: str) -> list[str]:
 
 def _sanitize_name(name: str, max_len: int) -> str:
     """Normalize and length-limit a name for safe indexing."""
-    name = name.strip()
+    name = _CONTROL_CHAR_RE.sub("", name).strip()
     if len(name) > max_len:
         name = name[:max_len]
     return name
@@ -148,7 +148,10 @@ def parse_rst_types(rst_path: Path) -> list[RstTypeDefinition]:
         if i >= len(lines):
             break
 
-        # Expect the type name as a heading — skip it
+        # Expect the type name as a heading — skip it.
+        # Assumption: every anchor is followed by a heading line + underline.
+        # If the format changes (e.g. anchor directly before a directive),
+        # the heading line would be mis-skipped.
         i += 1
 
         # Skip the underline (dashes)
@@ -293,7 +296,7 @@ def _parse_list_table(
                 ))
 
             raw_key = stripped[3:].strip().strip('"')
-            if raw_key.lower() in ("key", "value"):
+            if raw_key in ("Key", "Value"):  # case-sensitive to avoid collisions with data fields
                 in_header = True
                 current_key = None
             else:

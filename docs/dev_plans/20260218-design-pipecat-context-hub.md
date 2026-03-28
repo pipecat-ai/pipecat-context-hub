@@ -1462,7 +1462,7 @@ indexing per the AGENTS.md security constraint (non-AST ingestion source).
 
 ### Implementation Checklist
 
-- [ ] Create `src/pipecat_context_hub/services/ingest/rst_type_parser.py` —
+- [x] Create `src/pipecat_context_hub/services/ingest/rst_type_parser.py` —
       extract type definitions from `.rst` files (keeps `source_ingest.py`
       focused on orchestration)
 - [x] Handle all four RST type patterns: dict/list-table, enum/union, alias,
