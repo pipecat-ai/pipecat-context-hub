@@ -69,13 +69,9 @@ class RstTypeDefinition:
         elif self.kind == "enum":
             lines.append(f"Enum: {self.description}")
         elif self.kind == "alias":
-            # Only render concise type aliases (e.g. "A string or None").
-            # Drop free-form prose that doesn't look like a type definition.
-            desc = self.description
-            if len(desc) <= 80 and not any(w in desc.lower() for w in ("see ", "for more", "details")):
-                lines.append(f"Alias: {desc}")
-            else:
-                lines.append("Alias type (see source for details)")
+            # Never render alias prose in model-facing content — it is
+            # untrusted free-form text from cloned repos.
+            lines.append("Alias type (see source for details)")
 
         if self.rst_refs:
             lines.append("")
@@ -249,7 +245,7 @@ def parse_rst_types(rst_path: Path) -> list[RstTypeDefinition]:
                     line_start=anchor_line + 1,
                     line_end=section_end,
                     kind="alias",
-                    description=headline if headline else "",  # drop prose from alias descriptions
+                    description="",  # never store alias prose — untrusted text
                     rst_refs=refs,
                 )
             types.append(typedef)

@@ -150,19 +150,19 @@ NextType
 
         err = next(t for t in types if t.name == "CallClientError")
         assert err.kind == "alias"
-        assert "error message" in err.description
-        assert "None" in err.description
+        assert err.description == ""  # alias prose is never stored
 
 
-    def test_alias_renders_concise_description(self, tmp_path: Path):
+    def test_alias_never_renders_prose(self, tmp_path: Path):
+        """Alias content must never include untrusted RST prose."""
         rst_file = tmp_path / "types.rst"
         rst_file.write_text(self.RST)
         types = parse_rst_types(rst_file)
 
         err = next(t for t in types if t.name == "CallClientError")
         content = err.render_content("daily")
-        assert "Alias:" in content
-        assert "error message" in content
+        assert "see source" in content.lower()
+        assert "error message" not in content
 
     def test_prose_alias_does_not_render_raw_text(self, tmp_path: Path):
         """Regression: free-form prose from RST must not appear in snippet content."""
