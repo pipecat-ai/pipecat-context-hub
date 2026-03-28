@@ -154,6 +154,47 @@ NextType
         assert "None" in err.description
 
 
+    def test_alias_renders_concise_description(self, tmp_path: Path):
+        rst_file = tmp_path / "types.rst"
+        rst_file.write_text(self.RST)
+        types = parse_rst_types(rst_file)
+
+        err = next(t for t in types if t.name == "CallClientError")
+        content = err.render_content("daily")
+        assert "Alias:" in content
+        assert "error message" in content
+
+    def test_prose_alias_does_not_render_raw_text(self, tmp_path: Path):
+        """Regression: free-form prose from RST must not appear in snippet content."""
+        rst = """\
+.. _StreamingLayout:
+
+StreamingLayout
+-----------------------------------
+
+For more details see the layout object.
+
+.. _NextType:
+
+NextType
+-----------------------------------
+
+"a" | "b"
+"""
+        rst_file = tmp_path / "types.rst"
+        rst_file.write_text(rst)
+        types = parse_rst_types(rst_file)
+
+        sl = next(t for t in types if t.name == "StreamingLayout")
+        assert sl.kind == "alias"
+        content = sl.render_content("daily")
+        # Must NOT contain the raw prose text
+        assert "For more details" not in content
+        assert "layout object" not in content
+        # Should have a safe fallback
+        assert "see source" in content.lower() or "alias" in content.lower()
+
+
 class TestParseOrPattern:
     RST = """\
 .. _AudioInputSettings:

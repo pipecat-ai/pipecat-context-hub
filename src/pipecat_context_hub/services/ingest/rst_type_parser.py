@@ -69,7 +69,13 @@ class RstTypeDefinition:
         elif self.kind == "enum":
             lines.append(f"Enum: {self.description}")
         elif self.kind == "alias":
-            lines.append(self.description)
+            # Only render concise type aliases (e.g. "A string or None").
+            # Drop free-form prose that doesn't look like a type definition.
+            desc = self.description
+            if len(desc) <= 80 and not any(w in desc.lower() for w in ("see ", "for more", "details")):
+                lines.append(f"Alias: {desc}")
+            else:
+                lines.append("Alias type (see source for details)")
 
         if self.rst_refs:
             lines.append("")
@@ -224,9 +230,6 @@ def parse_rst_types(rst_path: Path) -> list[RstTypeDefinition]:
             stripped = _strip_rst_markup(content)
             content_lines = [ln for ln in stripped.splitlines() if ln.strip()]
             headline = _sanitize_name(content_lines[0], _MAX_DESCRIPTION_LEN) if content_lines else ""
-            prose = _sanitize_name(
-                "\n".join(content_lines[1:]).strip(), _MAX_DESCRIPTION_LEN
-            ) if len(content_lines) > 1 else ""
             refs = _extract_rst_refs(raw_section_text)
 
             if "|" in headline:
@@ -246,7 +249,7 @@ def parse_rst_types(rst_path: Path) -> list[RstTypeDefinition]:
                     line_start=anchor_line + 1,
                     line_end=section_end,
                     kind="alias",
-                    description=headline or prose,  # use prose if headline is empty
+                    description=headline if headline else "",  # drop prose from alias descriptions
                     rst_refs=refs,
                 )
             types.append(typedef)
