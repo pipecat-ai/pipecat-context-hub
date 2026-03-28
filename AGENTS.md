@@ -32,8 +32,10 @@ surface against real indexed data.
     `type_definition` in chunk_type
 11. `search_api("DialoutSendDtmfSettings", chunk_type="type_definition")` —
     returns the Daily SDK dict schema with field keys
-12. `search_api("send_dtmf settings")` — returns both the `.pyi` method
-    signature AND the `DialoutSendDtmfSettings` type definition
+12. `search_api("send_dtmf settings")` — returns method signatures.
+    Note: `DialoutSendDtmfSettings` type_definition does not yet surface
+    in mixed queries via embedding similarity alone (v2 cross-referencing
+    follow-up). Use `chunk_type="type_definition"` for direct lookup.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
