@@ -565,6 +565,7 @@ class HybridRetriever:
             else:
                 imports_raw = _parse_metadata_list(r.chunk.metadata, "imports")
                 calls_raw = _parse_metadata_list(r.chunk.metadata, "calls")
+                related_types = _parse_metadata_list(r.chunk.metadata, "related_types")
                 class_name = r.chunk.metadata.get("class_name", "")
                 companion = [
                     f"{class_name}.{c}"
@@ -572,6 +573,8 @@ class HybridRetriever:
                     else c
                     for c in calls_raw
                 ]
+                # Merge related type definitions into companion snippets
+                companion.extend(related_types)
 
                 yields_raw = _parse_metadata_list(r.chunk.metadata, "yields")
                 base_classes = _parse_metadata_list(r.chunk.metadata, "base_classes")

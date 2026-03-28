@@ -181,6 +181,12 @@ class SourceIngester:
                 errors.append(f"AST error in {rel_path}: {exc}")
                 continue
 
+            # Build type map for .pyi methods if this is a known repo
+            pyi_type_map: dict[str, list[str]] | None = None
+            if "daily-co/daily-python" in self._repo_slug:
+                from pipecat_context_hub.services.ingest.daily_type_map import ALL_METHOD_TYPES
+                pyi_type_map = ALL_METHOD_TYPES
+
             file_records = _build_chunks(
                 module_info=module_info,
                 source=source,
@@ -188,6 +194,7 @@ class SourceIngester:
                 commit_sha=commit_sha,
                 now=now,
                 repo_slug=self._repo_slug,
+                type_map=pyi_type_map,
             )
             records.extend(file_records)
 
@@ -340,6 +347,7 @@ def _build_chunks(
     commit_sha: str,
     now: datetime,
     repo_slug: str,
+    type_map: dict[str, list[str]] | None = None,
 ) -> list[ChunkedRecord]:
     """Build ChunkedRecord list from extracted module info."""
     records: list[ChunkedRecord] = []
@@ -444,6 +452,8 @@ def _build_chunks(
                     "yields": method.yields,
                     "calls": method.calls,
                     "imports": method.imports,
+                    **({"related_types": type_map[method.name]}
+                       if type_map and method.name in type_map else {}),
                 },
             ))
 

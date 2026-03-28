@@ -9,6 +9,11 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Method-to-type cross-referencing** — Daily SDK `.pyi` method chunks now
+  include `related_types` metadata linking methods to their RST type
+  definitions (e.g. `send_dtmf` → `DialoutSendDtmfSettings`). Surfaced in
+  `companion_snippets` on `get_code_snippet` results. 46 method-to-type
+  mappings for CallClient and EventHandler.
 - **MCP audit and hardening workflow** — committed CI quality/security jobs,
   a written MCP threat model, `just audit`, `just sbom`, and an opt-in
   runtime stability benchmark for repeated `refresh` / `serve` cycles and
