@@ -15,9 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # RST inline markup patterns to strip
+_RST_ROLE_RE = re.compile(r":(class|func|meth|attr|mod|ref|doc):`([^`]+)`")  # :class:`Foo`
 _RST_LINK_RE = re.compile(r"`([^<`]+)\s*<[^>]+>`_")  # `Text <url>`_
 _RST_REF_RE = re.compile(r"`([^`]+)`_")  # `TypeName`_
 _RST_EMPHASIS_RE = re.compile(r"\*([^*]+)\*")  # *italic*
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # control chars
 
 # Max lengths for sanitization (non-AST ingestion source)
 _MAX_TYPE_NAME_LEN = 128
@@ -78,9 +80,11 @@ class RstTypeDefinition:
 
 def _strip_rst_markup(text: str) -> str:
     """Remove RST inline markup, preserving the display text."""
+    text = _RST_ROLE_RE.sub(r"\2", text)  # :class:`Foo` → Foo
     text = _RST_LINK_RE.sub(r"\1", text)  # `Text <url>`_ → Text
     text = _RST_REF_RE.sub(r"\1", text)  # `TypeName`_ → TypeName
     text = _RST_EMPHASIS_RE.sub(r"\1", text)  # *italic* → italic
+    text = _CONTROL_CHAR_RE.sub("", text)  # strip control characters
     return text.strip()
 
 

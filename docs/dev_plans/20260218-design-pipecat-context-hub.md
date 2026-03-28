@@ -1338,7 +1338,7 @@ subclass name.
 
 **Test results:** 680 passed, 0 failed, lint clean
 
-## RST Type Documentation Indexing (planned)
+## RST Type Documentation Indexing (in progress)
 
 ### Problem
 
@@ -1465,27 +1465,27 @@ indexing per the AGENTS.md security constraint (non-AST ingestion source).
 - [ ] Create `src/pipecat_context_hub/services/ingest/rst_type_parser.py` —
       extract type definitions from `.rst` files (keeps `source_ingest.py`
       focused on orchestration)
-- [ ] Handle all four RST type patterns: dict/list-table, enum/union, alias,
+- [x] Handle all four RST type patterns: dict/list-table, enum/union, alias,
       and "or" alternates (merge as alternative shapes)
-- [ ] Strip RST inline markup: backtick cross-refs, external hyperlinks,
-      parenthetical descriptions
-- [ ] Normalize and length-limit type names, field keys, and refs before
-      indexing (security: non-AST ingestion source)
-- [ ] Wire into `SourceIngester.ingest()` — scan `docs/` for `.rst` files,
+- [x] Strip RST inline markup: backtick cross-refs, external hyperlinks,
+      parenthetical descriptions, Sphinx roles (`:class:`, `:func:`),
+      and control characters
+- [x] Normalize and length-limit type names, field keys, refs, and
+      descriptions before indexing (security: non-AST ingestion source)
+- [x] Wire into `SourceIngester.ingest()` — scan `docs/` for `.rst` files,
       call parser, build `content_type="source"` chunks
-- [ ] Set `path = "docs/src/types.rst"` and verify `_make_source_url` produces
+- [x] Set `path = "docs/src/types.rst"` and verify `_make_source_url` produces
       valid GitHub URLs with line ranges for RST files
-- [ ] Add `chunk_type="type_definition"` to `SearchApiInput.chunk_type` Literal
-- [ ] Add `fields` and `rst_refs` metadata serialization to
+- [x] Add `chunk_type="type_definition"` to `SearchApiInput.chunk_type` Literal
+- [x] Add `fields` and `rst_refs` metadata serialization to
       `_record_to_metadata` and `_metadata_to_record_fields` in `vector.py`
-- [ ] Update `search_api` tool description in `server/main.py` to mention
+- [x] Update `search_api` tool description in `server/main.py` to mention
       `type_definition` as a valid `chunk_type` filter
-- [ ] Update `type_definition` in reranking chunk-type preference in `rerank.py`
-- [ ] Unit tests for RST parsing (all 4 patterns + edge cases)
+- [x] Update `type_definition` in reranking chunk-type preference in `rerank.py`
+- [x] Unit tests for RST parsing (all 4 patterns + edge cases)
 - [ ] Test `.rst` discovery and combined `.pyi` + `.rst` ingestion in
       `test_source_ingest.py` — verify the `source_ingest.py` early-return
-      gate (line 71: only proceeds when `pkg_dirs` or `.pyi` files exist)
-      does not block `.rst` discovery
+      gate does not block `.rst` discovery
 - [ ] Update `test_mcp_tools.py` with `type_definition` filter test
 - [ ] Live MCP smoke test — mixed-query retrieval regression:
       `search_api("send_dtmf settings")` returns both the `.pyi` method
@@ -1493,8 +1493,7 @@ indexing per the AGENTS.md security constraint (non-AST ingestion source).
 - [ ] Live MCP smoke test — direct lookup:
       `search_api("DialoutSendDtmfSettings", chunk_type="type_definition")`
       returns the dict schema
-- [ ] Run full AGENTS.md pre-merge smoke suite (all 10 items) plus the
-      two new `type_definition` queries above
+- [ ] Run full AGENTS.md pre-merge smoke suite (all 12 items)
 
 ### Scope Constraints
 
