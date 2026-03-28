@@ -1482,9 +1482,19 @@ indexing per the AGENTS.md security constraint (non-AST ingestion source).
       `type_definition` as a valid `chunk_type` filter
 - [ ] Update `type_definition` in reranking chunk-type preference in `rerank.py`
 - [ ] Unit tests for RST parsing (all 4 patterns + edge cases)
+- [ ] Test `.rst` discovery and combined `.pyi` + `.rst` ingestion in
+      `test_source_ingest.py` — verify the `source_ingest.py` early-return
+      gate (line 71: only proceeds when `pkg_dirs` or `.pyi` files exist)
+      does not block `.rst` discovery
 - [ ] Update `test_mcp_tools.py` with `type_definition` filter test
-- [ ] Live MCP smoke test: `search_api("DialoutSendDtmfSettings",
-      chunk_type="type_definition")` returns the dict schema
+- [ ] Live MCP smoke test — mixed-query retrieval regression:
+      `search_api("send_dtmf settings")` returns both the `.pyi` method
+      signature AND `DialoutSendDtmfSettings` type definition
+- [ ] Live MCP smoke test — direct lookup:
+      `search_api("DialoutSendDtmfSettings", chunk_type="type_definition")`
+      returns the dict schema
+- [ ] Run full AGENTS.md pre-merge smoke suite (all 10 items) plus the
+      two new `type_definition` queries above
 
 ### Scope Constraints
 
