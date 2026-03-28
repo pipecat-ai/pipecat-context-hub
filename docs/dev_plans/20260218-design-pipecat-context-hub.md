@@ -1535,4 +1535,5 @@ core value (making dict schemas discoverable):
 - `src/pipecat_context_hub/services/retrieval/rerank.py` — chunk-type preference for `type_definition`
 - `src/pipecat_context_hub/server/main.py` — tool description update
 - `tests/unit/test_rst_type_parser.py` — new file, RST parsing tests
+- `tests/unit/test_source_ingest.py` — `.rst` discovery + combined ingestion test
 - `tests/unit/test_mcp_tools.py` — `type_definition` filter test
