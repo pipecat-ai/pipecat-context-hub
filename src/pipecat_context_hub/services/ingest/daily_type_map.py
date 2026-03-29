@@ -53,7 +53,7 @@ EVENT_HANDLER_PARAM_TYPES: dict[str, list[str]] = {
     "on_dtmf_event": ["DtmfEvent"],
     "on_inputs_updated": ["InputSettings"],
     "on_live_stream_started": ["LiveStreamStatus"],
-    "on_live_stream_updated": ["LiveStreamUpdate"],
+    "on_live_stream_updated": ["LiveStreamState"],
     "on_network_stats_updated": ["NetworkStats"],
     "on_participant_counts_updated": ["ParticipantCounts"],
     "on_participant_joined": ["Participant"],
