@@ -593,6 +593,8 @@ class HybridRetriever:
                     citation=citation,
                     dependency_notes=imports_raw,
                     companion_snippets=companion,
+                    # Metadata key is "related_types"; enriched output field is
+                    # "related_type_defs" (same pattern as calls → companion_snippets).
                     related_type_defs=related_types,
                     interface_expectations=expectations,
                 )

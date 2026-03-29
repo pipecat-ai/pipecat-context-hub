@@ -62,7 +62,10 @@ def _load_type_map(repo_slug: str) -> dict[str, list[str]] | None:
     mod_path, attr = entry
     import importlib
     mod = importlib.import_module(mod_path)
-    return getattr(mod, attr)  # type: ignore[no-any-return]
+    result = getattr(mod, attr)
+    if not isinstance(result, dict):
+        raise TypeError(f"{mod_path}.{attr} is not a dict: {type(result)}")
+    return result
 
 
 def _sanitize_slug(slug: str) -> str:
@@ -510,6 +513,8 @@ def _build_chunks(
                 "yields": func.yields,
                 "calls": func.calls,
                 "imports": func.imports,
+                **({"related_types": type_map[func.name]}
+                   if type_map and func.name in type_map else {}),
             },
         ))
 
