@@ -138,12 +138,11 @@ class SourceIngester:
                 if f.is_file() and not f.is_symlink()
             )
 
-        # 2c. Detect TypeScript repo (package.json or tsconfig.json at root)
+        # 2c. Detect TypeScript repo (package.json or tsconfig.json at root
+        # or in any immediate subdirectory — handles nested-package repos
+        # like small-webrtc-prebuilt where TS lives under client/)
         ts_files: list[Path] = []
-        is_ts_repo = (
-            (clone_dir / "package.json").is_file()
-            or (clone_dir / "tsconfig.json").is_file()
-        )
+        is_ts_repo = _has_ts_markers(clone_dir)
         if is_ts_repo:
             ts_files = _find_ts_files(clone_dir)
 
@@ -409,6 +408,25 @@ def _find_python_files(src_dir: Path) -> list[Path]:
             continue
         files.append(p)
     return files
+
+
+def _has_ts_markers(clone_dir: Path) -> bool:
+    """Check if a repo contains TypeScript markers (package.json or tsconfig.json).
+
+    Checks both the repo root and immediate subdirectories to handle
+    nested-package repos like ``small-webrtc-prebuilt`` where TS source
+    lives under ``client/``.
+    """
+    if not clone_dir.is_dir():
+        return False
+    for marker in ("package.json", "tsconfig.json"):
+        if (clone_dir / marker).is_file():
+            return True
+        # Check immediate subdirectories (not recursive — avoids node_modules)
+        for child in clone_dir.iterdir():
+            if child.is_dir() and child.name not in _TS_SKIP_DIRS and (child / marker).is_file():
+                return True
+    return False
 
 
 def _find_ts_files(clone_dir: Path) -> list[Path]:

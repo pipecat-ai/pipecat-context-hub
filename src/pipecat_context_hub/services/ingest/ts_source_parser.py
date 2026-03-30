@@ -449,9 +449,50 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
                     break
             i += 1
 
-        # Find the opening brace after return type annotation
-        brace_idx = source.find("{", i)
-        if brace_idx == -1 or brace_idx - i > 200:
+        # Find the function body brace. If a return type annotation contains
+        # an inline object type (e.g. `): { url: string } {`), the first `{`
+        # belongs to the type, not the body.  Scan past `: <type>` first.
+        body_search_start = i + 1
+        # Look for `:` indicating a return type annotation
+        colon_region = source[i + 1:i + 20].lstrip()
+        if colon_region.startswith(":"):
+            colon_pos = source.index(":", i + 1)
+            # Skip past the return type — find the next top-level `{`
+            # by scanning with brace depth awareness
+            j = colon_pos + 1
+            ret_brace_depth = 0
+            while j < len(source):
+                c = source[j]
+                if c in ('"', "'", "`"):
+                    q = c
+                    j += 1
+                    while j < len(source) and source[j] != q:
+                        if source[j] == "\\" and j + 1 < len(source):
+                            j += 1
+                        j += 1
+                    j += 1
+                    continue
+                if c == "{":
+                    if ret_brace_depth == 0:
+                        # This is either the return type object or the body
+                        # Check if we've seen a type object already
+                        break
+                    ret_brace_depth += 1
+                elif c == "}":
+                    ret_brace_depth -= 1
+                j += 1
+            # j now points at first `{` after colon — check if it's a type
+            if j < len(source) and source[j] == "{":
+                # Peek: find the matching `}` of this brace
+                close = _find_matching_brace(source, j)
+                # Check if there's another `{` after — that would be the body
+                after_close = source[close + 1:close + 20].lstrip()
+                if after_close.startswith("{"):
+                    # The first `{` was the return type, skip to the body
+                    body_search_start = close + 1
+
+        brace_idx = source.find("{", body_search_start)
+        if brace_idx == -1 or brace_idx - i > 500:
             # No body found within reasonable range — might be a declaration
             body = source[m.start():i + 1]
             end_pos = i
@@ -502,7 +543,7 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
             if opener == "{":
                 end_pos = _find_matching_brace(source, rest_start)
             else:
-                # Find matching paren
+                # Find matching paren (arrow function params)
                 depth = 1
                 j = rest_start + 1
                 while j < len(source) and depth > 0:
@@ -511,7 +552,30 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
                     elif source[j] == ")":
                         depth -= 1
                     j += 1
-                end_pos = j - 1
+                # j is now past the closing paren — check for => body
+                after_paren = source[j:j + 50].lstrip()
+                if after_paren.startswith("=>"):
+                    # Arrow function — find the body after =>
+                    arrow_pos = source.index("=>", j)
+                    after_arrow = source[arrow_pos + 2:].lstrip()
+                    body_start = arrow_pos + 2 + (len(source[arrow_pos + 2:]) - len(after_arrow))
+                    if after_arrow.startswith("{"):
+                        end_pos = _find_matching_brace(source, body_start)
+                    elif after_arrow.startswith("("):
+                        # Parenthesized expression (e.g. JSX)
+                        pd = 1
+                        k = body_start + 1
+                        while k < len(source) and pd > 0:
+                            if source[k] == "(":
+                                pd += 1
+                            elif source[k] == ")":
+                                pd -= 1
+                            k += 1
+                        end_pos = k - 1
+                    else:
+                        end_pos = _find_type_end(source, body_start)
+                else:
+                    end_pos = j - 1
         else:
             # Simple value — find semicolon or newline
             end_pos = _find_type_end(source, value_start)
