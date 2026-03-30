@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import textwrap
 
-import pytest
-
 from pipecat_context_hub.services.ingest.ts_source_parser import (
     TsDeclaration,
     parse_ts_source,

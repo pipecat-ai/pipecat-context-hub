@@ -363,12 +363,12 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
         name = m.group("name")
         base = m.group("base")
         ifaces_str = m.group("ifaces")
-        bases: list[str] = []
+        cls_bases: list[str] = []
         if base:
             # Strip generics from base class for clean metadata
-            bases.append(re.sub(r"<.*>", "", base).strip())
+            cls_bases.append(re.sub(r"<.*>", "", base).strip())
         if ifaces_str:
-            bases.extend(b.strip() for b in ifaces_str.split(","))
+            cls_bases.extend(b.strip() for b in ifaces_str.split(","))
 
         is_abstract = "abstract" in source[m.start():m.start() + len("export abstract class ") + 10]
 
@@ -384,7 +384,7 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
             line_end=_line_number(source, end_pos),
             body=body,
             jsdoc=jsdoc,
-            base_classes=bases,
+            base_classes=cls_bases,
             is_abstract=is_abstract,
         ))
 
@@ -466,7 +466,6 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
     # --- Typed const exports ---
     for m in _CONST_RE.finditer(source):
         name = m.group("name")
-        type_annotation = m.group("type").strip()
 
         # Find the end of the const value
         value_start = m.end()
