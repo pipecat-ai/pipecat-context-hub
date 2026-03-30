@@ -1746,7 +1746,7 @@ Phase 1:
       `pipecat-ai/web-client-ui`, `pipecat-ai/small-webrtc-prebuilt`
       (these are official Pipecat SDKs — smoke tests must not depend on
       user-specific `PIPECAT_HUB_EXTRA_REPOS` configuration)
-- [ ] README indexing for zero-chunk repos (standalone `content_type="doc"`)
+- [x] README indexing for zero-chunk repos (standalone `content_type="doc"`)
 - [x] Unit tests for TS parser (interfaces, classes, types, functions,
       typed const exports, generics, JSDoc extraction)
 - [x] MCP smoke tests — each must return ≥1 TS hit (`language="typescript"`,

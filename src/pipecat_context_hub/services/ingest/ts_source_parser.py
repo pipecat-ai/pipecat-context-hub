@@ -449,20 +449,21 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
                     break
             i += 1
 
-        # Find the function body brace. If a return type annotation contains
-        # an inline object type (e.g. `): { url: string } {`), the first `{`
-        # belongs to the type, not the body.  Scan past `: <type>` first.
+        # Find the function body brace. The return type annotation may
+        # contain braces inside generics (e.g. `Promise<{ url: string }>`),
+        # inline object types (`): { url: string } {`), or nested parens.
+        # Scan past the full type expression, balancing <>, (), and {}.
         body_search_start = i + 1
-        # Look for `:` indicating a return type annotation
         colon_region = source[i + 1:i + 20].lstrip()
         if colon_region.startswith(":"):
             colon_pos = source.index(":", i + 1)
-            # Skip past the return type — find the next top-level `{`
-            # by scanning with brace depth awareness
             j = colon_pos + 1
-            ret_brace_depth = 0
+            d_brace = 0
+            d_angle = 0
+            d_paren = 0
             while j < len(source):
                 c = source[j]
+                # Skip strings
                 if c in ('"', "'", "`"):
                     q = c
                     j += 1
@@ -472,24 +473,41 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
                         j += 1
                     j += 1
                     continue
-                if c == "{":
-                    if ret_brace_depth == 0:
-                        # This is either the return type object or the body
-                        # Check if we've seen a type object already
+                # Skip => (arrow, not angle bracket)
+                if c == "=" and j + 1 < len(source) and source[j + 1] == ">":
+                    j += 2
+                    continue
+                if c == "<":
+                    d_angle += 1
+                elif c == ">" and d_angle > 0:
+                    d_angle -= 1
+                elif c == "(":
+                    d_paren += 1
+                elif c == ")":
+                    d_paren -= 1
+                elif c == "{":
+                    if d_angle == 0 and d_paren == 0 and d_brace == 0:
+                        # Top-level `{` — this is either a type object or body
                         break
-                    ret_brace_depth += 1
+                    d_brace += 1
                 elif c == "}":
-                    ret_brace_depth -= 1
+                    d_brace -= 1
                 j += 1
-            # j now points at first `{` after colon — check if it's a type
+            # j points at the first top-level `{` after scanning past the
+            # full return type (including generics like Promise<{...}>).
             if j < len(source) and source[j] == "{":
-                # Peek: find the matching `}` of this brace
+                # Check if this `{` is a plain inline object type (no generics
+                # wrapping it).  If so, peek past its matching `}` for the
+                # real body `{`.  If the type was inside generics, the scanner
+                # already skipped past those and j IS the body brace.
                 close = _find_matching_brace(source, j)
-                # Check if there's another `{` after — that would be the body
-                after_close = source[close + 1:close + 20].lstrip()
+                after_close = source[close + 1:close + 30].lstrip()
                 if after_close.startswith("{"):
-                    # The first `{` was the return type, skip to the body
+                    # Plain object return type: `): { ... } {`
                     body_search_start = close + 1
+                else:
+                    # Body brace (type was inside generics, or no type object)
+                    body_search_start = j
 
         brace_idx = source.find("{", body_search_start)
         if brace_idx == -1 or brace_idx - i > 500:
