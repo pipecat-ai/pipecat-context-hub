@@ -46,7 +46,11 @@ surface against real indexed data.
 16. `search_api("RTVIEvent")` — returns TS type/enum from
     `pipecat-ai/pipecat-client-web`
 17. `search_api("VoiceVisualizer React component typescript")` — returns TS
-    React component from `pipecat-ai/voice-ui-kit` or `pipecat-ai/pipecat-client-web`
+    React component from `pipecat-ai/voice-ui-kit` or `pipecat-ai/pipecat-client-web`.
+    Also try bare `search_api("VoiceVisualizer")` — currently requires the
+    qualifier to rank above Python hits, but should improve as retrieval
+    quality improves (cross-encoder, corpus weighting). If the bare query
+    starts passing, that's a positive signal.
 18. `search_api("PipecatClientOptions")` — returns TS interface from
     `pipecat-ai/pipecat-client-web` with `language="typescript"` metadata
 19. `search_api("SmallWebRTCTransport")` — returns TS hits from
