@@ -207,7 +207,6 @@ method chunks.
 | File | Purpose |
 |------|---------|
 | `src/.../ingest/ts_tree_sitter_parser.py` | Tree-sitter extraction (replaces regex parser) |
-| `tests/unit/test_ts_tree_sitter_parser.py` | Tests for the new parser |
 
 ### Files to Modify
 
@@ -215,7 +214,7 @@ method chunks.
 |------|---------|
 | `pyproject.toml` | Add tree-sitter to `[project].dependencies` |
 | `source_ingest.py` | Import new parser, pass `is_tsx` flag, emit method chunks, update `_TS_KIND_TO_CHUNK_TYPE`, `_TS_KIND_LABEL`, `_render_ts_snippet` |
-| `test_ts_source_parser.py` | Re-point to new parser, add method/JSX tests |
+| `test_ts_source_parser.py` | Repoint imports to new parser, keep all existing tests, add method/JSX/overload tests (same filename — no rename) |
 | `docs/README.md` | Update architecture and data sources |
 | `CLAUDE.md` | Update project layout description |
 | `CHANGELOG.md` | Add Phase 2 entry |
@@ -244,6 +243,10 @@ class TsDeclaration:
     # Phase 2 additions:
     class_name: str = ""           # Enclosing class/interface name (for methods)
     method_signature: str = ""     # Full typed signature string
+    return_type: str = ""          # Return type annotation
+    imports: list[str] = field(default_factory=list)      # Import statements
+    calls: list[str] = field(default_factory=list)        # this.method() calls
+    decorators: list[str] = field(default_factory=list)   # @override, etc.
 ```
 
 Expanded kind values:
@@ -252,9 +255,11 @@ Expanded kind values:
 # Phase 2 adds: "method", "constructor", "getter", "setter"
 ```
 
-Deduplication key changes from `(name, kind)` to `(class_name, name, kind)`:
+Deduplication key changes from `(name, kind)` to
+`(class_name, name, kind, line_start)` to handle overloads within the
+same class (overloads share class_name + name + kind but differ by line):
 ```python
-key = (d.class_name, d.name, d.kind)
+key = (d.class_name, d.name, d.kind, d.line_start)
 ```
 
 ### Tree-sitter API Usage (corrected)
