@@ -39,6 +39,18 @@ surface against real indexed data.
 13. `get_code_snippet(symbol="CallClient.send_dtmf")` — returns method
     signature with `related_type_defs: ["DialoutSendDtmfSettings"]` linking
     to the dict schema
+14. `search_api("PipecatClient")` — returns TS hits from
+    `pipecat-ai/pipecat-client-web` (not only Python module overviews)
+15. `search_api("WebSocketTransport")` — returns TS class extending
+    `Transport` from `pipecat-ai/pipecat-client-web-transports`
+16. `search_api("RTVIEvent")` — returns TS type/enum from
+    `pipecat-ai/pipecat-client-web`
+17. `search_api("VoiceVisualizer")` — returns TS React component from
+    `pipecat-ai/pipecat-client-web` or `pipecat-ai/voice-ui-kit`
+18. `search_api("PipecatClientOptions")` — returns TS interface from
+    `pipecat-ai/pipecat-client-web` with `language="typescript"` metadata
+19. `search_api("SmallWebRTCTransport")` — returns TS hits from
+    `pipecat-ai/pipecat-client-web-transports` or `pipecat-ai/voice-ui-kit`
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
