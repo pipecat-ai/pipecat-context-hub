@@ -179,7 +179,9 @@ method chunks.
 - [ ] Populate `calls` — extract `this.method()` calls from method bodies
       (best-effort, like Python's `_extract_calls`)
 - [ ] Parameter extraction with types and defaults for all functions/methods
-- [ ] Decorator extraction (`@override`, `@deprecated`, etc.)
+- [ ] Decorator extraction (`@override`, `@deprecated`, etc.) — snippet-only,
+      included in rendered content for search but NOT separately indexed or
+      queryable (no new storage field or API output field in Phase 2)
 - [ ] Update smoke tests for method-level queries:
       - `search_api("connect", class_name="PipecatClient")` → method chunk
       - `search_api("initialize", class_name="Transport")` → abstract method
