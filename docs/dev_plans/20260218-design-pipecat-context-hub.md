@@ -1735,21 +1735,21 @@ lowest priority.
 ### Implementation Checklist
 
 Phase 1:
-- [ ] TS source parser (`ts_source_parser.py`) — regex-based extraction of
+- [x] TS source parser (`ts_source_parser.py`) — regex-based extraction of
       exported interfaces, classes, types, functions, and typed const exports
       from `.ts`/`.tsx` files, with JSDoc comment inclusion in snippets
-- [ ] Wire TS parser into `source_ingest.py` — TS repo detection, source
+- [x] Wire TS parser into `source_ingest.py` — TS repo detection, source
       root discovery, module path derivation
-- [ ] Add core TS SDK repos to default `sources.repos` in `config.py`:
+- [x] Add core TS SDK repos to default `sources.repos` in `config.py`:
       `pipecat-ai/pipecat-client-web`, `pipecat-ai/pipecat-client-web-transports`,
       `pipecat-ai/voice-ui-kit`, `pipecat-ai/pipecat-flows-editor`,
       `pipecat-ai/web-client-ui`, `pipecat-ai/small-webrtc-prebuilt`
       (these are official Pipecat SDKs — smoke tests must not depend on
       user-specific `PIPECAT_HUB_EXTRA_REPOS` configuration)
 - [ ] README indexing for zero-chunk repos (standalone `content_type="doc"`)
-- [ ] Unit tests for TS parser (interfaces, classes, types, functions,
+- [x] Unit tests for TS parser (interfaces, classes, types, functions,
       typed const exports, generics, JSDoc extraction)
-- [ ] MCP smoke tests — each must return ≥1 TS hit (`language="typescript"`,
+- [x] MCP smoke tests — each must return ≥1 TS hit (`language="typescript"`,
       `content_type="source"`) from the correct repo, not Python-only hits:
       - `search_api("PipecatClient")` → pipecat-client-web
       - `search_api("WebSocketTransport")` → pipecat-client-web-transports

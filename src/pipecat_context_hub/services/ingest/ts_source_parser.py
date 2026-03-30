@@ -67,7 +67,7 @@ _ENUM_RE = re.compile(
 # Exported const with type annotation
 _CONST_RE = re.compile(
     r"^export\s+(?:default\s+)?const\s+(?P<name>\w+)"
-    r"\s*:\s*(?P<type>[^=]+?)\s*=",
+    r"\s*:\s*(?P<type>[^=]*?)=",
     re.MULTILINE,
 )
 
@@ -78,7 +78,14 @@ _CONST_RE = re.compile(
 
 @dataclass
 class TsDeclaration:
-    """A single parsed TypeScript exported declaration."""
+    """A single parsed TypeScript exported declaration.
+
+    Pure data container — no knowledge of the index schema or chunk types.
+    Content rendering and chunk_type mapping live in ``source_ingest.py``,
+    mirroring the pattern used by ``ast_extractor.py`` / ``_build_chunks``.
+    This type will be replaced in Phase 2 when tree-sitter provides a
+    typed hierarchy (like ``ClassInfo`` / ``FunctionInfo``).
+    """
 
     name: str
     kind: str  # "interface", "class", "type_alias", "function", "enum", "const"
@@ -88,51 +95,6 @@ class TsDeclaration:
     jsdoc: str = ""  # JSDoc comment if present
     base_classes: list[str] = field(default_factory=list)
     is_abstract: bool = False
-
-    @property
-    def chunk_type(self) -> str:
-        """Map TS kind to existing chunk_type values."""
-        mapping = {
-            "interface": "class_overview",
-            "class": "class_overview",
-            "type_alias": "type_definition",
-            "function": "function",
-            "enum": "type_definition",
-            "const": "function",
-        }
-        return mapping[self.kind]
-
-    def render_snippet(self, module_path: str) -> str:
-        """Render a human-readable content string for indexing."""
-        parts: list[str] = []
-
-        # Header
-        kind_label = {
-            "interface": "Interface",
-            "class": "Class",
-            "type_alias": "Type",
-            "function": "Function",
-            "enum": "Enum",
-            "const": "Const",
-        }[self.kind]
-        parts.append(f"# {kind_label}: {self.name}")
-        parts.append(f"Module: {module_path}")
-
-        if self.base_classes:
-            label = "Extends" if self.kind == "class" else "Extends"
-            parts.append(f"{label}: {', '.join(self.base_classes)}")
-
-        if self.is_abstract:
-            parts.append("Abstract: yes")
-
-        # JSDoc
-        if self.jsdoc:
-            parts.append(f"\n{self.jsdoc}")
-
-        # Source
-        parts.append(f"\n```typescript\n{self.body}\n```")
-
-        return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -150,26 +112,50 @@ def _find_matching_brace(source: str, open_pos: int) -> int:
     i = open_pos + 1
     n = len(source)
 
+    # Stack tracks whether we are inside a template literal.
+    # When we encounter `${`, we push True; when the matching `}`
+    # is found (depth returns to the pre-template level), we pop
+    # and resume scanning the template literal for the closing `.
+    template_stack: list[int] = []  # depth at which template expr started
+
     while i < n and depth > 0:
         ch = source[i]
 
-        # Skip string literals
-        if ch in ('"', "'", "`"):
+        # Skip string literals (single/double quotes)
+        if ch in ('"', "'"):
             quote = ch
             i += 1
             while i < n:
                 if source[i] == "\\" and i + 1 < n:
-                    i += 2  # skip escaped char
+                    i += 2
                     continue
                 if source[i] == quote:
                     break
-                # Template literal nested expressions
-                if quote == "`" and source[i] == "$" and i + 1 < n and source[i + 1] == "{":
-                    i += 2
-                    depth += 1
-                    break
                 i += 1
             i += 1
+            continue
+
+        # Template literals need special handling for ${...}
+        if ch == "`":
+            i += 1
+            while i < n:
+                if source[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if source[i] == "`":
+                    i += 1
+                    break
+                if source[i] == "$" and i + 1 < n and source[i + 1] == "{":
+                    # Enter template expression — track current depth
+                    # so we know when to resume template scanning
+                    i += 2
+                    depth += 1
+                    template_stack.append(depth)
+                    break
+                i += 1
+            else:
+                # Unterminated template literal — reached end of source
+                pass
             continue
 
         # Skip line comments
@@ -190,6 +176,25 @@ def _find_matching_brace(source: str, open_pos: int) -> int:
             depth += 1
         elif ch == "}":
             depth -= 1
+            # Check if we're closing a template expression
+            if template_stack and depth < template_stack[-1]:
+                template_stack.pop()
+                # Resume scanning the template literal
+                i += 1
+                while i < n:
+                    if source[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if source[i] == "`":
+                        i += 1
+                        break
+                    if source[i] == "$" and i + 1 < n and source[i + 1] == "{":
+                        i += 2
+                        depth += 1
+                        template_stack.append(depth)
+                        break
+                    i += 1
+                continue
 
         i += 1
 
@@ -248,10 +253,15 @@ def _find_type_end(source: str, start: int) -> int:
             depth_paren += 1
         elif ch == ")":
             depth_paren -= 1
-        elif ch == "<":
+        elif ch == "=" and i + 1 < n and source[i + 1] == ">":
+            # Arrow function `=>` — skip both chars to avoid `>` decrementing angle depth
+            i += 2
+            continue
+        elif ch == "<" and depth_brace == 0:
+            # Only track angle brackets at top brace level (generics in type position)
             depth_angle += 1
-        elif ch == ">":
-            depth_angle = max(0, depth_angle - 1)
+        elif ch == ">" and depth_angle > 0:
+            depth_angle -= 1
 
         # Semicolon at top level ends the type
         if ch == ";" and depth_brace == 0 and depth_paren == 0 and depth_angle == 0:
@@ -412,14 +422,28 @@ def parse_ts_source(source: str) -> list[TsDeclaration]:
     for m in _FUNCTION_RE.finditer(source):
         name = m.group("name")
         # Find the function body (opening brace after params)
-        # First find the closing paren of params
+        # First find the closing paren of params, skipping strings/comments
         paren_start = source.index("(", m.start())
         paren_depth = 0
         i = paren_start
         while i < len(source):
-            if source[i] == "(":
+            ch = source[i]
+            # Skip string literals inside params (e.g. default values)
+            if ch in ('"', "'", "`"):
+                quote = ch
+                i += 1
+                while i < len(source):
+                    if source[i] == "\\" and i + 1 < len(source):
+                        i += 2
+                        continue
+                    if source[i] == quote:
+                        break
+                    i += 1
+                i += 1
+                continue
+            if ch == "(":
                 paren_depth += 1
-            elif source[i] == ")":
+            elif ch == ")":
                 paren_depth -= 1
                 if paren_depth == 0:
                     break

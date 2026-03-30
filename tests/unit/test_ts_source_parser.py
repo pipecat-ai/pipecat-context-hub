@@ -8,6 +8,10 @@ from pipecat_context_hub.services.ingest.ts_source_parser import (
     TsDeclaration,
     parse_ts_source,
 )
+from pipecat_context_hub.services.ingest.source_ingest import (
+    _TS_KIND_TO_CHUNK_TYPE,
+    _render_ts_snippet,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +32,7 @@ class TestInterfaceParsing:
         d = decls[0]
         assert d.name == "Config"
         assert d.kind == "interface"
-        assert d.chunk_type == "class_overview"
+        assert _TS_KIND_TO_CHUNK_TYPE[d.kind] == "class_overview"
         assert d.base_classes == []
 
     def test_interface_extends(self) -> None:
@@ -97,7 +101,7 @@ class TestClassParsing:
         d = decls[0]
         assert d.name == "PipecatClient"
         assert d.kind == "class"
-        assert d.chunk_type == "class_overview"
+        assert _TS_KIND_TO_CHUNK_TYPE[d.kind] == "class_overview"
         assert d.is_abstract is False
 
     def test_abstract_class(self) -> None:
@@ -146,7 +150,7 @@ class TestTypeAliasParsing:
         d = decls[0]
         assert d.name == "ID"
         assert d.kind == "type_alias"
-        assert d.chunk_type == "type_definition"
+        assert _TS_KIND_TO_CHUNK_TYPE[d.kind] == "type_definition"
 
     def test_union_type(self) -> None:
         source = textwrap.dedent("""\
@@ -196,7 +200,7 @@ class TestFunctionParsing:
         d = decls[0]
         assert d.name == "createClient"
         assert d.kind == "function"
-        assert d.chunk_type == "function"
+        assert _TS_KIND_TO_CHUNK_TYPE[d.kind] == "function"
 
     def test_async_function(self) -> None:
         source = textwrap.dedent("""\
@@ -238,7 +242,7 @@ class TestEnumParsing:
         d = decls[0]
         assert d.name == "RTVIEvent"
         assert d.kind == "enum"
-        assert d.chunk_type == "type_definition"
+        assert _TS_KIND_TO_CHUNK_TYPE[d.kind] == "type_definition"
 
     def test_const_enum(self) -> None:
         source = textwrap.dedent("""\
@@ -267,7 +271,7 @@ class TestConstExportParsing:
         d = decls[0]
         assert d.name == "DEFAULT_TIMEOUT"
         assert d.kind == "const"
-        assert d.chunk_type == "function"
+        assert _TS_KIND_TO_CHUNK_TYPE[d.kind] == "function"
 
     def test_react_component_const(self) -> None:
         source = textwrap.dedent("""\
@@ -375,7 +379,7 @@ class TestJSDocExtraction:
             }
         """)
         decls = parse_ts_source(source)
-        snippet = decls[0].render_snippet("my.module")
+        snippet = _render_ts_snippet(decls[0], "my.module")
         assert "The main client class" in snippet
         assert "Module: my.module" in snippet
 
@@ -429,7 +433,7 @@ class TestSnippetRendering:
             body="export class WebSocket extends Transport {}",
             base_classes=["Transport"],
         )
-        snippet = decl.render_snippet("transports.websocket")
+        snippet = _render_ts_snippet(decl, "transports.websocket")
         assert "# Class: WebSocket" in snippet
         assert "Module: transports.websocket" in snippet
         assert "Extends: Transport" in snippet
@@ -442,7 +446,7 @@ class TestSnippetRendering:
             line_end=3,
             body="export interface Config { url: string; }",
         )
-        snippet = decl.render_snippet("client.config")
+        snippet = _render_ts_snippet(decl, "client.config")
         assert "# Interface: Config" in snippet
         assert "```typescript" in snippet
 
@@ -455,7 +459,7 @@ class TestSnippetRendering:
             body="export abstract class Transport {}",
             is_abstract=True,
         )
-        snippet = decl.render_snippet("client.transport")
+        snippet = _render_ts_snippet(decl, "client.transport")
         assert "Abstract: yes" in snippet
 
 

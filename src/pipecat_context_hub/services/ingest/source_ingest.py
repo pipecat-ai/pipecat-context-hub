@@ -55,6 +55,9 @@ _TS_SKIP_DIRS: frozenset[str] = frozenset({
 # File extensions treated as TypeScript source.
 _TS_EXTENSIONS: frozenset[str] = frozenset({".ts", ".tsx"})
 
+# Max file size for TS files (skip generated bundles).
+_TS_MAX_FILE_BYTES: int = 512_000  # 500 KB
+
 # Minimum body lines for a method/function to get its own chunk.
 _MIN_METHOD_LINES = 3
 
@@ -335,6 +338,9 @@ class SourceIngester:
             for ts_file in ts_files:
                 try:
                     ts_file.resolve().relative_to(clone_dir.resolve())
+                    # Skip oversized files (e.g. generated bundles)
+                    if ts_file.stat().st_size > _TS_MAX_FILE_BYTES:
+                        continue
                     ts_source = ts_file.read_text(encoding="utf-8", errors="replace")
                 except Exception as exc:
                     rel = ts_file.relative_to(clone_dir).as_posix()
@@ -346,8 +352,8 @@ class SourceIngester:
                     continue
 
                 rel_path = ts_file.relative_to(clone_dir).as_posix()
-                # Module path: strip extension, use / separator
-                module_path = rel_path.removesuffix(ts_file.suffix).replace("/", ".")
+                # Module path: strip extension, keep / separator (TS convention)
+                module_path = rel_path.removesuffix(ts_file.suffix)
 
                 ts_records = _build_ts_chunks(
                     declarations=declarations,
@@ -696,6 +702,48 @@ def _build_function_chunk(func: FunctionInfo, module_path: str) -> str:
 # TypeScript chunk builders
 # ---------------------------------------------------------------------------
 
+# TS kind → index chunk_type mapping (mirrors plan's documented mapping)
+_TS_KIND_TO_CHUNK_TYPE: dict[str, str] = {
+    "interface": "class_overview",
+    "class": "class_overview",
+    "type_alias": "type_definition",
+    "function": "function",
+    "enum": "type_definition",
+    "const": "function",
+}
+
+# TS kind → human-readable label for snippets
+_TS_KIND_LABEL: dict[str, str] = {
+    "interface": "Interface",
+    "class": "Class",
+    "type_alias": "Type",
+    "function": "Function",
+    "enum": "Enum",
+    "const": "Const",
+}
+
+
+def _render_ts_snippet(decl: TsDeclaration, module_path: str) -> str:
+    """Render a human-readable content string for a TS declaration."""
+    parts: list[str] = [
+        f"# {_TS_KIND_LABEL[decl.kind]}: {decl.name}",
+        f"Module: {module_path}",
+    ]
+
+    if decl.base_classes:
+        parts.append(f"Extends: {', '.join(decl.base_classes)}")
+
+    if decl.is_abstract:
+        parts.append("Abstract: yes")
+
+    if decl.jsdoc:
+        parts.append(f"\n{decl.jsdoc}")
+
+    parts.append(f"\n```typescript\n{decl.body}\n```")
+
+    return "\n".join(parts)
+
+
 def _build_ts_chunks(
     *,
     declarations: list[TsDeclaration],
@@ -710,10 +758,16 @@ def _build_ts_chunks(
     records: list[ChunkedRecord] = []
 
     for decl in declarations:
-        content = decl.render_snippet(module_path)
-        chunk_type = decl.chunk_type
-        class_name = decl.name if chunk_type == "class_overview" else ""
-        method_name = decl.name if chunk_type != "class_overview" else ""
+        content = _render_ts_snippet(decl, module_path)
+        chunk_type = _TS_KIND_TO_CHUNK_TYPE[decl.kind]
+
+        # class_name holds the symbol name for class-like chunks;
+        # for non-class chunks (functions, types, enums, consts),
+        # method_name holds the symbol name — consistent with the
+        # Python convention in _build_chunks.
+        is_class_like = chunk_type == "class_overview"
+        class_name = decl.name if is_class_like else ""
+        method_name = "" if is_class_like else decl.name
 
         chunk_id = _make_chunk_id(
             repo_slug, module_path, chunk_type,
@@ -737,7 +791,7 @@ def _build_ts_chunks(
             metadata={
                 "module_path": module_path,
                 "chunk_type": chunk_type,
-                "class_name": class_name or decl.name,
+                "class_name": class_name,
                 "method_name": method_name,
                 "base_classes": decl.base_classes,
                 "method_signature": "",
