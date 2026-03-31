@@ -322,7 +322,9 @@ def _extract_const(node: Node, source: str) -> TsDeclaration | None:
     name_node = _find_child_by_type(decl, "identifier")
     name = _node_text(name_node) if name_node else ""
     type_ann = _find_child_by_type(decl, "type_annotation")
-    if not type_ann and not name:
+    # Only index typed const exports (matching Phase 1 behavior).
+    # Untyped consts like `export const foo = 1` are skipped.
+    if not type_ann or not name:
         return None
     jsdoc = _extract_jsdoc(node, source)
     body = _node_text(node)
@@ -367,30 +369,12 @@ def _extract_class_methods(
             if method:
                 methods.append(method)
         elif child.type == "method_signature":
-            # Overload signature in a class body (e.g., multiple typed
-            # signatures before the implementation)
-            name_node = _find_child_by_type(
-                child, "property_identifier", "identifier",
-            )
-            if not name_node:
-                continue
-            name = _node_text(name_node)
-            sig = _build_signature(child)
-            ret = _build_return_type(child)
-            jsdoc = _extract_jsdoc(child, source)
-            methods.append(TsDeclaration(
-                name=name,
-                kind="method",
-                line_start=child.start_point[0] + 1,
-                line_end=child.end_point[0] + 1,
-                body=_node_text(child),
-                jsdoc=jsdoc,
-                base_classes=base_classes,
-                is_abstract=False,
-                class_name=class_name,
-                method_signature=sig,
-                return_type=ret,
-            ))
+            # Overload signatures in class bodies are bodyless type
+            # declarations preceding the implementation. Don't emit them
+            # as separate chunks — the implementation method_definition
+            # already captures the full method. Overload signatures would
+            # surface as misleading bodyless method chunks in search.
+            pass
 
     return methods
 
