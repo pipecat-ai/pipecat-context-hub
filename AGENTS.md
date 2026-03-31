@@ -75,6 +75,21 @@ surface against real indexed data.
 26. `search_api("PipecatClientOptions", chunk_type="class_overview")` —
     returns the TS interface declaration from `pipecat-ai/pipecat-client-web`.
     Same ranking-stability check as test 25.
+27. `get_code_snippet(symbol="PipecatClient.connect")` — returns the TS
+    method snippet with full `method_signature` (end-to-end symbol lookup
+    for TS method chunks, not just search_api ranking)
+28. `search_api("connected", class_name="PipecatClient")` — returns the TS
+    getter chunk from `pipecat-ai/pipecat-client-web` (verifies getter
+    extraction — a separate code path from regular methods)
+29. `search_api("constructor", class_name="PipecatClient")` — returns the
+    constructor chunk with full signature `(options: PipecatClientOptions)`
+
+Note on bare TS symbol queries (e.g., `search_api("WebSocketTransport")`
+without `chunk_type` or `class_name` filters): after Phase 2 method
+extraction, method/getter chunks may rank ahead of the class declaration.
+This is expected — don't treat "class is not top result" as a hard blocker.
+Use `chunk_type="class_overview"` (tests 25-26) when class-level ranking
+matters.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
