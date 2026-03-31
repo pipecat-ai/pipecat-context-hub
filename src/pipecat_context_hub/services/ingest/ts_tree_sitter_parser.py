@@ -680,9 +680,9 @@ def parse_ts_source(
         elif decl_node.type == "lexical_declaration":
             # Check if it's a const with type annotation
             if any(c.type == "const" for c in decl_node.children):
-                decl = _extract_const(decl_node, source)
-                if decl:
-                    declarations.append(decl)
+                const_decl = _extract_const(decl_node, source)
+                if const_decl:
+                    declarations.append(const_decl)
 
     # Attach file-level imports to top-level declarations (class_overview,
     # module-level functions). Methods get imports from their class context.
