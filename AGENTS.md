@@ -69,6 +69,12 @@ surface against real indexed data.
 24. `search_api("initialize", class_name="Transport")` — returns TS abstract
     method from `pipecat-ai/pipecat-client-web` (verifies abstract method
     extraction and no _MIN_METHOD_LINES filtering)
+25. `search_api("WebSocketTransport", chunk_type="class_overview")` — returns
+    the TS class declaration (not just method chunks). Verifies class-level
+    chunks still rank when method extraction adds many per-class hits.
+26. `search_api("PipecatClientOptions", chunk_type="class_overview")` —
+    returns the TS interface declaration from `pipecat-ai/pipecat-client-web`.
+    Same ranking-stability check as test 25.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
