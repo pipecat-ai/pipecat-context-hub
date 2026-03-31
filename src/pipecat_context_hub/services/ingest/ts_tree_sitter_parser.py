@@ -517,6 +517,11 @@ def _extract_interface_methods(
             fn_ret = ""
             if type_ann:
                 fn_type = _find_child_by_type(type_ann, "function_type")
+                # Also check inside parenthesized_type wrapper
+                if not fn_type:
+                    paren = _find_child_by_type(type_ann, "parenthesized_type")
+                    if paren:
+                        fn_type = _find_child_by_type(paren, "function_type")
                 if fn_type:
                     fn_sig = _node_text(fn_type)
                     # Extract return type from function_type (after =>)
