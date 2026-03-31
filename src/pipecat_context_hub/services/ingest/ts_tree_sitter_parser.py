@@ -402,6 +402,9 @@ def _extract_method_definition(
         if child.type == "decorator":
             decorators.append(_node_text(child))
 
+    # Extract this.method() calls from method body
+    calls = _extract_calls(node)
+
     return TsDeclaration(
         name=name,
         kind=kind,
@@ -415,6 +418,7 @@ def _extract_method_definition(
         method_signature=sig,
         return_type=ret,
         decorators=decorators,
+        calls=calls,
     )
 
 
@@ -510,6 +514,40 @@ def _extract_interface_methods(
 
 
 # ---------------------------------------------------------------------------
+# Import and call extraction
+# ---------------------------------------------------------------------------
+
+
+def _extract_imports(root: Node) -> list[str]:
+    """Extract import statements from the source file."""
+    imports: list[str] = []
+    for child in root.children:
+        if child.type == "import_statement":
+            imports.append(_node_text(child).rstrip(";").strip())
+    return imports
+
+
+def _extract_calls(node: Node) -> list[str]:
+    """Extract this.method() calls from a method body (best-effort)."""
+    calls: list[str] = []
+    _walk_for_calls(node, calls)
+    return sorted(set(calls))
+
+
+def _walk_for_calls(node: Node, calls: list[str]) -> None:
+    """Recursively find call_expression nodes with this.member patterns."""
+    if node.type == "call_expression":
+        fn = node.children[0] if node.children else None
+        if fn and fn.type == "member_expression":
+            obj = fn.children[0] if fn.children else None
+            prop = _find_child_by_type(fn, "property_identifier")
+            if obj and _node_text(obj) == "this" and prop:
+                calls.append(_node_text(prop))
+    for child in node.children:
+        _walk_for_calls(child, calls)
+
+
+# ---------------------------------------------------------------------------
 # Main parser
 # ---------------------------------------------------------------------------
 
@@ -543,6 +581,9 @@ def parse_ts_source(
     tree = parser.parse(source.encode("utf-8"))
     root = tree.root_node
     declarations: list[TsDeclaration] = []
+
+    # Extract file-level imports once
+    file_imports = _extract_imports(root)
 
     for child in root.children:
         if child.type != "export_statement":
@@ -608,6 +649,12 @@ def parse_ts_source(
                 decl = _extract_const(decl_node, source)
                 if decl:
                     declarations.append(decl)
+
+    # Attach file-level imports to top-level declarations (class_overview,
+    # module-level functions). Methods get imports from their class context.
+    for d in declarations:
+        if not d.class_name and not d.imports:
+            d.imports = file_imports
 
     # Deduplicate by (class_name, name, kind, line_start)
     seen: set[tuple[str, str, str, int]] = set()
