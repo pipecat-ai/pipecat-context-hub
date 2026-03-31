@@ -63,6 +63,12 @@ surface against real indexed data.
 22. `search_api("SmallWebRTCTransport", class_name="SmallWebRTCTransport")` —
     returns TS class from `pipecat-ai/pipecat-client-web-transports` (verifies
     nested-package TS detection for `small-webrtc-prebuilt`)
+23. `search_api("connect", class_name="PipecatClient")` — returns TS method
+    chunk with `method_signature` from `pipecat-ai/pipecat-client-web`
+    (Phase 2 tree-sitter method extraction)
+24. `search_api("initialize", class_name="Transport")` — returns TS abstract
+    method from `pipecat-ai/pipecat-client-web` (verifies abstract method
+    extraction and no _MIN_METHOD_LINES filtering)
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

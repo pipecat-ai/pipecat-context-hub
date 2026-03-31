@@ -76,7 +76,7 @@ src/pipecat_context_hub/
 ├── shared/                   # Types, interfaces, config
 ├── services/
 │   ├── embedding.py          # EmbeddingService
-│   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS regex, taxonomy
+│   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS tree-sitter, taxonomy
 │   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/

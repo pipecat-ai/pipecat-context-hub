@@ -74,7 +74,7 @@ be tainted:
 Ingestion:
   DocsCrawler (llms-full.txt)    ──┐
   GitHubRepoIngester (N repos)   ──┤→ EmbeddingIndexWriter → IndexStore
-  SourceIngester (AST + TS regex)──┤   (sentence-transformers)   (ChromaDB + FTS5)
+  SourceIngester (AST + tree-sitter)─┤   (sentence-transformers)   (ChromaDB + FTS5)
   TaxonomyBuilder (auto-infer)   ──┘
     ↑                                         ↑
     Per-file taxonomy enrichment:             Metadata stored per chunk:
@@ -111,12 +111,13 @@ Retrieval:
   - `pipecat-ai/pipecat-flows-editor` — visual flow editor
   - `pipecat-ai/web-client-ui`, `pipecat-ai/small-webrtc-prebuilt` — prebuilt UI
   - TS exported declarations (interfaces, classes, types, functions, enums, const exports)
-    are regex-extracted and indexed as `content_type="source"` with `language="typescript"`
+    are tree-sitter-extracted and indexed as `content_type="source"` with `language="typescript"`,
+    including individual method chunks with full signatures
 - Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var (comma-separated slugs)
   - Supports single-project repos (`src/`-layout, root-level entry scripts)
   - Repos with `src/` layouts are AST-indexed for `search_api` (class definitions, method signatures)
   - Repos with `.pyi` stubs at root (no Python in `src/`) are also AST-indexed
-  - Repos with `package.json`/`tsconfig.json` are TS-regex-indexed for `search_api`
+  - Repos with `package.json`/`tsconfig.json` are tree-sitter-indexed for `search_api`
   - See `.env.example` for usage and copy-ready curated repo bundles
 
 ### Technology

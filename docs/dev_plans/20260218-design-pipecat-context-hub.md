@@ -1764,9 +1764,9 @@ Phase 1:
         small-webrtc-prebuilt
 
 Phase 2:
-- [ ] Add `tree-sitter` + `tree-sitter-typescript` dependencies
-- [ ] Build TypeScript AST extractor (replaces Phase 1a regex parser)
-- [ ] Index `pipecat-client-web`, `voice-ui-kit`, `pipecat-flows-editor`
+- [x] Add `tree-sitter` + `tree-sitter-typescript` dependencies
+- [x] Build TypeScript AST extractor (replaces Phase 1a regex parser)
+- [x] Index `pipecat-client-web`, `voice-ui-kit`, `pipecat-flows-editor`
 - [ ] Live MCP smoke tests for TypeScript API search
 
 Phase 3:
