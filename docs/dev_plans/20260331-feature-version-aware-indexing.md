@@ -212,6 +212,49 @@ if no version info → no change, label "unknown"
 | 3 | `hybrid.py` | Version-aware scoring |
 | 3 | `config.py` | `PIPECAT_HUB_USER_VERSION` env var |
 
+### Version Pinning Configuration
+
+Today the context hub has no version awareness. Two new configuration
+surfaces are needed:
+
+**1. Framework version to index** (affects what API surface is indexed):
+
+```bash
+# Default: HEAD of pipecat-ai/pipecat (current behavior, no change)
+# Pinned: index a specific tag instead of HEAD
+PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.95
+```
+
+Or via CLI:
+```bash
+pipecat-context-hub refresh --framework-version v0.0.95
+```
+
+When set, `GitHubRepoIngester` clones/checks out the specified tag for
+`pipecat-ai/pipecat` instead of HEAD. All other repos still index at HEAD.
+This is Phase 4 work — Phase 1-3 don't change what gets indexed, they
+only add metadata and scoring.
+
+**2. User's project version** (affects scoring/filtering at query time):
+
+```bash
+# Option A: env var (explicit, works for any project)
+PIPECAT_HUB_USER_VERSION=0.0.95
+
+# Option B: auto-detect from user's project (implicit)
+# The MCP server reads the calling project's pyproject.toml at startup
+# and extracts the pipecat-ai version constraint.
+```
+
+Auto-detection is more ergonomic but harder — the MCP server runs as a
+subprocess and may not know the calling project's working directory. The
+env var is simpler and reliable. Phase 3 should support both: env var
+takes precedence, auto-detect as fallback.
+
+**Neither mechanism exists today.** Phase 1 only extracts version metadata
+from indexed repos — no new config needed. Phases 2-3 add
+`PIPECAT_HUB_USER_VERSION`. Phase 4 adds `PIPECAT_HUB_FRAMEWORK_VERSION`.
+
 ## Open Questions
 
 1. **Should version filtering be opt-in or default?** — Filtering by default
