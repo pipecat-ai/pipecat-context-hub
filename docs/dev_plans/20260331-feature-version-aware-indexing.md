@@ -1,6 +1,6 @@
 # Version-Aware Indexing & Deprecation Checking
 
-**Status:** Not Started
+**Status:** Phase 1a Complete
 **Priority:** Medium
 **Branch:** `feature/version-aware-indexing`
 **Created:** 2026-03-31
@@ -230,9 +230,9 @@ penalty or make mutually exclusive.
 
 ### Phase 1a: Version Extraction
 
-- [ ] Add `packaging>=21.0,<27.0` to `[project].dependencies` in
+- [x] Add `packaging>=21.0,<27.0` to `[project].dependencies` in
       `pyproject.toml` (currently transitive only — must be explicit)
-- [ ] Add `_extract_pipecat_version(example_dir: Path, repo_root: Path)
+- [x] Add `_extract_pipecat_version(example_dir: Path, repo_root: Path)
       -> str | None` helper in `github_ingest.py`:
       - Walk upward from example_dir to repo_root
       - At each level, check pyproject.toml and requirements.txt for a
@@ -241,20 +241,20 @@ penalty or make mutually exclusive.
       - Extract version specifier as string (e.g., `">=0.0.105"`)
       - For `pipecat-ai/pipecat` repo, use `git describe --tags --abbrev=0`
       - For `package.json`, check `@pipecat-ai/client-js` in dependencies
-- [ ] Call version extraction at `_ingest_repo` level (around line 783),
+- [x] Call version extraction at `_ingest_repo` level (around line 783),
       once per example directory, then pass result into
       `_build_chunk_metadata()` as a new `pipecat_version: str | None` param
-- [ ] Store `pipecat_version_pin` in chunk metadata during ingestion
-- [ ] Add `pipecat_version_pin` to BOTH `_record_to_metadata()` AND
+- [x] Store `pipecat_version_pin` in chunk metadata during ingestion
+- [x] Add `pipecat_version_pin` to BOTH `_record_to_metadata()` AND
       `_metadata_to_record_fields()` in `vector.py` (both must match or
       field is lost on ChromaDB round-trip)
-- [ ] Add optional `pipecat_version_pin: str | None` field to `ExampleHit`,
+- [x] Add optional `pipecat_version_pin: str | None` field to `ExampleHit`,
       `ApiHit`, `CodeSnippet` in `types.py` (default `None` — Retriever
       protocol unaffected, backward compatible)
-- [ ] Surface in retrieval results via `hybrid.py`
-- [ ] Handle missing version data gracefully (default `None`, no penalty)
+- [x] Surface in retrieval results via `hybrid.py`
+- [x] Handle missing version data gracefully (default `None`, no penalty)
 - [ ] Document: `refresh --force` needed after upgrade to populate version pins
-- [ ] Unit tests for version extraction:
+- [x] Unit tests for version extraction:
       - Exact pin `==0.0.98`
       - Minimum `>=0.0.105`
       - Range `>=0.0.93,<1`
@@ -265,7 +265,7 @@ penalty or make mutually exclusive.
       - Monorepo: root pyproject.toml has `dependencies = []`, subdir has pin
       - Framework repo examples: derive from git tag
       - requirements.txt format: `pipecat-ai[daily]>=0.0.100,<0.1`
-- [ ] Bump `_SERVER_VERSION` (minor schema addition)
+- [x] Bump `_SERVER_VERSION` (minor schema addition)
 
 ### Phase 1b: Deprecation Check Tool
 

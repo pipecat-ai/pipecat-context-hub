@@ -321,6 +321,7 @@ class ExampleHit(BaseModel):
     repo: str
     path: str
     commit_sha: str | None = None
+    pipecat_version_pin: str | None = None
     citation: Citation
     score: float
 
@@ -434,6 +435,7 @@ class CodeSnippet(BaseModel):
     line_start: int
     line_end: int
     language: str | None = None
+    pipecat_version_pin: str | None = None
     citation: Citation
     dependency_notes: list[str] = Field(
         default_factory=list,
@@ -550,6 +552,7 @@ class ApiHit(BaseModel):
         default_factory=list,
         description="RST type definition names for this method's parameters. Look up with search_api(query=name, chunk_type='type_definition').",
     )
+    pipecat_version_pin: str | None = None
     citation: Citation
     score: float
 
