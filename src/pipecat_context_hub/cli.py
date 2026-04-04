@@ -129,6 +129,16 @@ def serve(ctx: click.Context) -> None:
 
     retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
 
+    # Load deprecation map from disk if available
+    from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+    dep_map_path = config.storage.data_dir / "deprecation_map.json"
+    retriever.deprecation_map = DeprecationMap.load(dep_map_path)
+    if retriever.deprecation_map.entries:
+        logger.info(
+            "Loaded deprecation map: %d entries", len(retriever.deprecation_map.entries)
+        )
+
     server = create_server(retriever, index_store)
     try:
         serve_stdio(server)
@@ -410,6 +420,27 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
                 index_store.set_metadata(f"repo:{repo_slug}:commit_sha", sha)
             else:
                 index_store.delete_metadata(f"repo:{repo_slug}:commit_sha")
+
+        # ----- 3. Deprecation map -----
+        from pipecat_context_hub.services.ingest.deprecation_map import (
+            build_deprecation_map_from_changelog,
+            build_deprecation_map_from_source,
+        )
+
+        framework_slug = "pipecat-ai/pipecat"
+        if framework_slug in prefetched:
+            fw_path, fw_sha = prefetched[framework_slug]
+            dep_map = build_deprecation_map_from_source(fw_path, commit_sha=fw_sha)
+            changelog = fw_path / "CHANGELOG.md"
+            dep_map = build_deprecation_map_from_changelog(changelog, dep_map)
+            dep_map_path = config.storage.data_dir / "deprecation_map.json"
+            dep_map.save(dep_map_path)
+        else:
+            logger.warning(
+                "Framework repo %s not in effective_repos — "
+                "deprecation map not rebuilt",
+                framework_slug,
+            )
 
     try:
         asyncio.run(_run_refresh())

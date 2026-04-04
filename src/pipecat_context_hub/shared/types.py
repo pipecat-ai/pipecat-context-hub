@@ -562,3 +562,30 @@ class SearchApiOutput(BaseModel):
 
     hits: list[ApiHit] = Field(default_factory=list)
     evidence: EvidenceReport
+
+
+# ---------------------------------------------------------------------------
+# MCP Tool I/O models — check_deprecation
+# ---------------------------------------------------------------------------
+
+
+class CheckDeprecationInput(BaseModel):
+    """Input for the check_deprecation MCP tool."""
+
+    symbol: str = Field(
+        max_length=256,
+        description=(
+            "Module path, class name, or method to check. "
+            "E.g., 'pipecat.services.grok.llm' or 'DailyTransport'."
+        ),
+    )
+
+
+class CheckDeprecationOutput(BaseModel):
+    """Output for the check_deprecation MCP tool."""
+
+    deprecated: bool
+    replacement: str | None = None
+    deprecated_in: str | None = None
+    removed_in: str | None = None
+    note: str | None = None

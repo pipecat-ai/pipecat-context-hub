@@ -1,6 +1,6 @@
 # Version-Aware Indexing & Deprecation Checking
 
-**Status:** Phase 1a Complete
+**Status:** Phase 1a + 1b Complete
 **Priority:** Medium
 **Branch:** `feature/version-aware-indexing`
 **Created:** 2026-03-31
@@ -269,7 +269,7 @@ penalty or make mutually exclusive.
 
 ### Phase 1b: Deprecation Check Tool
 
-- [ ] Create `deprecation_map.py` in `services/ingest/`:
+- [x] Create `deprecation_map.py` in `services/ingest/`:
       - Parse `DeprecatedModuleProxy` usage from cloned pipecat source
       - Handle bracket-expansion: `"cartesia.[stt,tts]"` → two entries,
         `"[ai_service,image_service,...]"` → individual module entries
@@ -278,25 +278,25 @@ penalty or make mutually exclusive.
       - Store as `DeprecationMap` dataclass (dict of `DeprecationEntry`)
       - Rebuild on each `refresh`, store pipecat commit SHA for staleness
       - Persist to disk (JSON) for loading at server startup
-- [ ] Create `check_deprecation` MCP tool handler in `server/tools/`:
+- [x] Create `check_deprecation` MCP tool handler in `server/tools/`:
       - Input: `symbol: str` (module path, class name, or method name)
       - Output: `{deprecated: bool, replacement: str | None,
         deprecated_in: str | None, removed_in: str | None, note: str | None}`
       - Fuzzy matching: `pipecat.services.grok` matches
         `pipecat.services.grok.llm`
-- [ ] Make `DeprecationMap` accessible via `HybridRetriever` attribute
+- [x] Make `DeprecationMap` accessible via `HybridRetriever` attribute
       (avoids special-case dispatch in `call_tool()`)
-- [ ] Register tool in `main.py` tool registry
-- [ ] Update `_SERVER_INSTRUCTIONS` to tell Claude to use `check_deprecation`
+- [x] Register tool in `main.py` tool registry
+- [x] Update `_SERVER_INSTRUCTIONS` to tell Claude to use `check_deprecation`
       when it sees pipecat imports
-- [ ] Unit tests for deprecation map parsing:
+- [x] Unit tests for deprecation map parsing:
       - `DeprecatedModuleProxy` extraction (standard format)
       - Bracket-expansion: `"cartesia.[stt,tts]"` → 2 entries
       - Bracket-expansion: `"[ai_service,image_service,...]"` → N entries
       - CHANGELOG `### Deprecated` section parsing
       - CHANGELOG `### Removed` section parsing
       - Fuzzy symbol matching (prefix, exact, partial)
-- [ ] MCP smoke test: `check_deprecation("pipecat.services.grok.llm")`
+- [x] MCP smoke test: `check_deprecation("pipecat.services.grok.llm")`
       returns `{deprecated: true, replacement: "pipecat.services.xai.llm"}`
 
 ### Phase 2: Version-Aware Retrieval
