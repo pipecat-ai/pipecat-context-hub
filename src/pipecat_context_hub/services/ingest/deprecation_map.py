@@ -263,16 +263,20 @@ def build_deprecation_map_from_source(
 def build_deprecation_map_from_changelog(
     changelog_path: Path,
     existing_map: DeprecationMap | None = None,
+    *,
+    repo_root: Path | None = None,
 ) -> DeprecationMap:
     """Supplement a deprecation map with CHANGELOG entries (best-effort).
 
     Parses ``### Deprecated`` and ``### Removed`` sections from CHANGELOG.md.
-    Entries are keyed by a normalized description (not module paths) and serve
-    as supplementary context — the DeprecatedModuleProxy entries are primary.
+    Notes are stored in ``changelog_notes`` (not ``entries``) since they are
+    keyed by description, not module paths, and cannot be matched by ``check()``.
 
     Args:
         changelog_path: Path to CHANGELOG.md in the pipecat repo.
-        existing_map: Map to supplement (entries are added, not replaced).
+        existing_map: Map to supplement (notes are added, not replaced).
+        repo_root: If provided, reject symlinks and paths that resolve
+            outside this root (same containment guard as source scanner).
 
     Returns:
         The supplemented map (or a new one if existing_map is None).
@@ -282,6 +286,17 @@ def build_deprecation_map_from_changelog(
     if not changelog_path.is_file():
         logger.debug("CHANGELOG not found at %s", changelog_path)
         return result
+
+    # Security: reject symlinks and verify path stays within repo root
+    if changelog_path.is_symlink():
+        logger.warning("CHANGELOG is a symlink, skipping: %s", changelog_path)
+        return result
+    if repo_root is not None:
+        try:
+            changelog_path.resolve().relative_to(repo_root.resolve())
+        except ValueError:
+            logger.warning("CHANGELOG resolves outside repo root, skipping: %s", changelog_path)
+            return result
 
     try:
         content = changelog_path.read_text(encoding="utf-8", errors="replace")

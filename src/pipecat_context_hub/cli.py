@@ -432,7 +432,9 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
             fw_path, fw_sha = prefetched[framework_slug]
             dep_map = build_deprecation_map_from_source(fw_path, commit_sha=fw_sha)
             changelog = fw_path / "CHANGELOG.md"
-            dep_map = build_deprecation_map_from_changelog(changelog, dep_map)
+            dep_map = build_deprecation_map_from_changelog(
+                changelog, dep_map, repo_root=fw_path
+            )
             dep_map_path = config.storage.data_dir / "deprecation_map.json"
             dep_map.save(dep_map_path)
         else:
