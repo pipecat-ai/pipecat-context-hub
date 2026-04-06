@@ -128,6 +128,11 @@ def compute_version_compatibility(
         user_v = Version(user_version)
         pin = chunk_version_pin.strip()
 
+        # Note: npm semver strings (^1.7.0, ~2.0.0) from package.json are
+        # not PEP 440 and will fall through to ("unknown", 0.0). This is
+        # intentional — TS SDK versioning is a separate scheme (see dev plan
+        # Open Question #3). A semver-aware path is deferred.
+
         # Plain version (e.g., "0.0.108" from git tag) — the chunk was
         # written for that version. Compatible if user is >= that version.
         if pin and pin[0].isdigit():
@@ -177,6 +182,16 @@ def compute_version_compatibility(
             return ("unknown", 0.0)
 
         if spec_versions and user_v >= max(spec_versions):
+            # Guard: if a strict lower bound (>) exists at the user's exact
+            # version, the user hasn't met the requirement.
+            # E.g., >0.0.95 with user 0.0.95 → newer_required, not older_targeted.
+            for s in spec:
+                try:
+                    sv = Version(s.version)
+                except InvalidVersion:
+                    continue
+                if s.operator == ">" and sv == user_v:
+                    return ("newer_required", VERSION_PENALTY)
             return ("older_targeted", 0.0)
         else:
             return ("newer_required", VERSION_PENALTY)

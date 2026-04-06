@@ -2,7 +2,7 @@
 
 **Status:** Phase 1a + 1b + 2 Complete
 **Priority:** Medium
-**Branch:** `feature/version-aware-indexing`
+**Branch:** `feature/version-aware-indexing` (Phase 1a+1b), `feature/version-aware-retrieval` (Phase 2)
 **Created:** 2026-03-31
 **Objective:** Track which pipecat version each repo/example targets, expose
 deprecation checking as a first-class MCP tool, and enable version-aware

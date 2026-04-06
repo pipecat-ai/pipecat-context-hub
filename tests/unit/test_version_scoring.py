@@ -94,6 +94,24 @@ class TestComputeVersionCompatibility:
         assert label == "newer_required"
         assert penalty == VERSION_PENALTY
 
+    def test_strict_lower_bound_at_user_version(self) -> None:
+        """>0.0.95 with user 0.0.95 → newer_required (strict lower bound)."""
+        label, penalty = compute_version_compatibility("0.0.95", ">0.0.95")
+        assert label == "newer_required"
+        assert penalty == VERSION_PENALTY
+
+    def test_strict_lower_bound_with_upper(self) -> None:
+        """>0.0.95,<0.1 with user 0.0.95 → newer_required."""
+        label, penalty = compute_version_compatibility("0.0.95", ">0.0.95,<0.1")
+        assert label == "newer_required"
+        assert penalty == VERSION_PENALTY
+
+    def test_strict_lower_bound_user_above(self) -> None:
+        """>0.0.95 with user 0.0.96 → compatible."""
+        label, penalty = compute_version_compatibility("0.0.96", ">0.0.95")
+        assert label == "compatible"
+        assert penalty == 0.0
+
     def test_upper_bounded_range_user_above(self) -> None:
         """User on 0.1.0, chunk pins >=0.0.95,<0.1 → older_targeted."""
         label, penalty = compute_version_compatibility("0.1.0", ">=0.0.95,<0.1")
