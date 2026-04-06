@@ -153,10 +153,13 @@ def compute_version_compatibility(
         # ranges (>=0.0.95,<0.1 with user 0.1.0) and compatible-release
         # (~=0.0.95 with user 0.1.0).
         spec_versions = []
-        has_negation = False
+        negated_versions: list[Version] = []
         for s in spec:
             if s.operator == "!=":
-                has_negation = True
+                try:
+                    negated_versions.append(Version(s.version))
+                except InvalidVersion:
+                    pass
                 continue
             try:
                 spec_versions.append(Version(s.version))
@@ -164,7 +167,13 @@ def compute_version_compatibility(
                 continue
 
         # Negation-only specs (e.g., !=0.0.95) don't imply a direction
-        if not spec_versions and has_negation:
+        if not spec_versions and negated_versions:
+            return ("unknown", 0.0)
+
+        # If user's exact version is excluded by != in a mixed spec
+        # (e.g., >=0.0.95,!=0.0.100 with user 0.0.100), the exclusion
+        # is intentional — don't classify as older_targeted.
+        if negated_versions and user_v in negated_versions:
             return ("unknown", 0.0)
 
         if spec_versions and user_v >= max(spec_versions):

@@ -118,6 +118,24 @@ class TestComputeVersionCompatibility:
         assert label == "newer_required"
         assert penalty == VERSION_PENALTY
 
+    def test_negation_only_spec(self) -> None:
+        """!=0.0.95 with user 0.0.95 → unknown (no direction implied)."""
+        label, penalty = compute_version_compatibility("0.0.95", "!=0.0.95")
+        assert label == "unknown"
+        assert penalty == 0.0
+
+    def test_mixed_negation_user_excluded(self) -> None:
+        """>=0.0.95,!=0.0.100 with user 0.0.100 → unknown (explicitly excluded)."""
+        label, penalty = compute_version_compatibility("0.0.100", ">=0.0.95,!=0.0.100")
+        assert label == "unknown"
+        assert penalty == 0.0
+
+    def test_mixed_negation_user_not_excluded(self) -> None:
+        """>=0.0.95,!=0.0.100 with user 0.0.99 → compatible."""
+        label, penalty = compute_version_compatibility("0.0.99", ">=0.0.95,!=0.0.100")
+        assert label == "compatible"
+        assert penalty == 0.0
+
     def test_plain_version_compatible(self) -> None:
         """Plain version (from git tag) treated as >=version."""
         label, penalty = compute_version_compatibility("0.0.110", "0.0.108")
