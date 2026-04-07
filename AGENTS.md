@@ -152,3 +152,13 @@ in future reviews unless the underlying circumstances change.
 - **[Security] won't-fix**: TypeScript import metadata currently stores raw `import_statement` text from indexed repos. This matches the existing model where source-derived metadata is returned verbatim and no executable sink exists. Revisit if user-supplied repos or prompt-sensitive metadata consumers are introduced. (2026-03-30)
 
 - **[Architecture] won't-fix**: The TypeScript parser-to-chunk contract is intentionally direct for Phase 2: `ts_tree_sitter_parser.py` emits the declaration/member fields that `source_ingest._build_ts_chunks` needs, mirroring the current Python `_build_chunks` pattern. Extract a normalization layer only if later language phases need a shared intermediate representation. (2026-03-30)
+
+- **[Security] won't-fix**: `DeprecationEntry.note` stores raw release-note prose from `pipecat-ai/pipecat` and returns it verbatim via `check_deprecation`. The source is the trusted upstream framework repo (not user input), and MCP JSON-RPC has no executable sink. Revisit if user-supplied repos are introduced as deprecation sources. (2026-04-07)
+
+- **[Architecture] won't-fix**: `_fetch_release_notes()` shells out to `gh` directly from `deprecation_map.py` rather than going through an adapter in the orchestration layer. The function already handles missing CLI, auth failures, and timeouts gracefully with warning-level logging. Extract to a dedicated adapter only if other modules need GitHub release data. (2026-04-07)
+
+- **[Logic] won't-fix**: Multi-item replacement paths from release notes are collapsed into a single comma-joined string assigned to all deprecated paths in the same bullet. This is informational metadata — users see all possible replacements rather than a potentially incorrect positional guess. Improve to positional pairing only if release notes adopt a consistent 1:1 format. (2026-04-07)
+
+- **[Logic] won't-fix**: `DeprecationMap.check()` reverse-prefix matching (`pipecat.services` matches `pipecat.services.grok`) returns the first matching entry, which may be arbitrary when multiple children exist. This is documented behavior for broad queries. Callers should use specific module paths for precise results. (2026-04-07)
+
+- **[Architecture] won't-fix**: Release-note entries do not override an existing `new_path` from source-derived mappings. Source-parsed `DeprecatedModuleProxy` mappings are module-to-module precise, while release notes may list multiple replacement paths. Keeping source-derived `new_path` as authoritative preserves precision. Revisit if source parsing is fully removed. (2026-04-07)

@@ -275,20 +275,22 @@ penalty or make mutually exclusive.
 ### Phase 1b: Deprecation Check Tool
 
 - [x] Create `deprecation_map.py` in `services/ingest/`:
-      - Parse `DeprecatedModuleProxy` usage from cloned pipecat source
+      - **Primary source:** GitHub release notes `### Deprecated` /
+        `### Removed` sections via `gh` CLI (100 releases, oldest-first
+        processing so earliest `deprecated_in`/`removed_in` wins)
+      - **Secondary source:** `DeprecatedModuleProxy` usage from cloned
+        pipecat source (structured but removed in pipecat PR #4240)
       - Handle bracket-expansion: `"cartesia.[stt,tts]"` → two entries,
         `"[ai_service,image_service,...]"` → individual module entries
-      - Fetch GitHub release notes `### Deprecated` / `### Removed` sections
-        via `gh` CLI (primary source, 100 releases by default; graceful
-        fallback with warning when `gh` is unavailable or unauthenticated)
       - Merge missing lifecycle fields (`deprecated_in`, `removed_in`,
-        `new_path`) into existing entries from later release data
+        `new_path`) into existing entries from release data
       - Extract dotted identifiers (e.g., `SimliVideoService.InputParams`)
-        as real queryable keys, not just CamelCase suffixed names
-      - Parse CHANGELOG.md `### Deprecated` and `### Removed` sections
-        (best-effort supplement stored as `changelog_notes` only)
+        as real queryable keys; unmatched prose goes to `changelog_notes`
+      - **Supplement:** CHANGELOG.md `### Deprecated` / `### Removed`
+        sections (stored as `changelog_notes` only)
       - Store as `DeprecationMap` dataclass (dict of `DeprecationEntry`)
-      - Rebuild on each `refresh`, store pipecat commit SHA for staleness
+      - Rebuild on each `refresh`; when framework repo absent, still
+        fetch release notes independently and preserve existing map
       - Persist to disk (JSON) for loading at server startup
 - [x] Create `check_deprecation` MCP tool handler in `server/tools/`:
       - Input: `symbol: str` (module path, class name, or method name)

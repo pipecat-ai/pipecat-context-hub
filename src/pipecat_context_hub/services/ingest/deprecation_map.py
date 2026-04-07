@@ -593,11 +593,20 @@ def build_deprecation_map_from_releases(
         logger.info("No release notes fetched — deprecation map unchanged")
         return result
 
+    # Sort oldest-first so earliest deprecated_in/removed_in wins
+    releases.sort(key=lambda r: r[0])
+
     added = 0
     merged = 0
+    notes_added = 0
     for version, body in releases:
         entries = _parse_release_body(version, body)
         for entry in entries:
+            # Synthetic keys (unmatched prose) go to changelog_notes, not entries
+            if entry.old_path.startswith("release:"):
+                result.changelog_notes.append(entry)
+                notes_added += 1
+                continue
             existing = result.entries.get(entry.old_path)
             if existing is None:
                 result.entries[entry.old_path] = entry
@@ -618,9 +627,11 @@ def build_deprecation_map_from_releases(
                     merged += 1
 
     logger.info(
-        "Added %d deprecation entries from %d release notes (%d existing entries merged)",
+        "Added %d deprecation entries from %d release notes "
+        "(%d merged, %d unmatched to notes)",
         added,
         len(releases),
         merged,
+        notes_added,
     )
     return result

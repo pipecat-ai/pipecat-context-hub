@@ -298,6 +298,48 @@ class TestBuildFromReleases:
         assert entry.deprecated_in == "0.0.105"  # merged
         assert entry.removed_in == "0.0.110"  # merged
 
+    def test_oldest_first_deprecated_in_wins(self) -> None:
+        """When a symbol appears in multiple releases, earliest deprecated_in wins."""
+        # Feed releases in reverse-chronological order (as gh returns them)
+        mock_releases = [
+            ("0.0.110", (
+                "### Deprecated\n"
+                "- `pipecat.services.old.thing` is deprecated.\n"
+            )),
+            ("0.0.105", (
+                "### Deprecated\n"
+                "- `pipecat.services.old.thing` is deprecated.\n"
+            )),
+        ]
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
+            return_value=mock_releases,
+        ):
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat")
+
+        entry = dm.entries["pipecat.services.old.thing"]
+        # Should be 0.0.105 (earliest), not 0.0.110
+        assert entry.deprecated_in == "0.0.105"
+
+    def test_synthetic_keys_go_to_notes(self) -> None:
+        """Unmatched prose entries go to changelog_notes, not entries."""
+        mock_releases = [
+            ("0.0.108", (
+                "### Deprecated\n"
+                "- Some general deprecation notice without backtick paths.\n"
+            )),
+        ]
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
+            return_value=mock_releases,
+        ):
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat")
+
+        # No synthetic release:... keys in entries
+        assert not any(k.startswith("release:") for k in dm.entries)
+        # But it should be in changelog_notes
+        assert len(dm.changelog_notes) >= 1
+
     def test_gh_not_available(self) -> None:
         """Gracefully returns empty when gh CLI is not available."""
         with patch(

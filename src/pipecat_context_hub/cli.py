@@ -429,6 +429,8 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
         )
 
         framework_slug = "pipecat-ai/pipecat"
+        dep_map_path = config.storage.data_dir / "deprecation_map.json"
+
         if framework_slug in prefetched:
             fw_path, fw_sha = prefetched[framework_slug]
             dep_map = build_deprecation_map_from_source(fw_path, commit_sha=fw_sha)
@@ -439,18 +441,27 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
             dep_map = build_deprecation_map_from_changelog(
                 changelog, dep_map, repo_root=fw_path
             )
-            dep_map_path = config.storage.data_dir / "deprecation_map.json"
             dep_map.save(dep_map_path)
         else:
-            # Delete stale map to avoid serving outdated deprecation data
-            dep_map_path = config.storage.data_dir / "deprecation_map.json"
-            if dep_map_path.is_file():
-                dep_map_path.unlink()
-                logger.info("Deleted stale deprecation map (framework repo not configured)")
+            # Framework repo not cloned — still try release notes via gh
+            from pipecat_context_hub.services.ingest.deprecation_map import (
+                DeprecationMap,
+            )
+            existing = DeprecationMap.load(dep_map_path) if dep_map_path.is_file() else DeprecationMap()
+            dep_map = build_deprecation_map_from_releases(
+                framework_slug, existing
+            )
+            if dep_map.entries:
+                dep_map.save(dep_map_path)
+                logger.info(
+                    "Built deprecation map from release notes only "
+                    "(%d entries — framework repo not cloned)",
+                    len(dep_map.entries),
+                )
             else:
                 logger.debug(
-                    "Framework repo %s not in effective_repos — "
-                    "no deprecation map to build",
+                    "Framework repo %s not in effective_repos and no "
+                    "release notes available — preserving existing map",
                     framework_slug,
                 )
 

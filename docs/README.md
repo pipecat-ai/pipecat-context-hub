@@ -33,8 +33,9 @@ uv sync --extra dev --group dev
 
 # Populate the local index (crawls docs + clones repos + computes embeddings)
 # When `gh` CLI is authenticated, also fetches GitHub release notes for
-# richer deprecation data. Without `gh`, check_deprecation still works
-# but may have fewer entries.
+# deprecation data. Authenticated `gh` is a practical prerequisite for
+# meaningful check_deprecation coverage — without it, most deprecation
+# entries will be absent.
 uv run pipecat-context-hub refresh
 
 # Force full re-ingest, ignoring cached state
