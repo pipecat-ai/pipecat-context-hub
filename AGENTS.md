@@ -91,6 +91,26 @@ This is expected — don't treat "class is not top result" as a hard blocker.
 Use `chunk_type="class_overview"` (tests 25-26) when class-level ranking
 matters.
 
+30. `search_examples("TTS pipeline", pipecat_version="0.0.95", domain="backend")`
+    — all hits have `version_compatibility: "newer_required"` (framework pins
+    are 0.0.108+)
+31. `search_examples("TTS pipeline", pipecat_version="0.0.110", domain="backend")`
+    — all hits have `version_compatibility: "compatible"`
+32. `search_examples("TTS pipeline", pipecat_version="0.0.110",
+    version_filter="compatible_only", domain="backend")` — no
+    `newer_required` hits pass through the filter
+33. `search_examples("TTS pipeline")` (no version) — all hits have
+    `version_compatibility: null`
+34. `check_deprecation("pipecat.services.grok.llm")` — returns
+    `deprecated: true`, `deprecated_in: "0.0.108"`, replacement includes
+    `pipecat.services.xai.llm`, note includes PR link
+35. `check_deprecation("SambaNovaSTTService")` — returns `deprecated: true`,
+    `removed_in: "0.0.108"`
+36. `check_deprecation("DailyTransport")` — returns `deprecated: false`
+37. `check_deprecation("pipecat.services.google.llm_vertex")` — returns
+    `deprecated: true`, `deprecated_in: "0.0.105"`, replacement includes
+    `pipecat.services.google.vertex.llm`
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
