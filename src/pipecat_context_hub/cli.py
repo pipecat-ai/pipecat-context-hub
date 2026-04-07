@@ -424,6 +424,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
         # ----- 3. Deprecation map -----
         from pipecat_context_hub.services.ingest.deprecation_map import (
             build_deprecation_map_from_changelog,
+            build_deprecation_map_from_releases,
             build_deprecation_map_from_source,
         )
 
@@ -431,6 +432,9 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool) -> None:
         if framework_slug in prefetched:
             fw_path, fw_sha = prefetched[framework_slug]
             dep_map = build_deprecation_map_from_source(fw_path, commit_sha=fw_sha)
+            dep_map = build_deprecation_map_from_releases(
+                framework_slug, dep_map
+            )
             changelog = fw_path / "CHANGELOG.md"
             dep_map = build_deprecation_map_from_changelog(
                 changelog, dep_map, repo_root=fw_path
