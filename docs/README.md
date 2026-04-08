@@ -82,10 +82,36 @@ Per-client setup guides:
 
 Config templates for all clients are in [`config/clients/`](../config/clients/).
 
-> **Recommended:** Add a `CLAUDE.md` snippet to your project so Claude prefers
-> the MCP tools for Pipecat questions. See the
-> [Claude Code setup guide](setup/claude-code.md#recommended-claudemd-instructions)
-> for the recommended instructions.
+### Add CLAUDE.md Instructions (Recommended)
+
+Add this to your project's `CLAUDE.md` (or `~/.claude/CLAUDE.md` globally) so
+your coding agent prefers the MCP tools for Pipecat questions:
+
+```markdown
+## MCP Tools
+
+When pipecat-context-hub MCP is available, always prefer its tools
+(`search_docs`, `search_api`, `search_examples`, `get_example`, `get_doc`,
+`get_code_snippet`, `check_deprecation`) for Pipecat framework questions.
+Do not read `.venv` or source files directly.
+
+- "How do I ...?" → `search_docs`
+- "Show me an example of ..." → `search_examples`, then `get_example`
+- Class constructors, method signatures, frame types → `search_api`
+- Specific code span or symbol → `get_code_snippet`
+- Retrieve a specific doc page → `get_doc`
+- Check if an import is deprecated → `check_deprecation`
+
+**Multi-concept queries:** Use ` + ` or ` & ` as delimiters
+(e.g., `search_docs("TTS + STT")`). Each concept is searched independently
+and results are interleaved.
+
+When suggesting commands for Pipecat projects, always use `uv` as the
+package manager:
+- Install dependencies: `uv sync` (not `pip install`)
+- Run scripts: `uv run python bot.py` (not `python bot.py`)
+- Add packages: `uv add <package>` (not `pip install <package>`)
+```
 
 ## MCP Tools
 
