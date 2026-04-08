@@ -126,8 +126,13 @@ distribute, and how concepts relate in embedding space.
 
 - **Index Explorer** (`dashboard/public/index.html`) — treemap, content type
   breakdown, AST chunk types, method length histogram
+
+  ![Index Explorer](sshot-dashboard-index.jpg)
+
 - **Latent Space Explorer** (`dashboard/public/latent-space.html`) — 3D point
   cloud of all chunks via UMAP projection (Three.js)
+
+  ![Latent Space Explorer](sshot-dashboard-latent-space.png)
 
 ```bash
 just dashboard-build     # rebuild dashboard data from current index
