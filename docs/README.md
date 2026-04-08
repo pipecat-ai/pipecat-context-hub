@@ -165,6 +165,7 @@ Retrieval:
 | `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
 | `PIPECAT_HUB_TAINTED_REPOS` | *(empty)* | Comma-separated repo slugs to skip entirely and remove from the active refresh set |
 | `PIPECAT_HUB_TAINTED_REFS` | *(empty)* | Comma-separated `org/repo@ref` entries. `ref` may be a tag or commit SHA/prefix; refresh skips a repo when fetched HEAD matches one of these refs |
+| `PIPECAT_HUB_FRAMEWORK_VERSION` | *(empty)* | Pin the framework repo (`pipecat-ai/pipecat`) to a specific git tag (e.g. `v0.0.96`). Source chunks come from that version instead of HEAD. Also available as `refresh --framework-version` CLI flag |
 | `PIPECAT_HUB_RERANKER_ENABLED` | `1` (enabled) | Set to `0` to disable cross-encoder reranking |
 | `PIPECAT_HUB_ENABLE_QUALITY_BENCHMARK` | *(empty)* | Set to `1` to opt into the retrieval-quality benchmark when running it directly with `pytest` |
 | `PIPECAT_HUB_BENCHMARK_OUTPUT` | *(empty)* | Optional JSON output path for the retrieval-quality benchmark report |
