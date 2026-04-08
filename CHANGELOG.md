@@ -5,6 +5,21 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.0.16] - 2026-04-06
+
+### Added
+
+- **Release notes deprecation parsing** — `check_deprecation` now uses
+  GitHub release notes as a primary source for deprecation data. Parses
+  `### Deprecated` and `### Removed` sections from pipecat releases,
+  extracts module paths and class names from backtick-wrapped text, and
+  populates the deprecation map with version-attributed entries. This
+  replaces the now-empty `DeprecatedModuleProxy` source as the primary
+  data for `check_deprecation`.
+- Release notes are fetched via `gh` CLI during `refresh` (graceful
+  fallback when `gh` is unavailable)
+- Replacement path extraction from "use X instead" patterns
+
 ## [0.0.15] - 2026-04-05
 
 ### Added

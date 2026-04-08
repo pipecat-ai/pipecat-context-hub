@@ -91,6 +91,31 @@ This is expected — don't treat "class is not top result" as a hard blocker.
 Use `chunk_type="class_overview"` (tests 25-26) when class-level ranking
 matters.
 
+30. `search_examples("TTS pipeline", pipecat_version="0.0.95", domain="backend")`
+    — all hits have `version_compatibility: "newer_required"` (framework pins
+    are 0.0.108+)
+31. `search_examples("TTS pipeline", pipecat_version="0.0.110", domain="backend")`
+    — all hits have `version_compatibility: "compatible"`
+32. `search_examples("TTS pipeline", pipecat_version="0.0.110",
+    version_filter="compatible_only", domain="backend")` — no
+    `newer_required` hits pass through the filter
+33. `search_examples("TTS pipeline")` (no version) — all hits have
+    `version_compatibility: null`
+**Prerequisite:** Tests 34-37 require that `gh` CLI was authenticated during
+the last `refresh`. Without `gh`, release-note-derived deprecation entries
+will be absent and these assertions will fail. Test 36 (`DailyTransport`)
+always passes regardless of `gh` availability.
+
+34. `check_deprecation("pipecat.services.grok.llm")` — returns
+    `deprecated: true`, `deprecated_in: "0.0.108"`, replacement includes
+    `pipecat.services.xai.llm`, note includes PR link
+35. `check_deprecation("SambaNovaSTTService")` — returns `deprecated: true`,
+    `removed_in: "0.0.108"`
+36. `check_deprecation("DailyTransport")` — returns `deprecated: false`
+37. `check_deprecation("pipecat.services.google.llm_vertex")` — returns
+    `deprecated: true`, `deprecated_in: "0.0.105"`, replacement includes
+    `pipecat.services.google.vertex.llm`
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
@@ -120,10 +145,22 @@ in future reviews unless the underlying circumstances change.
 
 - **[Logic] won't-fix**: Confidence scores are optimistic on weak `search_examples` results — noisy keyword matches from large repos (e.g., gradient-bang frontend files) score high via RRF + dual-hit bonus, driving confidence to ~0.95 even when results are semantically irrelevant. This is a retrieval quality issue, not a confidence calibration bug. The cross-encoder (Phase 1, disabled by default) directly addresses this by scoring query-result *pairs* for semantic relevance. Without cross-encoder, confidence reflects score distribution, not true relevance. Follow-up: example corpus weighting / repo scoring to reduce noise from non-pipeline code. (2026-03-24)
 
-- **[Security] resolved**: `pygments` CVE-2026-4539 resolved by upgrading to 2.20.0 via PR #34 (2026-03-31). The `--ignore-vuln` entry in the audit gate can be removed if still present.
+- **[Security] resolved**: `pygments` CVE-2026-4539 resolved by upgrading to 2.20.0 via PR #34 (2026-03-31). `--ignore-vuln` entry removed from CI and justfile.
+
+- **[Security] won't-fix**: `transformers` CVE-2026-1839 — fix requires 5.0.0rc3 (release candidate), but `sentence-transformers` pins `transformers<5.0`. Ignored via `--ignore-vuln CVE-2026-1839` in CI and justfile. Remove when `sentence-transformers` supports `transformers>=5.0`. (2026-04-07)
 
 - **[Architecture] won't-fix**: Removing `pipecat_context_hub.services.ingest.ts_source_parser` is intentional. The module is treated as internal implementation detail, not supported public API, and no external consumers are expected to import it directly. Revisit only if ingestion parser modules become documented extension points. (2026-03-30)
 
 - **[Security] won't-fix**: TypeScript import metadata currently stores raw `import_statement` text from indexed repos. This matches the existing model where source-derived metadata is returned verbatim and no executable sink exists. Revisit if user-supplied repos or prompt-sensitive metadata consumers are introduced. (2026-03-30)
 
 - **[Architecture] won't-fix**: The TypeScript parser-to-chunk contract is intentionally direct for Phase 2: `ts_tree_sitter_parser.py` emits the declaration/member fields that `source_ingest._build_ts_chunks` needs, mirroring the current Python `_build_chunks` pattern. Extract a normalization layer only if later language phases need a shared intermediate representation. (2026-03-30)
+
+- **[Security] won't-fix**: `DeprecationEntry.note` stores raw release-note prose from `pipecat-ai/pipecat` and returns it verbatim via `check_deprecation`. The source is the trusted upstream framework repo (not user input), and MCP JSON-RPC has no executable sink. Revisit if user-supplied repos are introduced as deprecation sources. (2026-04-07)
+
+- **[Architecture] won't-fix**: `_fetch_release_notes()` shells out to `gh` directly from `deprecation_map.py` rather than going through an adapter in the orchestration layer. The function already handles missing CLI, auth failures, and timeouts gracefully with warning-level logging. Extract to a dedicated adapter only if other modules need GitHub release data. (2026-04-07)
+
+- **[Logic] won't-fix**: Multi-item replacement paths from release notes are collapsed into a single comma-joined string assigned to all deprecated paths in the same bullet. This is informational metadata — users see all possible replacements rather than a potentially incorrect positional guess. Improve to positional pairing only if release notes adopt a consistent 1:1 format. (2026-04-07)
+
+- **[Logic] won't-fix**: `DeprecationMap.check()` reverse-prefix matching (`pipecat.services` matches `pipecat.services.grok`) returns the first matching entry, which may be arbitrary when multiple children exist. This is documented behavior for broad queries. Callers should use specific module paths for precise results. (2026-04-07)
+
+- **[Architecture] won't-fix**: Release-note entries do not override an existing `new_path` from source-derived mappings. Source-parsed `DeprecatedModuleProxy` mappings are module-to-module precise, while release notes may list multiple replacement paths. Keeping source-derived `new_path` as authoritative preserves precision. Revisit if source parsing is fully removed. (2026-04-07)

@@ -1,8 +1,8 @@
 # Version-Aware Indexing & Deprecation Checking
 
-**Status:** Phase 1a + 1b + 2 Complete
+**Status:** Phase 1a + 1b + 2 Complete (Phase 1b extended with release-notes parsing)
 **Priority:** Medium
-**Branch:** `feature/version-aware-indexing` (Phase 1a+1b), `feature/version-aware-retrieval` (Phase 2)
+**Branch:** `feature/version-aware-indexing` (Phase 1a+1b), `feature/version-aware-retrieval` (Phase 2), `feature/release-notes-deprecation` (Phase 1b extension)
 **Created:** 2026-03-31
 **Objective:** Track which pipecat version each repo/example targets, expose
 deprecation checking as a first-class MCP tool, and enable version-aware
@@ -58,8 +58,11 @@ mismatch:
 - `warnings.warn(DeprecationWarning)` for parameter/method deprecations
   (20+ instances, unstructured, scattered in source code — deferred to Phase 3)
 - `.. deprecated:: 0.0.99` docstring directives (semi-structured — deferred)
-- CHANGELOG `### Deprecated` and `### Removed` sections (human-authored prose,
-  best-effort parsing as supplement to DeprecatedModuleProxy)
+- GitHub release notes `### Deprecated` and `### Removed` sections (structured,
+  versioned — primary source now that `DeprecatedModuleProxy` was removed in
+  PR #4240; fetched via `gh` CLI, 100 releases by default)
+- CHANGELOG `### Deprecated` and `### Removed` sections (best-effort
+  supplement, stored as `changelog_notes` only)
 - Old imports keep working until explicitly removed
 
 **Example repo version pinning (observed patterns):**
@@ -159,7 +162,9 @@ penalty or make mutually exclusive.
 ### Phase 1b: Deprecation Check Tool (new MCP tool)
 
 1. **Build deprecation map at refresh time** — parse `DeprecatedModuleProxy`
-   usage from pipecat source + CHANGELOG `Deprecated`/`Removed` sections
+   usage from pipecat source, fetch GitHub release notes `Deprecated`/`Removed`
+   sections (primary source, 100 releases via `gh` CLI), and CHANGELOG
+   `Deprecated`/`Removed` sections (best-effort supplement)
 2. **Handle bracket-expansion syntax** — `"cartesia.[stt,tts]"` expands to
    `["pipecat.services.cartesia.stt", "pipecat.services.cartesia.tts"]` and
    `"[ai_service,image_service,...]"` expands to individual module paths
@@ -270,13 +275,22 @@ penalty or make mutually exclusive.
 ### Phase 1b: Deprecation Check Tool
 
 - [x] Create `deprecation_map.py` in `services/ingest/`:
-      - Parse `DeprecatedModuleProxy` usage from cloned pipecat source
+      - **Primary source:** GitHub release notes `### Deprecated` /
+        `### Removed` sections via `gh` CLI (100 releases, oldest-first
+        processing so earliest `deprecated_in`/`removed_in` wins)
+      - **Secondary source:** `DeprecatedModuleProxy` usage from cloned
+        pipecat source (structured but removed in pipecat PR #4240)
       - Handle bracket-expansion: `"cartesia.[stt,tts]"` → two entries,
         `"[ai_service,image_service,...]"` → individual module entries
-      - Parse CHANGELOG.md `### Deprecated` and `### Removed` sections
-        (best-effort supplement, seed manually for known deprecations)
+      - Merge missing lifecycle fields (`deprecated_in`, `removed_in`,
+        `new_path`) into existing entries from release data
+      - Extract dotted identifiers (e.g., `SimliVideoService.InputParams`)
+        as real queryable keys; unmatched prose goes to `changelog_notes`
+      - **Supplement:** CHANGELOG.md `### Deprecated` / `### Removed`
+        sections (stored as `changelog_notes` only)
       - Store as `DeprecationMap` dataclass (dict of `DeprecationEntry`)
-      - Rebuild on each `refresh`, store pipecat commit SHA for staleness
+      - Rebuild on each `refresh`; when framework repo absent, still
+        fetch release notes independently and preserve existing map
       - Persist to disk (JSON) for loading at server startup
 - [x] Create `check_deprecation` MCP tool handler in `server/tools/`:
       - Input: `symbol: str` (module path, class name, or method name)
@@ -452,9 +466,13 @@ def _expand_bracket_module(old_module: str, new_module: str) -> list[tuple[str, 
 
 **Sources (structured, Phase 1b):**
 1. `DeprecatedModuleProxy` usage in `__init__.py` files → old/new module path
-   (including bracket-expansion)
-2. CHANGELOG.md `### Deprecated` → version + description (best-effort)
-3. CHANGELOG.md `### Removed` → version + description (best-effort)
+   (including bracket-expansion) — removed in pipecat PR #4240
+2. GitHub release notes `### Deprecated` / `### Removed` sections → version +
+   module paths + replacement paths (primary source, 100 releases via `gh` CLI,
+   graceful fallback when `gh` unavailable)
+3. CHANGELOG.md `### Deprecated` → version + description (best-effort supplement,
+   stored as `changelog_notes` only)
+4. CHANGELOG.md `### Removed` → version + description (best-effort supplement)
 
 **Sources (unstructured, deferred to Phase 3):**
 4. `warnings.warn(DeprecationWarning, ...)` calls (20+ in source)
@@ -518,11 +536,11 @@ via `retriever.deprecation_map.check(symbol)` — no special-case dispatch.
 | 1a | `types.py` | `pipecat_version_pin` on `ExampleHit`, `ApiHit`, `CodeSnippet` |
 | 1a | `hybrid.py` | Surface version in results |
 | 1a | `main.py` | Bump `_SERVER_VERSION` |
-| 1b | New: `services/ingest/deprecation_map.py` | Parse deprecations, bracket-expansion |
+| 1b | New: `services/ingest/deprecation_map.py` | Parse deprecations, bracket-expansion, release-notes fetching (`_fetch_release_notes`, `_parse_release_body`), dotted symbol extraction, lifecycle field merging |
 | 1b | New: `server/tools/check_deprecation.py` | Tool handler |
 | 1b | `hybrid.py` / `retrieval/` | Add `deprecation_map` attribute to `HybridRetriever` |
 | 1b | `main.py` | Register `check_deprecation` tool, update instructions |
-| 1b | `cli.py` | Build + persist deprecation map during `refresh` |
+| 1b | `cli.py` | Build + persist deprecation map during `refresh` (source → release notes → CHANGELOG pipeline) |
 | 2 | `types.py` | `pipecat_version` param on search input models |
 | 2 | `rerank.py` | Version-aware scoring with combined penalty cap |
 | 2 | `hybrid.py` | `version_compatibility` field, version filter |

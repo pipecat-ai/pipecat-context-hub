@@ -25,6 +25,26 @@ IDE/Agent  ←stdio→  pipecat-context-hub serve  ←→  Local index (~/.pipec
 
 All responses include an `EvidenceReport` with `known`/`unknown` items, confidence scores, and suggested follow-up queries.
 
+### Version-Aware Queries
+
+If your project targets a specific pipecat version, pass `pipecat_version` to
+get results scored for compatibility:
+
+```
+search_examples("TTS pipeline", pipecat_version="0.0.96", domain="backend")
+search_api("DailyTransport", pipecat_version="0.0.96")
+```
+
+Results are annotated with `version_compatibility`: `"compatible"`,
+`"newer_required"`, `"older_targeted"`, or `"unknown"`. Use
+`version_filter="compatible_only"` to exclude results that require a newer
+version than yours.
+
+**Note:** The index always reflects the latest framework HEAD. Version scoring
+penalizes incompatible results but does not change what is indexed. Indexing a
+specific framework version (e.g., checking out `v0.0.96`) is planned for a
+future release.
+
 ## Quick Start
 
 ```bash
@@ -32,6 +52,10 @@ All responses include an `EvidenceReport` with `known`/`unknown` items, confiden
 uv sync --extra dev --group dev
 
 # Populate the local index (crawls docs + clones repos + computes embeddings)
+# When `gh` CLI is authenticated, also fetches GitHub release notes for
+# deprecation data. Authenticated `gh` is a practical prerequisite for
+# meaningful check_deprecation coverage — without it, most deprecation
+# entries will be absent.
 uv run pipecat-context-hub refresh
 
 # Force full re-ingest, ignoring cached state
