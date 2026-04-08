@@ -24,11 +24,9 @@ IDE/Agent  ←stdio→  pipecat-context-hub serve  ←→  Local index (~/.pipec
 ## Install
 
 ```bash
-# Option A: uv (recommended — installs into an isolated environment)
-uv tool install pipecat-context-hub
-
-# Option B: pip
-pip install pipecat-context-hub
+git clone https://github.com/pipecat-ai/pipecat-context-hub.git
+cd pipecat-context-hub
+uv sync
 ```
 
 ## Populate the Local Index
@@ -37,13 +35,13 @@ Before the server can answer queries, build the local index:
 
 ```bash
 # First-time setup (downloads docs, clones repos, computes embeddings)
-pipecat-context-hub refresh
+uv run pipecat-context-hub refresh
 
 # Force full re-ingest (ignores cached state)
-pipecat-context-hub refresh --force
+uv run pipecat-context-hub refresh --force
 
 # Recover from an unhealthy local index
-pipecat-context-hub refresh --force --reset-index
+uv run pipecat-context-hub refresh --force --reset-index
 ```
 
 > **Tip:** When `gh` CLI is authenticated, `refresh` also fetches GitHub release
@@ -53,13 +51,13 @@ pipecat-context-hub refresh --force --reset-index
 ## Start the Server
 
 ```bash
-pipecat-context-hub serve
+uv run pipecat-context-hub serve
 ```
 
 ## Client Setup
 
-Add the server to your IDE's MCP config. Per-client setup guides with
-copy-paste configs:
+Point your IDE's MCP config at the cloned repo using `uv run --directory`.
+Per-client setup guides:
 
 | Client | Setup Guide |
 |--------|-------------|
@@ -68,7 +66,21 @@ copy-paste configs:
 | **VS Code** | [docs/setup/vscode.md](setup/vscode.md) |
 | **Zed** | [docs/setup/zed.md](setup/zed.md) |
 
-Ready-to-use config templates are in [`config/clients/`](../config/clients/).
+**Example** (Claude Code `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "pipecat-context-hub": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"],
+      "env": {}
+    }
+  }
+}
+```
+
+Config templates for all clients are in [`config/clients/`](../config/clients/).
 
 > **Recommended:** Add a `CLAUDE.md` snippet to your project so Claude prefers
 > the MCP tools for Pipecat questions. See the
@@ -138,9 +150,9 @@ Results are annotated with `version_compatibility`: `"compatible"`,
 You can also pin the framework index to a specific version:
 
 ```bash
-pipecat-context-hub refresh --framework-version v0.0.96
+uv run pipecat-context-hub refresh --framework-version v0.0.96
 # or via env var:
-PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 pipecat-context-hub refresh
+PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 uv run pipecat-context-hub refresh
 ```
 
 ## Environment Variables
@@ -176,10 +188,9 @@ Add more repos via `PIPECAT_HUB_EXTRA_REPOS`.
 
 ## Troubleshooting
 
-- **Empty results** — run `pipecat-context-hub refresh` to populate the index
-- **Command not found** — ensure `pipecat-context-hub` is on your `PATH` (`uv tool list` to check)
-- **Stale results** — run `refresh --force` to re-ingest from latest upstream
-- **Index corruption** — run `refresh --force --reset-index` to wipe and rebuild
+- **Empty results** — run `uv run pipecat-context-hub refresh` to populate the index
+- **Stale results** — run `uv run pipecat-context-hub refresh --force` to re-ingest from latest upstream
+- **Index corruption** — run `uv run pipecat-context-hub refresh --force --reset-index` to wipe and rebuild
 
 If the server returns poor or missing results, [file a retrieval quality issue](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=retrieval-quality.yml) —
 the issue template includes a diagnostic prompt your coding agent can run to
