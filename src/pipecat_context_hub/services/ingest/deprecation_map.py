@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-import subprocess
+import subprocess  # nosec B404 — used for gh CLI calls with hardcoded arguments
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -420,7 +420,7 @@ def _fetch_release_notes(
     """
     try:
         # Step 1: get tag names
-        list_result = subprocess.run(
+        list_result = subprocess.run(  # nosec B603 B607 — hardcoded gh CLI, no user input
             ["gh", "release", "list", "--repo", repo_slug, "--limit", str(limit),
              "--json", "tagName"],
             capture_output=True,
@@ -440,7 +440,7 @@ def _fetch_release_notes(
         notes: list[tuple[str, str]] = []
         for tag in tags:
             try:
-                view_result = subprocess.run(
+                view_result = subprocess.run(  # nosec B603 B607
                     ["gh", "release", "view", tag, "--repo", repo_slug,
                      "--json", "body", "-q", ".body"],
                     capture_output=True,
