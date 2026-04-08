@@ -46,7 +46,7 @@ check: lint fmt-check typecheck
 
 # Dependency vulnerability audit
 audit-deps:
-    uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-4539
+    uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-1839
 
 # Static security scan for Python code
 audit-security:

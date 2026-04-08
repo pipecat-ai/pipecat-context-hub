@@ -145,7 +145,9 @@ in future reviews unless the underlying circumstances change.
 
 - **[Logic] won't-fix**: Confidence scores are optimistic on weak `search_examples` results — noisy keyword matches from large repos (e.g., gradient-bang frontend files) score high via RRF + dual-hit bonus, driving confidence to ~0.95 even when results are semantically irrelevant. This is a retrieval quality issue, not a confidence calibration bug. The cross-encoder (Phase 1, disabled by default) directly addresses this by scoring query-result *pairs* for semantic relevance. Without cross-encoder, confidence reflects score distribution, not true relevance. Follow-up: example corpus weighting / repo scoring to reduce noise from non-pipeline code. (2026-03-24)
 
-- **[Security] resolved**: `pygments` CVE-2026-4539 resolved by upgrading to 2.20.0 via PR #34 (2026-03-31). The `--ignore-vuln` entry in the audit gate can be removed if still present.
+- **[Security] resolved**: `pygments` CVE-2026-4539 resolved by upgrading to 2.20.0 via PR #34 (2026-03-31). `--ignore-vuln` entry removed from CI and justfile.
+
+- **[Security] won't-fix**: `transformers` CVE-2026-1839 — fix requires 5.0.0rc3 (release candidate), but `sentence-transformers` pins `transformers<5.0`. Ignored via `--ignore-vuln CVE-2026-1839` in CI and justfile. Remove when `sentence-transformers` supports `transformers>=5.0`. (2026-04-07)
 
 - **[Architecture] won't-fix**: Removing `pipecat_context_hub.services.ingest.ts_source_parser` is intentional. The module is treated as internal implementation detail, not supported public API, and no external consumers are expected to import it directly. Revisit only if ingestion parser modules become documented extension points. (2026-03-30)
 

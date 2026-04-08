@@ -130,6 +130,14 @@ Tool selection guide:
 ``from pipecat.services.grok import ...``), use ``check_deprecation`` \
 to verify the import path is not deprecated before recommending it.
 
+**Version-aware results:** If the user mentions their pipecat version \
+(e.g. in pyproject.toml or requirements.txt), pass it as \
+``pipecat_version`` to ``search_examples``, ``search_api``, and \
+``get_code_snippet``. This scores results for compatibility and \
+annotates them with ``version_compatibility``. Use \
+``version_filter="compatible_only"`` to exclude results requiring a \
+newer version than theirs.
+
 Multi-concept queries: use ` + ` or ` & ` to search for multiple concepts \
 at once (e.g. "idle timeout + function calling + Gemini"). Each concept is \
 searched independently and results are interleaved for balanced coverage.
