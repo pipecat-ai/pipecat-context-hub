@@ -19,6 +19,7 @@ uv run mypy src/ tests/                             # type check
 uv run pipecat-context-hub refresh                  # incremental rebuild
 uv run pipecat-context-hub refresh --force          # full re-ingest
 uv run pipecat-context-hub refresh --force --reset-index  # recover unhealthy local Chroma state
+uv run pipecat-context-hub refresh --framework-version v0.0.96  # index framework at a specific tag
 uv run pipecat-context-hub serve                    # start MCP server
 ```
 
