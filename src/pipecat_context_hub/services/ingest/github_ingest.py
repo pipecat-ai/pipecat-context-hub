@@ -94,6 +94,8 @@ _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 _REPO_SLUG_RE = re.compile(
     r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
 )
+# Validation for git tag names (e.g. "v0.0.96", "0.0.96").
+_TAG_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 
 def _estimate_tokens(text: str) -> int:
@@ -1127,10 +1129,22 @@ class GitHubRepoIngester:
             errors=errors,
         )
 
-    def clone_or_fetch(self, repo_slug: str, checkout: bool = True) -> tuple[Path, str]:
+    def clone_or_fetch(
+        self,
+        repo_slug: str,
+        checkout: bool = True,
+        tag: str | None = None,
+    ) -> tuple[Path, str]:
         """Clone repo if not present, otherwise fetch latest.
 
-        Returns (repo_path, HEAD commit SHA).
+        Args:
+            repo_slug: GitHub org/repo slug.
+            checkout: Whether to checkout the resolved commit.
+            tag: Optional git tag to resolve instead of HEAD (e.g. ``"v0.0.96"``).
+                 Only used for the framework repo to support version-pinned indexing.
+
+        Returns:
+            ``(repo_path, commit_sha)`` — the SHA of the checked-out commit.
         """
         if not _REPO_SLUG_RE.fullmatch(repo_slug):
             raise ValueError(f"Invalid repo slug: {repo_slug}")
@@ -1144,7 +1158,10 @@ class GitHubRepoIngester:
         if (repo_path / ".git").is_dir():
             git_repo = GitRepo(str(repo_path))
             git_repo.git.fetch("origin", "--tags")
-            commit_sha = _resolve_origin_head_commit(git_repo)
+            if tag:
+                commit_sha = self._resolve_tag(git_repo, tag)
+            else:
+                commit_sha = _resolve_origin_head_commit(git_repo)
             if checkout:
                 self.checkout_commit(repo_path, commit_sha)
         else:
@@ -1154,9 +1171,44 @@ class GitHubRepoIngester:
                 str(repo_path),
                 no_checkout=not checkout,
             )
-            commit_sha = git_repo.head.commit.hexsha
+            if tag:
+                commit_sha = self._resolve_tag(git_repo, tag)
+                if checkout:
+                    self.checkout_commit(repo_path, commit_sha)
+            else:
+                commit_sha = git_repo.head.commit.hexsha
 
         return repo_path, commit_sha
+
+    @staticmethod
+    def _resolve_tag(git_repo: GitRepo, tag: str) -> str:
+        """Resolve a git tag name to a commit SHA.
+
+        Handles both lightweight and annotated tags. Raises ``ValueError``
+        if the tag does not exist or has an invalid format.
+        """
+        if not _TAG_RE.fullmatch(tag):
+            raise ValueError(f"Invalid tag format: {tag!r}")
+        # Normalise: accept both "v0.0.96" and "0.0.96"
+        candidates = [tag]
+        if not tag.startswith("v"):
+            candidates.append(f"v{tag}")
+        else:
+            candidates.append(tag[1:])
+
+        for candidate in candidates:
+            try:
+                # Dereference annotated tags to their commit
+                obj = git_repo.tag(candidate).commit
+                return obj.hexsha
+            except (ValueError, IndexError, BadObject, GitCommandError):
+                continue
+
+        raise ValueError(
+            f"Tag '{tag}' not found in repository. "
+            f"Available tags (latest 5): "
+            f"{[str(t) for t in sorted(git_repo.tags, key=lambda t: t.name, reverse=True)[:5]]}"
+        )
 
     def checkout_commit(self, repo_path: Path, commit_sha: str) -> None:
         """Reset the local working tree to a specific commit."""

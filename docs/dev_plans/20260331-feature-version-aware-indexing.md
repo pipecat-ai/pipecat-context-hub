@@ -1,8 +1,8 @@
 # Version-Aware Indexing & Deprecation Checking
 
-**Status:** Phase 1a + 1b + 2 Complete (Phase 1b extended with release-notes parsing)
+**Status:** Phase 1a + 1b + 2 + 4 Complete (Phase 1b extended with release-notes parsing)
 **Priority:** Medium
-**Branch:** `feature/version-aware-indexing` (Phase 1a+1b), `feature/version-aware-retrieval` (Phase 2), `feature/release-notes-deprecation` (Phase 1b extension)
+**Branch:** `feature/version-aware-indexing` (Phase 1a+1b), `feature/version-aware-retrieval` (Phase 2), `feature/release-notes-deprecation` (Phase 1b extension), `feature/version-pinned-indexing` (Phase 4)
 **Created:** 2026-03-31
 **Objective:** Track which pipecat version each repo/example targets, expose
 deprecation checking as a first-class MCP tool, and enable version-aware
@@ -227,9 +227,10 @@ penalty or make mutually exclusive.
    specific tag (e.g., `v0.0.95`) instead of HEAD
 2. **Config:** `PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.95` env var or
    `refresh --framework-version v0.0.95` CLI flag
-3. **Multi-version API surface** — users pinned to v0.0.95 get API docs
-   from that version, not HEAD
-4. **Storage cost:** ~3x source chunk count per additional version indexed
+3. **Single-version replacement** — replaces HEAD source chunks with the
+   pinned version's chunks (not multi-version; avoids ~3x storage cost)
+4. **Tag validation** — `_TAG_RE` regex validates tag format before git ops;
+   `_resolve_tag()` normalises `v` prefix and dereferences annotated tags
 
 ## Implementation Checklist
 
@@ -339,10 +340,12 @@ penalty or make mutually exclusive.
 
 ### Phase 4: Historical Version Indexing (stretch)
 
-- [ ] `PIPECAT_HUB_FRAMEWORK_VERSION` env var / `--framework-version` CLI
-- [ ] Tag-based checkout in `GitHubRepoIngester.clone_or_fetch()`
-- [ ] Separate index partitions per version
-- [ ] Performance benchmarks for multi-version index
+- [x] `PIPECAT_HUB_FRAMEWORK_VERSION` env var / `--framework-version` CLI
+- [x] Tag-based checkout in `GitHubRepoIngester.clone_or_fetch()`
+- [ ] ~~Separate index partitions per version~~ (deferred — single-version
+      replacement model used instead, avoiding 3x storage cost)
+- [ ] ~~Performance benchmarks for multi-version index~~ (deferred — single-version
+      model means no multi-version index to benchmark)
 
 ## Technical Specifications
 

@@ -5,10 +5,16 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
-## [0.0.16] - 2026-04-06
+## [0.0.16] - 2026-04-07
 
 ### Added
 
+- **Version-pinned framework indexing (Phase 4)** — `refresh --framework-version v0.0.96`
+  (or `PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96` env var) indexes the framework
+  repo at a specific git tag instead of HEAD. Users pinned to an older pipecat
+  version get `search_api` results matching their installed API surface.
+  Deprecation map stays forward-looking from HEAD/release-notes.
+- `get_hub_status` now surfaces the pinned `framework_version` in its output
 - **Release notes deprecation parsing** — `check_deprecation` now uses
   GitHub release notes as a primary source for deprecation data. Parses
   `### Deprecated` and `### Removed` sections from pipecat releases,
