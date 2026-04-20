@@ -25,6 +25,10 @@ from pipecat_context_hub.shared.config import HubConfig
 # renderer and the producers cannot drift.
 _MISSING_SENTINEL = "\u2014"
 
+# Exit code for `serve` when the index cannot be used (unopenable or empty).
+# Documented in CHANGELOG 0.0.17 "Changed" section.
+_EXIT_INDEX_UNREADY = 2
+
 
 def _load_dotenv() -> None:
     """Load ``.env`` file from the current directory if it exists.
@@ -110,19 +114,27 @@ def serve(ctx: click.Context) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting server with transport=%s", config.server.transport)
 
+    index_store: IndexStore | None = None
     try:
         index_store = IndexStore(config.storage)
         stats = index_store.get_index_stats()
     except Exception as exc:
+        # IndexStore.__init__ opens two backends (Chroma + SQLite) without
+        # rolling back on partial failure; close() whatever did come up.
+        if index_store is not None:
+            try:
+                index_store.close()
+            except Exception:
+                pass
         logger.error(
             "Failed to open index at %s: %s. "
             "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild.",
             config.storage.data_dir,
             exc,
         )
-        raise SystemExit(2) from exc
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
 
-    if stats["total"] == 0:
+    if stats.get("total", 0) == 0:
         logger.error(
             "Index at %s is empty (0 records). "
             "MCP clients would hang waiting for results. "
@@ -130,7 +142,7 @@ def serve(ctx: click.Context) -> None:
             config.storage.data_dir,
         )
         index_store.close()
-        raise SystemExit(2)
+        raise SystemExit(_EXIT_INDEX_UNREADY)
 
     embedding_svc = EmbeddingService(config.embedding)
 

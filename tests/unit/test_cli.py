@@ -658,6 +658,20 @@ class TestServeEmptyIndex:
 
         assert result.exit_code == 2
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_stats_failure_closes_store(self, mock_is_cls, tmp_path, monkeypatch):
+        """If IndexStore opens but get_index_stats raises, close() is called."""
+        mock_store = MagicMock()
+        mock_store.get_index_stats = MagicMock(side_effect=RuntimeError("fts broken"))
+        mock_store.close = MagicMock()
+        mock_is_cls.return_value = mock_store
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == 2
+        mock_store.close.assert_called_once()
+
 
 class TestSafeHr:
     def test_utf8_returns_box_drawing(self, monkeypatch):
