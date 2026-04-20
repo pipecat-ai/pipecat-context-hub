@@ -140,8 +140,11 @@ for semantic relevance after RRF merge, significantly improving result quality
   log a warning and fall back to the default — server always boots)
 - **Latency:** ~50-100ms per query on CPU (MiniLM-L-6-v2)
 - **Offline:** gracefully disabled if model not cached (falls back to RRF-only)
-- **Verify active model:** call `get_hub_status` — `reranker_enabled` and
-  `reranker_model` fields show the effective state
+- **Verify active model:** call `get_hub_status` — `reranker_enabled` reports
+  live runtime state (not just configured intent), `reranker_model` is the
+  active model name, `reranker_configured_model` is what the operator asked
+  for, and `reranker_disabled_reason` explains why reranking is off
+  (`config_disabled` | `not_cached` | `load_failed`) when `reranker_enabled` is false
 
 | Model | Size | Notes |
 |-------|------|-------|

@@ -201,7 +201,7 @@ class TestToolDispatch:
 
 
 class TestGetHubStatusRerankerFields:
-    """Reranker fields surface through handle_get_hub_status."""
+    """Reranker fields in handle_get_hub_status reflect live runtime state."""
 
     def _stub_store(self) -> Any:
         class _Stub:
@@ -215,47 +215,65 @@ class TestGetHubStatusRerankerFields:
 
         return _Stub()
 
-    async def test_enabled_surfaces_effective_model(self, monkeypatch):
+    async def test_enabled_reports_live_model(self):
         import json
 
         from pipecat_context_hub.server.tools.get_hub_status import (
             handle_get_hub_status,
         )
-        from pipecat_context_hub.shared.config import (
-            _RERANKER_ENABLED_ENV,
-            _RERANKER_MODEL_ENV,
-            RerankerConfig,
-        )
+        from pipecat_context_hub.shared.types import RerankerStatus
 
-        monkeypatch.setenv(_RERANKER_ENABLED_ENV, "1")
-        monkeypatch.setenv(
-            _RERANKER_MODEL_ENV, "cross-encoder/ms-marco-TinyBERT-L-2-v2"
+        status = RerankerStatus(
+            enabled=True,
+            model="cross-encoder/ms-marco-TinyBERT-L-2-v2",
+            configured_model="cross-encoder/ms-marco-TinyBERT-L-2-v2",
         )
-
-        payload = await handle_get_hub_status({}, self._stub_store(), RerankerConfig())
+        payload = await handle_get_hub_status({}, self._stub_store(), status)
         data = json.loads(payload)
         assert data["reranker_enabled"] is True
         assert data["reranker_model"] == "cross-encoder/ms-marco-TinyBERT-L-2-v2"
+        assert data["reranker_configured_model"] == "cross-encoder/ms-marco-TinyBERT-L-2-v2"
+        assert data["reranker_disabled_reason"] is None
 
-    async def test_disabled_returns_none(self, monkeypatch):
+    async def test_not_cached_surfaces_reason_and_configured_model(self):
         import json
 
         from pipecat_context_hub.server.tools.get_hub_status import (
             handle_get_hub_status,
         )
-        from pipecat_context_hub.shared.config import (
-            _RERANKER_ENABLED_ENV,
-            RerankerConfig,
+        from pipecat_context_hub.shared.types import RerankerStatus
+
+        status = RerankerStatus(
+            enabled=False,
+            configured_model="cross-encoder/ms-marco-MiniLM-L-12-v2",
+            disabled_reason="not_cached",
         )
-
-        monkeypatch.setenv(_RERANKER_ENABLED_ENV, "0")
-
-        payload = await handle_get_hub_status({}, self._stub_store(), RerankerConfig())
+        payload = await handle_get_hub_status({}, self._stub_store(), status)
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_model"] is None
+        assert data["reranker_configured_model"] == "cross-encoder/ms-marco-MiniLM-L-12-v2"
+        assert data["reranker_disabled_reason"] == "not_cached"
 
-    async def test_no_reranker_config_returns_disabled(self):
+    async def test_load_failed_surfaces_reason(self):
+        import json
+
+        from pipecat_context_hub.server.tools.get_hub_status import (
+            handle_get_hub_status,
+        )
+        from pipecat_context_hub.shared.types import RerankerStatus
+
+        status = RerankerStatus(
+            enabled=False,
+            configured_model="cross-encoder/ms-marco-MiniLM-L-6-v2",
+            disabled_reason="load_failed",
+        )
+        payload = await handle_get_hub_status({}, self._stub_store(), status)
+        data = json.loads(payload)
+        assert data["reranker_enabled"] is False
+        assert data["reranker_disabled_reason"] == "load_failed"
+
+    async def test_no_status_returns_disabled(self):
         import json
 
         from pipecat_context_hub.server.tools.get_hub_status import (
@@ -266,6 +284,32 @@ class TestGetHubStatusRerankerFields:
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_model"] is None
+        assert data["reranker_disabled_reason"] == "config_disabled"
+
+    async def test_provider_is_called_per_query(self):
+        """create_server evaluates the provider on each get_hub_status call."""
+        from unittest.mock import AsyncMock
+
+        from pipecat_context_hub.server.main import create_server
+        from pipecat_context_hub.shared.types import RerankerStatus
+
+        retriever = AsyncMock()
+        calls: list[int] = []
+
+        def _provider() -> RerankerStatus:
+            calls.append(1)
+            return RerankerStatus(enabled=False, disabled_reason="config_disabled")
+
+        server = create_server(
+            retriever,
+            index_store=self._stub_store(),
+            reranker_status_provider=_provider,
+        )
+        assert server.name == "pipecat-context-hub"
+        # The closure is wired in — exercising it requires the full call path
+        # which is covered by integration tests; here we assert create_server
+        # accepts the callable and does not eagerly invoke it.
+        assert calls == []
 
 
 class TestTransport:

@@ -114,23 +114,51 @@ def serve(ctx: click.Context) -> None:
     embedding_svc = EmbeddingService(config.embedding)
 
     # Optional cross-encoder reranker (env var or config)
+    from pipecat_context_hub.shared.types import RerankerStatus
+
     cross_encoder: CrossEncoderReranker | None = None
-    if config.reranker.effective_enabled:
-        model_name = config.reranker.effective_model
+    configured_model = config.reranker.effective_model
+    startup_disabled_reason: str | None = None
+    if not config.reranker.effective_enabled:
+        startup_disabled_reason = "config_disabled"
+    else:
         # Check cache at startup — disable if model not downloaded
-        if CrossEncoderReranker.is_model_cached(model_name):
+        if CrossEncoderReranker.is_model_cached(configured_model):
             cross_encoder = CrossEncoderReranker(
-                model_name=model_name,
+                model_name=configured_model,
                 top_n=config.reranker.top_n,
                 enabled=True,
             )
-            logger.info("Cross-encoder reranker enabled: %s", model_name)
+            logger.info("Cross-encoder reranker enabled: %s", configured_model)
         else:
             logger.warning(
                 "Cross-encoder enabled but model '%s' not cached — disabling. "
                 "Run 'pipecat-context-hub refresh' to pre-download.",
-                model_name,
+                configured_model,
             )
+            startup_disabled_reason = "not_cached"
+
+    def _reranker_status() -> RerankerStatus:
+        """Compute live reranker status at get_hub_status query time."""
+        if cross_encoder is None:
+            return RerankerStatus(
+                enabled=False,
+                configured_model=configured_model,
+                disabled_reason=startup_disabled_reason,
+            )
+        if cross_encoder.enabled:
+            return RerankerStatus(
+                enabled=True,
+                model=configured_model,
+                configured_model=configured_model,
+            )
+        # Reranker was constructed but its .enabled flipped to False —
+        # first model-load attempt failed at runtime.
+        return RerankerStatus(
+            enabled=False,
+            configured_model=configured_model,
+            disabled_reason="load_failed",
+        )
 
     retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
 
@@ -144,7 +172,11 @@ def serve(ctx: click.Context) -> None:
             "Loaded deprecation map: %d entries", len(retriever.deprecation_map.entries)
         )
 
-    server = create_server(retriever, index_store, reranker_config=config.reranker)
+    server = create_server(
+        retriever,
+        index_store,
+        reranker_status_provider=_reranker_status,
+    )
     try:
         serve_stdio(server)
     finally:

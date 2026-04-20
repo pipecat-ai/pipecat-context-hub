@@ -161,32 +161,51 @@ class RerankerConfig(BaseModel):
         """Resolve the active reranker model.
 
         Precedence: ``PIPECAT_HUB_RERANKER_MODEL`` env var >
-        ``cross_encoder_model`` field > hardcoded default. An unknown env
-        value logs a warning and falls back to the field default — never
-        raises, so a misconfigured env var does not block server boot.
+        ``cross_encoder_model`` field > hardcoded default. Invalid values
+        at either layer log a warning and fall back — never raises, so a
+        misconfigured env var or field does not block server boot. The
+        warning always names the *actual* fallback target (never a value
+        that would itself be rejected).
         """
         # Imported lazily to avoid import cycles: cross_encoder imports
         # from shared.types, and shared is a sibling package.
+        import logging
+
         from pipecat_context_hub.services.retrieval.cross_encoder import (
             _ALLOWED_MODELS,
         )
 
-        env_value = os.environ.get(_RERANKER_MODEL_ENV, "").strip()
-        if env_value:
-            if env_value in _ALLOWED_MODELS:
-                return env_value
-            import logging
+        log = logging.getLogger(__name__)
+        allowed_list = ", ".join(sorted(_ALLOWED_MODELS))
 
-            logging.getLogger(__name__).warning(
+        env_value = os.environ.get(_RERANKER_MODEL_ENV, "").strip()
+        if env_value and env_value in _ALLOWED_MODELS:
+            return env_value
+
+        # Compute the true fallback target before logging so warnings
+        # never claim to use a model that is itself invalid.
+        if self.cross_encoder_model in _ALLOWED_MODELS:
+            fallback = self.cross_encoder_model
+        else:
+            fallback = _DEFAULT_RERANKER_MODEL
+
+        if env_value:
+            log.warning(
                 "Unknown %s value '%s' — falling back to '%s'. Allowed: %s",
                 _RERANKER_MODEL_ENV,
                 env_value,
-                self.cross_encoder_model,
-                ", ".join(sorted(_ALLOWED_MODELS)),
+                fallback,
+                allowed_list,
             )
-        if self.cross_encoder_model in _ALLOWED_MODELS:
-            return self.cross_encoder_model
-        return _DEFAULT_RERANKER_MODEL
+        if self.cross_encoder_model not in _ALLOWED_MODELS:
+            log.warning(
+                "RerankerConfig.cross_encoder_model '%s' is not allowlisted — "
+                "using default '%s'. Allowed: %s",
+                self.cross_encoder_model,
+                _DEFAULT_RERANKER_MODEL,
+                allowed_list,
+            )
+        return fallback
 
 
 class ServerConfig(BaseModel):

@@ -19,9 +19,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   server never fails to start on a misconfigured env var. Useful on slow or
   throttled HuggingFace Hub connections where the default model download
   would stall.
-- `get_hub_status` now surfaces `reranker_enabled` and `reranker_model` so
-  clients and agents can confirm which reranker is active without reading
-  server logs.
+- `get_hub_status` now surfaces live reranker runtime state (not just
+  configured intent): `reranker_enabled` reflects whether the reranker
+  is actually active, `reranker_model` is the active model name,
+  `reranker_configured_model` is what the operator requested, and
+  `reranker_disabled_reason` (`config_disabled` | `not_cached` |
+  `load_failed`) explains degraded runs. Lets operators diagnose cases
+  where the selected model is not cached or failed to load without
+  reading server logs.
 
 ### Fixed
 

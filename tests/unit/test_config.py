@@ -195,11 +195,30 @@ class TestRerankerConfigEffectiveModel:
             assert RerankerConfig().effective_model == self._TINY_MODEL
 
     def test_invalid_env_falls_back_to_field(self, caplog):
+        # Field is the default (valid), so fallback is the default.
         with patch.dict(os.environ, {_RERANKER_MODEL_ENV: "cross-encoder/not-real"}):
             with caplog.at_level("WARNING"):
                 model = RerankerConfig().effective_model
         assert model == _DEFAULT_RERANKER_MODEL
-        assert any("Unknown" in rec.message for rec in caplog.records)
+        # Warning must name the actual fallback target, not the invalid env value.
+        unknown_msgs = [r.getMessage() for r in caplog.records if "Unknown" in r.getMessage()]
+        assert any(_DEFAULT_RERANKER_MODEL in m for m in unknown_msgs)
+
+    def test_invalid_env_and_invalid_field_warn_with_accurate_target(self, caplog):
+        # Both env and field are invalid — fallback must be the hardcoded
+        # default, and the env-warning must name that (not the bad field).
+        with patch.dict(os.environ, {_RERANKER_MODEL_ENV: "cross-encoder/bad-env"}):
+            cfg = RerankerConfig(cross_encoder_model="cross-encoder/bad-field")
+            with caplog.at_level("WARNING"):
+                model = cfg.effective_model
+        assert model == _DEFAULT_RERANKER_MODEL
+        messages = [r.getMessage() for r in caplog.records]
+        # Env-fallback warning names default (not the invalid field).
+        env_warn = next(m for m in messages if "bad-env" in m)
+        assert _DEFAULT_RERANKER_MODEL in env_warn
+        assert "bad-field" not in env_warn
+        # Field-invalid warning is also emitted.
+        assert any("bad-field" in m and "not allowlisted" in m for m in messages)
 
     def test_empty_env_uses_field(self):
         with patch.dict(os.environ, {_RERANKER_MODEL_ENV: "   "}):
@@ -209,11 +228,16 @@ class TestRerankerConfigEffectiveModel:
         with patch.dict(os.environ, {_RERANKER_MODEL_ENV: f"  {self._ALT_MODEL}  "}):
             assert RerankerConfig().effective_model == self._ALT_MODEL
 
-    def test_invalid_field_and_env_fall_back_to_default(self, caplog):
+    def test_invalid_field_unset_env_falls_back_to_default(self, caplog):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop(_RERANKER_MODEL_ENV, None)
             cfg = RerankerConfig(cross_encoder_model="cross-encoder/not-real")
-            assert cfg.effective_model == _DEFAULT_RERANKER_MODEL
+            with caplog.at_level("WARNING"):
+                assert cfg.effective_model == _DEFAULT_RERANKER_MODEL
+        assert any(
+            "not-real" in r.getMessage() and "not allowlisted" in r.getMessage()
+            for r in caplog.records
+        )
 
 
 class TestHubConfig:

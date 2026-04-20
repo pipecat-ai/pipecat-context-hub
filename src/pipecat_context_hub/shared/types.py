@@ -518,11 +518,45 @@ class HubStatusOutput(BaseModel):
     )
     reranker_enabled: bool = Field(
         default=False,
-        description="Whether cross-encoder reranking is active (after env-var override).",
+        description="Whether cross-encoder reranking is ACTIVE right now "
+        "(reflects runtime availability, not just configured intent).",
     )
     reranker_model: str | None = Field(
         default=None,
-        description="Active cross-encoder model name, or None when reranking is disabled.",
+        description="Active cross-encoder model name when running, else None.",
+    )
+    reranker_configured_model: str | None = Field(
+        default=None,
+        description="The model the operator configured (via env var or field). "
+        "Useful for diagnosing why reranking is disabled — this may be set "
+        "even when reranker_model is None.",
+    )
+    reranker_disabled_reason: str | None = Field(
+        default=None,
+        description="Why reranking is not active. One of: 'config_disabled' "
+        "(explicitly turned off), 'not_cached' (model not pre-downloaded), "
+        "'load_failed' (model failed to load at runtime). None when active.",
+    )
+
+
+class RerankerStatus(BaseModel):
+    """Snapshot of the live reranker's state at status-query time.
+
+    Built by cli.py after ``CrossEncoderReranker`` construction (or skip)
+    and passed into ``create_server`` so ``get_hub_status`` reflects
+    runtime reality, not just configured intent.
+    """
+
+    enabled: bool = Field(description="Whether reranking is actually active.")
+    model: str | None = Field(
+        default=None, description="Active model name (None when disabled)."
+    )
+    configured_model: str | None = Field(
+        default=None, description="Operator-configured model (always set when config is enabled)."
+    )
+    disabled_reason: str | None = Field(
+        default=None,
+        description="Reason for disabled state: 'config_disabled' | 'not_cached' | 'load_failed'.",
     )
 
 

@@ -5,16 +5,20 @@ from __future__ import annotations
 from typing import Any
 
 from pipecat_context_hub.services.index.store import IndexStore
-from pipecat_context_hub.shared.config import RerankerConfig
-from pipecat_context_hub.shared.types import HubStatusOutput
+from pipecat_context_hub.shared.types import HubStatusOutput, RerankerStatus
 
 
 async def handle_get_hub_status(
     arguments: dict[str, Any],
     index_store: IndexStore,
-    reranker: RerankerConfig | None = None,
+    reranker_status: RerankerStatus | None = None,
 ) -> str:
-    """Return index health metadata: freshness, record counts, commit SHAs."""
+    """Return index health metadata: freshness, record counts, commit SHAs.
+
+    *reranker_status* reflects live runtime state (not configured intent),
+    built by the CLI after the reranker is constructed or skipped. When
+    omitted, reranker fields report as disabled.
+    """
     # Import here to use the same version string as the server.
     from pipecat_context_hub.server.main import _SERVER_VERSION
 
@@ -23,8 +27,8 @@ async def handle_get_hub_status(
 
     duration_str = metadata.get("last_refresh_duration_seconds")
 
-    reranker_enabled = bool(reranker and reranker.effective_enabled)
-    reranker_model = reranker.effective_model if reranker_enabled and reranker else None
+    if reranker_status is None:
+        reranker_status = RerankerStatus(enabled=False, disabled_reason="config_disabled")
 
     output = HubStatusOutput(
         server_version=_SERVER_VERSION,
@@ -35,7 +39,9 @@ async def handle_get_hub_status(
         commit_shas=stats.get("commit_shas", []),
         index_path=str(index_store.data_dir),
         framework_version=metadata.get("framework_version"),
-        reranker_enabled=reranker_enabled,
-        reranker_model=reranker_model,
+        reranker_enabled=reranker_status.enabled,
+        reranker_model=reranker_status.model,
+        reranker_configured_model=reranker_status.configured_model,
+        reranker_disabled_reason=reranker_status.disabled_reason,
     )
     return output.model_dump_json()
