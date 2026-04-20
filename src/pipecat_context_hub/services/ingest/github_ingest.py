@@ -1178,6 +1178,7 @@ class GitHubRepoIngester:
         self._repos_dir.mkdir(parents=True, exist_ok=True)
         repo_path.resolve().relative_to(self._repos_dir.resolve())
 
+        was_corrupt = False
         if repo_path.exists() and not _is_valid_clone(repo_path):
             # Guard: only remove paths that resolve under the hub's repos dir.
             repo_path.resolve().relative_to(self._repos_dir.resolve())
@@ -1188,7 +1189,7 @@ class GitHubRepoIngester:
                 repo_path,
             )
             shutil.rmtree(repo_path, ignore_errors=False)
-            self._recovered_repos.add(repo_slug)
+            was_corrupt = True
 
         if (repo_path / ".git").is_dir():
             git_repo = GitRepo(str(repo_path))
@@ -1212,6 +1213,12 @@ class GitHubRepoIngester:
                     self.checkout_commit(repo_path, commit_sha)
             else:
                 commit_sha = git_repo.head.commit.hexsha
+
+        # Only flag the repo as recovered once the fresh clone completes —
+        # otherwise a failed re-clone would be surfaced in the summary as
+        # "recovered" even though the directory is gone and we errored out.
+        if was_corrupt:
+            self._recovered_repos.add(repo_slug)
 
         return repo_path, commit_sha
 

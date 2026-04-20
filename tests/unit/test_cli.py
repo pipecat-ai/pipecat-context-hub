@@ -725,6 +725,32 @@ class TestPrintRefreshSummaryEncoding:
         raw = cp437_stdout.buffer.getvalue().decode("cp437")
         assert "\u2014" not in raw
 
+    def test_non_encodable_sha_value_normalized(self, monkeypatch):
+        """Any non-encodable cell value — not just the current em-dash
+        sentinel — must be swapped for the ASCII placeholder. Guards
+        against sentinel-drift silently re-introducing the crash."""
+        import io
+
+        cp437_stdout = io.TextIOWrapper(
+            io.BytesIO(), encoding="cp437", errors="strict", write_through=True
+        )
+        monkeypatch.setattr("pipecat_context_hub.cli.sys.stdout", cp437_stdout)
+
+        # U+2026 (ellipsis) is not encodable in cp437 either; use it as a
+        # stand-in for any future sentinel drift.
+        source_status = {
+            "some-source": {
+                "status": "updated",
+                "sha": "\u2026",
+                "existing": 10,
+                "updated": 20,
+            },
+        }
+        _print_refresh_summary(source_status, 20, 0, 1.0)
+        cp437_stdout.flush()
+        raw = cp437_stdout.buffer.getvalue().decode("cp437")
+        assert "\u2026" not in raw
+
     def test_recovered_repos_surfaced_in_summary(self, capsys):
         source_status = {
             "pipecat-ai/pipecat": {

@@ -407,6 +407,39 @@ class TestCloneOrFetchCorruptRecovery:
         assert _is_valid_clone(repo_path) is True
         assert sha
 
+    def test_failed_reclone_does_not_mark_repo_as_recovered(self, tmp_path: Path):
+        """If re-clone after corrupt-state removal fails, the repo must NOT be
+        listed as recovered — otherwise the summary misrepresents a failure
+        as a success."""
+        repo_slug = "test-org/test-repo"
+        _, clone_dir = _create_remote_and_clone(
+            tmp_path,
+            repo_slug,
+            {"main.py": "print('hi')\n"},
+        )
+        # Corrupt the clone so the recovery path triggers.
+        import shutil as _shutil
+
+        _shutil.rmtree(clone_dir / ".git")
+        (clone_dir / ".git" / "objects" / "pack").mkdir(parents=True)
+
+        config = HubConfig(
+            storage=StorageConfig(data_dir=tmp_path / "data"),
+            sources=HubConfig().sources.model_copy(update={"repos": [repo_slug]}),
+        )
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.GitRepo.clone_from",
+            side_effect=RuntimeError("simulated network failure"),
+        ):
+            with pytest.raises(RuntimeError, match="simulated network failure"):
+                ingester.clone_or_fetch(repo_slug, checkout=False)
+
+        assert repo_slug not in ingester.recovered_repos, (
+            "repo must not be flagged as recovered when re-clone fails"
+        )
+
 
 class TestResolveOriginHeadCommit:
     def test_empty_origin_refs_raise_clear_error(self):

@@ -20,6 +20,11 @@ import click
 
 from pipecat_context_hub.shared.config import HubConfig
 
+# Shared sentinel used by refresh bookkeeping for missing/unknown cells
+# (SHA, existing count, updated count). Centralised so the summary
+# renderer and the producers cannot drift.
+_MISSING_SENTINEL = "\u2014"
+
 
 def _load_dotenv() -> None:
     """Load ``.env`` file from the current directory if it exists.
@@ -236,9 +241,9 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
             raw_text = None
             source_status[docs_key] = {
                 "status": "error",
-                "sha": "—",
+                "sha": _MISSING_SENTINEL,
                 "existing": pre_counts.get(docs_key, 0),
-                "updated": "—",
+                "updated": _MISSING_SENTINEL,
             }
 
         if raw_text is not None:
@@ -248,9 +253,9 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                 logger.info("Docs unchanged (hash=%s…), skipping", content_hash[:8])
                 source_status[docs_key] = {
                     "status": "skipped",
-                    "sha": "—",
+                    "sha": _MISSING_SENTINEL,
                     "existing": pre_counts.get(docs_key, 0),
-                    "updated": "—",
+                    "updated": _MISSING_SENTINEL,
                 }
             else:
                 await index_store.delete_by_content_type("doc")
@@ -266,7 +271,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                     index_store.set_metadata("docs:content_hash", content_hash)
                 source_status[docs_key] = {
                     "status": "error" if docs_result.errors else "updated",
-                    "sha": "—",
+                    "sha": _MISSING_SENTINEL,
                     "existing": pre_counts.get(docs_key, 0),
                     "updated": docs_result.records_upserted,
                 }
@@ -312,9 +317,9 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                 all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
                 source_status[repo_slug] = {
                     "status": "error",
-                    "sha": "—",
+                    "sha": _MISSING_SENTINEL,
                     "existing": pre_counts.get(repo_slug, 0),
-                    "updated": "—",
+                    "updated": _MISSING_SENTINEL,
                 }
                 continue
 
@@ -344,7 +349,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                         "status": "tainted",
                         "sha": commit_sha[:8],
                         "existing": pre_counts.get(repo_slug, 0),
-                        "updated": "—",
+                        "updated": _MISSING_SENTINEL,
                     }
                 # Preserve the last known-good SHA (or lack of one) until this
                 # repo is ingested successfully at a non-tainted ref.
@@ -365,7 +370,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                     "status": "skipped",
                     "sha": commit_sha[:8],
                     "existing": pre_counts.get(repo_slug, 0),
-                    "updated": "—",
+                    "updated": _MISSING_SENTINEL,
                 }
             else:
                 if repo_slug in github.recovered_repos and stored_sha == commit_sha:
@@ -391,7 +396,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                     "status": "error",
                     "sha": commit_sha[:8],
                     "existing": pre_counts.get(repo_slug, 0),
-                    "updated": "—",
+                    "updated": _MISSING_SENTINEL,
                 }
                 continue
 
@@ -435,7 +440,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
 
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",
-                "sha": repo_shas.get(repo_slug, "—")[:8],
+                "sha": repo_shas.get(repo_slug, _MISSING_SENTINEL)[:8],
                 "existing": pre_counts.get(repo_slug, 0),
                 "updated": repo_upserted,
             }
@@ -563,6 +568,11 @@ def _stdout_can_encode(text: str) -> bool:
     return True
 
 
+def _encode_safe(value: str, fallback: str) -> str:
+    """Return ``value`` if stdout can encode every character, else ``fallback``."""
+    return value if _stdout_can_encode(value) else fallback
+
+
 def _safe_hr(width: int) -> str:
     """Return a horizontal-rule string of ``width`` characters.
 
@@ -624,9 +634,10 @@ def _print_refresh_summary(
     for name in sorted(source_status, key=lambda n: (source_status[n]["status"] == "skipped", n)):
         entry = source_status[name]
         status = str(entry["status"])
-        sha = str(entry["sha"])
-        if sha == "\u2014":
-            sha = placeholder
+        # Normalise any non-encodable cell (typically the missing-value
+        # sentinel) to the placeholder so the summary never crashes on
+        # terminals that cannot encode it.
+        sha = _encode_safe(str(entry["sha"]), placeholder)
         existing = entry["existing"]
         updated = entry["updated"]
 
