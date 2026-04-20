@@ -20,6 +20,11 @@ import click
 
 from pipecat_context_hub.shared.config import HubConfig
 
+# Shared sentinel used by refresh bookkeeping for missing/unknown cells
+# (SHA, existing count, updated count). Centralised so the summary
+# renderer and the producers cannot drift.
+_MISSING_SENTINEL = "\u2014"
+
 
 def _load_dotenv() -> None:
     """Load ``.env`` file from the current directory if it exists.
@@ -219,6 +224,10 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
     # Each entry: {status, sha, existing, updated}
     source_status: dict[str, dict[str, str | int]] = {}
 
+    # Built inside _run_refresh; read later by the summary pass. Created
+    # once per refresh invocation, so no cross-run state leakage.
+    github = GitHubRepoIngester(config, writer)
+
     async def _run_refresh() -> None:
         nonlocal total_upserted, all_errors
 
@@ -235,9 +244,9 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
             raw_text = None
             source_status[docs_key] = {
                 "status": "error",
-                "sha": "—",
+                "sha": _MISSING_SENTINEL,
                 "existing": pre_counts.get(docs_key, 0),
-                "updated": "—",
+                "updated": _MISSING_SENTINEL,
             }
 
         if raw_text is not None:
@@ -247,9 +256,9 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                 logger.info("Docs unchanged (hash=%s…), skipping", content_hash[:8])
                 source_status[docs_key] = {
                     "status": "skipped",
-                    "sha": "—",
+                    "sha": _MISSING_SENTINEL,
                     "existing": pre_counts.get(docs_key, 0),
-                    "updated": "—",
+                    "updated": _MISSING_SENTINEL,
                 }
             else:
                 await index_store.delete_by_content_type("doc")
@@ -265,14 +274,13 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                     index_store.set_metadata("docs:content_hash", content_hash)
                 source_status[docs_key] = {
                     "status": "error" if docs_result.errors else "updated",
-                    "sha": "—",
+                    "sha": _MISSING_SENTINEL,
                     "existing": pre_counts.get(docs_key, 0),
                     "updated": docs_result.records_upserted,
                 }
         await crawler.close()
 
         # ----- 2. Repos (code + source) -----
-        github = GitHubRepoIngester(config, writer)
         changed_repos: list[str] = []
         repo_shas: dict[str, str] = {}
         prefetched: dict[str, tuple[Path, str]] = {}
@@ -309,9 +317,9 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                 all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
                 source_status[repo_slug] = {
                     "status": "error",
-                    "sha": "—",
+                    "sha": _MISSING_SENTINEL,
                     "existing": pre_counts.get(repo_slug, 0),
-                    "updated": "—",
+                    "updated": _MISSING_SENTINEL,
                 }
                 continue
 
@@ -341,14 +349,18 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                         "status": "tainted",
                         "sha": commit_sha[:8],
                         "existing": pre_counts.get(repo_slug, 0),
-                        "updated": "—",
+                        "updated": _MISSING_SENTINEL,
                     }
                 # Preserve the last known-good SHA (or lack of one) until this
                 # repo is ingested successfully at a non-tainted ref.
                 frozen_sha_repos.add(repo_slug)
                 continue
 
-            if not force and stored_sha == commit_sha:
+            if (
+                not force
+                and stored_sha == commit_sha
+                and repo_slug not in github.recovered_repos
+            ):
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
                     repo_slug,
@@ -358,9 +370,15 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                     "status": "skipped",
                     "sha": commit_sha[:8],
                     "existing": pre_counts.get(repo_slug, 0),
-                    "updated": "—",
+                    "updated": _MISSING_SENTINEL,
                 }
             else:
+                if repo_slug in github.recovered_repos and stored_sha == commit_sha:
+                    logger.warning(
+                        "Repo %s SHA unchanged but local clone was recovered "
+                        "from corrupt state — forcing re-ingest",
+                        repo_slug,
+                    )
                 changed_repos.append(repo_slug)
 
         # Delete and re-ingest each changed repo atomically to minimise
@@ -378,7 +396,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                     "status": "error",
                     "sha": commit_sha[:8],
                     "existing": pre_counts.get(repo_slug, 0),
-                    "updated": "—",
+                    "updated": _MISSING_SENTINEL,
                 }
                 continue
 
@@ -422,7 +440,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
 
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",
-                "sha": repo_shas.get(repo_slug, "—")[:8],
+                "sha": repo_shas.get(repo_slug, _MISSING_SENTINEL)[:8],
                 "existing": pre_counts.get(repo_slug, 0),
                 "updated": repo_upserted,
             }
@@ -523,9 +541,59 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
             index_store.set_metadata("last_refresh_errored_at", now)
 
         # ----- Summary table -----
-        _print_refresh_summary(source_status, total_upserted, len(all_errors), duration)
+        _print_refresh_summary(
+            source_status,
+            total_upserted,
+            len(all_errors),
+            duration,
+            recovered_repos=sorted(github.recovered_repos),
+        )
     finally:
         index_store.close()
+
+
+def _stdout_can_encode(text: str) -> bool:
+    """Return True if ``sys.stdout`` can encode ``text`` without errors.
+
+    Re-reads ``sys.stdout`` on every call so tests (and callers) can swap
+    the stream. A missing ``encoding`` attribute is treated as ``ascii``.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        text.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+def _encode_safe(value: str, fallback: str) -> str:
+    """Return ``value`` if stdout can encode every character, else ``fallback``."""
+    return value if _stdout_can_encode(value) else fallback
+
+
+def _safe_hr(width: int) -> str:
+    """Return a horizontal-rule string of ``width`` characters.
+
+    Uses U+2500 (box-drawing light horizontal) when ``sys.stdout`` can encode
+    it; falls back to ASCII ``-`` on non-UTF-8 consoles (cp1252, cp1254,
+    cp437, etc.) so the refresh summary never crashes after a successful
+    index.
+    """
+    if not _stdout_can_encode("\u2500"):
+        return "-" * width
+    return "\u2500" * width
+
+
+def _safe_placeholder() -> str:
+    """Return a missing-value placeholder that the current stdout can encode.
+
+    U+2014 em dash on UTF-8 terminals; ASCII ``-`` when stdout cannot encode
+    it (cp437 notably rejects U+2014). Used for empty SHA / count cells in
+    the refresh summary.
+    """
+    if _stdout_can_encode("\u2014"):
+        return "\u2014"
+    return "-"
 
 
 def _print_refresh_summary(
@@ -533,6 +601,8 @@ def _print_refresh_summary(
     total_upserted: int,
     error_count: int,
     duration: float,
+    *,
+    recovered_repos: list[str] | None = None,
 ) -> None:
     """Print a summary table after refresh."""
     if not source_status:
@@ -543,12 +613,18 @@ def _print_refresh_summary(
     name_width = max(len(name) for name in source_status)
     name_width = max(name_width, len("Repository"))
 
+    hr = (
+        f"{_safe_hr(name_width)}  {_safe_hr(8)}  {_safe_hr(10)}  "
+        f"{_safe_hr(8)}  {_safe_hr(8)}"
+    )
+    placeholder = _safe_placeholder()
+
     # Header
     click.echo()
     click.echo(
         f"{'Repository':<{name_width}}  {'Status':<8}  {'SHA':<10}  {'Existing':>8}  {'Updated':>8}"
     )
-    click.echo(f"{'─' * name_width}  {'─' * 8}  {'─' * 10}  {'─' * 8}  {'─' * 8}")
+    click.echo(hr)
 
     # Rows — updated/error first, then skipped
     total_existing = 0
@@ -556,7 +632,10 @@ def _print_refresh_summary(
     for name in sorted(source_status, key=lambda n: (source_status[n]["status"] == "skipped", n)):
         entry = source_status[name]
         status = str(entry["status"])
-        sha = str(entry["sha"])
+        # Normalise any non-encodable cell (typically the missing-value
+        # sentinel) to the placeholder so the summary never crashes on
+        # terminals that cannot encode it.
+        sha = _encode_safe(str(entry["sha"]), placeholder)
         existing = entry["existing"]
         updated = entry["updated"]
 
@@ -570,23 +649,28 @@ def _print_refresh_summary(
             # Skipped repos carry forward their existing count —
             # their chunks are still in the index unchanged.
             total_updated += existing_int
-            updated_str = "—"
+            updated_str = placeholder
         else:
             # Error repos: don't carry forward (chunks may have been deleted).
-            updated_str = "—"
+            updated_str = placeholder
 
-        existing_str = f"{existing_int:,}" if existing_int else "—"
+        existing_str = f"{existing_int:,}" if existing_int else placeholder
 
         click.echo(
             f"{name:<{name_width}}  {status:<8}  {sha:<10}  {existing_str:>8}  {updated_str:>8}"
         )
 
     # Footer
-    click.echo(f"{'─' * name_width}  {'─' * 8}  {'─' * 10}  {'─' * 8}  {'─' * 8}")
+    click.echo(hr)
     click.echo(
         f"{'Total':<{name_width}}  {'':<8}  {'':<10}  {total_existing:>8,}  {total_updated:>8,}"
     )
     click.echo()
+    if recovered_repos:
+        click.echo(
+            f"Recovered {len(recovered_repos)} corrupt clone(s): "
+            f"{', '.join(recovered_repos)}"
+        )
     click.echo(
         f"Refresh complete: {total_upserted:,} upserted, "
         f"{error_count} errors, {duration}s."
