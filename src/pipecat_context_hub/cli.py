@@ -110,7 +110,28 @@ def serve(ctx: click.Context) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting server with transport=%s", config.server.transport)
 
-    index_store = IndexStore(config.storage)
+    try:
+        index_store = IndexStore(config.storage)
+        stats = index_store.get_index_stats()
+    except Exception as exc:
+        logger.error(
+            "Failed to open index at %s: %s. "
+            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild.",
+            config.storage.data_dir,
+            exc,
+        )
+        raise SystemExit(2) from exc
+
+    if stats["total"] == 0:
+        logger.error(
+            "Index at %s is empty (0 records). "
+            "MCP clients would hang waiting for results. "
+            "Run 'uv run pipecat-context-hub refresh' before 'serve'.",
+            config.storage.data_dir,
+        )
+        index_store.close()
+        raise SystemExit(2)
+
     embedding_svc = EmbeddingService(config.embedding)
 
     # Optional cross-encoder reranker (env var or config)

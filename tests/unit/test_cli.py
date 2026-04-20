@@ -631,6 +631,34 @@ class TestRefreshCommand:
         assert "repo:pipecat-ai/pipecat:commit_sha" not in set_calls
 
 
+class TestServeEmptyIndex:
+    """Serve must fail fast on empty or unopenable indexes rather than hang."""
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_empty_index_exits_nonzero(self, mock_is_cls, tmp_path, monkeypatch):
+        mock_store = MagicMock()
+        mock_store.get_index_stats = MagicMock(return_value={
+            "counts_by_type": {}, "total": 0, "commit_shas": [],
+        })
+        mock_store.close = MagicMock()
+        mock_is_cls.return_value = mock_store
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == 2
+        mock_store.close.assert_called_once()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_open_failure_exits_nonzero(self, mock_is_cls, tmp_path, monkeypatch):
+        mock_is_cls.side_effect = RuntimeError("corrupt sqlite")
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == 2
+
+
 class TestSafeHr:
     def test_utf8_returns_box_drawing(self, monkeypatch):
         fake_stdout = MagicMock()
