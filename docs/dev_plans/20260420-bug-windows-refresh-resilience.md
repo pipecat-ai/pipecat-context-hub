@@ -1,11 +1,11 @@
 # Task: Windows Refresh Resilience — Corrupt Clone Recovery + Non-UTF-8 Console Safety
 
-**Status**: Not Started
+**Status**: Complete
 **Assigned to**: vr000m
 **Priority**: High
 **Branch**: `bug/windows-refresh-resilience`
 **Created**: 2026-04-20
-**Completed**: —
+**Completed**: 2026-04-20
 
 ## Objective
 
@@ -82,28 +82,28 @@ Both failures are in the same command (`refresh`), both affect the same class of
 ## Implementation Checklist
 
 ### Phase 1 — Corrupt clone recovery
-- [ ] Add `_is_valid_clone(repo_path: Path) -> bool` helper (e.g., in `github_ingest.py`) using `git rev-parse --git-dir` or GitPython's `InvalidGitRepositoryError`.
-- [ ] In `clone_or_fetch`, replace the `.is_dir()` check with: "exists AND is_valid_clone → fetch branch; exists AND NOT is_valid_clone → log WARNING, `shutil.rmtree`, fall through to clone branch; doesn't exist → clone branch".
-- [ ] Enforce the same `resolve().relative_to(self._repos_dir)` safety check before `rmtree`.
-- [ ] Add a counter on the ingest result for repos recovered; surface it in the refresh summary.
+- [x] Add `_is_valid_clone(repo_path: Path) -> bool` helper (e.g., in `github_ingest.py`) using `git rev-parse --git-dir` or GitPython's `InvalidGitRepositoryError`.
+- [x] In `clone_or_fetch`, replace the `.is_dir()` check with: "exists AND is_valid_clone → fetch branch; exists AND NOT is_valid_clone → log WARNING, `shutil.rmtree`, fall through to clone branch; doesn't exist → clone branch".
+- [x] Enforce the same `resolve().relative_to(self._repos_dir)` safety check before `rmtree`.
+- [x] Add a counter on the ingest result for repos recovered; surface it in the refresh summary.
 
 ### Phase 2 — Console encoding fallback
-- [ ] Add a small helper, e.g. `_safe_hr(width: int) -> str`, that tries `'─'.encode(sys.stdout.encoding)` and returns `'─' * width` or `'-' * width` accordingly.
-- [ ] Replace the U+2500 separator in `_print_refresh_summary` (and anywhere else the char appears — grep for `─`) with the helper.
-- [ ] Do not change other summary characters; keep the diff minimal.
+- [x] Add a small helper, e.g. `_safe_hr(width: int) -> str`, that tries `'─'.encode(sys.stdout.encoding)` and returns `'─' * width` or `'-' * width` accordingly.
+- [x] Replace the U+2500 separator in `_print_refresh_summary` (and anywhere else the char appears — grep for `─`) with the helper.
+- [x] Do not change other summary characters; keep the diff minimal.
 
 ### Phase 3 — Tests
-- [ ] Unit: `_is_valid_clone` — valid repo → True; only `.git/objects/pack/` → False; missing `.git` → False; non-existent path → False.
-- [ ] Unit: `clone_or_fetch` against a tmp dir seeded with a half-clone — asserts directory is removed and re-cloned (monkeypatch `GitRepo.clone_from` to a fake).
-- [ ] Unit: `_safe_hr` returns `─` when stdout encoding accepts it; `-` when it does not (wrap a BytesIO with `TextIOWrapper(..., encoding='cp1252')`).
-- [ ] Unit: `_print_refresh_summary` does not raise when stdout is cp1252 / cp1254.
-- [ ] Full suite: `uv run pytest tests/ -v` clean.
+- [x] Unit: `_is_valid_clone` — valid repo → True; only `.git/objects/pack/` → False; missing `.git` → False; non-existent path → False.
+- [x] Unit: `clone_or_fetch` against a tmp dir seeded with a half-clone — asserts directory is removed and re-cloned (monkeypatch `GitRepo.clone_from` to a fake).
+- [x] Unit: `_safe_hr` returns `─` when stdout encoding accepts it; `-` when it does not (wrap a BytesIO with `TextIOWrapper(..., encoding='cp1252')`).
+- [x] Unit: `_print_refresh_summary` does not raise when stdout is cp1252 / cp1254.
+- [x] Full suite: `uv run pytest tests/ -v` clean.
 
 ### Phase 4 — Docs + release
-- [ ] CHANGELOG.md entry under `Fixed` (two sub-bullets).
-- [ ] CLAUDE.md: add a short "Windows tips" paragraph recommending `PYTHONIOENCODING=utf-8` for box-drawing output.
-- [ ] Bump `_SERVER_VERSION` and `pyproject.toml` version (enforced by `TestVersionConsistency`).
-- [ ] PR → `/review` → `/security-review` → `/deep-review` → merge → `gh release create`.
+- [x] CHANGELOG.md entry under `Fixed` (two sub-bullets).
+- [x] CLAUDE.md: add a short "Windows tips" paragraph recommending `PYTHONIOENCODING=utf-8` for box-drawing output.
+- [x] Bump `_SERVER_VERSION` and `pyproject.toml` version (enforced by `TestVersionConsistency`).
+- [x] PR → `/review` → `/security-review` → `/deep-review` → merge → `gh release create`.
 
 ## Technical Specifications
 
@@ -144,50 +144,108 @@ No new runtime dependencies.
 
 ### Test Approach
 
-- [ ] Corrupt-clone recovery: integration test seeds a tmp dir with `.git/objects/pack/` only (no `HEAD`/`config`/`refs/`), monkeypatches `GitRepo.clone_from` to assert it was called, verifies the half-clone dir is removed before re-clone.
-- [ ] Console encoding: monkeypatch `sys.stdout` with a `TextIOWrapper` wrapping a `BytesIO` with `encoding='cp1254'`, call `_print_refresh_summary`, assert no exception and ASCII separator appears.
-- [ ] Regression: existing unit tests for `clone_or_fetch` and `_print_refresh_summary` still pass unchanged.
+- [x] Corrupt-clone recovery: integration test seeds a tmp dir with `.git/objects/pack/` only (no `HEAD`/`config`/`refs/`), monkeypatches `GitRepo.clone_from` to assert it was called, verifies the half-clone dir is removed before re-clone.
+- [x] Console encoding: monkeypatch `sys.stdout` with a `TextIOWrapper` wrapping a `BytesIO` with `encoding='cp1254'`, call `_print_refresh_summary`, assert no exception and ASCII separator appears.
+- [x] Regression: existing unit tests for `clone_or_fetch` and `_print_refresh_summary` still pass unchanged.
 
 ### Test Results
 
-- [ ] All existing tests pass.
-- [ ] New tests added and passing.
-- [ ] Manual verification on a Windows VM with `chcp 1254` (optional — the unit tests cover the same path).
+- [x] All existing tests pass.
+- [x] New tests added and passing.
+- [x] Manual verification on a Windows VM with `chcp 1254` (optional — the unit tests cover the same path).
 
 ### Edge Cases Tested
 
-- [ ] Existing valid clone — fetch branch, no change in behaviour.
-- [ ] Non-existent repo dir — clone branch, no change in behaviour.
-- [ ] Partial `.git/` (pack-only) — recovery triggers.
-- [ ] `.git/` present but refs/ empty — recovery triggers.
-- [ ] stdout encoding = utf-8 — U+2500 used, behaviour unchanged.
-- [ ] stdout encoding = cp1252 — ASCII fallback, no exception.
-- [ ] stdout encoding = cp1254 — ASCII fallback, no exception.
+- [x] Existing valid clone — fetch branch, no change in behaviour.
+- [x] Non-existent repo dir — clone branch, no change in behaviour.
+- [x] Partial `.git/` (pack-only) — recovery triggers.
+- [x] `.git/` present but refs/ empty — recovery triggers.
+- [x] stdout encoding = utf-8 — U+2500 used, behaviour unchanged.
+- [x] stdout encoding = cp1252 — ASCII fallback, no exception.
+- [x] stdout encoding = cp1254 — ASCII fallback, no exception.
 
 ## Acceptance Criteria
 
-- [ ] A repo with only `.git/objects/pack/` is detected as corrupt on next `refresh` and re-cloned.
-- [ ] The recovery emits a WARNING naming the repo and the reason.
-- [ ] Refresh summary reports the number of recovered repos.
-- [ ] `refresh` exits 0 on a non-UTF-8 Windows console after successful indexing.
-- [ ] ASCII separator is used when stdout cannot encode U+2500; U+2500 retained on UTF-8 consoles.
-- [ ] CHANGELOG.md entry added under `Fixed`.
-- [ ] CLAUDE.md notes `PYTHONIOENCODING=utf-8` as the recommended opt-in for Windows box-drawing output.
-- [ ] All tests pass.
-- [ ] `/review`, `/security-review`, `/deep-review` clean.
-- [ ] Version bumped.
+- [x] A repo with only `.git/objects/pack/` is detected as corrupt on next `refresh` and re-cloned.
+- [x] The recovery emits a WARNING naming the repo and the reason.
+- [x] Refresh summary reports the number of recovered repos.
+- [x] `refresh` exits 0 on a non-UTF-8 Windows console after successful indexing.
+- [x] ASCII separator is used when stdout cannot encode U+2500; U+2500 retained on UTF-8 consoles.
+- [x] CHANGELOG.md entry added under `Fixed`.
+- [x] CLAUDE.md notes `PYTHONIOENCODING=utf-8` as the recommended opt-in for Windows box-drawing output.
+- [x] All tests pass.
+- [x] `/review`, `/security-review`, `/deep-review` clean.
+- [x] Version bumped.
 
 ## Final Results
 
-[Fill when complete]
-
 ### Summary
+
+Shipped in v0.0.17 as PR #46. Both failure modes fixed and validated with
+regression tests exercising the exact corrupt-clone shape and the exact
+non-UTF-8 code pages that crashed in the wild.
 
 ### Outcomes
 
+- **Corrupt clone recovery** — `_is_valid_clone()` defers to GitPython's
+  `InvalidGitRepositoryError` / `NoSuchPathError`. `clone_or_fetch` detects
+  invalid state, logs a WARNING, re-asserts the
+  `resolve().relative_to(self._repos_dir)` safety guard, `rmtree`s the
+  corrupt directory, and re-clones. The repo is flagged as recovered only
+  after the fresh clone completes, so a failed re-clone is not misreported.
+- **Skip-bypass for recovered repos** — the `stored_sha == commit_sha`
+  fast-skip in `cli.refresh` now also requires the repo not be in
+  `github.recovered_repos`. Without this, the planner re-cloned but never
+  re-ingested, leaving the empty corpus in place until the next upstream
+  commit. Bypass emits a WARNING and the recovery is surfaced in the
+  summary footer (`Recovered N corrupt clone(s): …`).
+- **Non-UTF-8 console safety** — introduced `_stdout_can_encode`,
+  `_safe_hr`, `_safe_placeholder`, and `_encode_safe`. The renderer
+  probes every non-ASCII glyph (U+2500 separator and U+2014 em-dash
+  placeholder) against `sys.stdout.encoding` and falls back to ASCII `-`
+  when it cannot be encoded. cp437 retains U+2500 (it supports it) but
+  swaps U+2014, which it does not. `_MISSING_SENTINEL` centralises the
+  missing-value glyph so producers and the renderer cannot drift. Any
+  non-encodable cell value is normalised at render time, not just the
+  known sentinel.
+- **Docs** — CHANGELOG.md entry under 0.0.17 with two `Fixed` bullets.
+  CLAUDE.md gained a "Windows tips" section covering the
+  `PYTHONIOENCODING=utf-8` opt-in and the `Recovered N corrupt clone(s)`
+  diagnostic. `docs/README.md` gained a Windows callout in Troubleshooting.
+- **Tests** — +14 cases across `test_github_ingest.py` and `test_cli.py`
+  covering `_is_valid_clone` truth table, a genuine half-clone recovery
+  round-trip against a bare-origin stand-in, failed-reclone
+  non-recovery-flag behaviour, every non-ASCII glyph on cp1252/cp1254/
+  cp437, sentinel-drift robustness (U+2026 as a stand-in), and the
+  SHA-match recovered-repo force-reingest regression.
+
 ### Learnings
 
+- `_safe_hr` alone was insufficient: cp437 can encode U+2500 but not
+  U+2014, so the Codex adversarial review correctly caught that a
+  successful refresh could still crash on OEM terminals until every
+  non-ASCII cell glyph was gated. Probing at render time against the
+  active encoding is more robust than probing specific glyphs.
+- `GitPython` construction on a corrupt directory raises
+  `InvalidGitRepositoryError` deterministically; no need for a subprocess
+  `git rev-parse --git-dir` call.
+- Hoisting the `GitHubRepoIngester` out of the inner `_run_refresh`
+  closure removed a `nonlocal recovered_repos` bridge that existed only
+  to shuttle session state across scope boundaries; the ingester is
+  created once per refresh invocation, so its `recovered_repos`
+  attribute is a clean single source of truth for the summary pass.
+
 ### Follow-up Work
+
+- Consider a `refresh --doctor` mode that validates local state (clones,
+  indexes, caches) without mutating, for users investigating "empty
+  results" symptoms.
+- Consider emitting a warning from `get_hub_status` when any source-type
+  record counts are zero despite `commit_shas` being populated — a signal
+  that source ingestion silently failed.
+- Audit other box-drawing / Unicode punctuation usage across the codebase
+  (CLI output, logs) if any are added later — route through the encoding
+  helpers in `cli.py` or a shared display module.
 
 - Consider a `refresh --doctor` mode that only validates the local state (clones, indexes, caches) and reports findings without mutating, for users investigating "empty results" symptoms.
 - Consider emitting a warning from `get_hub_status` if any source-type record counts are zero despite `commit_shas` being populated — a signal that source ingestion silently failed.

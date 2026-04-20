@@ -672,7 +672,7 @@ class TestPrintRefreshSummaryEncoding:
         )
         monkeypatch.setattr("pipecat_context_hub.cli.sys.stdout", cp1254_stdout)
 
-        source_status = {
+        source_status: dict[str, dict[str, str | int]] = {
             "pipecat-ai/pipecat": {
                 "status": "updated",
                 "sha": "abcdef12",
@@ -698,7 +698,7 @@ class TestPrintRefreshSummaryEncoding:
 
         # Exercise every placeholder code path: docs row (sha="—"),
         # skipped repo (updated="—"), error repo, and zero-existing repo.
-        source_status = {
+        source_status: dict[str, dict[str, str | int]] = {
             "docs.pipecat.ai": {
                 "status": "updated",
                 "sha": "\u2014",
@@ -738,7 +738,7 @@ class TestPrintRefreshSummaryEncoding:
 
         # U+2026 (ellipsis) is not encodable in cp437 either; use it as a
         # stand-in for any future sentinel drift.
-        source_status = {
+        source_status: dict[str, dict[str, str | int]] = {
             "some-source": {
                 "status": "updated",
                 "sha": "\u2026",
@@ -752,7 +752,7 @@ class TestPrintRefreshSummaryEncoding:
         assert "\u2026" not in raw
 
     def test_recovered_repos_surfaced_in_summary(self, capsys):
-        source_status = {
+        source_status: dict[str, dict[str, str | int]] = {
             "pipecat-ai/pipecat": {
                 "status": "updated",
                 "sha": "abcdef12",

@@ -19,11 +19,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   obvious signal. The refresh summary reports recovered repos.
 - **Non-UTF-8 console safety** — `refresh`'s summary table no longer crashes
   with `UnicodeEncodeError` on Windows consoles whose code page cannot
-  encode U+2500 (cp1252, cp1254, etc.) or U+2014 em dash used for empty
-  SHA/count cells (cp437, cp1252, etc.). Every non-ASCII glyph in the
-  summary falls back to ASCII when the active stdout encoding rejects it;
-  UTF-8 terminals are unchanged. Set `PYTHONIOENCODING=utf-8` to opt into
-  the full box-drawing output on Windows.
+  encode the non-ASCII glyphs it uses (U+2500 box-drawing rule, U+2014 em
+  dash in empty SHA/count cells). Every such glyph is probed against the
+  active `sys.stdout.encoding` and falls back to ASCII `-` when it cannot
+  be encoded; UTF-8 terminals and OEM code pages that support the glyph
+  (e.g. cp437 supports U+2500) are unchanged. Set `PYTHONIOENCODING=utf-8`
+  to opt into the full Unicode output on Windows.
 
 ## [0.0.16] - 2026-04-07
 

@@ -219,14 +219,17 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
 
     total_upserted = 0
     all_errors: list[str] = []
-    recovered_repos: list[str] = []
 
     # Per-source tracking for the summary table.
     # Each entry: {status, sha, existing, updated}
     source_status: dict[str, dict[str, str | int]] = {}
 
+    # Built inside _run_refresh; read later by the summary pass. Created
+    # once per refresh invocation, so no cross-run state leakage.
+    github = GitHubRepoIngester(config, writer)
+
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, recovered_repos
+        nonlocal total_upserted, all_errors
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -278,9 +281,6 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
         await crawler.close()
 
         # ----- 2. Repos (code + source) -----
-        github = GitHubRepoIngester(config, writer)
-        # Expose recovery signal to the outer-scope summary.
-        recovered_repos[:] = []
         changed_repos: list[str] = []
         repo_shas: dict[str, str] = {}
         prefetched: dict[str, tuple[Path, str]] = {}
@@ -507,8 +507,6 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                     framework_slug,
                 )
 
-        recovered_repos.extend(sorted(github.recovered_repos))
-
     try:
         asyncio.run(_run_refresh())
 
@@ -548,7 +546,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
             total_upserted,
             len(all_errors),
             duration,
-            recovered_repos=list(recovered_repos),
+            recovered_repos=sorted(github.recovered_repos),
         )
     finally:
         index_store.close()

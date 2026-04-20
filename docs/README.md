@@ -218,6 +218,20 @@ Add more repos via `PIPECAT_HUB_EXTRA_REPOS`.
 - **Stale results** — run `uv run pipecat-context-hub refresh --force` to re-ingest from latest upstream
 - **Index corruption** — run `uv run pipecat-context-hub refresh --force --reset-index` to wipe and rebuild
 
+### Windows
+
+- **Refresh appears to hang or returns zero code results** — a prior
+  `refresh` may have left a clone half-initialised (common after an
+  interrupted run or antivirus quarantine). `pipecat-context-hub` now
+  detects this on the next refresh and re-clones automatically; look for
+  `Recovered N corrupt clone(s): …` in the summary. As a manual remedy you
+  can delete `%LOCALAPPDATA%\pipecat-context-hub\repos\`.
+- **`UnicodeEncodeError` in the refresh summary** — the summary table uses
+  box-drawing characters that some Windows code pages (cp1252, cp1254,
+  etc.) cannot encode. The server falls back to ASCII automatically. To
+  opt into the full Unicode output, set `PYTHONIOENCODING=utf-8` before
+  invoking `refresh`, or use Windows Terminal (which defaults to UTF-8).
+
 If the server returns poor or missing results, [file a retrieval quality issue](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=retrieval-quality.yml) —
 the issue template includes a diagnostic prompt your coding agent can run to
 generate a structured report.
