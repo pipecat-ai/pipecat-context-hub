@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-(none)
+| 2026-04-20 | bug | Windows Refresh Resilience (corrupt clone recovery + non-UTF-8 console) | Not Started | vr000m | `bug/windows-refresh-resilience` | `20260420-bug-windows-refresh-resilience.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
