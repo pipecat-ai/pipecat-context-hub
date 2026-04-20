@@ -28,7 +28,9 @@ async def handle_get_hub_status(
     duration_str = metadata.get("last_refresh_duration_seconds")
 
     if reranker_status is None:
-        reranker_status = RerankerStatus(enabled=False, disabled_reason="config_disabled")
+        # Caller didn't wire a provider — we don't actually know why
+        # reranking is off, so leave disabled_reason unset.
+        reranker_status = RerankerStatus(enabled=False)
 
     output = HubStatusOutput(
         server_version=_SERVER_VERSION,

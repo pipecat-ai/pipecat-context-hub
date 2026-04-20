@@ -114,27 +114,36 @@ def serve(ctx: click.Context) -> None:
     embedding_svc = EmbeddingService(config.embedding)
 
     # Optional cross-encoder reranker (env var or config)
-    from pipecat_context_hub.shared.types import RerankerStatus
+    from pipecat_context_hub.shared.config import _RERANKER_MODEL_ENV
+    from pipecat_context_hub.shared.types import (
+        RerankerDisabledReason,
+        RerankerStatus,
+    )
 
     cross_encoder: CrossEncoderReranker | None = None
-    configured_model = config.reranker.effective_model
-    startup_disabled_reason: str | None = None
+    active_model = config.reranker.effective_model  # post-validation, in allowlist
+    # Capture the operator's raw request so get_hub_status can surface
+    # misconfigurations (e.g. typo in env var) even when silently falling
+    # back to the default. Env wins over field when set.
+    env_request = os.environ.get(_RERANKER_MODEL_ENV, "").strip()
+    requested_model = env_request or config.reranker.cross_encoder_model
+    startup_disabled_reason: RerankerDisabledReason | None = None
     if not config.reranker.effective_enabled:
         startup_disabled_reason = "config_disabled"
     else:
         # Check cache at startup — disable if model not downloaded
-        if CrossEncoderReranker.is_model_cached(configured_model):
+        if CrossEncoderReranker.is_model_cached(active_model):
             cross_encoder = CrossEncoderReranker(
-                model_name=configured_model,
+                model_name=active_model,
                 top_n=config.reranker.top_n,
                 enabled=True,
             )
-            logger.info("Cross-encoder reranker enabled: %s", configured_model)
+            logger.info("Cross-encoder reranker enabled: %s", active_model)
         else:
             logger.warning(
                 "Cross-encoder enabled but model '%s' not cached — disabling. "
                 "Run 'pipecat-context-hub refresh' to pre-download.",
-                configured_model,
+                active_model,
             )
             startup_disabled_reason = "not_cached"
 
@@ -143,20 +152,20 @@ def serve(ctx: click.Context) -> None:
         if cross_encoder is None:
             return RerankerStatus(
                 enabled=False,
-                configured_model=configured_model,
+                configured_model=requested_model,
                 disabled_reason=startup_disabled_reason,
             )
         if cross_encoder.enabled:
             return RerankerStatus(
                 enabled=True,
-                model=configured_model,
-                configured_model=configured_model,
+                model=active_model,
+                configured_model=requested_model,
             )
         # Reranker was constructed but its .enabled flipped to False —
         # first model-load attempt failed at runtime.
         return RerankerStatus(
             enabled=False,
-            configured_model=configured_model,
+            configured_model=requested_model,
             disabled_reason="load_failed",
         )
 

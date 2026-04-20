@@ -493,6 +493,11 @@ class GetHubStatusInput(BaseModel):
     """Input for the get_hub_status MCP tool (no parameters needed)."""
 
 
+# Typed alias for the reranker disabled-reason sentinel. Literal so mypy and
+# Pydantic both enforce the valid set at boundaries.
+RerankerDisabledReason = Literal["config_disabled", "not_cached", "load_failed"]
+
+
 class HubStatusOutput(BaseModel):
     """Output for the get_hub_status MCP tool."""
 
@@ -527,15 +532,17 @@ class HubStatusOutput(BaseModel):
     )
     reranker_configured_model: str | None = Field(
         default=None,
-        description="The model the operator configured (via env var or field). "
-        "Useful for diagnosing why reranking is disabled — this may be set "
-        "even when reranker_model is None.",
+        description="The model the operator literally requested (raw env-var "
+        "value or field value, pre-validation). Differs from reranker_model "
+        "when the request was invalid and silently fell back to a different "
+        "model — surfaces misconfiguration without requiring log inspection.",
     )
-    reranker_disabled_reason: str | None = Field(
+    reranker_disabled_reason: RerankerDisabledReason | None = Field(
         default=None,
-        description="Why reranking is not active. One of: 'config_disabled' "
+        description="Why reranking is not active. 'config_disabled' "
         "(explicitly turned off), 'not_cached' (model not pre-downloaded), "
-        "'load_failed' (model failed to load at runtime). None when active.",
+        "'load_failed' (model failed to load at runtime). None when active "
+        "or when the state is unknown.",
     )
 
 
@@ -552,11 +559,13 @@ class RerankerStatus(BaseModel):
         default=None, description="Active model name (None when disabled)."
     )
     configured_model: str | None = Field(
-        default=None, description="Operator-configured model (always set when config is enabled)."
-    )
-    disabled_reason: str | None = Field(
         default=None,
-        description="Reason for disabled state: 'config_disabled' | 'not_cached' | 'load_failed'.",
+        description="Operator's raw requested model (pre-validation). "
+        "May differ from .model if the request fell back to the default.",
+    )
+    disabled_reason: RerankerDisabledReason | None = Field(
+        default=None,
+        description="Reason for disabled state, or None when active/unknown.",
     )
 
 

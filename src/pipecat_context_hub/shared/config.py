@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 # Environment variable for adding extra repos (comma-separated).
 _EXTRA_REPOS_ENV = "PIPECAT_HUB_EXTRA_REPOS"
@@ -29,6 +29,15 @@ _RERANKER_MODEL_ENV = "PIPECAT_HUB_RERANKER_MODEL"
 
 # Default cross-encoder model used when no override is supplied.
 _DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# Allowlisted cross-encoder models. Kept in the shared config layer so both
+# the config resolver and the reranker service import it from the same place
+# (single source of truth, upward dependency direction).
+_ALLOWED_RERANKER_MODELS: frozenset[str] = frozenset({
+    _DEFAULT_RERANKER_MODEL,
+    "cross-encoder/ms-marco-MiniLM-L-12-v2",
+    "cross-encoder/ms-marco-TinyBERT-L-2-v2",
+})
 
 # Environment variable for pinning the framework repo to a specific git tag.
 _FRAMEWORK_VERSION_ENV = "PIPECAT_HUB_FRAMEWORK_VERSION"
@@ -162,34 +171,41 @@ class RerankerConfig(BaseModel):
 
         Precedence: ``PIPECAT_HUB_RERANKER_MODEL`` env var >
         ``cross_encoder_model`` field > hardcoded default. Invalid values
-        at either layer log a warning and fall back — never raises, so a
-        misconfigured env var or field does not block server boot. The
-        warning always names the *actual* fallback target (never a value
-        that would itself be rejected).
+        at either layer silently fall back — the server never fails to
+        boot on a misconfigured env var or field. Warnings for invalid
+        configuration are emitted once at construction time by
+        ``_warn_on_invalid_model`` (a ``model_validator``); this property
+        is a pure derivation so it is safe to call repeatedly (e.g. from
+        ``model_dump()``).
         """
-        # Imported lazily to avoid import cycles: cross_encoder imports
-        # from shared.types, and shared is a sibling package.
+        env_value = os.environ.get(_RERANKER_MODEL_ENV, "").strip()
+        if env_value and env_value in _ALLOWED_RERANKER_MODELS:
+            return env_value
+        if self.cross_encoder_model in _ALLOWED_RERANKER_MODELS:
+            return self.cross_encoder_model
+        return _DEFAULT_RERANKER_MODEL
+
+    @model_validator(mode="after")
+    def _warn_on_invalid_model(self) -> "RerankerConfig":
+        """Emit configuration warnings exactly once, at construction time.
+
+        Keeps ``effective_model`` free of side effects so the property is
+        safe for repeated access during serialization.
+        """
         import logging
 
-        from pipecat_context_hub.services.retrieval.cross_encoder import (
-            _ALLOWED_MODELS,
-        )
-
         log = logging.getLogger(__name__)
-        allowed_list = ", ".join(sorted(_ALLOWED_MODELS))
+        allowed_list = ", ".join(sorted(_ALLOWED_RERANKER_MODELS))
 
         env_value = os.environ.get(_RERANKER_MODEL_ENV, "").strip()
-        if env_value and env_value in _ALLOWED_MODELS:
-            return env_value
 
-        # Compute the true fallback target before logging so warnings
-        # never claim to use a model that is itself invalid.
-        if self.cross_encoder_model in _ALLOWED_MODELS:
+        # Compute the true fallback target so warnings name the real value.
+        if self.cross_encoder_model in _ALLOWED_RERANKER_MODELS:
             fallback = self.cross_encoder_model
         else:
             fallback = _DEFAULT_RERANKER_MODEL
 
-        if env_value:
+        if env_value and env_value not in _ALLOWED_RERANKER_MODELS:
             log.warning(
                 "Unknown %s value '%s' — falling back to '%s'. Allowed: %s",
                 _RERANKER_MODEL_ENV,
@@ -197,7 +213,7 @@ class RerankerConfig(BaseModel):
                 fallback,
                 allowed_list,
             )
-        if self.cross_encoder_model not in _ALLOWED_MODELS:
+        if self.cross_encoder_model not in _ALLOWED_RERANKER_MODELS:
             log.warning(
                 "RerankerConfig.cross_encoder_model '%s' is not allowlisted — "
                 "using default '%s'. Allowed: %s",
@@ -205,7 +221,7 @@ class RerankerConfig(BaseModel):
                 _DEFAULT_RERANKER_MODEL,
                 allowed_list,
             )
-        return fallback
+        return self
 
 
 class ServerConfig(BaseModel):

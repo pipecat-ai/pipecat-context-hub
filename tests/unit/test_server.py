@@ -273,7 +273,7 @@ class TestGetHubStatusRerankerFields:
         assert data["reranker_enabled"] is False
         assert data["reranker_disabled_reason"] == "load_failed"
 
-    async def test_no_status_returns_disabled(self):
+    async def test_no_status_returns_disabled_with_unknown_reason(self):
         import json
 
         from pipecat_context_hub.server.tools.get_hub_status import (
@@ -284,7 +284,8 @@ class TestGetHubStatusRerankerFields:
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_model"] is None
-        assert data["reranker_disabled_reason"] == "config_disabled"
+        # When no provider is wired the reason is unknown — don't lie.
+        assert data["reranker_disabled_reason"] is None
 
     async def test_provider_is_called_per_query(self):
         """create_server evaluates the provider on each get_hub_status call."""

@@ -1,11 +1,11 @@
 # Task: Configurable Cross-Encoder Reranker Model Selection
 
-**Status**: In Progress
+**Status**: Complete (v0.0.17)
 **Assigned to**: vr000m
 **Priority**: Low
 **Branch**: `feature/reranker-model-selection`
 **Created**: 2026-04-20
-**Completed**: —
+**Completed**: 2026-04-20
 
 ## Objective
 
@@ -142,14 +142,49 @@ No new runtime dependencies. Tests may need a sentence-transformers mock if not 
 
 ## Final Results
 
-[Fill when complete]
-
 ### Summary
+
+Added `PIPECAT_HUB_RERANKER_MODEL` env var to select one of three
+allowlisted cross-encoder models without editing Python config. Extended
+`get_hub_status` with live runtime state (`reranker_enabled`,
+`reranker_model`, `reranker_configured_model`, `reranker_disabled_reason`)
+so operators can diagnose degraded reranking from a single MCP tool call.
+Bundled into the v0.0.17 release alongside the Windows refresh fixes.
 
 ### Outcomes
 
+- Env-var validation path never raises — invalid values log a warning and
+  fall back to the field-or-default model; server always boots.
+- `_ALLOWED_RERANKER_MODELS` lives in `shared/config.py` as the single
+  source of truth; `cross_encoder.py` imports it upward (no dependency
+  inversion).
+- `effective_model` is a pure computed property (no side effects); all
+  configuration warnings fire exactly once via a `model_validator` at
+  construction time.
+- `get_hub_status` surfaces the operator's *raw* requested model in
+  `reranker_configured_model`, so a typo'd env var is visible in the
+  tool output without reading server logs.
+- `disabled_reason` is typed `Literal["config_disabled" | "not_cached" |
+  "load_failed"] | None` for mypy/Pydantic enforcement.
+- Two rounds of adversarial review (Codex + multi-lens `/deep-review`)
+  surfaced real issues — (a) status reporting config intent instead of
+  live state, (b) fallback-target misreported in warnings, (c)
+  `configured_model` masking misconfigurations — all fixed.
+
 ### Learnings
+
+- Operators need a *diagnostic* view, not just a *configured* view:
+  threading a live-state callable through `create_server` proved more
+  valuable than a static snapshot.
+- Side-effecting `computed_field` properties are easy to add and hard to
+  spot; `model_validator(mode="after")` is the right hook for one-time
+  validation + logging.
+- Pin `Literal` types for sentinel strings the moment they appear —
+  pipe-delimited docstrings rot; typed aliases don't.
 
 ### Follow-up Work
 
-- Consider eager-loading the reranker at `serve` startup so download failures surface at boot instead of on first query.
+- Consider eager-loading the reranker at `serve` startup so download
+  failures surface at boot instead of on first query. (The MCP-stdio
+  startup budget makes this non-trivial; revisit if `load_failed` shows
+  up in real operator reports.)
