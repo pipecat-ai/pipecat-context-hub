@@ -144,6 +144,23 @@ def serve(ctx: click.Context) -> None:
         index_store.close()
         raise SystemExit(_EXIT_INDEX_UNREADY)
 
+    # Startup banner: one line so operators can confirm version, data dir,
+    # and content-type shape from an MCP JSONL trace. Helps diagnose
+    # "upgraded but still running the old exe" and "docs indexed but code
+    # didn't" without extra tooling.
+    from pipecat_context_hub.server.main import _SERVER_VERSION
+
+    counts_by_type = stats.get("counts_by_type", {}) or {}
+    logger.info(
+        "pipecat-context-hub v%s starting: data_dir=%s total=%d docs=%d code=%d source=%d",
+        _SERVER_VERSION,
+        config.storage.data_dir,
+        stats.get("total", 0),
+        counts_by_type.get("docs", 0),
+        counts_by_type.get("code", 0),
+        counts_by_type.get("source", 0),
+    )
+
     # From here on, any failure must close the index_store — otherwise a
     # crash between open and serve_stdio() leaks Chroma/SQLite handles and
     # hinders the `refresh --reset-index` recovery path.
@@ -183,19 +200,26 @@ def serve(ctx: click.Context) -> None:
         # grep this from MCP traces to diagnose degraded startups without
         # calling get_hub_status.
         if startup_disabled_reason is not None:
-            _REASON_HINTS = {
-                "config_disabled": "PIPECAT_HUB_RERANKER_ENABLED=0 (or config). "
-                "Unset the env var (or set it to 1) to re-enable.",
-                "not_cached": "model not downloaded. "
-                "Run 'pipecat-context-hub refresh' to pre-download, or set "
-                "PIPECAT_HUB_RERANKER_MODEL to a smaller cached model "
-                "(e.g. cross-encoder/ms-marco-TinyBERT-L-2-v2).",
-            }
+            hint = ""
+            if startup_disabled_reason == "config_disabled":
+                hint = (
+                    "PIPECAT_HUB_RERANKER_ENABLED=0 (or config). "
+                    "Unset the env var (or set it to 1) to re-enable."
+                )
+            elif startup_disabled_reason == "not_cached":
+                probed = CrossEncoderReranker.resolve_hf_cache_dir()
+                hint = (
+                    f"model not downloaded (checked HF cache: {probed}). "
+                    "Run 'pipecat-context-hub refresh' to pre-download, or set "
+                    "PIPECAT_HUB_RERANKER_MODEL to a smaller cached model "
+                    "(e.g. cross-encoder/ms-marco-TinyBERT-L-2-v2). "
+                    "If this path is unexpected, check HF_HOME / HUGGINGFACE_HUB_CACHE."
+                )
             logger.warning(
                 "Reranker disabled at startup: reason=%s configured_model=%s — %s",
                 startup_disabled_reason,
                 requested_model or "(default)",
-                _REASON_HINTS.get(startup_disabled_reason, ""),
+                hint,
             )
 
         def _reranker_status() -> RerankerStatus:

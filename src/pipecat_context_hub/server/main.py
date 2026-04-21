@@ -165,7 +165,17 @@ was filtered out.
 If none of these work, suggest the user file a retrieval quality issue at \
 https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=retrieval-quality.yml \
 — the issue template includes a diagnostic prompt that you can run to generate \
-a structured report for the maintainers.\
+a structured report for the maintainers.
+
+**When the hub itself is degraded:** If ``get_hub_status`` reports \
+``reranker_enabled: false`` with a non-null ``reranker_disabled_reason``, or \
+the MCP connection fails at boot with a non-zero exit code, the hub is \
+running in a degraded mode. Share the full ``get_hub_status`` response and \
+any ``pipecat-context-hub`` startup log lines (look for \
+``Reranker disabled at startup`` and the ``pipecat-context-hub vX.Y.Z \
+starting`` banner) with the user and suggest they file a bug report at \
+https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml \
+so the maintainers can diagnose from the trace alone.\
 """
 
 

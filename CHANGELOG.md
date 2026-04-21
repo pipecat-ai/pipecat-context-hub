@@ -30,8 +30,22 @@ This project uses [Semantic Versioning](https://semver.org/).
 - **Reranker disabled-at-startup warning** — when `serve` boots with the
   reranker off, a single consolidated `WARNING` log line now reports
   `reason=<config_disabled|not_cached> configured_model=<name>` plus a
-  one-line remediation hint. Operators can grep this from an MCP JSONL
-  trace to diagnose degraded boots without calling `get_hub_status`.
+  one-line remediation hint. For `not_cached`, the hint names the exact
+  HuggingFace cache directory that was probed (resolved through
+  `HF_HOME` / `HUGGINGFACE_HUB_CACHE` when set), so operators can spot
+  cache-discovery mismatches without reading library internals.
+  Operators can grep this from an MCP JSONL trace to diagnose degraded
+  boots without calling `get_hub_status`.
+- **Startup banner** — `serve` now logs one `INFO` line at boot reporting
+  version, data directory, and record counts by content type
+  (`total`, `docs`, `code`, `source`). Confirms which binary is actually
+  running after an upgrade and exposes partially-populated indexes
+  (e.g. docs ingested but code missing) without a separate tool call.
+- **Degraded-hub reporting guideline** — server instructions now direct
+  MCP clients to share the full `get_hub_status` response and startup
+  log lines with the user (and point them at the bug-report template)
+  when the hub is running in a degraded mode (non-null
+  `reranker_disabled_reason` or non-zero boot exit).
 
 ### Changed
 
