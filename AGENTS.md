@@ -122,9 +122,9 @@ always passes regardless of `gh` availability.
     `ValueError` mentioning "not found" and listing available tags (confirms
     tag validation rejects invalid input)
 40. `uv run pipecat-context-hub serve` — startup `INFO` log line
-    `pipecat-context-hub vX.Y.Z starting: data_dir=<path> total=N docs=… code=… source=…`
-    appears with non-zero `total` (confirms version banner and index-populated
-    state are observable from the MCP trace)
+    `pipecat-context-hub vX.Y.Z starting: data_dir=<path> total=N counts_by_type={code=N,doc=N,source=N}`
+    appears with non-zero `total` (confirms version banner, index-populated
+    state, and content-type counts are observable from the MCP trace)
 41. `PIPECAT_HUB_RERANKER_ENABLED=0 uv run pipecat-context-hub serve` — startup
     `WARNING` log line `Reranker disabled at startup: reason=config_disabled
     configured_model=…` appears. Then re-run with

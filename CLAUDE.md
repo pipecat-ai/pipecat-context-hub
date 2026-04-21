@@ -140,6 +140,14 @@ for semantic relevance after RRF merge, significantly improving result quality
   log a warning and fall back to the default — server always boots)
 - **Latency:** ~50-100ms per query on CPU (MiniLM-L-6-v2)
 - **Offline:** gracefully disabled if model not cached (falls back to RRF-only)
+- **Startup warning:** when reranker is disabled at boot, `serve` logs
+  `Reranker disabled at startup: reason=<config_disabled|not_cached> configured_model=…`
+  plus a remediation hint. For `not_cached`, the hint names the exact HF cache
+  directory probed (respects `HF_HOME` / `HUGGINGFACE_HUB_CACHE`).
+- **Startup banner:** on `serve` boot, one `INFO` line reports version,
+  data directory (home-redacted to `~/…`), total record count, and
+  `counts_by_type={code=N,doc=N,source=N}` — use this to confirm the upgraded
+  binary is running and the index is populated.
 - **Verify active model:** call `get_hub_status` — `reranker_enabled` reports
   live runtime state (not just configured intent), `reranker_model` is the
   active model name, `reranker_configured_model` is what the operator asked
