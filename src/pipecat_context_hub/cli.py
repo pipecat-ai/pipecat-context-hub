@@ -30,6 +30,23 @@ _MISSING_SENTINEL = "\u2014"
 _EXIT_INDEX_UNREADY = 2
 
 
+def _redact_home(path: Path | str) -> str:
+    """Replace the user's home-directory prefix with ``~`` for logs.
+
+    Startup telemetry is included in the "share this with maintainers"
+    guidance, so stripping usernames out of absolute paths keeps routine
+    bug reports from leaking local filesystem layout.
+    """
+    try:
+        s = str(path)
+        home = str(Path.home())
+        if home and (s == home or s.startswith(home + os.sep)):
+            return "~" + s[len(home):]
+        return s
+    except Exception:
+        return str(path)
+
+
 def _load_dotenv() -> None:
     """Load ``.env`` file from the current directory if it exists.
 
@@ -144,6 +161,28 @@ def serve(ctx: click.Context) -> None:
         index_store.close()
         raise SystemExit(_EXIT_INDEX_UNREADY)
 
+    # Startup banner: one line so operators can confirm version, data dir,
+    # and content-type shape from an MCP JSONL trace. Helps diagnose
+    # "upgraded but still running the old exe" and "docs indexed but code
+    # didn't" without extra tooling.
+    #
+    # Logs the raw counts_by_type mapping (whose keys — doc, code, source —
+    # come straight from FTS) so a future content_type rename or new type
+    # cannot silently zero out this signal. `data_dir` is redacted to ~/…
+    # because server instructions now encourage clients to share startup
+    # log lines in bug reports.
+    from pipecat_context_hub.server.main import _SERVER_VERSION
+
+    counts_by_type = stats.get("counts_by_type", {}) or {}
+    counts_repr = ",".join(f"{k}={v}" for k, v in sorted(counts_by_type.items()))
+    logger.info(
+        "pipecat-context-hub v%s starting: data_dir=%s total=%d counts_by_type={%s}",
+        _SERVER_VERSION,
+        _redact_home(config.storage.data_dir),
+        stats.get("total", 0),
+        counts_repr or "(empty)",
+    )
+
     # From here on, any failure must close the index_store — otherwise a
     # crash between open and serve_stdio() leaks Chroma/SQLite handles and
     # hinders the `refresh --reset-index` recovery path.
@@ -177,12 +216,33 @@ def serve(ctx: click.Context) -> None:
                 )
                 logger.info("Cross-encoder reranker enabled: %s", active_model)
             else:
-                logger.warning(
-                    "Cross-encoder enabled but model '%s' not cached — disabling. "
-                    "Run 'pipecat-context-hub refresh' to pre-download.",
-                    active_model,
-                )
                 startup_disabled_reason = "not_cached"
+
+        # Single telemetry line when the reranker is off at boot. Operators
+        # grep this from MCP traces to diagnose degraded startups without
+        # calling get_hub_status.
+        if startup_disabled_reason is not None:
+            hint = ""
+            if startup_disabled_reason == "config_disabled":
+                hint = (
+                    "PIPECAT_HUB_RERANKER_ENABLED=0 (or config). "
+                    "Unset the env var (or set it to 1) to re-enable."
+                )
+            elif startup_disabled_reason == "not_cached":
+                probed = _redact_home(CrossEncoderReranker.resolve_hf_cache_dir())
+                hint = (
+                    f"model not downloaded (checked HF cache: {probed}). "
+                    "Run 'pipecat-context-hub refresh' to pre-download, or set "
+                    "PIPECAT_HUB_RERANKER_MODEL to a smaller cached model "
+                    "(e.g. cross-encoder/ms-marco-TinyBERT-L-2-v2). "
+                    "If this path is unexpected, check HF_HOME / HUGGINGFACE_HUB_CACHE."
+                )
+            logger.warning(
+                "Reranker disabled at startup: reason=%s configured_model=%s — %s",
+                startup_disabled_reason,
+                requested_model or "(default)",
+                hint,
+            )
 
         def _reranker_status() -> RerankerStatus:
             """Compute live reranker status at get_hub_status query time."""

@@ -139,6 +139,22 @@ class CrossEncoderReranker:
         self._load_model()
 
     @staticmethod
+    def resolve_hf_cache_dir() -> Path:
+        """Return the HuggingFace hub cache directory that would be probed.
+
+        Used for operator diagnostics so a failed ``is_model_cached`` check
+        can name the exact path the server looked at. Respects ``HF_HOME``
+        and ``HUGGINGFACE_HUB_CACHE`` when ``huggingface_hub`` is installed;
+        falls back to the legacy ``~/.cache/huggingface/hub`` path otherwise.
+        """
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            return Path(HF_HUB_CACHE)
+        except Exception:
+            return Path.home() / ".cache" / "huggingface" / "hub"
+
+    @staticmethod
     def is_model_cached(model_name: str) -> bool:
         """Check if a model is cached in the HuggingFace hub cache.
 

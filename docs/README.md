@@ -128,7 +128,7 @@ package manager:
 | `search_api` | Class definitions, method signatures, frame types, inheritance |
 | `get_code_snippet` | Get targeted code by symbol name, intent, or file path + line range |
 | `check_deprecation` | Verify whether a pipecat import path is deprecated |
-| `get_hub_status` | Index health: last refresh time, record counts, commit SHAs |
+| `get_hub_status` | Index health, reranker runtime state, record counts, framework version, commit SHAs |
 
 All search results include an **EvidenceReport** with confidence scores,
 source-grounded facts, unresolved questions, and suggested follow-up queries.
@@ -227,6 +227,12 @@ Add more repos via `PIPECAT_HUB_EXTRA_REPOS`.
   `refresh --force --reset-index` if the error message mentions a failed
   open) and try again. This is deliberate: prior versions started anyway
   and MCP clients hung on every query.
+- **Diagnosing degraded starts** — on `serve` boot, look for
+  `pipecat-context-hub vX.Y.Z starting: …` (`INFO`) to confirm the running
+  version and index content-type counts. If reranking is off, a
+  `Reranker disabled at startup: reason=…` (`WARNING`) line names the
+  cause (`config_disabled` | `not_cached`) and, for `not_cached`, the
+  exact HF cache directory probed.
 
 ### Windows
 
