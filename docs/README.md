@@ -50,6 +50,10 @@ uv run pipecat-context-hub refresh --force --reset-index
 
 ## Start the Server
 
+Run `refresh` at least once first (see above). `serve` exits with code `2`
+if the index is empty or cannot be opened — it will not start against an
+unusable index, since MCP clients would otherwise hang on zero-hit queries.
+
 ```bash
 uv run pipecat-context-hub serve
 ```
@@ -218,6 +222,11 @@ Add more repos via `PIPECAT_HUB_EXTRA_REPOS`.
 - **Empty results** — run `uv run pipecat-context-hub refresh` to populate the index
 - **Stale results** — run `uv run pipecat-context-hub refresh --force` to re-ingest from latest upstream
 - **Index corruption** — run `uv run pipecat-context-hub refresh --force --reset-index` to wipe and rebuild
+- **`serve` exits immediately with code 2** — the index is empty or
+  unopenable. Run `uv run pipecat-context-hub refresh` (or
+  `refresh --force --reset-index` if the error message mentions a failed
+  open) and try again. This is deliberate: prior versions started anyway
+  and MCP clients hung on every query.
 
 ### Windows
 

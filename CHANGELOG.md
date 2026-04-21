@@ -28,6 +28,16 @@ This project uses [Semantic Versioning](https://semver.org/).
   where the selected model is not cached or failed to load without
   reading server logs.
 
+### Changed
+
+- **`serve` fails fast on unusable indexes** — the server now exits with a
+  non-zero status and a clear remediation hint when the index is empty
+  (zero records) or cannot be opened, instead of starting up and silently
+  returning no results. MCP clients previously hung waiting for meaningful
+  responses; they now see stdio close at boot and can surface a real
+  error. Run `pipecat-context-hub refresh` before `serve` on a fresh
+  install; use `refresh --force --reset-index` to rebuild a corrupt index.
+
 ### Fixed
 
 - **Corrupt clone recovery** — `refresh` now detects repo clones left in a
