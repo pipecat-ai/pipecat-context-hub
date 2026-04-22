@@ -227,6 +227,12 @@ Add more repos via `PIPECAT_HUB_EXTRA_REPOS`.
   `refresh --force --reset-index` if the error message mentions a failed
   open) and try again. This is deliberate: prior versions started anyway
   and MCP clients hung on every query.
+- **Stale `serve` processes** — `serve` polls its parent PID every 2s
+  and exits cleanly when the MCP client disappears (look for
+  `Shutting down: parent_died original_ppid=… current_ppid=1` in the
+  trace). If you still see orphans (older versions, or Windows where the
+  watchdog is disabled), `pkill -f "pipecat-context-hub serve"` is safe
+  to run between sessions.
 - **Diagnosing degraded starts** — on `serve` boot, look for
   `pipecat-context-hub vX.Y.Z starting: …` (`INFO`) to confirm the running
   version and index content-type counts. If reranking is off, a

@@ -5,6 +5,23 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.0.18] - 2026-04-21
+
+### Fixed
+
+- **Orphan `serve` processes no longer accumulate** — a parent-death
+  watchdog inside the stdio transport polls `os.getppid()` every 2s and
+  triggers a clean shutdown when the MCP client disappears without
+  closing stdio (e.g., editor crash, abandoned session, transport blip).
+  Previously, every Claude Code / Cursor / etc. session that ended
+  without a graceful close left a `pipecat-context-hub serve` zombie
+  holding the Chroma + SQLite handles for `~/.pipecat-context-hub`,
+  contending on the same index. The watchdog logs
+  `parent_died original_ppid=N current_ppid=1` at INFO when it fires.
+  Honors hidden env var `PIPECAT_HUB_PARENT_WATCH_INTERVAL` (seconds,
+  default `2.0`) for tests. Disabled on Windows where orphan-reparent
+  semantics differ — stdin EOF still works there.
+
 ## [0.0.17] - 2026-04-20
 
 ### Added

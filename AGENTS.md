@@ -131,6 +131,12 @@ always passes regardless of `gh` availability.
     `PIPECAT_HUB_RERANKER_MODEL=cross-encoder/does-not-exist` — the warning
     reports `reason=not_cached` and the remediation hint includes the HF cache
     path that was probed (e.g. `checked HF cache: /…/huggingface/hub`)
+42. **Orphan-watchdog smoke test** — spawn `serve` from a shell, note the
+    PID, then `kill -9` the shell (or close the terminal). The orphaned
+    `serve` process must exit on its own within ~5s. Confirm with
+    `pgrep -fl pipecat-context-hub` — no stale entry should remain.
+    A successful trigger logs `Shutting down: parent_died original_ppid=N
+    current_ppid=1` at INFO before exit.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
