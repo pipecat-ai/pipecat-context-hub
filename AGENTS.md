@@ -137,6 +137,13 @@ always passes regardless of `gh` availability.
     `pgrep -fl pipecat-context-hub` — no stale entry should remain.
     A successful trigger logs `Shutting down: parent_died original_ppid=N
     current_ppid=1` at INFO before exit.
+43. **Idle-timeout backstop smoke test** — covers the `uv run` path
+    where the parent-death watchdog cannot fire. Launch with
+    `PIPECAT_HUB_IDLE_TIMEOUT_SECS=10 uv run pipecat-context-hub serve`
+    and leave the stdio transport unused for >10s. The process must
+    exit on its own and log `Shutting down: idle_timeout idle_seconds=N
+    timeout_seconds=10` at INFO. Confirms the idle watchdog resolves
+    the production zombie-accumulation case.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

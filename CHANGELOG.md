@@ -27,7 +27,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   resolution moved out of `transport.py` into `shared/config.py` for
   consistency. `parent_watch_interval_secs` is now floored at `0.1s`
   when non-zero (prevents misconfigured tiny values from CPU-spinning
-  on `os.getppid()`). No user-visible behaviour change.
+  on `os.getppid()`). Both parsers reject non-finite values
+  (`nan`/`inf`) with a warning and fall back to the field default. No
+  user-visible behaviour change.
+- **`IdleTracker` moved from `shared/types.py` to new
+  `shared/tracking.py`** — `shared/types.py` now holds only Pydantic
+  data contracts; stateful runtime helpers live in `shared/tracking.py`.
+  Internal refactor only; imports in `cli.py`, `server/main.py`,
+  `server/transport.py` updated accordingly.
 
 ### Added
 
