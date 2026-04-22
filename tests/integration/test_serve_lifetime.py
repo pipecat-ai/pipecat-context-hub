@@ -7,17 +7,71 @@ case that motivated the watchdog).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
 import sys
 import textwrap
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(scope="session")
+def seeded_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A tmp `$HOME` holding a minimal non-empty index.
+
+    `cli.serve` fail-fasts with exit code 2 when the index is empty
+    (see `_EXIT_INDEX_UNREADY` in cli.py). The lifetime tests only care
+    that `serve` reaches the transport; they don't need real data. This
+    fixture seeds one record into `<tmp_home>/.pipecat-context-hub/` so
+    subprocesses launched with `env["HOME"]=<tmp_home>` find a usable
+    index and proceed into `run_stdio`.
+    """
+    from pipecat_context_hub.services.embedding import (
+        EmbeddingIndexWriter,
+        EmbeddingService,
+    )
+    from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.shared.config import (
+        EmbeddingConfig,
+        StorageConfig,
+    )
+    from pipecat_context_hub.shared.types import ChunkedRecord
+
+    home = tmp_path_factory.mktemp("serve_lifetime_home")
+    data_dir = home / ".pipecat-context-hub"
+    storage = StorageConfig(data_dir=data_dir)
+    store = IndexStore(storage)
+    try:
+        writer = EmbeddingIndexWriter(store, EmbeddingService(EmbeddingConfig()))
+        record = ChunkedRecord(
+            chunk_id="seed-1",
+            content="seed record for serve lifetime tests",
+            content_type="doc",
+            source_url="https://docs.pipecat.ai/seed",
+            path="/seed",
+            indexed_at=datetime.now(tz=timezone.utc),
+            metadata={"title": "seed"},
+        )
+        asyncio.run(writer.upsert([record]))
+    finally:
+        store.close()
+    return home
+
+
+def _env_with_home(home: Path, **extra: str) -> dict[str, str]:
+    """Copy of os.environ with HOME/USERPROFILE pointing at the seeded dir."""
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env.update(extra)
+    return env
 
 
 def _serve_cmd(direct: bool = False) -> list[str]:
@@ -51,13 +105,14 @@ def _initialize_payload() -> bytes:
     return (json.dumps(msg) + "\n").encode()
 
 
-def test_stdin_close_exits_cleanly() -> None:
+def test_stdin_close_exits_cleanly(seeded_home: Path) -> None:
     """Closing stdin must cause `serve` to exit within a few seconds."""
     proc = subprocess.Popen(
         _serve_cmd(),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=_env_with_home(seeded_home),
     )
     try:
         assert proc.stdin is not None
@@ -73,17 +128,19 @@ def test_stdin_close_exits_cleanly() -> None:
             proc.wait(timeout=5)
 
 
-def test_idle_timeout_exits_serve() -> None:
+def test_idle_timeout_exits_serve(seeded_home: Path) -> None:
     """`serve` must exit on its own when no requests arrive within the
     idle window, even if stdin stays open and the parent stays alive
     (the `uv run` failure mode where neither EOF nor PPID watchdog
     fires).
     """
-    env = os.environ.copy()
-    env["PIPECAT_HUB_IDLE_TIMEOUT_SECS"] = "3"
-    # Disable PPID watchdog by setting an absurd interval so we
-    # demonstrate the idle path in isolation.
-    env["PIPECAT_HUB_PARENT_WATCH_INTERVAL"] = "3600"
+    env = _env_with_home(
+        seeded_home,
+        PIPECAT_HUB_IDLE_TIMEOUT_SECS="3",
+        # Disable PPID watchdog by setting an absurd interval so we
+        # demonstrate the idle path in isolation.
+        PIPECAT_HUB_PARENT_WATCH_INTERVAL="3600",
+    )
     proc = subprocess.Popen(
         _serve_cmd(),
         stdin=subprocess.PIPE,
@@ -106,7 +163,7 @@ def test_idle_timeout_exits_serve() -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="orphan-reparent semantics differ on Windows")
-def test_orphaned_serve_exits_via_watchdog(tmp_path: Path) -> None:
+def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) -> None:
     """Orphan `serve` (parent dies without closing stdio) must exit via watchdog.
 
     This test must *not* let the child see stdin EOF — otherwise the
@@ -143,6 +200,8 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path) -> None:
                 stderr=subprocess.DEVNULL,
             )
             env = os.environ.copy()
+            env["HOME"] = {str(seeded_home)!r}
+            env["USERPROFILE"] = {str(seeded_home)!r}
             env["PIPECAT_HUB_PARENT_WATCH_INTERVAL"] = "0.5"
             proc = subprocess.Popen(
                 {_serve_cmd(direct=True)!r},
