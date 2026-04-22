@@ -10,7 +10,7 @@ import sys
 from mcp import stdio_server
 from mcp.server.lowlevel import Server
 
-from pipecat_context_hub.shared.types import IdleTracker
+from pipecat_context_hub.shared.tracking import IdleTracker
 
 logger = logging.getLogger(__name__)
 

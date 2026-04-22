@@ -120,6 +120,14 @@ class TestServerConfigEffectiveIdleTimeout:
         monkeypatch.delenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", raising=False)
         assert ServerConfig(idle_timeout_secs=300.0).effective_idle_timeout_secs == 300.0
 
+    def test_env_nan_falls_back_to_field(self, monkeypatch):
+        monkeypatch.setenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", "nan")
+        assert ServerConfig(idle_timeout_secs=42.0).effective_idle_timeout_secs == 42.0
+
+    def test_env_inf_falls_back_to_field(self, monkeypatch):
+        monkeypatch.setenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", "inf")
+        assert ServerConfig(idle_timeout_secs=42.0).effective_idle_timeout_secs == 42.0
+
 
 class TestServerConfigEffectiveParentWatchInterval:
     def test_default_when_unset(self, monkeypatch):
@@ -150,6 +158,14 @@ class TestServerConfigEffectiveParentWatchInterval:
     def test_at_floor_unchanged(self, monkeypatch):
         monkeypatch.setenv("PIPECAT_HUB_PARENT_WATCH_INTERVAL", "0.1")
         assert ServerConfig().effective_parent_watch_interval_secs == 0.1
+
+    def test_env_nan_falls_back_to_field(self, monkeypatch):
+        monkeypatch.setenv("PIPECAT_HUB_PARENT_WATCH_INTERVAL", "nan")
+        assert ServerConfig(parent_watch_interval_secs=1.5).effective_parent_watch_interval_secs == 1.5
+
+    def test_env_inf_falls_back_to_field(self, monkeypatch):
+        monkeypatch.setenv("PIPECAT_HUB_PARENT_WATCH_INTERVAL", "inf")
+        assert ServerConfig(parent_watch_interval_secs=1.5).effective_parent_watch_interval_secs == 1.5
 
 
 class TestSourceConfig:

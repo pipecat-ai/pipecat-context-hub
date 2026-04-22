@@ -10,13 +10,13 @@ from mcp.server.lowlevel import Server
 
 from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.shared.interfaces import Retriever
+from pipecat_context_hub.shared.tracking import IdleTracker
 from pipecat_context_hub.shared.types import (
     CheckDeprecationInput,
     GetCodeSnippetInput,
     GetDocInput,
     GetExampleInput,
     GetHubStatusInput,
-    IdleTracker,
     RerankerStatus,
     SearchApiInput,
     SearchDocsInput,

@@ -6,6 +6,7 @@ Defines chunking policies, embedding settings, storage paths, and server config.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Literal
@@ -271,7 +272,7 @@ class ServerConfig(BaseModel):
         if not raw:
             return max(0.0, self.idle_timeout_secs)
         try:
-            return max(0.0, float(raw))
+            parsed = float(raw)
         except ValueError:
             logger.warning(
                 "Ignoring invalid %s=%r (not a float); using %.0fs",
@@ -280,6 +281,15 @@ class ServerConfig(BaseModel):
                 self.idle_timeout_secs,
             )
             return max(0.0, self.idle_timeout_secs)
+        if not math.isfinite(parsed):
+            logger.warning(
+                "Ignoring non-finite %s=%r; using %.0fs",
+                _IDLE_TIMEOUT_ENV,
+                raw,
+                self.idle_timeout_secs,
+            )
+            return max(0.0, self.idle_timeout_secs)
+        return max(0.0, parsed)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -295,7 +305,7 @@ class ServerConfig(BaseModel):
             value: float = max(0.0, self.parent_watch_interval_secs)
         else:
             try:
-                value = max(0.0, float(raw))
+                parsed = float(raw)
             except ValueError:
                 logger.warning(
                     "Ignoring invalid %s=%r (not a float); using %.1fs",
@@ -304,6 +314,17 @@ class ServerConfig(BaseModel):
                     self.parent_watch_interval_secs,
                 )
                 value = max(0.0, self.parent_watch_interval_secs)
+            else:
+                if not math.isfinite(parsed):
+                    logger.warning(
+                        "Ignoring non-finite %s=%r; using %.1fs",
+                        _PARENT_WATCH_INTERVAL_ENV,
+                        raw,
+                        self.parent_watch_interval_secs,
+                    )
+                    value = max(0.0, self.parent_watch_interval_secs)
+                else:
+                    value = max(0.0, parsed)
         if value == 0.0:
             return 0.0
         return max(value, _PARENT_WATCH_INTERVAL_FLOOR)

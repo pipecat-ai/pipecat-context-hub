@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from pipecat_context_hub.server import transport
-from pipecat_context_hub.shared.types import IdleTracker
+from pipecat_context_hub.shared.tracking import IdleTracker
 
 
 class TestWatchParent:

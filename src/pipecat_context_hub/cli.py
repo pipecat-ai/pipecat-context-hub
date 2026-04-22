@@ -129,7 +129,7 @@ def serve(ctx: click.Context) -> None:
 
     from pipecat_context_hub.server.main import create_server
     from pipecat_context_hub.server.transport import serve_stdio
-    from pipecat_context_hub.shared.types import IdleTracker
+    from pipecat_context_hub.shared.tracking import IdleTracker
     from pipecat_context_hub.services.embedding import EmbeddingService
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
