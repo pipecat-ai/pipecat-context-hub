@@ -95,8 +95,7 @@ async def run_stdio(
                 name="parent-death-watchdog",
             )
             tasks.append(watchdog_task)
-        if enable_idle_watch:
-            assert idle_tracker is not None  # type-narrow for mypy
+        if enable_idle_watch and idle_tracker is not None:
             poll = min(_IDLE_POLL_INTERVAL_SECS, max(idle_timeout_secs / 4.0, 1.0))
             idle_task = asyncio.create_task(
                 _watch_idle(idle_tracker, idle_timeout_secs, poll),
