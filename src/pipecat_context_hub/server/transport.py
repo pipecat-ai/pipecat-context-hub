@@ -131,25 +131,22 @@ async def run_stdio(
             except (OSError, ValueError):
                 pass
 
-            # Try a graceful unwind for a short window. If the stdin
-            # reader is stuck in a blocked syscall we can't interrupt,
-            # hard-exit the process — the watchdog's whole purpose is
-            # "the client is gone, die" so waiting forever defeats it.
-            # The caller's `finally` won't run, so the caller is
-            # expected to have no critical state open at this point
-            # (serve.py closes the index_store in its outer finally
-            # after serve_stdio returns; if we hard-exit here, Chroma's
-            # SQLite WAL is fsync'd on its own close which runs via
-            # atexit handlers too).
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending, return_exceptions=True),
-                    timeout=2.0,
-                )
-            except asyncio.TimeoutError:
+            # Give graceful unwind a short window. ``asyncio.wait`` with
+            # a timeout returns unconditionally once the window expires —
+            # unlike ``wait_for``, which cancels the inner awaitable and
+            # then waits for that cancellation to complete, which would
+            # itself hang here because the stdin reader is stuck in a
+            # blocked ``read(0)`` syscall inside anyio's thread pool and
+            # cannot observe asyncio cancellation.
+            _done_after_shutdown, still_pending = await asyncio.wait(
+                pending, timeout=2.0
+            )
+            if still_pending:
                 logger.warning(
-                    "Graceful shutdown timed out; hard-exiting "
-                    "(stdin reader thread stuck in blocked syscall)"
+                    "Graceful shutdown timed out (%d task(s) stuck); "
+                    "hard-exiting — stdin reader is in an uninterruptible "
+                    "read(0) inside anyio's thread pool",
+                    len(still_pending),
                 )
                 if on_hard_exit is not None:
                     try:
