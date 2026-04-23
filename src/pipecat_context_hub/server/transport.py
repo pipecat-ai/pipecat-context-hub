@@ -126,7 +126,29 @@ async def run_stdio(
             shutdown_reason = idle_task.result()
 
         graceful_done: threading.Event | None = None
-        if shutdown_reason is not None:
+        # Single-shot guard for the on_watchdog_shutdown callback. Lives
+        # outside the `exit_on_watchdog_shutdown` branch because the
+        # in-process path below also invokes the callback on the
+        # graceful unwind, and we want identical one-shot semantics in
+        # both modes.
+        shutdown_cb_lock = threading.Lock()
+        shutdown_cb_started = [False]
+
+        def _invoke_shutdown_cb_once(context: str) -> None:
+            if on_watchdog_shutdown is None:
+                return
+            with shutdown_cb_lock:
+                if shutdown_cb_started[0]:
+                    return
+                shutdown_cb_started[0] = True
+            try:
+                on_watchdog_shutdown()
+            except Exception:
+                logger.exception(
+                    "on_watchdog_shutdown raised during %s", context
+                )
+
+        if shutdown_reason is not None and exit_on_watchdog_shutdown:
             logger.info("Shutting down: %s", shutdown_reason)
             # Arm a watchdog-of-the-watchdog: a plain OS thread that
             # will hard-exit the process if graceful teardown doesn't
@@ -154,38 +176,14 @@ async def run_stdio(
             # unwind (macOS, or any in-process caller) would still get
             # `os._exit` called 2.5 s later and kill the host — e.g.
             # the pytest worker when `run_stdio` is driven directly.
-            graceful_done = threading.Event()
-
-            # Single-shot guard: `on_watchdog_shutdown` is invoked on both
-            # the graceful path (inline, while the timer is armed) and
-            # the hard-exit path (timer thread when main hangs). If the
-            # graceful-path call itself is what hangs (Chroma close on
-            # Linux — the exact scenario the backstop exists for), the
-            # timer firing must NOT start a second concurrent
-            # `IndexStore.close()` call. This lock + flag ensures the
-            # second caller short-circuits immediately so the timer can
-            # proceed straight to `os._exit(0)`.
             #
-            # NB: callers MUST NOT register a re-entrant callback here
-            # (i.e. one that calls back into `run_stdio` or spawns work
-            # that does). The guard protects against cross-thread
-            # duplication, not recursion from the same call site.
-            shutdown_cb_lock = threading.Lock()
-            shutdown_cb_started = [False]
-
-            def _invoke_shutdown_cb_once(context: str) -> None:
-                if on_watchdog_shutdown is None:
-                    return
-                with shutdown_cb_lock:
-                    if shutdown_cb_started[0]:
-                        return
-                    shutdown_cb_started[0] = True
-                try:
-                    on_watchdog_shutdown()
-                except Exception:
-                    logger.exception(
-                        "on_watchdog_shutdown raised during %s", context
-                    )
+            # Arming the timer (and closing stdin, below) is gated on
+            # `exit_on_watchdog_shutdown` so in-process callers
+            # (tests, library embedders) are never exposed to an
+            # `os._exit` from a daemon thread or a closed host stdin.
+            # The single-shot guard for `on_watchdog_shutdown` is
+            # defined above so the in-process `else` path can reuse it.
+            graceful_done = threading.Event()
 
             def _hard_exit_on_hang() -> None:
                 # `Event.wait(timeout)` returns True if set before the
@@ -243,6 +241,19 @@ async def run_stdio(
                 os.close(sys.stdin.fileno())
             except (OSError, ValueError):
                 pass
+        elif shutdown_reason is not None:
+            # In-process safe mode (`exit_on_watchdog_shutdown=False`).
+            # The caller owns `sys.stdin` and the host process — do NOT
+            # close stdin, do NOT arm the hard-exit timer. Cancel the
+            # pending tasks, invoke the shutdown callback once so
+            # critical resources still release, and return
+            # `shutdown_reason` so the caller can drive its own
+            # teardown. On Linux the graceful unwind may hang inside
+            # `stdio_server.__aexit__` for the same reasons the timer
+            # exists; that is the in-process caller's problem to handle
+            # (e.g. test setups mock `stdio_server` to avoid it).
+            logger.info("Shutting down: %s", shutdown_reason)
+            _invoke_shutdown_cb_once("graceful unwind (in-process)")
 
         for task in pending:
             task.cancel()
@@ -253,6 +264,11 @@ async def run_stdio(
                 pass
 
         if graceful_done is not None:
+            # Exit path only (`exit_on_watchdog_shutdown=True`). The
+            # in-process path above already called
+            # `_invoke_shutdown_cb_once` on the graceful unwind and
+            # returns normally so the caller can tear down.
+            #
             # Release index handles while the hard-exit timer is still
             # armed — Chroma's close can hang on Linux (internal threads
             # we cannot interrupt), and the caller's outer `finally` runs
@@ -274,11 +290,8 @@ async def run_stdio(
             # watchdog's job is "client is gone, die" — skip both by
             # exiting directly. We do this from the main thread (not
             # the daemon timer) so the call is guaranteed to execute
-            # even under GIL-holding C code. Opt-in via
-            # `exit_on_watchdog_shutdown` so in-process callers (unit
-            # tests) are not killed.
-            if exit_on_watchdog_shutdown:
-                os._exit(0)
+            # even under GIL-holding C code.
+            os._exit(0)
 
         # Surface server-task exceptions (e.g. unexpected protocol error)
         # while still letting the index_store finally-block run.
@@ -319,14 +332,20 @@ def serve_stdio(
 
     ``exit_on_watchdog_shutdown`` must be True for the CLI entry point
     and False for any in-process caller (tests, library embedding).
-    This is a policy choice, not a test shim: ``run_stdio`` cannot
-    simply return the shutdown reason and let the caller choose,
-    because on Linux ``mcp.stdio_server.__aexit__`` itself waits on
-    the anyio worker thread that is parked in an uninterruptible
-    ``read(0)`` — control would never return to the caller. The flag
-    therefore decides *where* exit happens: inside ``run_stdio`` (for
-    the CLI, which wants the process to die) or never (for in-process
-    callers that need ``run_stdio`` to return so they can clean up).
+    This is a policy choice, not a test shim: when True, ``run_stdio``
+    closes ``sys.stdin`` (to unblock mcp's stdin reader on Linux),
+    arms a 2.5 s daemon hard-exit timer, and calls ``os._exit(0)``
+    itself after graceful unwind — otherwise, on Linux,
+    ``mcp.stdio_server.__aexit__`` waits on the anyio worker thread
+    parked in an uninterruptible ``read(0)`` and control never returns.
+    When False, every host-affecting action is suppressed: no stdin
+    close, no hard-exit timer, no ``os._exit``. The shutdown callback
+    still runs (single-shot) so index handles are released, tasks are
+    cancelled, and ``run_stdio`` returns ``shutdown_reason`` to the
+    caller. In-process callers MUST arrange for the graceful unwind
+    actually to complete on their platform (e.g. by mocking
+    ``stdio_server``); the safe-mode flag does not rescue them from a
+    real Linux ``read(0)`` hang.
     """
     return asyncio.run(
         run_stdio(

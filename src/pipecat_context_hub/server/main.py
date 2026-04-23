@@ -250,39 +250,45 @@ def create_server(
 
     @server.call_tool()  # type: ignore[untyped-decorator]
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.TextContent]:
-        # Reset the idle clock on every tool dispatch — used by the idle
-        # watchdog to shut down hubs that the client has stopped using
-        # but is still holding pipes open for (the failure mode the PPID
-        # watchdog cannot detect under `uv run`).
+        # Mark the call in-flight so the idle watchdog treats the whole
+        # dispatch (including slow first-call lazy loads in
+        # EmbeddingService / the cross-encoder) as active. `begin()`
+        # also touches the clock; `end()` resets it again at completion
+        # so the idle window starts from "request finished", not
+        # "request dispatched".
         if idle_tracker is not None:
-            idle_tracker.touch()
-        args = arguments or {}
+            idle_tracker.begin()
+        try:
+            args = arguments or {}
 
-        # get_hub_status has a different dispatch signature (needs index_store)
-        if name == "get_hub_status" and index_store is not None:
-            status = reranker_status_provider() if reranker_status_provider else None
-            result_json = await handle_get_hub_status(args, index_store, status)
+            # get_hub_status has a different dispatch signature (needs index_store)
+            if name == "get_hub_status" and index_store is not None:
+                status = reranker_status_provider() if reranker_status_provider else None
+                result_json = await handle_get_hub_status(args, index_store, status)
+                return [types.TextContent(type="text", text=result_json)]
+
+            # check_deprecation dispatches via retriever.deprecation_map
+            if name == "check_deprecation":
+                dep_map = getattr(retriever, "deprecation_map", None)
+                result_json = await handle_check_deprecation(args, dep_map)
+                return [types.TextContent(type="text", text=result_json)]
+
+            handler_map: dict[str, Any] = {
+                "search_docs": handle_search_docs,
+                "get_doc": handle_get_doc,
+                "search_examples": handle_search_examples,
+                "get_example": handle_get_example,
+                "get_code_snippet": handle_get_code_snippet,
+                "search_api": handle_search_api,
+            }
+            handler = handler_map.get(name)
+            if handler is None:
+                raise ValueError(f"Unknown tool: {name}")
+
+            result_json = await handler(args, retriever)
             return [types.TextContent(type="text", text=result_json)]
-
-        # check_deprecation dispatches via retriever.deprecation_map
-        if name == "check_deprecation":
-            dep_map = getattr(retriever, "deprecation_map", None)
-            result_json = await handle_check_deprecation(args, dep_map)
-            return [types.TextContent(type="text", text=result_json)]
-
-        handler_map: dict[str, Any] = {
-            "search_docs": handle_search_docs,
-            "get_doc": handle_get_doc,
-            "search_examples": handle_search_examples,
-            "get_example": handle_get_example,
-            "get_code_snippet": handle_get_code_snippet,
-            "search_api": handle_search_api,
-        }
-        handler = handler_map.get(name)
-        if handler is None:
-            raise ValueError(f"Unknown tool: {name}")
-
-        result_json = await handler(args, retriever)
-        return [types.TextContent(type="text", text=result_json)]
+        finally:
+            if idle_tracker is not None:
+                idle_tracker.end()
 
     return server

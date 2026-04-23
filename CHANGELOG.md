@@ -7,6 +7,26 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [0.0.18] - 2026-04-21
 
+### Fixed
+
+- **Idle watchdog no longer reaps in-flight requests** — `IdleTracker`
+  now counts active tool dispatches (`begin()` / `end()`) and reports
+  `seconds_since_last() == 0` while any call is active. Previously the
+  clock was only touched on call entry, so a cold `search_*` /
+  `get_code_snippet` that waited on `EmbeddingService` or the
+  cross-encoder lazy load could exceed
+  `PIPECAT_HUB_IDLE_TIMEOUT_SECS` and be killed mid-response. The
+  clock is also reset on `end()` so the idle window starts at "request
+  finished", not "request dispatched".
+- **`exit_on_watchdog_shutdown=False` is now host-safe end-to-end** —
+  the in-process / library-embedding mode previously still closed
+  `sys.stdin` and armed the 2.5 s hard-exit timer, either of which
+  could tear down the host process. The flag now gates every
+  host-affecting action: when `False`, `run_stdio` cancels its own
+  tasks, invokes the shutdown callback once, and returns
+  `shutdown_reason` to the caller without touching stdin or spawning
+  the timer thread.
+
 ### Security
 
 - **lxml GHSA-vfmq-68hx-4jfw / CVE-2026-41066** — bumped `lxml` to `>=6.1.0`
