@@ -218,6 +218,17 @@ async def run_stdio(
                 pass
 
         if graceful_done is not None:
+            # Release index handles while the hard-exit timer is still
+            # armed — Chroma's close can hang on Linux (internal threads
+            # we cannot interrupt), and the caller's outer `finally` runs
+            # after `run_stdio` returns, outside the timer's scope. If
+            # this hangs, the 2.5 s timer fires and hard-exits; if it
+            # completes, we disarm the timer below.
+            if on_hard_exit is not None:
+                try:
+                    on_hard_exit()
+                except Exception:
+                    logger.exception("on_hard_exit raised during graceful unwind")
             # Graceful path completed — disarm the hard-exit timer so
             # it does not fire after `run_stdio` returns.
             graceful_done.set()
