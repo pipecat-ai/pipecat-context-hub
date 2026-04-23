@@ -146,9 +146,24 @@ async def run_stdio(
             graceful_done = threading.Event()
 
             def _hard_exit_on_hang() -> None:
+                # Emit a breadcrumb so CI logs prove the timer thread
+                # launched (if this line is absent on a hang, the
+                # daemon thread was never scheduled — a different bug).
+                try:
+                    sys.stderr.write("pipecat-context-hub: hard-exit timer armed\n")
+                    sys.stderr.flush()
+                except Exception:  # nosec B110 - best-effort diagnostic
+                    pass  # nosec B110
                 # `Event.wait(timeout)` returns True if set before the
                 # timeout, False on timeout. Only hard-exit on timeout.
                 if graceful_done.wait(2.5):
+                    try:
+                        sys.stderr.write(
+                            "pipecat-context-hub: graceful_done set, timer disarmed\n"
+                        )
+                        sys.stderr.flush()
+                    except Exception:  # nosec B110 - best-effort diagnostic
+                        pass  # nosec B110
                     return
                 # Write directly to stderr (bypassing the logging
                 # framework, which can buffer / deadlock with handlers
