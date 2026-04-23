@@ -93,7 +93,15 @@ class TaxonomyEntry(BaseModel):
     repo: str = Field(description="GitHub repo slug.")
     path: str = Field(description="Path to example directory within repo.")
     foundational_class: str | None = Field(
-        default=None, description="Class name if from examples/foundational, else None."
+        default=None,
+        description=(
+            "DEPRECATED: Legacy field from pre-reorg pipecat main layout where "
+            "examples lived under examples/foundational/NN-name/. Only set for "
+            "entries discovered via the legacy foundational/ tree. New topic-based "
+            "examples/<topic>/<example>/ layout leaves this as None. Field remains "
+            "readable for backward compatibility with persisted indexes and the "
+            "hybrid.py filter path, but is no longer written for new-layout entries."
+        ),
     )
     capabilities: list[CapabilityTag] = Field(
         default_factory=list, description="Detected capability tags."
@@ -305,7 +313,15 @@ class SearchExamplesInput(BaseModel):
         default=None,
         max_length=20,
     )
-    foundational_class: str | None = Field(default=None, max_length=256)
+    foundational_class: str | None = Field(
+        default=None,
+        max_length=256,
+        description=(
+            "DEPRECATED: Legacy filter targeting the pre-reorg examples/foundational/ "
+            "layout. Retained for backward compatibility against indexes built from "
+            "older pipecat tags (e.g. v0.0.96). Not populated for topic-layout entries."
+        ),
+    )
     execution_mode: str | None = Field(default=None, max_length=64)
     pipecat_version: str | None = Field(
         default=None,
@@ -330,6 +346,9 @@ class ExampleHit(BaseModel):
 
     example_id: str
     summary: str
+    # DEPRECATED: see TaxonomyEntry.foundational_class. Remains readable so
+    # existing indexes (built against the pre-reorg foundational/ layout)
+    # continue to annotate results; None for topic-layout entries.
     foundational_class: str | None = None
     capability_tags: list[str] = Field(default_factory=list)
     key_files: list[str] = Field(default_factory=list)

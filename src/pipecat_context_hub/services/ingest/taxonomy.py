@@ -120,6 +120,53 @@ _DIR_TAG_MAP: dict[str, str] = {
 # Regex to detect a numbered foundational directory like "07-interruptible".
 _FOUNDATIONAL_DIR_RE = re.compile(r"^\d{2,}-")
 
+# Override map for compound capability tags derived from topic-directory names.
+# Topic layout (pipecat-ai/pipecat post-reorg) uses ``examples/<topic>/<example>/``;
+# the topic dir name is a coarse capability label. Most topics pass through
+# unchanged, but a handful need an extra synonym/related tag for better recall.
+# Keep this map small and documented — do NOT enumerate every topic here.
+_TOPIC_TAG_OVERRIDES: dict[str, list[str]] = {
+    "function-calling": ["function-calling", "tools"],
+    "realtime": ["realtime", "voice-ai"],
+}
+
+# File extensions that count as "code" for topic-tree scanning. Must stay in
+# sync with ``github_ingest._CODE_EXTENSIONS`` so ``_scan_topic_tree`` emits a
+# TaxonomyEntry for every dir that ``_discover_under_examples`` returns.
+_TOPIC_CODE_EXTENSIONS: frozenset[str] = frozenset(
+    {".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml", ".toml"}
+)
+
+# Directories to ignore while walking topic trees (mirrors github_ingest skip list).
+_TOPIC_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        "__pycache__",
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+        ".egg-info",
+    }
+)
+
+
+def _infer_tags_from_topic(topic_name: str) -> list[CapabilityTag]:
+    """Derive capability tags from a topic directory name.
+
+    New-layout pipecat examples group code under ``examples/<topic>/``, where
+    the topic is a coarse capability label (e.g. ``function-calling``,
+    ``realtime``, ``transports``). We expose the topic itself as a tag, and a
+    small explicit override map adds related synonyms for a handful of
+    compound topics. Unknown topics pass through as a single-tag entry.
+    """
+    tags_names = _TOPIC_TAG_OVERRIDES.get(topic_name, [topic_name])
+    return [_make_tag(name, 1.0, "directory") for name in tags_names]
+
 
 CapabilitySource = Literal["directory", "readme", "code", "manual"]
 
@@ -233,9 +280,15 @@ def _find_key_files(example_dir: Path) -> list[str]:
 class TaxonomyBuilder:
     """Builds taxonomy entries by scanning local directory structures.
 
-    Operates on two kinds of repos:
-    - **pipecat main** (contains ``examples/foundational/NN-name/``):
-      each numbered subdirectory becomes a foundational-class entry.
+    Operates on three layouts:
+    - **pipecat main, legacy (pre-reorg)** (contains
+      ``examples/foundational/NN-name/``): each numbered subdirectory
+      becomes a foundational-class entry. ``foundational_class`` is now
+      deprecated but still populated for these legacy entries.
+    - **pipecat main, topic-based (current)** (contains
+      ``examples/<topic>/<example>/``): each discovered example dir becomes
+      an entry; ``foundational_class`` stays ``None``. Capability tags are
+      derived from the topic dir name (see ``_TOPIC_TAG_OVERRIDES``).
     - **pipecat-examples** (contains project-level examples):
       each top-level subdirectory becomes an entry with capability tags.
     """
@@ -333,6 +386,34 @@ class TaxonomyBuilder:
         self._entries.extend(entries)
         return entries
 
+    def build_from_topic_dirs(
+        self,
+        examples_dir: Path,
+        *,
+        repo: str = "pipecat-ai/pipecat",
+        commit_sha: str | None = None,
+    ) -> list[TaxonomyEntry]:
+        """Scan a topic-based ``examples/<topic>/<example>/`` tree.
+
+        Mirrors ``github_ingest._discover_under_examples`` exactly: if
+        ``<topic>`` contains direct code files, emit one entry for
+        ``<topic>``; otherwise emit one entry per subdirectory under
+        ``<topic>``. Every emitted entry has
+        ``path == str(ex_dir.relative_to(repo_root))`` where
+        ``repo_root`` is the parent of ``examples_dir``.
+
+        Args:
+            examples_dir: Path to the ``examples/`` directory.
+            repo: GitHub repo slug.
+            commit_sha: Optional commit SHA for provenance.
+        """
+        repo_root = examples_dir.parent
+        entries = self._scan_topic_tree(
+            examples_dir, repo_root=repo_root, repo=repo, commit_sha=commit_sha
+        )
+        self._entries.extend(entries)
+        return entries
+
     def build_from_directory(
         self,
         root: Path,
@@ -340,51 +421,54 @@ class TaxonomyBuilder:
         repo: str = "unknown",
         commit_sha: str | None = None,
     ) -> list[TaxonomyEntry]:
-        """Generic scan: auto-detects foundational vs examples layout.
+        """Generic scan: auto-detects layout by sniffing the tree.
 
-        Looks for ``examples/foundational/`` inside *root* — if present,
-        treats it as a pipecat main repo and scans foundational examples.
-        Also scans any **non-foundational** sibling directories under
-        ``examples/`` (e.g. ``examples/quickstart``) so mixed-layout
-        repos get full taxonomy coverage.
+        Dispatch order:
 
-        If ``examples/foundational/`` is absent, falls back to scanning
-        top-level subdirectories as independent examples.
+        1. If ``examples/foundational/`` exists, scan the legacy foundational
+           tree **and** walk any non-foundational sibling dirs under
+           ``examples/`` as topic-layout entries (preserves the
+           ``v0.0.96``-era mixed layout where ``examples/foundational/`` lives
+           alongside ``examples/simple-chatbot/``).
+        2. Else if ``examples/`` exists with any subdirs, treat as a pure
+           topic-based layout (current pipecat main).
+        3. Else fall back to ``build_from_examples_repo(root)`` for the
+           ``pipecat-examples`` layout where top-level dirs are each an
+           independent example.
 
         Args:
-            root: Path to the repo root or examples directory.
+            root: Path to the repo root.
             repo: GitHub repo slug.
             commit_sha: Optional commit SHA for provenance.
 
         Returns:
             List of TaxonomyEntry objects.
         """
-        foundational_dir = root / "examples" / "foundational"
+        examples_dir = root / "examples"
+        foundational_dir = examples_dir / "foundational"
         if foundational_dir.is_dir():
             entries = self.build_from_foundational(
                 foundational_dir, repo=repo, commit_sha=commit_sha
             )
-            # Also scan non-foundational sibling dirs under examples/
-            examples_dir = root / "examples"
-            for child in sorted(examples_dir.iterdir()):
-                if not child.is_dir():
-                    continue
-                if child.name == "foundational":
-                    continue
-                if child.name.startswith(".") or child.name in (
-                    "__pycache__",
-                    "node_modules",
-                ):
-                    continue
-                entry = self._build_entry_for_example(
-                    child,
-                    repo=repo,
-                    commit_sha=commit_sha,
-                    path_prefix="examples",
-                )
-                entries.append(entry)
-                self._entries.append(entry)
+            # Also scan non-foundational sibling dirs under examples/ using
+            # the shared topic-tree helper so foundational + topic branches
+            # cannot drift apart.
+            sibling_entries = self._scan_topic_tree(
+                examples_dir,
+                repo_root=root,
+                repo=repo,
+                commit_sha=commit_sha,
+                skip_names={"foundational"},
+            )
+            entries.extend(sibling_entries)
+            self._entries.extend(sibling_entries)
             return entries
+        if examples_dir.is_dir() and any(
+            p.is_dir() for p in examples_dir.iterdir()
+        ):
+            return self.build_from_topic_dirs(
+                examples_dir, repo=repo, commit_sha=commit_sha
+            )
         return self.build_from_examples_repo(root, repo=repo, commit_sha=commit_sha)
 
     @property
@@ -485,6 +569,128 @@ class TaxonomyBuilder:
             key_files=[py_file.name],
             summary="",
             readme_content=None,
+            commit_sha=commit_sha,
+            indexed_at=datetime.now(timezone.utc),
+        )
+
+    def _scan_topic_tree(
+        self,
+        examples_dir: Path,
+        *,
+        repo_root: Path,
+        repo: str,
+        commit_sha: str | None,
+        skip_names: frozenset[str] | set[str] | None = None,
+    ) -> list[TaxonomyEntry]:
+        """Walk an ``examples/`` dir in topic-layout style and emit entries.
+
+        Shared helper used by both ``build_from_topic_dirs`` and the
+        ``build_from_directory`` dispatch for legacy mixed layouts, so the
+        two code paths cannot diverge.
+
+        Mirrors ``github_ingest._discover_under_examples``: for each topic
+        dir ``<topic>``, if it contains direct code files emit one entry for
+        ``<topic>`` itself; otherwise emit one entry per subdirectory under
+        ``<topic>``. Every emitted entry has
+        ``path == str(ex_dir.relative_to(repo_root))``.
+
+        ``skip_names`` lets callers exclude specific top-level topic names
+        (used to skip ``foundational`` on mixed legacy layouts).
+        """
+        entries: list[TaxonomyEntry] = []
+        if not examples_dir.is_dir():
+            return entries
+        skip = set(skip_names) if skip_names else set()
+        for topic in sorted(examples_dir.iterdir()):
+            if not topic.is_dir():
+                continue
+            if topic.name in skip:
+                continue
+            if topic.name.startswith(".") or topic.name in _TOPIC_SKIP_DIRS:
+                continue
+            sub_has_code = any(
+                f.suffix in _TOPIC_CODE_EXTENSIONS
+                for f in topic.iterdir()
+                if f.is_file()
+            )
+            if sub_has_code:
+                # Topic dir itself is the example (flat layout).
+                entries.append(
+                    self._build_entry_for_topic_example(
+                        topic,
+                        repo_root=repo_root,
+                        repo=repo,
+                        commit_sha=commit_sha,
+                        topic_name=topic.name,
+                    )
+                )
+            else:
+                # Descend one level: each sub-dir is an example under ``topic``.
+                for ex_dir in sorted(topic.iterdir()):
+                    if not ex_dir.is_dir():
+                        continue
+                    if ex_dir.name in _TOPIC_SKIP_DIRS:
+                        continue
+                    entries.append(
+                        self._build_entry_for_topic_example(
+                            ex_dir,
+                            repo_root=repo_root,
+                            repo=repo,
+                            commit_sha=commit_sha,
+                            topic_name=topic.name,
+                        )
+                    )
+        return entries
+
+    def _build_entry_for_topic_example(
+        self,
+        example_dir: Path,
+        *,
+        repo_root: Path,
+        repo: str,
+        commit_sha: str | None,
+        topic_name: str,
+    ) -> TaxonomyEntry:
+        """Build a TaxonomyEntry for an example discovered under a topic dir.
+
+        The ``path`` is ``str(example_dir.relative_to(repo_root))`` — this is
+        the load-bearing invariant: ``github_ingest._build_taxonomy_lookup``
+        keys entries by the same relative path that
+        ``_discover_under_examples`` produces. ``foundational_class`` stays
+        ``None`` for all topic-layout entries (deprecated legacy field).
+        """
+        dirname = example_dir.name
+        example_id = f"example-{dirname}"
+        rel_path = str(example_dir.relative_to(repo_root))
+
+        tags: list[CapabilityTag] = []
+        # Primary source: the topic dir name (with compound-topic overrides).
+        tags.extend(_infer_tags_from_topic(topic_name))
+        # Keep the existing dir-name heuristics as a secondary signal.
+        tags.extend(_infer_tags_from_directory_name(dirname))
+
+        readme_content: str | None = None
+        summary = ""
+        readme_path = example_dir / "README.md"
+        if readme_path.is_file():
+            readme_content = readme_path.read_text(encoding="utf-8", errors="replace")
+            tags.extend(_infer_tags_from_readme(readme_content))
+            summary = _extract_summary_from_readme(readme_content)
+
+        # Scan Python files (including subdirectories) for code-level tags.
+        for py_file in sorted(example_dir.rglob("*.py")):
+            code = py_file.read_text(encoding="utf-8", errors="replace")
+            tags.extend(_infer_tags_from_code(code))
+
+        return TaxonomyEntry(
+            example_id=example_id,
+            repo=repo,
+            path=rel_path,
+            foundational_class=None,
+            capabilities=_dedup_tags(tags),
+            key_files=_find_key_files(example_dir),
+            summary=summary,
+            readme_content=readme_content,
             commit_sha=commit_sha,
             indexed_at=datetime.now(timezone.utc),
         )
