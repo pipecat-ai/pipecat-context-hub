@@ -54,7 +54,7 @@ async def run_stdio(
     idle_tracker: IdleTracker | None = None,
     parent_watch_interval_secs: float = 0.0,
     idle_timeout_secs: float = 0.0,
-    on_hard_exit: Callable[[], None] | None = None,
+    on_watchdog_shutdown: Callable[[], None] | None = None,
     exit_on_watchdog_shutdown: bool = False,
 ) -> str | None:
     """Run the MCP server over stdio transport.
@@ -146,6 +146,32 @@ async def run_stdio(
             # the pytest worker when `run_stdio` is driven directly.
             graceful_done = threading.Event()
 
+            # Single-shot guard: `on_watchdog_shutdown` is invoked on both
+            # the graceful path (inline, while the timer is armed) and
+            # the hard-exit path (timer thread when main hangs). If the
+            # graceful-path call itself is what hangs (Chroma close on
+            # Linux — the exact scenario the backstop exists for), the
+            # timer firing must NOT start a second concurrent
+            # `IndexStore.close()` call. This lock + flag ensures the
+            # second caller short-circuits immediately so the timer can
+            # proceed straight to `os._exit(0)`.
+            shutdown_cb_lock = threading.Lock()
+            shutdown_cb_started = [False]
+
+            def _invoke_shutdown_cb_once(context: str) -> None:
+                if on_watchdog_shutdown is None:
+                    return
+                with shutdown_cb_lock:
+                    if shutdown_cb_started[0]:
+                        return
+                    shutdown_cb_started[0] = True
+                try:
+                    on_watchdog_shutdown()
+                except Exception:
+                    logger.exception(
+                        "on_watchdog_shutdown raised during %s", context
+                    )
+
             def _hard_exit_on_hang() -> None:
                 # `Event.wait(timeout)` returns True if set before the
                 # timeout, False on timeout. Only hard-exit on timeout.
@@ -164,35 +190,28 @@ async def run_stdio(
                     sys.stderr.flush()
                 except Exception:  # nosec B110 - best-effort diagnostic before hard exit
                     pass  # nosec B110
-                # Give on_hard_exit a short, bounded window. If it
-                # hangs (e.g. Chroma's close blocks on an internal
-                # thread holding a lock we cannot interrupt), abandon
-                # it rather than defeating the watchdog. The on-disk
-                # state is crash-consistent (SQLite WAL + Chroma
-                # recovery on next open).
-                if on_hard_exit is not None:
-                    cb_done = threading.Event()
+                # Give `on_watchdog_shutdown` a short, bounded window.
+                # The single-shot guard short-circuits if the graceful
+                # path already started the callback (and is hung in
+                # it); in that case we skip straight to `os._exit(0)`
+                # rather than starting a second concurrent
+                # `IndexStore.close()`. If it hangs fresh here, abandon
+                # it after 1 s — on-disk state is crash-consistent
+                # (SQLite WAL + Chroma recovery on next open).
+                cb_done = threading.Event()
 
-                    def _run_cb() -> None:
-                        try:
-                            on_hard_exit()
-                        except Exception:
-                            try:
-                                sys.stderr.write(
-                                    "pipecat-context-hub: on_hard_exit raised; "
-                                    "continuing to hard-exit\n"
-                                )
-                            except Exception:  # nosec B110 - best-effort
-                                pass  # nosec B110
-                        finally:
-                            cb_done.set()
+                def _run_cb() -> None:
+                    try:
+                        _invoke_shutdown_cb_once("hard-exit timer")
+                    finally:
+                        cb_done.set()
 
-                    threading.Thread(
-                        target=_run_cb,
-                        name="hub-hard-exit-cleanup",
-                        daemon=True,
-                    ).start()
-                    cb_done.wait(1.0)
+                threading.Thread(
+                    target=_run_cb,
+                    name="hub-hard-exit-cleanup",
+                    daemon=True,
+                ).start()
+                cb_done.wait(1.0)
                 os._exit(0)
 
             threading.Thread(
@@ -223,13 +242,11 @@ async def run_stdio(
             # armed — Chroma's close can hang on Linux (internal threads
             # we cannot interrupt), and the caller's outer `finally` runs
             # after `run_stdio` returns, outside the timer's scope. If
-            # this hangs, the 2.5 s timer fires and hard-exits; if it
+            # this hangs, the 2.5 s timer fires; the single-shot guard
+            # ensures the timer does NOT start a second concurrent
+            # close, it goes straight to `os._exit(0)`. If this
             # completes, we disarm the timer below.
-            if on_hard_exit is not None:
-                try:
-                    on_hard_exit()
-                except Exception:
-                    logger.exception("on_hard_exit raised during graceful unwind")
+            _invoke_shutdown_cb_once("graceful unwind")
             # Graceful path completed — disarm the hard-exit timer so
             # it does not fire after `run_stdio` returns.
             graceful_done.set()
@@ -264,7 +281,7 @@ def serve_stdio(
     idle_tracker: IdleTracker | None = None,
     parent_watch_interval_secs: float = 0.0,
     idle_timeout_secs: float = 0.0,
-    on_hard_exit: Callable[[], None] | None = None,
+    on_watchdog_shutdown: Callable[[], None] | None = None,
     exit_on_watchdog_shutdown: bool = False,
 ) -> str | None:
     """Blocking entry point that runs the stdio server.
@@ -276,10 +293,14 @@ def serve_stdio(
     watchdog; the caller passes the same instance to ``create_server``.
     The two timeouts come from ``ServerConfig`` env-aware computed
     properties; 0 disables the corresponding watchdog.
-    ``on_hard_exit`` is invoked before ``os._exit`` when a watchdog
-    shutdown cannot unwind gracefully (e.g. Linux pipe-reader stuck in
-    a blocked syscall); pass the index-store close here so critical
-    resources are released even on the hard path.
+    ``on_watchdog_shutdown`` is invoked once when a watchdog-triggered
+    shutdown begins — either inline on the graceful unwind (while the
+    hard-exit timer is armed) or from the timer thread if the graceful
+    path hangs. A single-shot guard ensures at most one invocation, so
+    a hanging close on the graceful path does not spawn a second
+    concurrent close when the timer fires. Pass the index-store close
+    here so critical resources are released whether the unwind is
+    graceful or hard.
     """
     return asyncio.run(
         run_stdio(
@@ -288,7 +309,7 @@ def serve_stdio(
             idle_tracker=idle_tracker,
             parent_watch_interval_secs=parent_watch_interval_secs,
             idle_timeout_secs=idle_timeout_secs,
-            on_hard_exit=on_hard_exit,
+            on_watchdog_shutdown=on_watchdog_shutdown,
             exit_on_watchdog_shutdown=exit_on_watchdog_shutdown,
         )
     )

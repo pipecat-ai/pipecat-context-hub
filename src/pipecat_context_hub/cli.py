@@ -293,19 +293,21 @@ def serve(ctx: click.Context) -> None:
             reranker_status_provider=_reranker_status,
             idle_tracker=idle_tracker,
         )
-        def _close_index_store_for_hard_exit() -> None:
-            """Release index handles on the watchdog hard-exit path.
+        def _close_index_store_on_watchdog_shutdown() -> None:
+            """Release index handles on any watchdog-triggered shutdown.
 
-            `run_stdio` calls this just before `os._exit(0)` when a
-            graceful unwind can't complete (Linux stdin-reader thread
-            stuck in a blocked syscall). Since `os._exit` skips the
-            outer `finally`, closing the store here keeps Chroma's
-            SQLite WAL / FTS handles from being leaked on abrupt exit.
+            `run_stdio` calls this on both the graceful watchdog path
+            (inline, while the hard-exit timer is armed) and the
+            hard-exit path (timer thread, if graceful unwind hangs).
+            A single-shot guard in `run_stdio` ensures at most one
+            invocation. Since `os._exit(0)` then skips the outer
+            `finally`, closing the store here keeps Chroma's SQLite
+            WAL / FTS handles from leaking on abrupt exit.
             """
             try:
                 index_store.close()
             except Exception:
-                logger.exception("Failed to close index store on hard exit")
+                logger.exception("Failed to close index store on watchdog shutdown")
 
         serve_stdio(
             server,
@@ -313,7 +315,7 @@ def serve(ctx: click.Context) -> None:
             idle_tracker=idle_tracker,
             parent_watch_interval_secs=config.server.effective_parent_watch_interval_secs,
             idle_timeout_secs=config.server.effective_idle_timeout_secs,
-            on_hard_exit=_close_index_store_for_hard_exit,
+            on_watchdog_shutdown=_close_index_store_on_watchdog_shutdown,
             exit_on_watchdog_shutdown=True,
         )
     finally:
