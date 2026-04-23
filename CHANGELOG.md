@@ -5,6 +5,47 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+> **Upgrade:** run `uv run pipecat-context-hub refresh --force` after upgrading
+> to clear stale `foundational_class` values pointing at paths that no longer
+> exist upstream.
+
+### Fixed
+
+- **Taxonomy coverage for the new pipecat examples topic-based layout** —
+  `ExampleTaxonomyBuilder.build_from_directory` now dispatches on the layout
+  shape it sees on disk: foundational + sibling topic dirs (preserving the
+  `v0.0.96`-era behaviour), topic-only trees (current pipecat `main`), and
+  root-level layouts (`pipecat-examples`). The builder no longer emits junk
+  entries for `src/`, `tests/`, `docs/`, `scripts/`, `dashboard/`, `.github/`,
+  or `.claude/` when falling back at a packaged-project root. Every dir
+  returned by `_discover_under_examples` now has a matching taxonomy entry,
+  restoring `capability_tags` / `key_files` / `execution_mode` on example
+  chunks for topic-layout checkouts.
+
+### Added
+
+- **Offline smoke-test fixtures** under `tests/fixtures/smoke/` with reusable
+  invariant helpers in `tests/smoke/invariants.py`. PR-gating tests exercise
+  discovery + taxonomy against vendored tree-only snapshots of
+  `pipecat-ai/pipecat` and `pipecat-ai/pipecat-examples`; no network, no
+  embedding model, no Chroma. Wall time ≤ 15 s.
+- **Scheduled upstream-drift workflow** (`.github/workflows/smoke-drift.yml`)
+  runs every 5 days against upstream `main`, reusing the same invariant
+  helpers via `scripts/check_pipecat_drift.py`. On failure it opens (or
+  updates in place) a single `upstream-drift`-labelled tracking issue via
+  `gh` CLI — does not gate PRs.
+
+### Deprecated
+
+- **`foundational_class` field** on `ExampleMetadata`, `TaxonomyEntry`, and
+  `SearchExamplesInput` is deprecated. The field remains readable for
+  persisted indexes and the `hybrid.py` filter path, but is no longer written
+  for new-layout (non-foundational) examples. Existing users should run
+  `uv run pipecat-context-hub refresh --force` after upgrading to clear stale
+  values pointing at paths that no longer exist upstream.
+
 ## [0.0.18] - 2026-04-21
 
 ### Fixed
