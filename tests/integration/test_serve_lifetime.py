@@ -91,6 +91,53 @@ def _serve_cmd(direct: bool = False) -> list[str]:
     return ["uv", "run", "--directory", str(REPO_ROOT), "pipecat-context-hub", "serve"]
 
 
+def _readline_with_timeout(stream, timeout: float) -> bytes:
+    """Read a single newline-terminated line from ``stream`` within ``timeout``.
+
+    Uses ``select`` on the underlying FD so we don't block forever when
+    the peer hangs mid-startup. Raises ``TimeoutError`` if nothing
+    arrives in time. Returns the line (may be empty on EOF).
+    """
+    import select
+
+    deadline = time.time() + timeout
+    buf = b""
+    fd = stream.fileno()
+    while b"\n" not in buf:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise TimeoutError(f"no line within {timeout}s; got {buf!r}")
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            raise TimeoutError(f"no line within {timeout}s; got {buf!r}")
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            return buf  # EOF
+        buf += chunk
+    return buf
+
+
+def _drain_stderr(proc: "subprocess.Popen[bytes]") -> str:
+    """Best-effort read of stderr without blocking. Used for diagnostics."""
+    if proc.stderr is None:
+        return "(no stderr captured)"
+    try:
+        import select
+
+        chunks: list[bytes] = []
+        while True:
+            ready, _, _ = select.select([proc.stderr.fileno()], [], [], 0.1)
+            if not ready:
+                break
+            chunk = os.read(proc.stderr.fileno(), 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks).decode(errors="replace")[-4000:]
+    except Exception as exc:
+        return f"(failed to drain stderr: {exc})"
+
+
 def _initialize_payload() -> bytes:
     msg = {
         "jsonrpc": "2.0",
@@ -133,6 +180,14 @@ def test_idle_timeout_exits_serve(seeded_home: Path) -> None:
     idle window, even if stdin stays open and the parent stays alive
     (the `uv run` failure mode where neither EOF nor PPID watchdog
     fires).
+
+    The outer ``proc.wait`` timeout is generous because `uv run` +
+    chromadb/mcp imports + index open can take 10–15 s on cold Linux
+    CI runners. What we're actually measuring is the idle-watchdog fire
+    window (3 s idle + 1 s poll = ~4 s), so we read the initialize
+    response first to anchor the clock after startup. Without that
+    anchor a slow cold start would gobble the whole budget before the
+    watchdog ever got a chance to tick.
     """
     env = _env_with_home(
         seeded_home,
@@ -150,11 +205,31 @@ def test_idle_timeout_exits_serve(seeded_home: Path) -> None:
     )
     try:
         assert proc.stdin is not None
+        assert proc.stdout is not None
         proc.stdin.write(_initialize_payload())
         proc.stdin.flush()
+        # Wait for serve to respond to initialize — this confirms it's
+        # past startup and the idle tracker is armed. Fail fast with
+        # stderr if it doesn't answer within a generous window.
+        try:
+            ready_line = _readline_with_timeout(proc.stdout, 45.0)
+        except TimeoutError:
+            stderr = _drain_stderr(proc)
+            pytest.fail(
+                "serve did not respond to initialize within 45s "
+                f"(startup hang). stderr tail:\n{stderr}"
+            )
+        assert ready_line, "serve closed stdout before responding"
         # Do NOT close stdin, do NOT send any further requests.
         # serve should exit via idle timeout within ~timeout + poll margin.
-        rc = proc.wait(timeout=20)
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            stderr = _drain_stderr(proc)
+            pytest.fail(
+                "serve did not exit via idle watchdog within 15s of "
+                f"ready-state. stderr tail:\n{stderr}"
+            )
         assert rc == 0, f"expected clean exit, got {rc}"
     finally:
         if proc.poll() is None:
@@ -169,32 +244,39 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
     This test must *not* let the child see stdin EOF — otherwise the
     existing stdin-close path would hide a broken watchdog. Strategy:
 
-    1. Wrapper creates a pipe `(r, w)`.
-    2. Wrapper spawns a "holder" subprocess that inherits `w` via
-       `pass_fds` and just sleeps. The holder exists solely to keep
-       the write-end of `serve`'s stdin alive after the wrapper dies.
-    3. Wrapper spawns `serve` with `stdin=r`.
-    4. Wrapper closes its own copies of `r` and `w`, prints the two
-       PIDs, and `os._exit`s. Only the holder and `serve` now hold
-       pipe FDs. The holder keeps `w` open, so `serve`'s stdin does
-       NOT see EOF when the wrapper dies.
-    5. `serve` is reparented to init/launchd. The watchdog must fire
-       within `PIPECAT_HUB_PARENT_WATCH_INTERVAL` + one poll margin.
+    1. Wrapper creates two pipes: ``(r, w)`` for serve's stdin and
+       ``(out_r, out_w)`` for serve's stdout.
+    2. Wrapper spawns a "holder" subprocess that inherits ``w`` and
+       ``out_r`` via ``pass_fds`` and just sleeps. Holding ``w`` keeps
+       serve's stdin alive; holding ``out_r`` prevents SIGPIPE if serve
+       writes anything after the wrapper dies.
+    3. Wrapper spawns `serve` with ``stdin=r``, ``stdout=out_w``.
+    4. Wrapper sends ``initialize`` on ``w`` and reads the response
+       from ``out_r``. This anchors the test clock *after* startup, so
+       the 15s poll below measures watchdog latency, not cold-start
+       latency (which on Linux CI can itself exceed 15s).
+    5. Wrapper closes its own FDs, prints PIDs, and ``os._exit``s.
+       Only holder + serve now hold pipe FDs. The holder keeps ``w``
+       open, so serve's stdin does NOT see EOF.
+    6. `serve` is reparented to init/launchd. The watchdog must fire
+       within ``PIPECAT_HUB_PARENT_WATCH_INTERVAL`` + one poll margin.
 
     The test cleans up the holder at the end regardless of outcome.
     """
     wrapper = tmp_path / "wrapper.py"
+    init_payload = _initialize_payload().decode()
     wrapper.write_text(
         textwrap.dedent(
             f"""
-            import os, subprocess, sys, time
+            import os, select, subprocess, sys, time
             r, w = os.pipe()
-            # Holder: inherits `w` via pass_fds, sleeps. Keeps serve's
-            # stdin open after wrapper dies — forces the watchdog path,
-            # not the stdin-EOF path.
+            out_r, out_w = os.pipe()
+            # Holder inherits both `w` and `out_r` so serve's stdin stays
+            # open (no EOF) AND serve's stdout has a reader (no SIGPIPE)
+            # after the wrapper exits.
             holder = subprocess.Popen(
                 [sys.executable, "-c", "import time; time.sleep(120)"],
-                pass_fds=(w,),
+                pass_fds=(w, out_r),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -206,27 +288,53 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
             proc = subprocess.Popen(
                 {_serve_cmd(direct=True)!r},
                 stdin=r,
-                stdout=subprocess.DEVNULL,
+                stdout=out_w,
                 stderr=subprocess.DEVNULL,
                 env=env,
             )
-            # Release wrapper's copies so only holder and serve hold the pipe.
+            # Release wrapper's copies of the child ends.
             os.close(r)
+            os.close(out_w)
+            # Send initialize and wait for response — confirms serve is
+            # past startup before we orphan it.
+            os.write(w, {init_payload!r}.encode())
+            deadline = time.time() + 45
+            buf = b""
+            while b"\\n" not in buf:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    sys.stderr.write(f"wrapper: no initialize response within 45s; buf={{buf!r}}\\n")
+                    os._exit(2)
+                ready, _, _ = select.select([out_r], [], [], remaining)
+                if not ready:
+                    continue
+                chunk = os.read(out_r, 4096)
+                if not chunk:
+                    sys.stderr.write("wrapper: serve closed stdout before responding\\n")
+                    os._exit(3)
+                buf += chunk
+            # Wrapper releases its copies; holder keeps w + out_r alive.
             os.close(w)
+            os.close(out_r)
             print(f"{{proc.pid}} {{holder.pid}}", flush=True)
-            time.sleep(0.5)
             # Exit without closing serve's pipe end — orphan reparents to init.
             os._exit(0)
             """
         )
     )
 
-    wrapper_proc = subprocess.run(
-        [sys.executable, str(wrapper)],
-        capture_output=True,
-        timeout=15,
-        check=True,
-    )
+    try:
+        wrapper_proc = subprocess.run(
+            [sys.executable, str(wrapper)],
+            capture_output=True,
+            timeout=60,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        pytest.fail(
+            f"wrapper exited with {exc.returncode}. "
+            f"stderr:\n{exc.stderr.decode(errors='replace')}"
+        )
     serve_pid_str, holder_pid_str = wrapper_proc.stdout.decode().strip().split()
     serve_pid = int(serve_pid_str)
     holder_pid = int(holder_pid_str)
@@ -243,7 +351,10 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
                 "have exercised the stdin-EOF path, not the watchdog"
             )
 
-        # Poll up to 15s for the orphan to exit via the watchdog.
+        # Poll up to 15s for the orphan to exit via the watchdog. Serve
+        # has already finished startup (initialize response round-tripped
+        # in the wrapper), so this is a pure measurement of watchdog
+        # latency after the PPID flip.
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
