@@ -105,14 +105,6 @@ async def run_stdio(
 
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-        for task in pending:
-            task.cancel()
-        for task in pending:
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-
         shutdown_reason: str | None = None
         if watchdog_task is not None and watchdog_task in done:
             shutdown_reason = watchdog_task.result()
@@ -121,19 +113,29 @@ async def run_stdio(
 
         if shutdown_reason is not None:
             logger.info("Shutting down: %s", shutdown_reason)
+            # Close stdin BEFORE awaiting the cancelled server_task.
             # Cancelling server_task alone is not enough: stdio_server's
             # internal TaskGroup still awaits a stdin_reader that's
             # blocked on `async for line in stdin`. If the client
             # orphaned us without closing the pipe, that reader never
-            # unblocks and `async with stdio_server()` hangs on exit.
-            # Forcibly close stdin so the reader sees EOF / ClosedResource
-            # and the TaskGroup can unwind. ValueError catches the case
+            # unblocks and `await server_task` hangs — which then hangs
+            # the whole process, since `async with stdio_server()` can't
+            # unwind. Closing the FD here gives the reader an EOF so the
+            # TaskGroup teardown completes. ValueError catches the case
             # where sys.stdin was already closed at the Python level
             # (fileno() raises on a closed stream); OSError catches
             # EBADF from os.close on an already-closed FD.
             try:
                 os.close(sys.stdin.fileno())
             except (OSError, ValueError):
+                pass
+
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
                 pass
 
         # Surface server-task exceptions (e.g. unexpected protocol error)
