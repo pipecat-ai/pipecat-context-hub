@@ -307,7 +307,7 @@ def serve(ctx: click.Context) -> None:
             except Exception:
                 logger.exception("Failed to close index store on hard exit")
 
-        serve_stdio(
+        shutdown_reason = serve_stdio(
             server,
             original_ppid=_original_ppid,
             idle_tracker=idle_tracker,
@@ -317,6 +317,17 @@ def serve(ctx: click.Context) -> None:
         )
     finally:
         index_store.close()
+
+    # When a watchdog triggered shutdown (parent died or idle timeout),
+    # bypass normal interpreter shutdown with os._exit. CPython's
+    # threading._shutdown() joins non-daemon threads at exit — and
+    # mcp.stdio_server's anyio reader thread is parked in an
+    # uninterruptible read(0) on Linux, so that join hangs forever.
+    # Graceful unwind already completed (shutdown_reason is set only
+    # after on_hard_exit + pending-task cleanup returned), and
+    # index_store is closed. Nothing else needs atexit processing.
+    if shutdown_reason is not None:
+        os._exit(0)
 
 
 @main.command()
