@@ -29,6 +29,8 @@ _MISSING_SENTINEL = "\u2014"
 # Documented in CHANGELOG 0.0.17 "Changed" section.
 _EXIT_INDEX_UNREADY = 2
 
+_module_logger = logging.getLogger(__name__)
+
 
 def _redact_home(path: Path | str) -> str:
     """Replace the user's home-directory prefix with ``~`` for logs.
@@ -45,6 +47,58 @@ def _redact_home(path: Path | str) -> str:
         return s
     except Exception:
         return str(path)
+
+
+# Values of PIPECAT_HUB_WARMUP that disable pre-warm. Anything else
+# (including unset, "1", "true", or garbage like "yes") enables it — the
+# default is "warm unless explicitly told not to".
+_WARMUP_DISABLED_VALUES = frozenset({"0", "false", "False", "FALSE", "no", "No", "NO"})
+
+
+def _warmup_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True when model pre-warm should run.
+
+    Reads ``PIPECAT_HUB_WARMUP`` from ``env`` (defaults to ``os.environ``).
+    Disabled on ``0`` / ``false`` / ``no`` (any common casing). Any other
+    value — including unset — enables pre-warm.
+    """
+    source = env if env is not None else os.environ
+    return source.get("PIPECAT_HUB_WARMUP", "1").strip() not in _WARMUP_DISABLED_VALUES
+
+
+def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None:
+    """Eagerly load retrieval models so the first MCP query is warm.
+
+    ``sentence_transformers`` import + weight load can take 30-130s on
+    Windows CPU. Running it at boot (rather than inside the first
+    ``asyncio.to_thread`` call) keeps first-query latency inside Claude
+    Code's tool-permission window. Failures are logged and swallowed —
+    the lazy-load paths still handle first-query loading.
+    """
+    if not _warmup_enabled():
+        _module_logger.info("Model pre-warm skipped: PIPECAT_HUB_WARMUP=0")
+        return
+    warmup_start = time.monotonic()
+    try:
+        embedding_svc.embed_query("warmup")  # type: ignore[attr-defined]
+        _module_logger.info(
+            "Embedding model pre-warmed in %.1fs", time.monotonic() - warmup_start
+        )
+    except Exception:
+        _module_logger.exception(
+            "Embedding model pre-warm failed; falling back to lazy load"
+        )
+    if cross_encoder is not None:
+        ce_start = time.monotonic()
+        try:
+            cross_encoder.ensure_model()  # type: ignore[attr-defined]
+            _module_logger.info(
+                "Cross-encoder pre-warmed in %.1fs", time.monotonic() - ce_start
+            )
+        except Exception:
+            _module_logger.exception(
+                "Cross-encoder pre-warm failed; falling back to lazy load"
+            )
 
 
 def _load_dotenv() -> None:
@@ -252,30 +306,7 @@ def serve(ctx: click.Context) -> None:
                 hint,
             )
 
-        # Pre-warm retrieval models so the first MCP query doesn't pay the
-        # cold-start cost (sentence_transformers import + model-weight load).
-        # On Windows CPU a cold first query can hang 30-130s while loads
-        # happen inside asyncio.to_thread — longer than Claude Code's default
-        # tool-permission window, which surfaces as a spurious disconnect.
-        # Failures are non-fatal: lazy-load paths still handle first-query
-        # loading if this pre-warm fails. Set PIPECAT_HUB_WARMUP=0 to skip
-        # (trading a longer first-query latency for faster boot).
-        if os.environ.get("PIPECAT_HUB_WARMUP", "1").strip() not in ("0", "false", "False"):
-            warmup_start = time.monotonic()
-            try:
-                embedding_svc.embed_query("warmup")
-                logger.info("Embedding model pre-warmed in %.1fs", time.monotonic() - warmup_start)
-            except Exception:
-                logger.exception("Embedding model pre-warm failed; falling back to lazy load")
-            if cross_encoder is not None:
-                ce_start = time.monotonic()
-                try:
-                    cross_encoder.ensure_model()
-                    logger.info("Cross-encoder pre-warmed in %.1fs", time.monotonic() - ce_start)
-                except Exception:
-                    logger.exception("Cross-encoder pre-warm failed; falling back to lazy load")
-        else:
-            logger.info("Model pre-warm skipped: PIPECAT_HUB_WARMUP=0")
+        _prewarm_models(embedding_svc, cross_encoder)
 
         def _reranker_status() -> RerankerStatus:
             """Compute live reranker status at get_hub_status query time."""
