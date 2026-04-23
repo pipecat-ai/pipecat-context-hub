@@ -147,10 +147,10 @@ class TestRunStdioWatchdogWiring:
             yield (None, None)
 
         exit_calls: list[int] = []
-        monkeypatch.setattr(transport.os, "_exit", exit_calls.append)
+        monkeypatch.setattr(os, "_exit", exit_calls.append)
         # Don't actually close pytest's stdin FD (this test runs
         # in-process and would otherwise fight the runner).
-        monkeypatch.setattr(transport.os, "close", lambda _fd: None)
+        monkeypatch.setattr(os, "close", lambda _fd: None)
 
         with patch.object(transport, "stdio_server", fake_stdio_server):
 
