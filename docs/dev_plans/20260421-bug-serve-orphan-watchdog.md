@@ -150,6 +150,7 @@ Review loop:
 Open follow-ups (intentionally deferred):
 - Promote `shutdown_reason` from `str | None` to a `ShutdownReason` enum. Caller currently does not consume the return value; enum churn is not justified until it does.
 - Reconsider `exit_on_watchdog_shutdown: bool` if another in-process caller appears. Today it is the only seam that lets unit tests drive `run_stdio` without being killed — documented as a policy flag, not a test shim.
+- Add a subprocess-level guard for `exit_on_watchdog_shutdown=False` once a real in-process caller (library embedder, in-proc dashboard hub, etc.) exists. Today the unit guard (`test_safe_mode_does_not_close_stdin_or_exit`) mocks `stdio_server`, which is sufficient for the contract we ship but cannot catch a regression where the real Linux `stdio_server.__aexit__` hangs in safe mode. The updated docstring explicitly makes that the caller's problem — add a real guard when there is a real caller to speak for.
 
 ## Phase 7 — Post-Phase-6 Codex review fixes
 
