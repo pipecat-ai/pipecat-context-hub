@@ -211,6 +211,26 @@ def create_server(
         instructions=_SERVER_INSTRUCTIONS,
     )
 
+    # MCP's low-level Server routes `ping` requests via its built-in
+    # handler (`types.PingRequest -> _ping_handler`), bypassing our
+    # list/call decorators. Clients that keep an otherwise idle
+    # session alive via periodic pings would otherwise still be
+    # reaped by the idle watchdog after `idle_timeout_secs`. Wrap
+    # the built-in ping handler so it counts as activity.
+    if idle_tracker is not None:
+        _builtin_ping = server.request_handlers.get(types.PingRequest)
+        if _builtin_ping is not None:
+            # Bind a local so the closure captures a non-Optional
+            # reference (avoids mypy narrowing issues and a bandit
+            # B101 `assert`).
+            _tracker = idle_tracker
+
+            async def _ping_with_idle_touch(request: types.PingRequest) -> types.ServerResult:
+                _tracker.touch()
+                return await _builtin_ping(request)
+
+            server.request_handlers[types.PingRequest] = _ping_with_idle_touch
+
     @server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
     async def list_tools() -> list[types.Tool]:
         # Count capability-refresh requests as activity too — some clients

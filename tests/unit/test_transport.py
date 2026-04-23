@@ -130,3 +130,56 @@ class TestRunStdioWatchdogWiring:
                     ),
                     timeout=5.0,
                 )
+
+    @pytest.mark.asyncio
+    async def test_graceful_shutdown_disarms_hard_exit_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After a clean watchdog-triggered unwind, `os._exit` must not
+        fire from the backstop thread — otherwise the test runner (or
+        any in-process host) would be killed 2.5s later.
+        """
+        from collections.abc import AsyncIterator
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+            yield (None, None)
+
+        exit_calls: list[int] = []
+        monkeypatch.setattr(transport.os, "_exit", exit_calls.append)
+        # Don't actually close pytest's stdin FD (this test runs
+        # in-process and would otherwise fight the runner).
+        monkeypatch.setattr(transport.os, "close", lambda _fd: None)
+
+        with patch.object(transport, "stdio_server", fake_stdio_server):
+
+            class FakeServer:
+                def create_initialization_options(self) -> object:
+                    return object()
+
+                async def run(self, *_args: object, **_kwargs: object) -> None:
+                    await asyncio.sleep(60)
+
+            ppid_calls = {"n": 0}
+            real_ppid = os.getppid()
+
+            def flipping_ppid() -> int:
+                ppid_calls["n"] += 1
+                return real_ppid if ppid_calls["n"] <= 1 else 1
+
+            with patch.object(os, "getppid", side_effect=flipping_ppid):
+                await asyncio.wait_for(
+                    transport.run_stdio(
+                        cast(Any, FakeServer()),
+                        original_ppid=real_ppid,
+                        parent_watch_interval_secs=0.02,
+                    ),
+                    timeout=5.0,
+                )
+        # Wait past the 2.5s backstop window; graceful_done.set() should
+        # have disarmed the timer so os._exit stays uncalled.
+        await asyncio.sleep(3.0)
+        assert exit_calls == [], (
+            f"hard-exit timer fired after graceful shutdown: {exit_calls}"
+        )

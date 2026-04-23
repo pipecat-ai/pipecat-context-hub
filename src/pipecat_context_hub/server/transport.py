@@ -7,7 +7,6 @@ import logging
 import os
 import sys
 import threading
-import time
 from typing import Callable
 
 from mcp import stdio_server
@@ -115,6 +114,7 @@ async def run_stdio(
         elif idle_task is not None and idle_task in done:
             shutdown_reason = idle_task.result()
 
+        graceful_done: threading.Event | None = None
         if shutdown_reason is not None:
             logger.info("Shutting down: %s", shutdown_reason)
             # Arm a watchdog-of-the-watchdog: a plain OS thread that
@@ -138,8 +138,18 @@ async def run_stdio(
             # is scheduled by the kernel, not the event loop. The
             # watchdog's whole purpose is "client is gone, die", so
             # blocking forever on graceful unwind defeats it.
+            # Event signals that graceful teardown finished, disarming
+            # the hard-exit thread. Without this, a successful graceful
+            # unwind (macOS, or any in-process caller) would still get
+            # `os._exit` called 2.5 s later and kill the host — e.g.
+            # the pytest worker when `run_stdio` is driven directly.
+            graceful_done = threading.Event()
+
             def _hard_exit_on_hang() -> None:
-                time.sleep(2.5)
+                # `Event.wait(timeout)` returns True if set before the
+                # timeout, False on timeout. Only hard-exit on timeout.
+                if graceful_done.wait(2.5):
+                    return
                 logger.warning(
                     "Graceful shutdown timed out; hard-exiting "
                     "(stdin reader stuck in uninterruptible read(0))"
@@ -178,6 +188,11 @@ async def run_stdio(
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        if graceful_done is not None:
+            # Graceful path completed — disarm the hard-exit timer so
+            # it does not fire after `run_stdio` returns.
+            graceful_done.set()
 
         # Surface server-task exceptions (e.g. unexpected protocol error)
         # while still letting the index_store finally-block run.
