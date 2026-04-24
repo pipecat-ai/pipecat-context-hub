@@ -1,0 +1,89 @@
+name: Upstream drift smoke
+
+# Live-network drift detection for the upstream Pipecat example layouts.
+# Scheduled only; NOT a required check. On failure this workflow opens or
+# updates a single tracking issue labelled `upstream-drift`.
+
+on:
+  schedule:
+    # Every 5 days at 06:00 UTC. Cadence chosen in the dev plan; keeps noise
+    # low while still catching reorgs within a week of landing.
+    - cron: "0 6 */5 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    name: Check upstream layouts
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPORT_PATH: drift-report.md
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7.6.0
+        with:
+          version: "0.9.18"
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev --group dev
+
+      - name: Run drift check
+        id: drift
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          uv run python scripts/check_pipecat_drift.py | tee "${REPORT_PATH}"
+
+      - name: Open or update tracking issue on failure
+        if: steps.drift.outcome == 'failure'
+        env:
+          LABEL: upstream-drift
+          TITLE: "upstream-drift: pipecat examples layout"
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "${REPORT_PATH}" ]; then
+            echo "No drift report file produced; aborting issue update." >&2
+            exit 1
+          fi
+          # ``gh issue create --label`` fails if the label does not already
+          # exist, which would sink the very first drift notification in a
+          # fresh repo. ``gh label create --force`` is idempotent: it creates
+          # the label if missing and updates the description/colour otherwise.
+          gh label create "${LABEL}" \
+            --description "Upstream Pipecat examples layout drift" \
+            --color "B60205" \
+            --force
+          existing="$(gh issue list \
+            --state open \
+            --label "${LABEL}" \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            echo "Updating existing drift issue #${existing}"
+            gh issue edit "${existing}" --body-file "${REPORT_PATH}"
+            gh issue comment "${existing}" \
+              --body "Drift detected $(date -u +%FT%TZ) in run ${RUN_ID}."
+          else
+            echo "Opening new drift issue with label ${LABEL}"
+            gh issue create \
+              --title "${TITLE}" \
+              --label "${LABEL}" \
+              --body-file "${REPORT_PATH}"
+          fi
+
+      - name: Fail job if drift detected
+        if: steps.drift.outcome == 'failure'
+        run: |
+          echo "Upstream drift detected — see tracking issue for details." >&2
+          exit 1

@@ -807,6 +807,537 @@ class TestTaxonomyBuilderQueryMethods:
         assert "pipecat-ai/pipecat-examples" in repos
 
 
+class TestTaxonomyBuilderTopicLayout:
+    """Phase 1: topic-based examples layout (post-foundational reorg).
+
+    Covers:
+    (a) topic-based tree with subdir examples under multiple topics
+    (b) topic-based tree where one topic contains flat ``.py`` files
+    (c) legacy ``foundational/`` tree still works unchanged
+    (d) mixed layout: ``foundational/`` + ``simple-chatbot/`` siblings (v0.0.96)
+    (e) ``pipecat-examples``-style root-level layout still works
+    (f) repo root with no ``examples/`` dir falls back correctly
+    (g) Lookup-key parity vs ``_discover_under_examples``
+    """
+
+    # -- fixtures ----------------------------------------------------------
+
+    @pytest.fixture
+    def topic_repo_dir(self, tmp_path: Path) -> Path:
+        """Topic-based layout: ``examples/<topic>/<example>/``.
+
+        Mirrors post-reorg pipecat main: multiple topic dirs, each with
+        one or more example subdirs.
+        """
+        examples = tmp_path / "examples"
+
+        # function-calling/weather — subdir example
+        fc = examples / "function-calling" / "weather"
+        fc.mkdir(parents=True)
+        (fc / "bot.py").write_text(
+            "from pipecat.services.openai import OpenAILLMService\n"
+            "from pipecat.services.deepgram import DeepgramSTTService\n"
+        )
+        (fc / "README.md").write_text(
+            "# Weather\n\nFunction-calling example that reports weather.\n"
+        )
+
+        # function-calling/calendar — second subdir example under same topic
+        cal = examples / "function-calling" / "calendar"
+        cal.mkdir(parents=True)
+        (cal / "bot.py").write_text(
+            "from pipecat.services.openai import OpenAILLMService\n"
+        )
+
+        # transports/daily-demo — subdir example under a different topic
+        tr = examples / "transports" / "daily-demo"
+        tr.mkdir(parents=True)
+        (tr / "bot.py").write_text(
+            "from pipecat.transports.daily import DailyTransport\n"
+        )
+
+        # realtime/voice-agent — yet another topic
+        rt = examples / "realtime" / "voice-agent"
+        rt.mkdir(parents=True)
+        (rt / "main.py").write_text(
+            "from pipecat.services.cartesia import CartesiaTTSService\n"
+        )
+
+        return tmp_path
+
+    @pytest.fixture
+    def topic_repo_with_flat_topic_dir(self, tmp_path: Path) -> Path:
+        """Topic-based layout where one topic contains flat ``.py`` files.
+
+        The flat topic dir itself is the example (matches
+        ``_discover_under_examples`` behaviour when a topic dir directly
+        contains code files).
+        """
+        examples = tmp_path / "examples"
+
+        # getting-started/ with flat code files at its root — topic is the example
+        gs = examples / "getting-started"
+        gs.mkdir(parents=True)
+        (gs / "hello.py").write_text(
+            "from pipecat.pipeline.pipeline import Pipeline\n"
+            "Pipeline()\n"
+        )
+        (gs / "README.md").write_text(
+            "# Getting Started\n\nQuickstart snippets.\n"
+        )
+
+        # audio/echo-bot — standard subdir-style example under a sibling topic
+        au = examples / "audio" / "echo-bot"
+        au.mkdir(parents=True)
+        (au / "bot.py").write_text(
+            "from pipecat.services.deepgram import DeepgramSTTService\n"
+        )
+
+        return tmp_path
+
+    @pytest.fixture
+    def pipecat_examples_root(self, tmp_path: Path) -> Path:
+        """pipecat-examples-style root-level layout (no ``examples/`` dir)."""
+        root = tmp_path / "pipecat-examples"
+        root.mkdir()
+
+        chatbot = root / "chatbot"
+        chatbot.mkdir()
+        (chatbot / "main.py").write_text(
+            "from pipecat.services.openai import OpenAILLMService\n"
+        )
+        (chatbot / "README.md").write_text("# Chatbot\n\nA chatbot.\n")
+
+        story = root / "storytelling"
+        story.mkdir()
+        (story / "app.py").write_text(
+            "from pipecat.services.anthropic import AnthropicLLMService\n"
+        )
+
+        return root
+
+    @pytest.fixture
+    def bare_repo_root(self, tmp_path: Path) -> Path:
+        """Repo root with no ``examples/`` dir — must fall back safely."""
+        root = tmp_path / "bare-repo"
+        root.mkdir()
+        # Some code lives at the root, but there is no examples/ dir.
+        (root / "main.py").write_text(
+            "from pipecat.pipeline.pipeline import Pipeline\n"
+            "Pipeline()\n"
+        )
+        return root
+
+    # -- (a) topic-based tree with subdir examples under multiple topics ---
+
+    def test_topic_layout_produces_entries_for_each_subdir(
+        self, topic_repo_dir: Path
+    ):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_dir, repo="pipecat-ai/pipecat"
+        )
+        paths = {e.path for e in entries}
+        # One entry per example dir under each topic.
+        assert "examples/function-calling/weather" in paths
+        assert "examples/function-calling/calendar" in paths
+        assert "examples/transports/daily-demo" in paths
+        assert "examples/realtime/voice-agent" in paths
+
+    def test_topic_layout_paths_are_relative_to_repo_root(
+        self, topic_repo_dir: Path
+    ):
+        """Every entry.path must equal str(ex_dir.relative_to(repo_root))."""
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_dir, repo="pipecat-ai/pipecat"
+        )
+        for entry in entries:
+            full = topic_repo_dir / entry.path
+            assert full.is_dir(), f"entry.path {entry.path!r} does not resolve"
+            assert entry.path == str(full.relative_to(topic_repo_dir))
+
+    def test_topic_layout_foundational_class_is_none(self, topic_repo_dir: Path):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_dir, repo="pipecat-ai/pipecat"
+        )
+        for entry in entries:
+            assert entry.foundational_class is None
+
+    def test_topic_layout_capability_tags_non_empty(self, topic_repo_dir: Path):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_dir, repo="pipecat-ai/pipecat"
+        )
+        for entry in entries:
+            assert entry.capabilities, (
+                f"Entry {entry.path!r} must carry at least one capability tag"
+            )
+
+    def test_topic_layout_tag_includes_topic_name(self, topic_repo_dir: Path):
+        """Capability tags start from topic dir name.
+
+        Unknown topics (without an override map entry) should pass through
+        as a single-tag value. Known compound topics may expand.
+        """
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_dir, repo="pipecat-ai/pipecat"
+        )
+        by_path = {e.path: e for e in entries}
+
+        tr_tags = {t.name for t in by_path["examples/transports/daily-demo"].capabilities}
+        assert "transports" in tr_tags
+
+        # function-calling is one of the documented override-map entries
+        fc_tags = {t.name for t in by_path["examples/function-calling/weather"].capabilities}
+        assert "function-calling" in fc_tags
+
+    # -- (b) topic-based tree where a topic contains flat .py files --------
+
+    def test_flat_topic_dir_itself_becomes_the_example(
+        self, topic_repo_with_flat_topic_dir: Path
+    ):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_with_flat_topic_dir, repo="pipecat-ai/pipecat"
+        )
+        paths = {e.path for e in entries}
+        # getting-started has flat code files → topic dir itself is the example
+        assert "examples/getting-started" in paths
+        # audio/echo-bot is a nested subdir example
+        assert "examples/audio/echo-bot" in paths
+
+    def test_flat_topic_dir_entry_has_capabilities(
+        self, topic_repo_with_flat_topic_dir: Path
+    ):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_with_flat_topic_dir, repo="pipecat-ai/pipecat"
+        )
+        by_path = {e.path: e for e in entries}
+        gs = by_path["examples/getting-started"]
+        assert gs.capabilities
+        tag_names = {t.name for t in gs.capabilities}
+        assert "getting-started" in tag_names
+
+    # -- (c) legacy foundational/ tree still works unchanged ---------------
+
+    def test_legacy_foundational_layout_unchanged(
+        self, foundational_dir: Path
+    ):
+        """Legacy ``examples/foundational/`` tree keeps producing the same
+        foundational-class entries with unchanged path prefix and metadata.
+        """
+        repo_root = foundational_dir.parent.parent
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            repo_root, repo="pipecat-ai/pipecat"
+        )
+        assert len(entries) == 3
+        for entry in entries:
+            assert entry.path.startswith("examples/foundational/")
+            assert entry.foundational_class is not None
+
+    # -- (d) mixed layout: foundational/ + simple-chatbot sibling (v0.0.96) -
+
+    def test_mixed_v0096_layout_foundational_plus_sibling(self, tmp_path: Path):
+        """At pins like ``v0.0.96``, ``examples/foundational/`` coexists with
+        non-numbered sibling dirs such as ``simple-chatbot/``. Both must
+        produce taxonomy entries.
+        """
+        # Foundational numbered example
+        f = tmp_path / "examples" / "foundational" / "01-hello"
+        f.mkdir(parents=True)
+        (f / "bot.py").write_text(
+            "from pipecat.pipeline.pipeline import Pipeline\nPipeline()\n"
+        )
+        (f / "README.md").write_text("# Hello\n\nHello example.\n")
+
+        # v0.0.96-era sibling: simple-chatbot
+        sc = tmp_path / "examples" / "simple-chatbot"
+        sc.mkdir(parents=True)
+        (sc / "bot.py").write_text(
+            "from pipecat.services.openai import OpenAILLMService\n"
+        )
+        (sc / "README.md").write_text("# Simple Chatbot\n\nA simple chatbot.\n")
+
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            tmp_path, repo="pipecat-ai/pipecat"
+        )
+
+        paths = {e.path for e in entries}
+        assert "examples/foundational/01-hello" in paths
+        assert "examples/simple-chatbot" in paths
+
+        by_path = {e.path: e for e in entries}
+        assert by_path["examples/foundational/01-hello"].foundational_class == "01-hello"
+        assert by_path["examples/simple-chatbot"].foundational_class is None
+
+    # -- (e) pipecat-examples-style root-level layout still works ----------
+
+    def test_root_level_layout_unchanged(self, pipecat_examples_root: Path):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            pipecat_examples_root, repo="pipecat-ai/pipecat-examples"
+        )
+        ids = {e.example_id for e in entries}
+        assert "example-chatbot" in ids
+        assert "example-storytelling" in ids
+        for entry in entries:
+            assert entry.foundational_class is None
+
+    # -- (f) repo root with no examples/ dir falls back correctly ---------
+
+    def test_no_examples_dir_fallback(self, bare_repo_root: Path):
+        """Repo with no ``examples/`` dir must not raise and must not emit
+        entries with a stale ``examples/...`` path prefix.
+        """
+        builder = TaxonomyBuilder()
+        # Must not raise
+        entries = builder.build_from_directory(
+            bare_repo_root, repo="org/bare-repo"
+        )
+        # Fallback is either empty or treats repo root as a single example
+        # (existing behaviour via ``build_from_examples_repo``/root entry).
+        # Whichever path is taken, no entry should claim an ``examples/`` path.
+        for entry in entries:
+            assert not entry.path.startswith("examples/"), (
+                f"Fallback emitted an entry with stale examples/ prefix: {entry.path!r}"
+            )
+
+    # -- (g) Lookup-key parity: _discover_under_examples ↔ taxonomy keys ---
+
+    def test_lookup_key_parity_topic_layout(self, topic_repo_dir: Path):
+        """Seam 1 contract: every dir returned by ``_discover_under_examples``
+        must have a matching ``taxonomy_lookup[rel]`` entry built from the
+        builder output. This is the unit contract for Seam 1.
+        """
+        from pipecat_context_hub.services.ingest.github_ingest import (
+            _discover_under_examples,
+        )
+
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_dir, repo="pipecat-ai/pipecat", commit_sha="abc123"
+        )
+        taxonomy_lookup = {e.path: e for e in entries}
+
+        discovered = _discover_under_examples(topic_repo_dir / "examples")
+        assert discovered, "fixture must produce at least one discovered dir"
+        for ex_dir in discovered:
+            rel = str(ex_dir.relative_to(topic_repo_dir))
+            assert rel in taxonomy_lookup, (
+                f"No taxonomy entry for discovered dir {rel!r}; "
+                f"available keys: {sorted(taxonomy_lookup.keys())}"
+            )
+
+    def test_lookup_key_parity_flat_topic_layout(
+        self, topic_repo_with_flat_topic_dir: Path
+    ):
+        """Parity test (g) also covers the flat-topic-dir case."""
+        from pipecat_context_hub.services.ingest.github_ingest import (
+            _discover_under_examples,
+        )
+
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            topic_repo_with_flat_topic_dir, repo="pipecat-ai/pipecat"
+        )
+        taxonomy_lookup = {e.path: e for e in entries}
+
+        discovered = _discover_under_examples(
+            topic_repo_with_flat_topic_dir / "examples"
+        )
+        assert discovered
+        for ex_dir in discovered:
+            rel = str(ex_dir.relative_to(topic_repo_with_flat_topic_dir))
+            assert rel in taxonomy_lookup, (
+                f"No taxonomy entry for discovered dir {rel!r}; "
+                f"available keys: {sorted(taxonomy_lookup.keys())}"
+            )
+
+    def test_lookup_key_parity_mixed_v0096_layout(self, tmp_path: Path):
+        """Parity test (g) extended to the v0.0.96 mixed layout."""
+        from pipecat_context_hub.services.ingest.github_ingest import (
+            _discover_under_examples,
+        )
+
+        f = tmp_path / "examples" / "foundational" / "01-hello"
+        f.mkdir(parents=True)
+        (f / "bot.py").write_text(
+            "from pipecat.pipeline.pipeline import Pipeline\nPipeline()\n"
+        )
+        sc = tmp_path / "examples" / "simple-chatbot"
+        sc.mkdir(parents=True)
+        (sc / "bot.py").write_text(
+            "from pipecat.services.openai import OpenAILLMService\n"
+        )
+
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_directory(
+            tmp_path, repo="pipecat-ai/pipecat"
+        )
+        taxonomy_lookup = {e.path: e for e in entries}
+
+        discovered = _discover_under_examples(tmp_path / "examples")
+        assert discovered
+        for ex_dir in discovered:
+            rel = str(ex_dir.relative_to(tmp_path))
+            assert rel in taxonomy_lookup, (
+                f"No taxonomy entry for discovered dir {rel!r}; "
+                f"available keys: {sorted(taxonomy_lookup.keys())}"
+            )
+
+
+def test_no_junk_entries_from_repo_root(tmp_path: Path):
+    """Phase 2: ``build_from_directory`` on a packaged-repo root with
+    ``src/``, ``tests/``, ``docs/`` and a real ``examples/foo/bot.py`` must
+    yield exactly one entry for ``examples/foo`` and zero entries for the
+    non-example root siblings.
+    """
+    # Packaged-project markers: src/ + pyproject.toml trigger
+    # require_example_markers=True in the fallback.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'pkg'\n")
+
+    src = tmp_path / "src" / "pkg"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text("")
+    (src / "module.py").write_text(
+        "from pipecat.pipeline.pipeline import Pipeline\nPipeline()\n"
+    )
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_something.py").write_text("def test_ok():\n    assert True\n")
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# Docs\n")
+
+    foo = tmp_path / "examples" / "foo"
+    foo.mkdir(parents=True)
+    (foo / "bot.py").write_text(
+        "from pipecat.services.openai import OpenAILLMService\n"
+    )
+    (foo / "README.md").write_text("# Foo\n\nFoo example.\n")
+
+    builder = TaxonomyBuilder()
+    entries = builder.build_from_directory(
+        tmp_path, repo="org/packaged-project", commit_sha="abc123"
+    )
+
+    paths = {e.path for e in entries}
+
+    # Exactly one entry for examples/foo.
+    foo_entries = [e for e in entries if e.path == "examples/foo"]
+    assert len(foo_entries) == 1, (
+        f"Expected exactly one entry for 'examples/foo'; got paths={sorted(paths)}"
+    )
+
+    # No junk entries for packaged-project sibling dirs.
+    for junk in ("src", "tests", "docs"):
+        assert junk not in paths, (
+            f"Fallback emitted junk entry for {junk!r}; paths={sorted(paths)}"
+        )
+
+
+class TestBuildFromExamplesRepoExampleMarkers:
+    """Phase 2: ``build_from_examples_repo(require_example_markers=...)``.
+
+    When ``require_example_markers=True``, well-known non-example root dirs
+    (``src``, ``tests``, ``docs``, ``scripts``, ``dashboard``, ``.github``,
+    ``.claude``) are skipped in addition to the existing hidden/pycache
+    rules. Default (``False``) preserves backward compatibility — those
+    dirs are **not** skipped.
+    """
+
+    @pytest.fixture
+    def repo_with_non_example_siblings(self, tmp_path: Path) -> Path:
+        """Root containing a real example plus many junk sibling dirs."""
+        root = tmp_path / "packaged-repo"
+        root.mkdir()
+
+        # Real example sibling
+        real = root / "real-example"
+        real.mkdir()
+        (real / "main.py").write_text(
+            "from pipecat.services.openai import OpenAILLMService\n"
+        )
+        (real / "README.md").write_text("# Real\n\nReal example.\n")
+
+        # Non-example sibling dirs that Phase 2 should skip when
+        # ``require_example_markers=True``.
+        for junk in ("src", "tests", "docs", "scripts", "dashboard"):
+            d = root / junk
+            d.mkdir()
+            (d / "placeholder.py").write_text("# placeholder\n")
+
+        # Dotdir non-example siblings — already skipped by the existing
+        # ``.*`` rule, but we want them to stay skipped under the new
+        # ``require_example_markers=True`` path too.
+        for dotdir in (".github", ".claude"):
+            d = root / dotdir
+            d.mkdir()
+            (d / "placeholder.yml").write_text("x: 1\n")
+
+        return root
+
+    def test_require_example_markers_true_skips_packaged_project_dirs(
+        self, repo_with_non_example_siblings: Path
+    ):
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_examples_repo(
+            repo_with_non_example_siblings,
+            repo="org/packaged-repo",
+            require_example_markers=True,
+        )
+        ids = {e.example_id for e in entries}
+        paths = {e.path for e in entries}
+
+        # Real example still emitted.
+        assert "example-real-example" in ids
+
+        # Well-known non-example dirs are skipped.
+        for junk in ("src", "tests", "docs", "scripts", "dashboard",
+                     ".github", ".claude"):
+            assert f"example-{junk}" not in ids, (
+                f"{junk!r} must be skipped with require_example_markers=True"
+            )
+            assert junk not in paths
+
+    def test_require_example_markers_default_keeps_backward_compat(
+        self, repo_with_non_example_siblings: Path
+    ):
+        """Default ``require_example_markers=False`` must NOT skip the new
+        list — backward compat with existing ``pipecat-examples`` callers.
+        """
+        builder = TaxonomyBuilder()
+        entries = builder.build_from_examples_repo(
+            repo_with_non_example_siblings,
+            repo="org/packaged-repo",
+        )
+        ids = {e.example_id for e in entries}
+
+        # Real example still emitted.
+        assert "example-real-example" in ids
+
+        # The non-dotdir siblings are treated as examples by default
+        # (backward-compatible behaviour).
+        for junk in ("src", "tests", "docs", "scripts", "dashboard"):
+            assert f"example-{junk}" in ids, (
+                f"Default (require_example_markers=False) must not skip "
+                f"{junk!r} — backward compat broken"
+            )
+
+        # Dotdirs remain skipped by the pre-existing rule regardless of the
+        # new flag.
+        assert "example-.github" not in ids
+        assert "example-.claude" not in ids
+
+
 class TestTaxonomyEntryRoundTrip:
     """Verify that taxonomy entries produced by the builder round-trip through JSON."""
 

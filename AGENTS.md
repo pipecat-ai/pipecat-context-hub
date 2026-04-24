@@ -148,6 +148,36 @@ always passes regardless of `gh` availability.
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
+## Upstream Drift Check
+
+Offline smoke tests in `tests/smoke/` exercise the taxonomy builder against
+vendored snapshots of the upstream pipecat and pipecat-examples repos. They
+run on every `pytest` invocation and have no `smoke` marker — no opt-in
+needed. The Seam 1 contract (every dir returned by
+`_discover_under_examples` has a matching `taxonomy_lookup[rel]` entry) is
+what these tests enforce.
+
+- **PR gate (offline, always runs):** `uv run pytest tests/smoke/ -v`
+- **Scaffold unit coverage:** `uv run pytest tests/unit/test_smoke_scaffold.py -v`
+  (root-layout refresh, SHA-vs-named-ref clone argv, symlink rejection).
+- **Scheduled drift check (live network):** `.github/workflows/smoke-drift.yml`
+  runs the invariants against a fresh clone of each upstream repo every 5
+  days (`cron: '0 6 */5 * *'`). The same checks are runnable locally:
+
+  ```bash
+  # Branch or tag ref (default --ref main)
+  uv run python scripts/check_pipecat_drift.py --repo pipecat-ai/pipecat --ref main
+  # Pinned commit SHA (branch/tag refs use --branch; SHAs use init+fetch+checkout)
+  uv run python scripts/check_pipecat_drift.py --repo pipecat-ai/pipecat --ref ef7fa07b
+  ```
+- **Refresh vendored fixtures:** when upstream changes layout, run
+  `uv run python tests/smoke/refresh_fixtures.py` (optionally with
+  `--ref <sha|branch|tag>` to pin the snapshot) to regenerate the
+  snapshots in `tests/fixtures/smoke/`. The refresher is layout-aware:
+  it copies `examples/` for topic-layout repos and every top-level
+  example dir for root-layout repos (pipecat-examples). See
+  `tests/smoke/README.md` for the refresh cadence and pin-bump triage.
+
 ## Pre-Merge Quality Gate
 
 Run the full CI gate locally before merging any PR. Do not rely on tests
