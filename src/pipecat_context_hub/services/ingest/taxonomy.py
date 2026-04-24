@@ -607,7 +607,8 @@ class TaxonomyBuilder:
         skip = set(skip_names) if skip_names else set()
         for ex_dir in _discover_under_examples(examples_dir):
             # Refuse to follow symlinks out of the clone root. Untrusted
-            # upstream repos could land a symlink under examples/.
+            # upstream repos could land a symlink under examples/ either as
+            # the example dir itself OR as the enclosing topic dir.
             if ex_dir.is_symlink():
                 continue
             try:
@@ -619,6 +620,11 @@ class TaxonomyBuilder:
             # entry still has a meaningful capability tag.
             topic_name = rel_parts[0] if rel_parts else examples_dir.name
             if topic_name in skip:
+                continue
+            # A symlinked topic dir would let ``_discover_under_examples``
+            # reach through it and surface grandchildren that aren't really
+            # under ``examples/``. Reject those too.
+            if rel_parts and (examples_dir / topic_name).is_symlink():
                 continue
             entries.append(
                 self._build_entry_for_topic_example(
