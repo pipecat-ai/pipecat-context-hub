@@ -30,12 +30,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from datetime import date
 from pathlib import Path
+
+_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+_REF_RE = re.compile(r"^(?!-)[A-Za-z0-9._/+-]+$")
+_CLONE_TIMEOUT_S = 300
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _FIXTURES_ROOT = _REPO_ROOT / "tests" / "fixtures" / "smoke"
@@ -69,22 +74,36 @@ _REPOS: dict[str, str] = {
 }
 
 
-def _run(cmd: list[str], cwd: Path | None = None) -> str:
+def _run(cmd: list[str], cwd: Path | None = None, timeout: int | None = None) -> str:
     result = subprocess.run(
-        cmd, cwd=cwd, check=True, capture_output=True, text=True
+        cmd, cwd=cwd, check=True, capture_output=True, text=True, timeout=timeout
     )
     return result.stdout.strip()
 
 
 def _shallow_clone(repo_slug: str, dest: Path, ref: str = "main") -> str:
+    if not _SLUG_RE.match(repo_slug):
+        raise ValueError(f"Invalid repo slug: {repo_slug!r}")
+    if not _REF_RE.match(ref):
+        raise ValueError(f"Invalid git ref: {ref!r}")
     url = f"https://github.com/{repo_slug}.git"
-    _run(["git", "clone", "--depth", "1", "--branch", ref, url, str(dest)])
+    _run(
+        ["git", "clone", "--depth", "1", "--branch", ref, "--", url, str(dest)],
+        timeout=_CLONE_TIMEOUT_S,
+    )
     return _run(["git", "rev-parse", "HEAD"], cwd=dest)
 
 
 def _copy_filtered(src: Path, dst: Path) -> None:
-    """Copy ``src`` into ``dst``, stripping ``.git`` and non-text files."""
+    """Copy ``src`` into ``dst``, stripping ``.git``, symlinks, and non-text files.
+
+    Symlinks in upstream clones are never followed — a malicious (or just
+    buggy) example directory containing ``link -> /etc`` could otherwise
+    cause the copy to escape the clone root.
+    """
     if not src.exists():
+        return
+    if src.is_symlink():
         return
     if src.is_file():
         if src.suffix in _TEXT_SUFFIXES or src.name in {"README", "LICENSE"}:

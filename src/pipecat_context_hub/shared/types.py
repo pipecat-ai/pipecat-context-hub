@@ -87,7 +87,15 @@ class CapabilityTag(BaseModel):
 
 
 class TaxonomyEntry(BaseModel):
-    """Metadata record for a single example in the taxonomy."""
+    """Metadata record for a single example in the taxonomy.
+
+    ``foundational_class`` is deprecated: it is populated only for entries
+    discovered via the legacy ``examples/foundational/NN-name/`` layout
+    (pre-reorg pipecat, e.g. ``v0.0.96``). New topic-based layouts leave it
+    ``None``. The field remains readable for backward compatibility with
+    persisted indexes; run ``uv run pipecat-context-hub refresh --force``
+    after upgrading to rebuild.
+    """
 
     example_id: str = Field(description="Unique identifier for this example.")
     repo: str = Field(description="GitHub repo slug.")

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from pipecat_context_hub.services.ingest.github_ingest import _discover_under_examples
 from pipecat_context_hub.shared.types import CapabilityTag, TaxonomyEntry
 
 # ---------------------------------------------------------------------------
@@ -129,31 +130,6 @@ _TOPIC_TAG_OVERRIDES: dict[str, list[str]] = {
     "function-calling": ["function-calling", "tools"],
     "realtime": ["realtime", "voice-ai"],
 }
-
-# File extensions that count as "code" for topic-tree scanning. Must stay in
-# sync with ``github_ingest._CODE_EXTENSIONS`` so ``_scan_topic_tree`` emits a
-# TaxonomyEntry for every dir that ``_discover_under_examples`` returns.
-_TOPIC_CODE_EXTENSIONS: frozenset[str] = frozenset(
-    {".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml", ".toml"}
-)
-
-# Directories to ignore while walking topic trees (mirrors github_ingest skip list).
-_TOPIC_SKIP_DIRS: frozenset[str] = frozenset(
-    {
-        "__pycache__",
-        ".git",
-        "node_modules",
-        ".venv",
-        "venv",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "dist",
-        "build",
-        ".egg-info",
-    }
-)
-
 
 def _infer_tags_from_topic(topic_name: str) -> list[CapabilityTag]:
     """Derive capability tags from a topic directory name.
@@ -615,62 +591,44 @@ class TaxonomyBuilder:
     ) -> list[TaxonomyEntry]:
         """Walk an ``examples/`` dir in topic-layout style and emit entries.
 
-        Shared helper used by both ``build_from_topic_dirs`` and the
-        ``build_from_directory`` dispatch for legacy mixed layouts, so the
-        two code paths cannot diverge.
-
-        Mirrors ``github_ingest._discover_under_examples``: for each topic
-        dir ``<topic>``, if it contains direct code files emit one entry for
-        ``<topic>`` itself; otherwise emit one entry per subdirectory under
-        ``<topic>``. Every emitted entry has
+        Delegates directory discovery to
+        ``github_ingest._discover_under_examples`` so the Seam 1 contract
+        (``taxonomy_lookup[rel]`` has an entry for every discovered dir)
+        holds by construction — one walk, not two. Every emitted entry has
         ``path == str(ex_dir.relative_to(repo_root))``.
 
-        ``skip_names`` lets callers exclude specific top-level topic names
-        (used to skip ``foundational`` on mixed legacy layouts).
+        ``skip_names`` excludes discovered dirs whose first path component
+        under ``examples_dir`` is listed (used to skip ``foundational`` on
+        mixed legacy layouts where the caller handles it separately).
         """
         entries: list[TaxonomyEntry] = []
         if not examples_dir.is_dir():
             return entries
         skip = set(skip_names) if skip_names else set()
-        for topic in sorted(examples_dir.iterdir()):
-            if not topic.is_dir():
+        for ex_dir in _discover_under_examples(examples_dir):
+            # Refuse to follow symlinks out of the clone root. Untrusted
+            # upstream repos could land a symlink under examples/.
+            if ex_dir.is_symlink():
                 continue
-            if topic.name in skip:
+            try:
+                rel_parts = ex_dir.relative_to(examples_dir).parts
+            except ValueError:
                 continue
-            if topic.name.startswith(".") or topic.name in _TOPIC_SKIP_DIRS:
+            # ``rel_parts == ()`` → ex_dir IS examples_dir itself (the flat-
+            # code-in-examples fallback). Use the dir name as topic so the
+            # entry still has a meaningful capability tag.
+            topic_name = rel_parts[0] if rel_parts else examples_dir.name
+            if topic_name in skip:
                 continue
-            sub_has_code = any(
-                f.suffix in _TOPIC_CODE_EXTENSIONS
-                for f in topic.iterdir()
-                if f.is_file()
-            )
-            if sub_has_code:
-                # Topic dir itself is the example (flat layout).
-                entries.append(
-                    self._build_entry_for_topic_example(
-                        topic,
-                        repo_root=repo_root,
-                        repo=repo,
-                        commit_sha=commit_sha,
-                        topic_name=topic.name,
-                    )
+            entries.append(
+                self._build_entry_for_topic_example(
+                    ex_dir,
+                    repo_root=repo_root,
+                    repo=repo,
+                    commit_sha=commit_sha,
+                    topic_name=topic_name,
                 )
-            else:
-                # Descend one level: each sub-dir is an example under ``topic``.
-                for ex_dir in sorted(topic.iterdir()):
-                    if not ex_dir.is_dir():
-                        continue
-                    if ex_dir.name.startswith(".") or ex_dir.name in _TOPIC_SKIP_DIRS:
-                        continue
-                    entries.append(
-                        self._build_entry_for_topic_example(
-                            ex_dir,
-                            repo_root=repo_root,
-                            repo=repo,
-                            commit_sha=commit_sha,
-                            topic_name=topic.name,
-                        )
-                    )
+            )
         return entries
 
     def _build_entry_for_topic_example(

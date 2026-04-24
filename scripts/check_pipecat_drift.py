@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess  # nosec B404 - we construct the args ourselves
 import sys
 import tempfile
@@ -43,6 +44,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+# ``owner/repo`` slug; mirrors GitHub's accepted name charset.
+_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+# Git ref must not start with ``-`` (option injection) and stays in a safe set.
+_REF_RE = re.compile(r"^(?!-)[A-Za-z0-9._/+-]+$")
+# Upper bound on git clone wall time (seconds). CI default is much higher;
+# explicit timeout surfaces network stalls fast.
+_CLONE_TIMEOUT_S = 300
 
 # --- Path bootstrap ---------------------------------------------------------
 # Allow ``from tests.smoke.invariants import ...`` when invoked as a standalone
@@ -124,10 +133,26 @@ def _clone_repo(slug: str, ref: str, dest: Path) -> None:
     """Shallow-clone ``slug`` at ``ref`` into ``dest``.
 
     Uses ``--depth 1`` for speed; we only need the tree, not history.
+
+    ``slug`` and ``ref`` come from the pins file or ``--repo``/``--ref`` CLI
+    args — both sources are trusted today, but we validate shape anyway so a
+    ref like ``-upload-pack=…`` can never slip past ``git clone``'s option
+    parser. The ``--`` sentinel before positional args is a second line of
+    defence.
     """
+    if not _SLUG_RE.match(slug):
+        raise ValueError(f"Invalid repo slug: {slug!r}")
+    if not _REF_RE.match(ref):
+        raise ValueError(f"Invalid git ref: {ref!r}")
     url = f"https://github.com/{slug}.git"
-    cmd = ["git", "clone", "--depth", "1", "--branch", ref, url, str(dest)]
-    subprocess.run(cmd, check=True, capture_output=True, text=True)  # nosec B603
+    cmd = ["git", "clone", "--depth", "1", "--branch", ref, "--", url, str(dest)]
+    subprocess.run(  # nosec B603
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=_CLONE_TIMEOUT_S,
+    )
 
 
 def _check_capability_tags(repo_root: Path) -> None:
@@ -196,6 +221,16 @@ def _check_repo(slug: str, ref: str, *, dry_run: bool) -> RepoResult:
                 False,
                 f"git clone {slug}@{ref} failed: {stderr or err}",
             )
+            return result
+        except subprocess.TimeoutExpired:
+            result.record(
+                "git_clone",
+                False,
+                f"git clone {slug}@{ref} timed out after {_CLONE_TIMEOUT_S}s",
+            )
+            return result
+        except ValueError as err:
+            result.record("git_clone", False, f"invalid clone argument: {err}")
             return result
         except FileNotFoundError:
             result.record(

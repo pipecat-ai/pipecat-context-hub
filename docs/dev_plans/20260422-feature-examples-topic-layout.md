@@ -1,11 +1,11 @@
 # Task: Adapt taxonomy builder to topic-based pipecat examples layout + add smoke tests
 
-**Status**: Not Started
+**Status**: Completed
 **Assigned to**: Claude
 **Priority**: Medium
 **Branch**: `feature/examples-topic-layout`
 **Created**: 2026-04-22
-**Completed**:
+**Completed**: 2026-04-23
 
 ## Objective
 
