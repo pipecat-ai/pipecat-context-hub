@@ -40,6 +40,7 @@ from pathlib import Path
 
 _SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 _REF_RE = re.compile(r"^(?!-)[A-Za-z0-9._/+-]+$")
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 _CLONE_TIMEOUT_S = 300
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -82,15 +83,37 @@ def _run(cmd: list[str], cwd: Path | None = None, timeout: int | None = None) ->
 
 
 def _shallow_clone(repo_slug: str, dest: Path, ref: str = "main") -> str:
+    """Clone ``repo_slug`` at ``ref`` into ``dest`` and return the resolved SHA.
+
+    Named refs (branch/tag) go through ``git clone --depth 1 --branch``.
+    Commit-SHA refs use ``git init`` + ``git fetch --depth 1`` +
+    ``git checkout FETCH_HEAD`` because ``--branch`` rejects SHAs.
+    """
     if not _SLUG_RE.match(repo_slug):
         raise ValueError(f"Invalid repo slug: {repo_slug!r}")
     if not _REF_RE.match(ref):
         raise ValueError(f"Invalid git ref: {ref!r}")
     url = f"https://github.com/{repo_slug}.git"
-    _run(
-        ["git", "clone", "--depth", "1", "--branch", ref, "--", url, str(dest)],
-        timeout=_CLONE_TIMEOUT_S,
-    )
+    if _SHA_RE.match(ref):
+        dest.mkdir(parents=True, exist_ok=True)
+        _run(["git", "init", "--quiet", str(dest)], timeout=_CLONE_TIMEOUT_S)
+        _run(
+            ["git", "-C", str(dest), "remote", "add", "origin", "--", url],
+            timeout=_CLONE_TIMEOUT_S,
+        )
+        _run(
+            ["git", "-C", str(dest), "fetch", "--depth", "1", "origin", ref],
+            timeout=_CLONE_TIMEOUT_S,
+        )
+        _run(
+            ["git", "-C", str(dest), "checkout", "--quiet", "FETCH_HEAD"],
+            timeout=_CLONE_TIMEOUT_S,
+        )
+    else:
+        _run(
+            ["git", "clone", "--depth", "1", "--branch", ref, "--", url, str(dest)],
+            timeout=_CLONE_TIMEOUT_S,
+        )
     return _run(["git", "rev-parse", "HEAD"], cwd=dest)
 
 
@@ -116,14 +139,41 @@ def _copy_filtered(src: Path, dst: Path) -> None:
         _copy_filtered(entry, dst / entry.name)
 
 
+# Top-level dirs that must never be vendored even in root-layout repos —
+# mirrors ``TaxonomyBuilder.build_from_examples_repo`` packaged-project skip
+# list so the fixture never captures source/tests/CI trees.
+_ROOT_LAYOUT_SKIP: frozenset[str] = frozenset(
+    {"src", "tests", "docs", "scripts", "dashboard", ".github", ".claude", ".git"}
+)
+
+
 def _rebuild_fixture(repo_slug: str, fixture_name: str, clone_root: Path) -> None:
     fixture_dir = _FIXTURES_ROOT / fixture_name
     if fixture_dir.exists():
         shutil.rmtree(fixture_dir)
     fixture_dir.mkdir(parents=True, exist_ok=True)
 
-    for top_level in ("examples", "pyproject.toml", "README.md"):
+    # Always copy root-level manifests when present.
+    for top_level in ("pyproject.toml", "README.md"):
         _copy_filtered(clone_root / top_level, fixture_dir / top_level)
+
+    examples_dir = clone_root / "examples"
+    if examples_dir.is_dir():
+        # Topic/foundational layout (pipecat-ai/pipecat): all examples live
+        # under ``examples/``.
+        _copy_filtered(examples_dir, fixture_dir / "examples")
+        return
+
+    # Root-level layout (pipecat-ai/pipecat-examples): each top-level
+    # directory IS an example. Mirror ``build_from_examples_repo``'s
+    # packaged-project skip list so we don't vendor source trees, CI
+    # config, or hidden metadata.
+    for entry in clone_root.iterdir():
+        if not entry.is_dir():
+            continue
+        if entry.name.startswith(".") or entry.name in _ROOT_LAYOUT_SKIP:
+            continue
+        _copy_filtered(entry, fixture_dir / entry.name)
 
 
 def refresh(ref: str = "main", dry_run: bool = False) -> None:

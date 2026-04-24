@@ -56,6 +56,14 @@ jobs:
             echo "No drift report file produced; aborting issue update." >&2
             exit 1
           fi
+          # ``gh issue create --label`` fails if the label does not already
+          # exist, which would sink the very first drift notification in a
+          # fresh repo. ``gh label create --force`` is idempotent: it creates
+          # the label if missing and updates the description/colour otherwise.
+          gh label create "${LABEL}" \
+            --description "Upstream Pipecat examples layout drift" \
+            --color "B60205" \
+            --force
           existing="$(gh issue list \
             --state open \
             --label "${LABEL}" \
