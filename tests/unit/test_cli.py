@@ -11,9 +11,11 @@ from click.testing import CliRunner
 
 from pipecat_context_hub.cli import (
     _load_dotenv,
+    _prewarm_models,
     _print_refresh_summary,
     _redact_home,
     _safe_hr,
+    _warmup_enabled,
     main,
 )
 from pipecat_context_hub.shared.config import HubConfig
@@ -862,3 +864,87 @@ class TestPrintRefreshSummaryEncoding:
         out = capsys.readouterr().out
         assert "Recovered 1 corrupt clone(s)" in out
         assert "pipecat-ai/pipecat" in out
+
+
+class TestWarmupEnabled:
+    """PIPECAT_HUB_WARMUP env var parsing."""
+
+    @pytest.mark.parametrize("value", ["0", "false", "False", "FALSE", "no", "No", "NO"])
+    def test_disabled_values(self, value: str) -> None:
+        assert _warmup_enabled({"PIPECAT_HUB_WARMUP": value}) is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "True", "yes", "on", "garbage", ""])
+    def test_enabled_by_default(self, value: str) -> None:
+        # Any value other than the disabled set enables pre-warm — empty
+        # string and garbage both fall through to the "warm" default.
+        assert _warmup_enabled({"PIPECAT_HUB_WARMUP": value}) is True
+
+    def test_unset_enables(self) -> None:
+        assert _warmup_enabled({}) is True
+
+    def test_whitespace_tolerated(self) -> None:
+        assert _warmup_enabled({"PIPECAT_HUB_WARMUP": "  0  "}) is False
+        assert _warmup_enabled({"PIPECAT_HUB_WARMUP": "  false  "}) is False
+
+
+class TestPrewarmModels:
+    """Unit tests for `_prewarm_models` — covers success, failure, skip,
+    and cross-encoder-absent paths. Uses MagicMock for the embedding
+    service and cross-encoder so no real model load happens."""
+
+    def test_warmup_disabled_skips(self, monkeypatch, caplog) -> None:
+        monkeypatch.setenv("PIPECAT_HUB_WARMUP", "0")
+        embed = MagicMock()
+        ce = MagicMock()
+        with caplog.at_level("INFO", logger="pipecat_context_hub.cli"):
+            _prewarm_models(embed, ce)
+        embed.embed_query.assert_not_called()
+        ce.ensure_model.assert_not_called()
+        assert any("pre-warm skipped" in r.message for r in caplog.records)
+
+    def test_warmup_runs_both_when_enabled(self, monkeypatch, caplog) -> None:
+        monkeypatch.delenv("PIPECAT_HUB_WARMUP", raising=False)
+        embed = MagicMock()
+        ce = MagicMock()
+        with caplog.at_level("INFO", logger="pipecat_context_hub.cli"):
+            _prewarm_models(embed, ce)
+        embed.embed_query.assert_called_once_with("warmup")
+        ce.ensure_model.assert_called_once_with()
+        messages = [r.message for r in caplog.records]
+        assert any("Embedding model pre-warmed" in m for m in messages)
+        assert any("Cross-encoder pre-warmed" in m for m in messages)
+
+    def test_no_cross_encoder_skips_ce_silently(self, monkeypatch, caplog) -> None:
+        monkeypatch.delenv("PIPECAT_HUB_WARMUP", raising=False)
+        embed = MagicMock()
+        with caplog.at_level("INFO", logger="pipecat_context_hub.cli"):
+            _prewarm_models(embed, None)
+        embed.embed_query.assert_called_once()
+        messages = [r.message for r in caplog.records]
+        assert any("Embedding model pre-warmed" in m for m in messages)
+        assert not any("Cross-encoder" in m for m in messages)
+
+    def test_embedding_failure_is_non_fatal(self, monkeypatch, caplog) -> None:
+        """Embedding pre-warm failure logs and proceeds to cross-encoder —
+        the lazy-load path in production will handle first-query loads."""
+        monkeypatch.delenv("PIPECAT_HUB_WARMUP", raising=False)
+        embed = MagicMock()
+        embed.embed_query.side_effect = RuntimeError("cold-start boom")
+        ce = MagicMock()
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            _prewarm_models(embed, ce)  # must not raise
+        ce.ensure_model.assert_called_once_with()
+        assert any(
+            "Embedding model pre-warm failed" in r.message for r in caplog.records
+        )
+
+    def test_cross_encoder_failure_is_non_fatal(self, monkeypatch, caplog) -> None:
+        monkeypatch.delenv("PIPECAT_HUB_WARMUP", raising=False)
+        embed = MagicMock()
+        ce = MagicMock()
+        ce.ensure_model.side_effect = RuntimeError("weights missing")
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            _prewarm_models(embed, ce)  # must not raise
+        assert any(
+            "Cross-encoder pre-warm failed" in r.message for r in caplog.records
+        )
