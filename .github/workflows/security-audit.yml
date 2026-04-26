@@ -1,0 +1,86 @@
+name: Biweekly Security Audit
+
+# Runs pip-audit WITHOUT --ignore-vuln so newly-published fixes for
+# previously-ignored CVEs surface automatically. Opens (or updates) a
+# tracking issue when findings exist. The PR-blocking audit in ci.yml
+# stays quiet for known-no-fix CVEs; this job is the nudge.
+#
+# Cron fires every Friday; the parity guard skips odd ISO weeks so the
+# job effectively runs once a fortnight (even ISO weeks only).
+
+on:
+  schedule:
+    - cron: "0 9 * * 5"  # Fridays 09:00 UTC (biweekly via parity guard)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: Unfiltered pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Biweekly parity guard
+        id: guard
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          week=$(date -u +%V)
+          if [ $((10#$week % 2)) -eq 0 ]; then
+            echo "ISO week $week (even) — running."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ISO week $week (odd) — skipping for biweekly cadence."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.run == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: steps.guard.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v7.6.0
+        with:
+          version: "0.9.18"
+
+      - name: Sync dependencies
+        if: steps.guard.outputs.run == 'true'
+        run: uv sync --frozen --extra dev --group dev
+
+      - name: Run pip-audit (no ignores)
+        id: audit
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          set +e
+          uv run pip-audit --local --progress-spinner off --format markdown > audit.md
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          {
+            echo "report<<AUDIT_EOF"
+            cat audit.md
+            echo "AUDIT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open or update tracking issue
+        if: steps.guard.outputs.run == 'true' && steps.audit.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ steps.audit.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Biweekly pip-audit: vulnerabilities detected"
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          body=$(printf '%s\n\n_Source: %s_\n' "$REPORT" "$RUN_URL")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label security --body "$body"
+          fi
