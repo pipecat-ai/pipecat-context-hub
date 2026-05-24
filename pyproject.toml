@@ -35,6 +35,18 @@ dev = [
 [project.scripts]
 pipecat-context-hub = "pipecat_context_hub.cli:main"
 
+[tool.uv]
+# Security floors for transitive dependencies the project does not import directly.
+# Recorded as constraints (not project dependencies) so a plain `uv lock` keeps the
+# fixed version instead of regressing to the highest version an intermediate package
+# (e.g. an older fastapi) would otherwise allow.
+constraint-dependencies = [
+    # starlette < 1.0.1: Host-header validation bypass poisoning request.url.path
+    # (PYSEC-2026-161 / GHSA-86qp-5c8j-p5mr). Reached only via mcp / fastapi /
+    # sse-starlette; the hub speaks MCP over stdio and never serves HTTP itself.
+    "starlette>=1.0.1",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pipecat_context_hub"]
 
