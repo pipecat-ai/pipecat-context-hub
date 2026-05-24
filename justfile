@@ -46,7 +46,8 @@ check: lint fmt-check typecheck
 
 # Dependency vulnerability audit
 audit-deps:
-    uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-1839
+    # PYSEC-2026-139: torch pt2-loader deserialization, no upstream fix (see ci.yml).
+    uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-1839 --ignore-vuln PYSEC-2026-139
 
 # Static security scan for Python code
 audit-security:

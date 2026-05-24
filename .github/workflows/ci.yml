@@ -60,7 +60,12 @@ jobs:
         run: uv sync --frozen --extra dev --group dev
 
       - name: Dependency Audit
-        run: uv run pip-audit --local --progress-spinner off
+        # PYSEC-2026-139 (torch, CVE-2026-4538): local-only pt2-loader
+        # deserialization with no upstream fix released. Reached only via
+        # sentence-transformers; the hub never loads untrusted pt2 artifacts.
+        # The unfiltered biweekly security-audit.yml job re-surfaces it so the
+        # ignore cannot silently outlive the upstream patch.
+        run: uv run pip-audit --local --progress-spinner off --ignore-vuln PYSEC-2026-139
 
       - name: Bandit
         run: uv run bandit -r src
