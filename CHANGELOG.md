@@ -10,6 +10,7 @@ This project uses [Semantic Versioning](https://semver.org/).
 ### Security
 
 - **Bumped `urllib3` to `2.7.0`** in `uv.lock` (transitive via `chromadb` → `kubernetes` / `posthog` → `requests`; no top-level constraint required) to address two high-severity advisories: decompression-bomb safeguard bypass in the streaming API (GHSA-mf9v-mfxr-j63j, Dependabot alert #15) and sensitive-header forwarding across origins via `ProxyManager` redirects (GHSA-qccp-gfcp-xxvc, Dependabot alert #16). Closed via Dependabot PR #62. No exploitable path from this codebase: the hub uses `httpx` for outbound HTTP and never calls `urllib3` / `ProxyManager` directly.
+- **Bumped `idna` to `3.15`** in `uv.lock` (transitive via `anyio` / `httpx` / `requests`; no top-level constraint required) to address a medium-severity advisory: specially crafted inputs to `idna.encode()` can bypass the CVE-2024-3651 mitigation and trigger quadratic-time processing (CVE-2026-45409, GHSA-65pc-fj4g-8rjx, Dependabot alert #17). Closed via Dependabot PR #64. No exploitable path from this codebase: the hub never calls `idna` directly, and the hostnames reached via `httpx` / `requests` are fixed, trusted endpoints (GitHub, docs sources), not attacker-controlled input.
 
 ## [0.0.19] - 2026-05-08
 
