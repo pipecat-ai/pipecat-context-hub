@@ -7,6 +7,22 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-05-29
+
+> **Security + compat release.** Batches four upstream security bumps that
+> accumulated since v0.0.19 and caps `requires-python` so the resolver doesn't
+> attempt Python 3.14 with the current compiled stack. No functional changes;
+> no re-index required.
+
+### Changed
+
+- **Capped `requires-python` to `>=3.11,<3.14`** (PR #65). chromadb 0.6.x's
+  Pydantic-v1 `BaseSettings` shim crashes under Python 3.14, and torch (reached
+  via `sentence-transformers` / `transformers`) has no cp314 wheels yet, so
+  installs on 3.14 would either fail to resolve or fail at import. The cap will
+  lift once the chromadb 1.x migration lands and the compiled stack ships 3.14
+  wheels. Users already on 3.11–3.13 are unaffected.
+
 ### Security
 
 - **Bumped `urllib3` to `2.7.0`** in `uv.lock` (transitive via `chromadb` → `kubernetes` / `posthog` → `requests`; no top-level constraint required) to address two high-severity advisories: decompression-bomb safeguard bypass in the streaming API (GHSA-mf9v-mfxr-j63j, Dependabot alert #15) and sensitive-header forwarding across origins via `ProxyManager` redirects (GHSA-qccp-gfcp-xxvc, Dependabot alert #16). Closed via Dependabot PR #62. No exploitable path from this codebase: the hub uses `httpx` for outbound HTTP and never calls `urllib3` / `ProxyManager` directly.
