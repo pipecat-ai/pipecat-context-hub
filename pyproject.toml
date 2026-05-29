@@ -8,7 +8,10 @@ version = "0.0.19"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"
-requires-python = ">=3.11"
+# Upper bound: chromadb 0.6.x's Pydantic-v1 BaseSettings shim crashes on 3.14, and
+# torch (via sentence-transformers/transformers) has no cp314 wheels yet. Lift once
+# the chromadb 1.x migration lands and the compiled stack ships 3.14 wheels.
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "pydantic>=2.0,<3.0",
     "mcp>=1.0,<2.0",
