@@ -22,5 +22,5 @@ dashboard/public/*.json
 dashboard/video-frames/*.png
 tests/.tmp-chroma-introspect/
 artifacts/
-.claude/
 .conduct/
+.python-version
