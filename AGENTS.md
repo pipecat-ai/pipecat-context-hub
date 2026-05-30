@@ -137,13 +137,24 @@ always passes regardless of `gh` availability.
     `pgrep -fl pipecat-context-hub` — no stale entry should remain.
     A successful trigger logs `Shutting down: parent_died original_ppid=N
     current_ppid=1` at INFO before exit.
-43. **Idle-timeout backstop smoke test** — covers the `uv run` path
-    where the parent-death watchdog cannot fire. Launch with
+43. **Idle-timeout backstop smoke test** — exercises the idle watchdog
+    in its explicit-override mode (since the default idle timeout is now
+    auto-disabled under `uv run`, where the grandparent watchdog covers
+    client death). Launch with
     `PIPECAT_HUB_IDLE_TIMEOUT_SECS=10 uv run pipecat-context-hub serve`
     and leave the stdio transport unused for >10s. The process must
     exit on its own and log `Shutting down: idle_timeout idle_seconds=N
-    timeout_seconds=10` at INFO. Confirms the idle watchdog resolves
-    the production zombie-accumulation case.
+    timeout_seconds=10` at INFO. Confirms an explicitly-configured idle
+    backstop still fires.
+43b. **Grandparent-death watchdog smoke test (`uv run` headline path)** —
+    confirms the hub exits when its real client dies even though `uv`
+    lingers. Without setting `PIPECAT_HUB_IDLE_TIMEOUT_SECS` (so smart-idle
+    disables the idle backstop), launch `uv run pipecat-context-hub serve`
+    from a parent process you then kill, keeping the hub's stdin open (so
+    EOF can't be the cause). The hub must exit within ~`PARENT_WATCH_INTERVAL`
+    and log `Shutting down: client_died ...` at INFO — not `idle_timeout`.
+    Automated equivalent:
+    `uv run pytest tests/integration/test_serve_lifetime.py::test_uv_run_client_death_exits_via_grandparent_watchdog`.
 44. **Model pre-warm smoke test** — `uv run pipecat-context-hub serve`
     logs `Embedding model pre-warmed in <N>s` at INFO (and
     `Cross-encoder pre-warmed in <N>s` when the reranker is enabled

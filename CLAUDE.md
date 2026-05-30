@@ -87,7 +87,7 @@ src/pipecat_context_hub/
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/
     ├── main.py               # MCP server setup (_SERVER_VERSION here)
-    ├── transport.py          # stdio transport + parent-death / idle watchdogs
+    ├── transport.py          # stdio transport + parent-death / grandparent-death watchdogs (idle = fallback)
     └── tools/                # Per-tool handler modules
 
 dashboard/
