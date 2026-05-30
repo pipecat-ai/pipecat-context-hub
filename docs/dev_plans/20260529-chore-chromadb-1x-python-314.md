@@ -346,7 +346,17 @@ _Workspace below the review marker — does not affect the contract hash. Driven
   - `350ff0e` core migration: pin+lock + `VectorIndex` teardown uses public `Client.close()` (1.x) instead of private `_system.stop()` + manual refcount. Old path left a dead Rust system cached → reopen failed tenant validation (`'RustBindingsAPI' object has no attribute 'bindings'`) — the only failing test. Telemetry import + `Settings` survive 1.x unchanged; `include=`/None-metadata already compliant.
   - `0981d2d` format detection: non-mutating sqlite probe (sysdb migration < 10 ⇒ 0.6) → typed `IncompatibleIndexFormatError` + remediation, wired into `serve`/`refresh`. Verified non-mutating against the real 0.6 snapshot.
   - `02637c9` metadata-type enumeration test + `get_or_create` identity test (risk #11 safe on 1.5.9).
-- [ ] **Phase 3–7 + release** — REMAINING. Run parity (3, ref at `/tmp/chroma-v0.0.20-parity-results.json`), e2e/integration + dashboard data-dir routing (4), perf vs baseline (5), migration-path serve-refusal (6), live MCP smoke (7). Plus: version `0.0.20`→`0.1.0` (pyproject + `main.py::_SERVER_VERSION` + test), CHANGELOG, CLAUDE.md/README Windows-tips review, `ci.yml` Windows job, `docs/dev_plans/README.md` row. **Env-flip (merge `spike/chromadb-1x` → migration branch) breaks the live 0.6 MCP index until `refresh --force --reset-index`.**
+- [x] **Phase 3 — PASS** (`fadb826`). Engine-parity (replay identical vectors into both engines, isolating chromadb from repo-discovery variance): top-1 ID 15/15, mean top-20 Jaccard 0.987, **max distance delta 4.17e-07** (<1e-6). `1 - distance/2` similarity preserved; Layer B follows (FTS + reranker are chromadb-independent). Tool: `tests/benchmarks/engine_parity_check.py` (manual two-venv). _Note: fresh full-corpus rebuild parity is flaky — record counts vary with GitHub repo discovery (0.6 build saw 81 repos/39,786 recs; a 1.x build saw 9 repos/15,847). Not a chromadb bug; use the replay tool, not a rebuild._
+- [x] **Phase 0.2 version bump** — `0.0.20`→`0.1.0` (pyproject + `main.py::_SERVER_VERSION` + uv.lock; consistency test passes) + CHANGELOG `[0.1.0]` (`a3c93c7`).
+- [x] **Branches merged** — `spike/chromadb-1x` → `chore/chromadb-1x-python-314` (`c034f5a`, conflict-free regular merge). All Phases 0–3 now on one branch. **Env flipped: next `uv run` in the main worktree syncs `.venv` to chromadb 1.5.9; the live `~/.pipecat-context-hub` 0.6 index now needs `refresh --force --reset-index`.**
+- [ ] **Phase 4–7 + housekeeping** — REMAINING:
+  - Phase 4: integration/e2e (`serve` boot, dashboard) + route dashboard scripts (`extract_embeddings.py`/`extract_dashboard.py`) through the data-dir config + telemetry-egress check.
+  - Phase 6: e2e `serve`-refuses-0.6-dir (probe unit-proven; snapshot at `/tmp/chroma-0.6-snapshot`).
+  - Phase 5: perf vs committed `baselines/v0.0.20.json` (compare query p50/p95 + RSS; record-count varies with repo discovery).
+  - Phase 7: live MCP smoke.
+  - Docs/CI: CLAUDE.md Windows-tips review, README, `ci.yml` Windows job, `docs/dev_plans/README.md` row.
+  - **Release housekeeping:** fold the parked `[Unreleased]` work (PR #67/#69) into the `[0.1.0]` CHANGELOG section — the chromadb migration is the held release's trigger (see auto-memory `project_release_hold_chromadb`).
+  - Cleanup: remove the now-merged `/tmp/pcmcp-spike-1x` worktree (`git worktree remove`).
 
 ### Migration scope additions (from Findings)
 - Wire `PIPECAT_HUB_DATA_DIR` — **done early** (`692b49c`), unblocks Phase 4/6 isolation.
