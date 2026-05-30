@@ -341,7 +341,8 @@ _Workspace below the review marker — does not affect the contract hash. Driven
 - [x] **Phase 0.3 + 0.4** — parity harness `tests/benchmarks/test_chromadb_parity.py` committed (`bf968c7`); 0.6 reference captured to `/tmp/chroma-v0.0.20-parity-results.json` (15 queries, 39,768 records, Layer A dist 0.18–0.49; not committed per plan).
 - [x] **Phase 0.2 harness** — `tests/benchmarks/test_chromadb_perf.py` + `just benchmark-perf-report` recipe committed (`bf968c7`). Mechanics self-tested (RSS sampler, percentiles).
 - [~] **Phase 0.2 baseline** — `just benchmark-perf-report tests/benchmarks/baselines/v0.0.20.json` running against isolated `/tmp/pch-perf-0.6` (real refresh, ~27 min). Pending commit on completion.
-- [ ] **Phase 1–7** — migration + verification. **Phase 1 (pin bump + `uv lock`) is the point of no return for the live 0.6 env.**
+- [x] **Phase 1 spike** — PASS in isolated worktree `/tmp/pcmcp-spike-1x` (branch `spike/chromadb-1x`, own `.venv`; main env + live MCP untouched). `uv lock`: chromadb 0.6.3→**1.5.9**, 170 pkgs, no conflict. Import + `PersistentClient` + `get_or_create_collection(metadata={'hnsw:space':'cosine'})` + add/count/query roundtrip all OK. Dep tree: pydantic 2.12.5 (in-bound); **removed** `posthog`, `chroma-hnswlib`, `fastapi`, `asgiref`, OTel-instrumentation, `wrapt`, `backoff`; **kept** `onnxruntime` 1.24.1, `kubernetes` 35.0.0. `requires-python` `<3.14` unchanged.
+- [ ] **Phase 2–7** — migration code + verification. Spike worktree has the 1.x env ready. **Bringing the pin+lock onto the main branch flips `.venv` to 1.x → the live `~/.pipecat-context-hub` 0.6 index becomes unreadable (format break) until `refresh --force --reset-index`.** Decide before the env flip.
 
 ### Migration scope additions (from Findings)
 - Wire `PIPECAT_HUB_DATA_DIR` — **done early** (`692b49c`), unblocks Phase 4/6 isolation.
