@@ -62,7 +62,8 @@ surface against real indexed data.
     truncated at the parameter list)
 22. `search_api("SmallWebRTCTransport", class_name="SmallWebRTCTransport")` —
     returns TS class from `pipecat-ai/pipecat-client-web-transports` (verifies
-    nested-package TS detection for `small-webrtc-prebuilt`)
+    nested-package TS detection for `pipecat-prebuilt`, formerly
+    `small-webrtc-prebuilt` — renamed in PR #67)
 23. `search_api("connect", class_name="PipecatClient")` — returns TS method
     chunk with `method_signature` from `pipecat-ai/pipecat-client-web`
     (Phase 2 tree-sitter method extraction)
@@ -92,10 +93,14 @@ Use `chunk_type="class_overview"` (tests 25-26) when class-level ranking
 matters.
 
 30. `search_examples("TTS pipeline", pipecat_version="0.0.95", domain="backend")`
-    — all hits have `version_compatibility: "newer_required"` (framework pins
-    are 0.0.108+)
+    — all hits have `version_compatibility: "newer_required"` (framework
+    examples now pin pipecat `1.3.0`, and community examples pin `>=0.0.98` /
+    `>=1.0.0` — all newer than the queried 0.0.95)
 31. `search_examples("TTS pipeline", pipecat_version="0.0.110", domain="backend")`
-    — all hits have `version_compatibility: "compatible"`
+    — mixed by pin: framework `pipecat`/`pipecat-examples` hits pin `1.3.0` so
+    they score `newer_required` at 0.0.110; sub-1.0 community pins (e.g.
+    finchvox `>=0.0.98`) score `compatible`. (Pre-PR-#67 this returned all
+    `compatible` when the framework still pinned 0.0.x.)
 32. `search_examples("TTS pipeline", pipecat_version="0.0.110",
     version_filter="compatible_only", domain="backend")` — no
     `newer_required` hits pass through the filter
