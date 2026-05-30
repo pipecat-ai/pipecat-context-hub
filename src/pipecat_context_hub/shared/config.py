@@ -296,6 +296,10 @@ class ServerConfig(BaseModel):
             return max(0.0, self.idle_timeout_secs)
         return max(0.0, parsed)
 
+    # Plain @property, not @computed_field: this is a meta-query about
+    # configuration *intent*, not a resolved setting, so it is
+    # deliberately excluded from model_dump() (unlike the effective_*
+    # computed fields above). Do not promote it to @computed_field.
     @property
     def idle_timeout_explicitly_set(self) -> bool:
         """Whether the operator chose an idle timeout (vs. the default).

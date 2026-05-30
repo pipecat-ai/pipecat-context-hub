@@ -44,7 +44,21 @@ _ATEXIT_CLEANUP_TIMEOUT_SECS = 1.0
 # parent, so os.getppid() never flips when the real client (the
 # grandparent) dies — the parent-death watchdog cannot fire. For these,
 # we watch the grandparent PID directly instead. Compared by basename.
-_INTERMEDIATE_LAUNCHERS = frozenset({"uv", "uvx"})
+#
+# Listing a launcher here is strictly safe and only ever improves
+# coverage: the name is matched only when that process is the hub's
+# *direct* parent, i.e. it actually lingered. A launcher that `exec`s
+# into the target (replacing itself) is never the parent, so its entry
+# can't false-match; a real client genuinely named `uv`/`poetry`/… does
+# not exist in practice. Conversely, an *unlisted* lingering launcher
+# falls through to `(None, True)` in `resolve_watch_plan` — idle is then
+# auto-disabled with no working death detection, so the hub can only be
+# reaped by stdin EOF. Add common Python launchers that may linger.
+# Entries must be <=15 chars: Linux `ps -o comm=` truncates to the COMM
+# limit, so a longer name would be compared in truncated form.
+_INTERMEDIATE_LAUNCHERS = frozenset(
+    {"uv", "uvx", "pipx", "poetry", "pdm", "hatch", "rye", "pipenv"}
+)
 
 
 def _inspect_process(pid: int) -> tuple[int | None, str | None]:
@@ -143,6 +157,12 @@ def _run_atexit_bounded(timeout: float) -> None:
 
     def _run() -> None:
         try:
+            # `atexit._run_exitfuncs` is an undocumented CPython private,
+            # but it is the only way to flush handlers before `os._exit`
+            # and is stable across CPython 3.x / PyPy / GraalPy. If a
+            # future runtime moves it, the broad `except` degrades
+            # gracefully to the original (benign) leaked-semaphore
+            # warning rather than failing shutdown.
             atexit._run_exitfuncs()
         except Exception:  # nosec B110 - best-effort cleanup before hard exit
             pass  # nosec B110
@@ -153,7 +173,9 @@ def _run_atexit_bounded(timeout: float) -> None:
     done.wait(timeout)
 
 
-async def _watch_parent(original_ppid: int, interval: float, client_pid: int | None = None) -> str:
+async def _watch_parent(
+    original_ppid: int, interval: float, client_watch_pid: int | None = None
+) -> str:
     """Poll for client-process death; return a reason string when detected.
 
     Two detection modes run together:
@@ -162,7 +184,7 @@ async def _watch_parent(original_ppid: int, interval: float, client_pid: int | N
       the child to PID 1 (init/launchd), so getppid() flips. Windows
       lacks the reparent semantics — getppid() may return stale PIDs —
       so the caller skips spawning this watchdog there.
-    - **Grandparent death** (when ``client_pid`` is set): under an
+    - **Grandparent death** (when ``client_watch_pid`` is set): under an
       intermediate launcher like ``uv run`` the chain is
       ``client → uv → hub``. ``uv`` lingers after the client dies, so
       getppid() never flips. We watch the real client (the grandparent)
@@ -174,8 +196,8 @@ async def _watch_parent(original_ppid: int, interval: float, client_pid: int | N
         current = os.getppid()
         if current != original_ppid:
             return f"parent_died original_ppid={original_ppid} current_ppid={current}"
-        if client_pid is not None and not _pid_alive(client_pid):
-            return f"client_died client_pid={client_pid} intermediate_ppid={original_ppid}"
+        if client_watch_pid is not None and not _pid_alive(client_watch_pid):
+            return f"client_died client_pid={client_watch_pid} intermediate_ppid={original_ppid}"
 
 
 async def _watch_idle(tracker: IdleTracker, timeout: float, interval: float) -> str:

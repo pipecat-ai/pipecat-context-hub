@@ -285,9 +285,19 @@ Add more repos via `PIPECAT_HUB_EXTRA_REPOS`.
 - **Stale `serve` processes** — `serve` polls its parent PID every 2s
   and exits cleanly when the MCP client disappears (look for
   `Shutting down: parent_died original_ppid=… current_ppid=1` in the
-  trace). If you still see orphans (older versions, or Windows where the
-  watchdog is disabled), `pkill -f "pipecat-context-hub serve"` is safe
-  to run between sessions.
+  trace). Under `uv run` (where the immediate parent is `uv`, not the
+  client), it instead watches the grandparent and logs
+  `Shutting down: client_died client_pid=…`. If you still see orphans
+  (older versions, an unrecognized lingering launcher, or Windows where
+  the watchdog is disabled), `pkill -f "pipecat-context-hub serve"` is
+  safe to run between sessions.
+- **`Idle watchdog disabled: watching … for client exit` on boot** —
+  this `INFO` line is expected and benign. It means `serve` has reliable
+  client-death detection (direct parent, or `uv`/`uvx`/`poetry`/… with a
+  resolved grandparent), so the idle timeout is switched off to keep the
+  hub warm through quiet stretches of an active session. No action
+  needed; set `PIPECAT_HUB_IDLE_TIMEOUT_SECS` if you want an idle
+  backstop anyway.
 - **Diagnosing degraded starts** — on `serve` boot, look for
   `pipecat-context-hub vX.Y.Z starting: …` (`INFO`) to confirm the running
   version and index content-type counts. If reranking is off, a

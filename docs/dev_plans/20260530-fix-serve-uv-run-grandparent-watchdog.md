@@ -72,6 +72,11 @@ A stdio MCP server **cannot restart itself** (it's a subprocess the client spawn
 - Deeper-than-one-level intermediate chains (`uv → something → hub`); resolve only the immediate grandparent. If unresolved → idle fallback stays on.
 - Changing the 2.5s hard-exit budget or the `read(0)` unwind mechanics (Phase 6 of the prior plan stands).
 
-## Known minor gap
+## Recognized intermediate launchers
 
-If the client dies and its exact PID is reused by a new process within one poll interval (default 2s), `os.kill(client_pid, 0)` succeeds and we miss the death → hub lingers until its own parent (`uv`) exits or the next launch. Low probability; documented. Idle fallback does not cover this case by design (it's disabled when grandparent watch is active).
+`_INTERMEDIATE_LAUNCHERS = {uv, uvx, pipx, poetry, pdm, hatch, rye, pipenv}`. Listing a launcher is strictly safe (deep-review finding): the name matches only when that process is the hub's *direct* parent (i.e. it lingered); a launcher that `exec`s into the target is never the parent, so its entry can't false-match. Entries must be ≤15 chars (Linux `ps -o comm=` COMM truncation).
+
+## Known minor gaps
+
+- **PID reuse (TOCTOU).** If the client dies and its exact PID is reused by a new process within one poll interval (default 2s), `os.kill(client_pid, 0)` succeeds and we miss the death → hub lingers until its own parent (`uv`) exits or the next launch. Low probability; documented. Idle fallback does not cover this case by design (it's disabled when grandparent watch is active).
+- **Unrecognized lingering launcher.** A launcher not in `_INTERMEDIATE_LAUNCHERS` that lingers as the hub's parent falls through to `(None, True)` in `resolve_watch_plan` — idle is auto-disabled and parent-death won't fire, so the hub is reaped only by stdin EOF. Mitigated by covering the common Python launchers above; add new ones as they're reported.

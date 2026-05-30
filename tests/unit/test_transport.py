@@ -52,7 +52,7 @@ class TestWatchParent:
         original = os.getppid()  # stable — uv stays alive
         with patch.object(os, "kill", side_effect=ProcessLookupError):
             result = await asyncio.wait_for(
-                transport._watch_parent(original, interval=0.01, client_pid=4242),
+                transport._watch_parent(original, interval=0.01, client_watch_pid=4242),
                 timeout=1.0,
             )
         assert "client_died" in result
@@ -66,7 +66,7 @@ class TestWatchParent:
         original = os.getppid()
         # os.kill(pid, 0) succeeds → grandparent alive.
         task = asyncio.create_task(
-            transport._watch_parent(original, interval=0.01, client_pid=os.getpid())
+            transport._watch_parent(original, interval=0.01, client_watch_pid=os.getpid())
         )
         await asyncio.sleep(0.05)
         assert not task.done()
@@ -99,6 +99,16 @@ class TestResolveWatchPlan:
             client_pid, reliable = transport.resolve_watch_plan(1234)
         assert client_pid == 888
         assert reliable is True
+
+    def test_other_lingering_launchers_resolve_grandparent(self) -> None:
+        # Common Python launchers that may linger as the parent must also
+        # be recognized, otherwise idle would be disabled with no working
+        # death detection (zombie regression for non-uv launchers).
+        for launcher in ("pipx", "poetry", "pdm", "hatch", "rye", "pipenv"):
+            with patch.object(transport, "_inspect_process", return_value=(999, launcher)):
+                client_pid, reliable = transport.resolve_watch_plan(1234)
+            assert client_pid == 999, launcher
+            assert reliable is True, launcher
 
     def test_uv_parent_unresolved_grandparent_is_unreliable(self) -> None:
         # `ps` failed to give us the grandparent → cannot watch it.
