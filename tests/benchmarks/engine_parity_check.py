@@ -86,7 +86,9 @@ def capture_06(chroma_path: str) -> None:
     results = []
     for i, text in enumerate(QUERY_SET):
         r = col.query(query_embeddings=[q[i].tolist()], n_results=TOP_K, include=["distances"])
-        results.append({"query": text, "ids": r["ids"][0], "distances": r["distances"][0]})
+        dists = r["distances"]
+        assert dists is not None  # we requested distances above
+        results.append({"query": text, "ids": r["ids"][0], "distances": dists[0]})
 
     np.savez(CORPUS_NPZ, ids=np.asarray(ids), embeddings=embs)
     np.savez(QUERIES_NPZ, embeddings=q)
@@ -118,7 +120,9 @@ def compare_1x() -> None:
     max_top1_dist_delta = 0.0
     for i, ref_q in enumerate(ref):
         r = col.query(query_embeddings=[q[i].tolist()], n_results=TOP_K, include=["distances"])
-        cur_ids, cur_dist = r["ids"][0], r["distances"][0]
+        dists = r["distances"]
+        assert dists is not None  # we requested distances above
+        cur_ids, cur_dist = r["ids"][0], dists[0]
         ref_ids, ref_dist = ref_q["ids"], ref_q["distances"]
 
         if ref_ids and cur_ids and ref_ids[0] == cur_ids[0]:

@@ -42,6 +42,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -102,7 +103,7 @@ def _open_stack(data_dir: Path | None = None) -> _Stack:
     return _Stack(store=store, embedding=embedding, retriever=retriever)
 
 
-async def _capture_query(stack: _Stack, query: str) -> dict:
+async def _capture_query(stack: _Stack, query: str) -> dict[str, Any]:
     """Capture Layer A (raw chroma) and Layer B (HybridRetriever) for one query."""
     embedding = stack.embedding.embed_query(query)
 
@@ -120,7 +121,7 @@ async def _capture_query(stack: _Stack, query: str) -> dict:
     return {"query": query, "layer_a": layer_a, "layer_b": layer_b}
 
 
-async def _capture_all(stack: _Stack) -> dict:
+async def _capture_all(stack: _Stack) -> dict[str, Any]:
     record_count = stack.store.get_index_stats().get("total")
     queries = [await _capture_query(stack, q) for q in QUERY_SET]
     return {
@@ -131,7 +132,7 @@ async def _capture_all(stack: _Stack) -> dict:
     }
 
 
-def capture_reference(out_path: Path, data_dir: Path | None = None) -> dict:
+def capture_reference(out_path: Path, data_dir: Path | None = None) -> dict[str, Any]:
     """Capture the parity reference for the current index and write it to *out_path*."""
     stack = _open_stack(data_dir)
     try:
@@ -154,14 +155,14 @@ def _jaccard(a: list[str], b: list[str]) -> float:
     return len(sa & sb) / len(union) if union else 1.0
 
 
-def _ids(layer: list[dict]) -> list[str]:
+def _ids(layer: list[dict[str, Any]]) -> list[str]:
     return [row["id"] for row in layer]
 
 
 # --- pytest -----------------------------------------------------------------
 
 
-def _load_reference() -> dict:
+def _load_reference() -> dict[str, Any]:
     ref_path = os.environ.get(_REFERENCE_ENV, "").strip()
     if not ref_path:
         pytest.skip(
@@ -189,18 +190,20 @@ def _load_reference() -> dict:
 @pytest.mark.benchmark
 class TestChromaParity:
     @pytest.fixture(scope="class")
-    def reference(self) -> dict:
+    def reference(self) -> dict[str, Any]:
         return _load_reference()
 
     @pytest.fixture(scope="class")
-    def current(self, reference: dict) -> dict:
+    def current(self, reference: dict[str, Any]) -> dict[str, Any]:
         stack = _open_stack()
         try:
             return asyncio.run(_capture_all(stack))
         finally:
             stack.store.close()
 
-    def test_layer_a_raw_chroma_parity(self, reference: dict, current: dict) -> None:
+    def test_layer_a_raw_chroma_parity(
+        self, reference: dict[str, Any], current: dict[str, Any]
+    ) -> None:
         ref_by_q = {q["query"]: q for q in reference["queries"]}
         jaccards: list[float] = []
         top1_matches = 0
@@ -241,7 +244,9 @@ class TestChromaParity:
             f"{_LAYER_A_TOP1_DISTANCE_TOL:.0e}: {top1_distance_violations}"
         )
 
-    def test_layer_b_integration_parity(self, reference: dict, current: dict) -> None:
+    def test_layer_b_integration_parity(
+        self, reference: dict[str, Any], current: dict[str, Any]
+    ) -> None:
         ref_by_q = {q["query"]: q for q in reference["queries"]}
         jaccards: list[float] = []
         score_violations: list[str] = []

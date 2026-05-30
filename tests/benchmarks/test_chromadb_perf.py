@@ -40,6 +40,7 @@ import time
 from collections.abc import Generator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -160,7 +161,7 @@ def _process_tree_rss_bytes(root_pid: int) -> int:
     return total
 
 
-def peak_rss_bytes_during(popen_proc: subprocess.Popen[object]) -> int:
+def peak_rss_bytes_during(popen_proc: subprocess.Popen[Any]) -> int:
     """Poll the process tree's RSS while ``popen_proc`` runs; return peak bytes.
 
     Sampling runs on a background thread that stops once the process exits.
