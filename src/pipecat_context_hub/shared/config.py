@@ -37,14 +37,35 @@ _DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Allowlisted cross-encoder models. Kept in the shared config layer so both
 # the config resolver and the reranker service import it from the same place
 # (single source of truth, upward dependency direction).
-_ALLOWED_RERANKER_MODELS: frozenset[str] = frozenset({
-    _DEFAULT_RERANKER_MODEL,
-    "cross-encoder/ms-marco-MiniLM-L-12-v2",
-    "cross-encoder/ms-marco-TinyBERT-L-2-v2",
-})
+_ALLOWED_RERANKER_MODELS: frozenset[str] = frozenset(
+    {
+        _DEFAULT_RERANKER_MODEL,
+        "cross-encoder/ms-marco-MiniLM-L-12-v2",
+        "cross-encoder/ms-marco-TinyBERT-L-2-v2",
+    }
+)
 
 # Environment variable for pinning the framework repo to a specific git tag.
 _FRAMEWORK_VERSION_ENV = "PIPECAT_HUB_FRAMEWORK_VERSION"
+
+# Environment variable for overriding the local data directory. Used to isolate
+# refresh/serve/dashboard runs from the default ~/.pipecat-context-hub index
+# (e.g. migration tests, perf baselines, throwaway corpora). An explicit
+# StorageConfig(data_dir=...) still wins — the env var only sets the default.
+_DATA_DIR_ENV = "PIPECAT_HUB_DATA_DIR"
+
+
+def _default_data_dir() -> Path:
+    """Resolve the default data dir, honouring ``PIPECAT_HUB_DATA_DIR``.
+
+    Falls back to ``~/.pipecat-context-hub`` when the env var is unset or blank.
+    ``~`` in the override is expanded so values like ``~/scratch`` work.
+    """
+    override = os.environ.get(_DATA_DIR_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".pipecat-context-hub"
+
 
 # `serve` lifetime knobs. Idle timeout is user-facing (default 30 min;
 # 0 disables). Parent-watch interval is hidden / for tests, but lives
@@ -121,8 +142,11 @@ class StorageConfig(BaseModel):
     """Local storage paths."""
 
     data_dir: Path = Field(
-        default=Path.home() / ".pipecat-context-hub",
-        description="Root directory for all local data.",
+        default_factory=_default_data_dir,
+        description=(
+            "Root directory for all local data. Defaults to "
+            "~/.pipecat-context-hub, overridable via PIPECAT_HUB_DATA_DIR."
+        ),
     )
     sqlite_filename: str = Field(default="metadata.db", description="SQLite database filename.")
     chroma_dirname: str = Field(default="chroma", description="ChromaDB persistence directory.")
@@ -167,6 +191,7 @@ class RerankerConfig(BaseModel):
         if env in ("1", "true", "yes"):
             return True
         return self.enabled
+
     cross_encoder_model: str = Field(
         default=_DEFAULT_RERANKER_MODEL,
         description="Cross-encoder model name from sentence-transformers. "
@@ -242,7 +267,9 @@ class RerankerConfig(BaseModel):
 class ServerConfig(BaseModel):
     """MCP server settings."""
 
-    transport: Literal["stdio"] = Field(default="stdio", description="Transport type (stdio only in v0).")
+    transport: Literal["stdio"] = Field(
+        default="stdio", description="Transport type (stdio only in v0)."
+    )
     log_level: str = Field(default="INFO", description="Logging level.")
     idle_timeout_secs: float = Field(
         default=_DEFAULT_IDLE_TIMEOUT_SECS,
@@ -381,9 +408,7 @@ class SourceConfig(BaseModel):
     @property
     def tainted_repos(self) -> list[str]:
         """Repos explicitly blocked from refresh by local policy."""
-        return _dedupe_preserve_order(
-            _split_csv_env(os.environ.get(_TAINTED_REPOS_ENV, ""))
-        )
+        return _dedupe_preserve_order(_split_csv_env(os.environ.get(_TAINTED_REPOS_ENV, "")))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
