@@ -41,9 +41,35 @@ jobs:
       - name: Pytest
         run: uv run pytest tests/ -v
 
-  security:
-    name: Security
-    runs-on: ubuntu-latest
+  windows-smoke:
+    name: Windows smoke (chromadb 1.x)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7.6.0
+        with:
+          version: "0.9.18"
+
+      - name: Sync dependencies
+        # Proves chromadb 1.5.9 (and the rest of the stack) resolves and installs
+        # from wheels on Windows — the primary cross-platform risk of the 1.x bump.
+        run: uv sync --frozen --extra dev --group dev
+
+      - name: Index + serve smoke
+        # We do NOT run a full network `refresh` here (cloning ~80 repos + a model
+        # download + ~40k-record ingest is too slow/flaky for a PR gate and needs
+        # GitHub auth). Instead the integration suite builds a real ChromaDB 1.x
+        # index in a temp dir, exercises the non-mutating format-detection probe,
+        # boots `serve` over stdio, and runs search_docs/search_examples queries —
+        # the same code paths a Windows `refresh --force --reset-index` + serve +
+        # one query would hit, minus the network corpus fetch.
+        run: uv run pytest tests/unit/ tests/integration/ -v
     steps:
       - uses: actions/checkout@v4
 
