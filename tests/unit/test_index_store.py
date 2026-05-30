@@ -51,7 +51,9 @@ def _make_record(
     )
 
 
-def _make_records(count: int, source_url: str = "https://docs.pipecat.ai/intro") -> list[ChunkedRecord]:
+def _make_records(
+    count: int, source_url: str = "https://docs.pipecat.ai/intro"
+) -> list[ChunkedRecord]:
     """Create multiple unique records."""
     return [
         _make_record(
@@ -358,6 +360,29 @@ class TestVectorIndex:
         idx2.close()
         idx1.close()
 
+    def test_get_or_create_preserves_existing_collection(self, tmp_path: Path):
+        """get_or_create with explicit hnsw:space must not recreate/empty data.
+
+        chromadb 1.x moved HNSW config to a ``configuration`` API and deprecated
+        ``metadata={"hnsw:space": ...}``. Guard against a regression where the
+        legacy metadata form silently drops an existing collection's rows
+        (risk #11) — re-opening a populated index must keep every record.
+        """
+        chroma_path = tmp_path / "chroma"
+        idx1 = VectorIndex(chroma_path)
+        records = _make_records(3)
+        known_id = records[0].chunk_id
+        idx1.upsert(records)
+        idx1.close()
+
+        # Re-open: _open_client calls get_or_create_collection with cosine.
+        idx2 = VectorIndex(chroma_path)
+        query = IndexQuery(query_text="test", query_embedding=records[0].embedding, limit=10)
+        results = idx2.search(query)
+        assert len(results) == 3, "get_or_create dropped rows on reopen"
+        assert any(r.chunk.chunk_id == known_id for r in results)
+        idx2.close()
+
 
 # ---------------------------------------------------------------------------
 # ChromaDB batch stress tests
@@ -538,9 +563,21 @@ class TestFTSIndex:
 
     def test_delete_by_repo(self, fts_index: FTSIndex):
         records = [
-            _make_record(chunk_id="r1", repo="pipecat-ai/pipecat", content_type="code", content="pipecat code r1"),
-            _make_record(chunk_id="r2", repo="pipecat-ai/pipecat", content_type="source", content="pipecat source r2"),
-            _make_record(chunk_id="r3", repo="pipecat-ai/pipecat-examples", content="pipecat examples r3"),
+            _make_record(
+                chunk_id="r1",
+                repo="pipecat-ai/pipecat",
+                content_type="code",
+                content="pipecat code r1",
+            ),
+            _make_record(
+                chunk_id="r2",
+                repo="pipecat-ai/pipecat",
+                content_type="source",
+                content="pipecat source r2",
+            ),
+            _make_record(
+                chunk_id="r3", repo="pipecat-ai/pipecat-examples", content="pipecat examples r3"
+            ),
         ]
         fts_index.upsert(records)
 
@@ -679,8 +716,7 @@ class TestFTSIndex:
 
     def test_result_limit(self, fts_index: FTSIndex):
         records = [
-            _make_record(chunk_id=f"lim-{i}", content=f"pipecat content {i}")
-            for i in range(5)
+            _make_record(chunk_id=f"lim-{i}", content=f"pipecat content {i}") for i in range(5)
         ]
         fts_index.upsert(records)
 
@@ -820,9 +856,21 @@ class TestIndexStore:
     @pytest.mark.asyncio
     async def test_delete_by_repo_both_indexes(self, store: IndexStore):
         records = [
-            _make_record(chunk_id="r1", repo="pipecat-ai/pipecat", content_type="code", content="pipecat code"),
-            _make_record(chunk_id="r2", repo="pipecat-ai/pipecat", content_type="source", content="pipecat source"),
-            _make_record(chunk_id="r3", repo="pipecat-ai/pipecat-examples", content="pipecat examples"),
+            _make_record(
+                chunk_id="r1",
+                repo="pipecat-ai/pipecat",
+                content_type="code",
+                content="pipecat code",
+            ),
+            _make_record(
+                chunk_id="r2",
+                repo="pipecat-ai/pipecat",
+                content_type="source",
+                content="pipecat source",
+            ),
+            _make_record(
+                chunk_id="r3", repo="pipecat-ai/pipecat-examples", content="pipecat examples"
+            ),
         ]
         await store.upsert(records)
 

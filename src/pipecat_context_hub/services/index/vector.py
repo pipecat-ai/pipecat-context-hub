@@ -447,6 +447,10 @@ class VectorIndex:
                 continue
             ids.append(record.chunk_id)
             documents.append(record.content)
+            # chromadb 1.x metadata must be str | int | float | bool (None is
+            # rejected). _record_to_metadata enforces this by omitting absent
+            # fields; the exact field->type map is pinned in
+            # tests/unit/test_metadata_types.py::EXPECTED_METADATA_TYPES.
             metadatas.append(_record_to_metadata(record))
             embeddings.append(record.embedding)
 
