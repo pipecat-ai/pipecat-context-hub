@@ -1,6 +1,6 @@
 # Task: Bound `serve` Lifetime to the Real Client Under `uv run` (Grandparent-Death Watchdog)
 
-**Status**: Complete (unreleased) — all phases implemented, 1041 unit/integration tests + 4 serve-lifetime integration tests green, lint/format/mypy clean. Headline `uv run` client-death path proven by `test_uv_run_client_death_exits_via_grandparent_watchdog`.
+**Status**: Complete (unreleased) — all phases implemented, full suite green (1046 passed, 3 skipped, incl. 4 serve-lifetime integration tests), lint/format/mypy + bandit clean. Headline `uv run` client-death path proven by `test_uv_run_client_death_exits_via_grandparent_watchdog`.
 **Date**: 2026-05-30
 **Branch**: `fix/serve-uv-run-grandparent-watchdog`
 **Follows**: [`20260421-bug-serve-orphan-watchdog.md`](20260421-bug-serve-orphan-watchdog.md) — closes its documented **"Known Gap: `uv run` wrapper"**.
@@ -27,7 +27,7 @@ The desired experience: the hub should not self-terminate mid-session, and shoul
 
 **Grandparent-death detection** + smart idle gating + clean/quiet exit.
 
-- When the hub's **direct parent is an intermediate launcher** (`uv`/`uvx`), watch the **grandparent** (the real client) for death instead of relying on `getppid()` flipping. When the client dies, `uv` reparents to PID 1, the client PID disappears, and `os.kill(client_pid, 0)` raises `ProcessLookupError` → shut down.
+- When the hub's **direct parent is an intermediate launcher** (`uv`/`uvx`/`pipx`/`poetry`/`pdm`/`hatch`/`rye`/`pipenv` — see `_INTERMEDIATE_LAUNCHERS`), watch the **grandparent** (the real client) for death instead of relying on `getppid()` flipping. When the client dies, the launcher reparents to PID 1, the client PID disappears, and `os.kill(client_pid, 0)` raises `ProcessLookupError` → shut down.
 - When the **direct parent is the client** (direct launch), the existing parent-death watchdog already covers orphan cleanup — unchanged.
 - **Idle watchdog becomes a fallback only.** When reliable client-death detection is active (direct parent, or intermediate parent with a resolved grandparent), the default idle timeout is disabled — it would only kill a warm server during a quiet stretch of an active session. The operator can always force it back via `PIPECAT_HUB_IDLE_TIMEOUT_SECS`. It stays ON when detection is *not* reliable: Windows (watchdog disabled), parent-watch disabled, or an intermediate parent whose grandparent can't be resolved.
 - **Clean exit:** run `atexit` handlers in a bounded daemon thread before each `os._exit(0)` so loky/multiprocessing release resources (no semaphore warning) without risking an unbounded hang.
@@ -39,7 +39,7 @@ A stdio MCP server **cannot restart itself** (it's a subprocess the client spawn
 
 - `src/pipecat_context_hub/server/transport.py`
   - `_inspect_process(pid)` → `(ppid, comm_basename)` via one best-effort `ps -p PID -o ppid=,comm=` (timeout-guarded). Returns `(None, None)` on any failure.
-  - `_INTERMEDIATE_LAUNCHERS = frozenset({"uv", "uvx", "pipx", "poetry", "pdm", "hatch", "rye", "pipenv"})` (asserted ≤15 chars at import).
+  - `_INTERMEDIATE_LAUNCHERS = frozenset({"uv", "uvx", "pipx", "poetry", "pdm", "hatch", "rye", "pipenv"})` (import-time `raise ValueError` if any entry > 15 chars — survives `python -O`, unlike `assert`; Linux `ps -o comm=` COMM truncation).
   - `resolve_watch_plan(parent_pid)` → `WatchPlan(client_watch_pid: int | None, detection_reliable: bool)` (a `NamedTuple`, so it still unpacks positionally).
   - `_pid_alive(pid)` via `os.kill(pid, 0)` (ProcessLookupError → dead; PermissionError/other → alive).
   - `_watch_parent(original_ppid, interval, client_pid=None)` — also fire on `not _pid_alive(client_pid)` → `"client_died ..."`.

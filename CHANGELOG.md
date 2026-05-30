@@ -16,10 +16,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   timeout was the only (blunt) backstop. It would reap a perfectly healthy
   hub during a quiet stretch of an active session, after which the client
   had to cold-start a new one. `serve` now detects an intermediate launcher
-  (`uv`/`uvx`) and watches the **grandparent** (the real client) for death
-  instead, so it exits promptly when — and only when — the client actually
-  goes away. Closes the "Known Gap: `uv run` wrapper" from the v0.0.18
-  orphan-watchdog work.
+  (`uv`/`uvx`/`pipx`/`poetry`/`pdm`/`hatch`/`rye`/`pipenv`) and watches the
+  **grandparent** (the real client) for death instead, so it exits promptly
+  when — and only when — the client actually goes away. Closes the "Known
+  Gap: `uv run` wrapper" from the v0.0.18 orphan-watchdog work.
 - **No more spurious "leaked semaphore" warning on watchdog shutdown.** A
   watchdog-triggered exit calls `os._exit(0)`, which skips `atexit` and left
   loky/multiprocessing (reached via the cross-encoder → `torch`/`sklearn`)
