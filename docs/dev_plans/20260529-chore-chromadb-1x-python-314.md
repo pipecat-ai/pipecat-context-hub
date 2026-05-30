@@ -43,7 +43,7 @@ Mapped via `grep -rn chromadb src/ dashboard/ tests/`. Total: **5 files**, **~10
 
 | File | API |
 |---|---|
-| `src/pipecat_context_hub/services/index/vector.py` | `chromadb.PersistentClient(path, settings)`, `chromadb.config.Settings(anonymized_telemetry=False, chroma_product_telemetry_impl="...NoOpProductTelemetryClient")`, `chromadb.telemetry.product.{ProductTelemetryClient, ProductTelemetryEvent}` (subclassed by `NoOpProductTelemetryClient`), `client._system.stop()`, `client.clear_system_cache()` (private API), `client.get_or_create_collection(name, metadata={"hnsw:space": "cosine"})`, `collection.add(ids, embeddings, documents, metadatas)`, `collection.get(where=..., include=[])`, `collection.query(query_embeddings, n_results, include=["documents", "metadatas", "distances"], where=...)`, `collection.delete(ids=...)` |
+| `src/pipecat_context_hub/services/index/vector.py` | `chromadb.PersistentClient(path, settings)`, `chromadb.config.Settings(anonymized_telemetry=False, chroma_product_telemetry_impl="...NoOpProductTelemetryClient")`, `chromadb.telemetry.product.{ProductTelemetryClient, ProductTelemetryEvent}` (subclassed by `NoOpProductTelemetryClient`), `client._system.stop()`, `client.clear_system_cache()` (private API), `client.get_or_create_collection(name, metadata={"hnsw:space": "cosine"})`, `collection.upsert(ids, embeddings, documents, metadatas)`, `collection.get(where=..., include=[])`, `collection.query(query_embeddings, n_results, include=["documents", "metadatas", "distances"], where=...)`, `collection.delete(ids=...)` |
 | `dashboard/scripts/extract_embeddings.py` | `PersistentClient(path)`, `client.get_collection("latest")`, `collection.get(include=["embeddings", "metadatas", "documents"])` |
 | `dashboard/scripts/extract_dashboard.py` | `PersistentClient(path)`, `client.get_collection("latest")` |
 | `tests/unit/test_index_store.py` | exercises the above |
@@ -61,7 +61,7 @@ Each item below needs to be verified during the spike, **not assumed**. The list
 2. **`Settings(anonymized_telemetry=False)` may not be sufficient.** Current code uses both `anonymized_telemetry=False` AND `chroma_product_telemetry_impl="...NoOpProductTelemetryClient"` (`vector.py:311-316`). The dual configuration is deliberate defense-in-depth; the flag alone may have been historically insufficient. Verify in 1.x that the flag short-circuits ALL telemetry paths (posthog, otel, anything else) before dropping the impl override. If not, keep the no-op subclass and re-target the import. **[T2, T4]**
 3. **`chromadb.config.Settings` field surface changed.** We currently pass two fields. Confirm both `anonymized_telemetry` and `chroma_product_telemetry_impl` survive in 1.5.x — historically some fields moved to client kwargs or were removed. **[T1]**
 4. **`include=` default for `collection.get()` and `collection.query()` changed in 1.x.** In 0.6 the default included embeddings; in 1.x it does not (to save memory). We pass `include=` explicitly at every call site I checked — but `tests/unit/test_index_store.py` may not, so test assertions on result shape will break. **[T2]**
-5. **On-disk format is not backward-compatible.** A 0.6-formatted Chroma directory will not load under 1.x. Every existing user must run `refresh --force --reset-index`. We need a startup detection in the index service layer + clear error message. **[T6]**
+5. **On-disk format is not backward-compatible.** A 0.6-formatted Chroma directory will not load under 1.x. Every existing user must run `refresh --force --reset-index`. We need a non-mutating startup detection in the index service layer + clear error message. The probe must run before `chromadb.PersistentClient(...)` or `get_or_create_collection(...)`, because those calls may create or rewrite Chroma state. **[T6]**
 6. **Private API in `_release_client`.** `vector.py:353-361` calls `client._system.stop()` and `client.clear_system_cache()`. The comment pins this to ChromaDB 0.6.3 internals. 1.x likely restructures `_system` or exposes a public `client.close()`/`client.reset()`. If we don't audit this, refresh + `--reset-index` cycles silently leak references or fail. **[T2, T4]**
 
 ### Likely
@@ -87,16 +87,22 @@ Each item below needs to be verified during the spike, **not assumed**. The list
 
 ## Files to Modify
 
-- `pyproject.toml` — chromadb pin `>=0.6,<1.0` → **`>=1.5,<2.0`** (consistent throughout; do not weaken to `>=1.0`)
-- `src/pipecat_context_hub/services/index/vector.py` — imports, Settings construction (drop or retarget `chroma_product_telemetry_impl` per Phase 2 finding), telemetry no-op stub, `_release_client` private-API audit (prefer public `client.close()` / `client.reset()` if exposed in 1.x; otherwise re-pin), query/get call sites, **format detection probe (new) — `VectorIndex._open_client` raises typed `IncompatibleIndexFormatError` on 0.6-format directory**
+- `pyproject.toml` — chromadb pin `>=0.6,<1.0` → **`>=1.5,<2.0`** (consistent throughout; do not weaken to `>=1.0`); version `0.0.20` → `0.1.0`
+- `src/pipecat_context_hub/server/main.py` — `_SERVER_VERSION` `0.0.20` → `0.1.0` only; do **not** add storage-open policy here
+- `src/pipecat_context_hub/services/index/errors.py` (new) — define typed `IncompatibleIndexFormatError` and shared remediation text containing literal `refresh --force --reset-index`
+- `src/pipecat_context_hub/services/index/vector.py` — imports, Settings construction (drop or retarget `chroma_product_telemetry_impl` per Phase 2 finding), telemetry no-op stub, `_release_client` private-API audit (prefer public `client.close()` / `client.reset()` if exposed in 1.x; otherwise re-pin), query/get call sites, `collection.upsert` semantics, **non-mutating format detection probe before `PersistentClient` construction** (new) — raise typed `IncompatibleIndexFormatError` on 0.6-format directory before `VectorIndex._open_client` creates/opens Chroma state
 - `src/pipecat_context_hub/services/index/__init__.py` — export `IncompatibleIndexFormatError`
-- `src/pipecat_context_hub/cli.py` — catch `IncompatibleIndexFormatError` in the `refresh` codepath and surface the same remediation message as `serve`
-- `src/pipecat_context_hub/server/main.py` — catch `IncompatibleIndexFormatError` in the `serve` startup and surface the remediation message (must contain literal `refresh --force --reset-index`)
-- `dashboard/scripts/extract_embeddings.py` — verify `include=[...]` shape, batch loop
-- `dashboard/scripts/extract_dashboard.py` — verify `get_collection` path
+- `src/pipecat_context_hub/cli.py` — catch `IncompatibleIndexFormatError` around `IndexStore` construction in `serve` and `refresh`; surface the same remediation message in both paths
+- `src/pipecat_context_hub/services/index/chroma_client.py` (new, if the spike confirms this helper is cleaner than local construction) — shared Chroma client opening/settings helper used by core index code and dashboard scripts
+- `dashboard/scripts/extract_embeddings.py` — route through shared storage/config/Chroma-open path; verify `include=[...]` shape, batch loop
+- `dashboard/scripts/extract_dashboard.py` — route through shared storage/config/Chroma-open path; verify `get_collection` path
 - `tests/unit/test_index_store.py` — update assertions for new `include=` defaults; add metadata-type enumeration test; add `get_or_create_collection` identity preservation test
 - `tests/integration/test_format_detection.py` (new) — exercise the 0.6 → 1.x format detection path with hash-equality assertion on the snapshot directory
+- `tests/integration/test_no_telemetry_egress.sh` (new) — committed smoke script that records/blocks non-loopback sockets across refresh, serve query, and dashboard extraction
+- `tests/benchmarks/test_chromadb_parity.py` (new) — fixed-query parity harness for raw Chroma and HybridRetriever comparisons; accepts the 0.6 reference path via env var/CLI and emits Layer A/B metrics
 - `tests/benchmarks/baselines/v0.0.20.json` (new) — captured baseline for Phase 5 comparison
+- `tests/benchmarks/` support code — extend `benchmark-stability-report` output or add a companion benchmark so Phase 5 emits the exact metrics it compares (build time, query p50/p95, refresh RSS, dashboard RSS)
+- `.github/workflows/ci.yml` — add a Windows smoke job/matrix entry that runs `refresh --force --reset-index`, boots `serve`, and executes one `search_docs` query
 - `uv.lock` — re-lock; **MUST land in the same commit as `pyproject.toml`** (no intermediate broken-resolution state)
 - `CHANGELOG.md` — Changed entry: chromadb 1.x, format break, upgrade command
 - `CLAUDE.md` — update `Vector store:` line if anything material changes; remove `Windows tips` items that 1.x fixes
@@ -105,7 +111,7 @@ Each item below needs to be verified during the spike, **not assumed**. The list
 
 ## Testing strategy
 
-Seven phases (Phase 0 prerequisite + six test phases). Each has explicit pass/fail criteria. Run in order — if Phase 1 fails, don't proceed.
+Eight phases (Phase 0 prerequisite + seven test phases). Each has explicit pass/fail criteria. Run in order — if Phase 1 fails, don't proceed.
 
 ### Phase 0: Prerequisites (RUN BEFORE TOUCHING ANY CODE)
 
@@ -114,22 +120,29 @@ These steps MUST complete on `main` (or a 0.6 worktree) before bumping the chrom
 1. **Snapshot a 0.6-formatted Chroma directory.**
    ```bash
    uv run pipecat-context-hub refresh --force  # ensure index is freshly built on 0.6
-   cp -a ~/.local/share/pipecat-context-hub/chroma /tmp/chroma-0.6-snapshot
-   shasum -a 256 -r /tmp/chroma-0.6-snapshot | sort > /tmp/chroma-0.6-snapshot.sha256
+   cp -a ~/.pipecat-context-hub/chroma /tmp/chroma-0.6-snapshot
+   find /tmp/chroma-0.6-snapshot -type f -print0 | xargs -0 shasum -a 256 | LC_ALL=C sort > /tmp/chroma-0.6-snapshot.sha256
    ```
    The hash file is used by Phase 6 to verify no silent overwrite.
 
 2. **Capture v0.0.20 performance baseline.**
    ```bash
-   just benchmark-stability > tests/benchmarks/baselines/v0.0.20.json
+   mkdir -p tests/benchmarks/baselines
+   just benchmark-stability-report tests/benchmarks/baselines/v0.0.20.json
    git add tests/benchmarks/baselines/v0.0.20.json
    git commit -m "tests: capture v0.0.20 perf baseline for chromadb 1.x comparison"
    ```
-   Commit the baseline so Phase 5 has a stable comparison artefact, independent of whichever machine runs it.
+   Commit the baseline so Phase 5 has a stable comparison artefact, independent of whichever machine runs it. Before committing, confirm the JSON includes every metric Phase 5 compares: index build duration, query p50, query p95, refresh peak RSS, and dashboard peak RSS. If `benchmark-stability-report` does not emit these yet, extend the benchmark harness on the 0.6 branch/worktree first, then capture the baseline.
 
-3. **Capture v0.0.20 parity reference outputs.** Run the parity harness (described in Phase 3) against 0.6 and save the top-10 query results as `tests/fixtures/parity/v0.0.20-results.json`. Do not commit this fixture (it's large and machine-specific) — keep it in `/tmp/` and reference from Phase 3.
+3. **Create or identify the parity harness before the dependency bump.** Add `tests/benchmarks/test_chromadb_parity.py` (or document an existing equivalent) with:
+   - a fixed query set committed to the repo
+   - a JSON schema for raw Chroma and HybridRetriever outputs
+   - clear failure when the 0.6 reference file is missing
+   - emitted metrics matching Phase 3 Layer A and Layer B names
 
-4. **Read chromadb 1.0 → 1.5.9 release notes.** Catalogue breaking changes between minor versions. Free intel for Phase 2 triage.
+4. **Capture v0.0.20 parity reference outputs.** Run the parity harness from step 3 against 0.6 and save the top-10 query results to `/tmp/chroma-v0.0.20-parity-results.json`. Do not commit this fixture (it's large and machine-specific). Phase 3 must consume this explicit `/tmp/` path.
+
+5. **Read chromadb 1.0 → 1.5.9 release notes.** Catalogue breaking changes between minor versions. Free intel for Phase 2 triage.
 
 ### Phase 1: Spike — does the import even work?
 
@@ -144,6 +157,7 @@ Also enumerate the resolved dependency tree to confirm:
 - chromadb resolves to ≥ 1.5
 - pydantic resolves cleanly within `>=2.0,<3.0`
 - `posthog` / `kubernetes` / `onnxruntime` presence — if any are gone, note it (CVE surface reduction)
+- `collection.upsert` keeps 0.6-equivalent ID collision, metadata replacement, and batch-limit behavior for our write path
 
 **Pass:** no import error, no construction error, dep tree resolves.
 **Fail:** stop. Identify the breakage, fix it, retry.
@@ -169,7 +183,7 @@ Categorise every failure:
 Apply categorised fixes. Rerun until clean. The pass criterion is **all tests pass; any count delta from v0.0.20 is documented** with a list of {test name, change applied, category (a/b/c)}.
 
 Also during Phase 2:
-- **Metadata enumeration task:** grep `vector.py` and ingest paths for every metadata field we write. Produce a typed list (`field: type`). Add a unit test (`test_metadata_types.py`) that ingests a representative chunk and asserts every field's type matches that list. The list is also added as a code comment near the `add()` call site so future contributors know what 1.x's stricter typing constrains.
+- **Metadata enumeration task:** grep `vector.py` and ingest paths for every metadata field we write. Produce a typed list (`field: type`). Add a unit test (`test_metadata_types.py`) that ingests a representative chunk and asserts every field's type matches that list. The list is also added as a code comment near the `upsert()` call site so future contributors know what 1.x's stricter typing constrains.
 - **`get_or_create_collection` identity test:** unit test that creates a collection with no explicit `hnsw:space`, then calls `get_or_create_collection` with explicit `{"hnsw:space": "cosine"}`. Assert row count and a known ID are still present (not a fresh empty collection).
 
 **Pass:** unit suite green; metadata enumeration committed; identity test passing.
@@ -178,7 +192,7 @@ Also during Phase 2:
 
 The parity test must compare BOTH the chroma boundary AND the HybridRetriever output, because the score formula `1 - (distance / 2)` is consumed by the retriever's RRF merge and the reranker (see risk #7).
 
-1. Load the v0.0.20 reference outputs captured in Phase 0 step 3.
+1. Load the v0.0.20 reference outputs captured in Phase 0 step 4 from `/tmp/chroma-v0.0.20-parity-results.json`.
 2. Run the same query set against 1.x on the same corpus.
 3. Compare at two layers:
 
@@ -208,8 +222,8 @@ uv run pipecat-context-hub serve  # smoke-check it boots and serves a query
 Plus these sub-steps:
 
 - **Dashboard pipeline:** `just dashboard-refresh` completes without error; `dashboard/public/embeddings_3d.json` is produced.
-- **Telemetry no-op verification:** boot `serve` with `lsof -i -P -n -p <pid>` running; assert zero outbound TCP connections during the boot window (excluding loopback). Procedure: pick `lsof` over a netns approach; it's the simplest portable check. Concrete script committed under `tests/integration/test_no_telemetry_egress.sh`.
-- **Windows smoke (CI):** the Windows runner in the CI matrix runs `refresh --force --reset-index` + `serve` + one `search_docs` query. The CLAUDE.md "Windows tips" section is re-checked against 1.x behaviour and items that 1.x fixes are removed.
+- **Telemetry no-op verification:** run committed `tests/integration/test_no_telemetry_egress.sh`; it must assert zero non-loopback outbound TCP connections during (1) `refresh --force --reset-index`, (2) `serve` boot plus one MCP query, and (3) dashboard extraction. A boot-window-only `lsof` check is insufficient because Chroma telemetry can trigger after client construction.
+- **Windows smoke (CI):** the Windows runner in `.github/workflows/ci.yml` runs `refresh --force --reset-index` + `serve` + one `search_docs` query. The CLAUDE.md "Windows tips" section is re-checked against 1.x behaviour and items that 1.x fixes are removed.
 - **Concurrent reader test:** two `serve` processes against the same data dir; both should return query results without locking errors.
 
 **Pass:** full pipeline works; `get_hub_status` returns expected counts; MCP `search_docs` returns sensible results; no network egress on boot; Windows CI green.
@@ -217,7 +231,7 @@ Plus these sub-steps:
 ### Phase 5: Performance regression
 
 ```bash
-just benchmark-stability > /tmp/phase5-1x.json
+just benchmark-stability-report /tmp/phase5-1x.json
 diff <(jq -S . tests/benchmarks/baselines/v0.0.20.json) <(jq -S . /tmp/phase5-1x.json)
 ```
 
@@ -231,15 +245,15 @@ Compare against the committed `tests/benchmarks/baselines/v0.0.20.json` (no ambi
 
 **Fail:** severe regression (e.g., 2× slowdown) → investigate HNSW parameter defaults (risk #8) before blaming chromadb.
 
-### Phase 6: Migration path (post-merge, pre-tag — release blocker)
+### Phase 6: Migration path (pre-merge release blocker)
 
-This phase verifies the user upgrade path. It's a release blocker, not optional.
+This phase verifies the user upgrade path. It must pass before merge; a post-merge, pre-tag rerun is allowed as release sanity, but it is not the first proof.
 
 ```bash
 # Setup: restore the 0.6 snapshot to a fresh data dir.
 export PIPECAT_HUB_DATA_DIR=/tmp/chroma-migration-test
 cp -a /tmp/chroma-0.6-snapshot "$PIPECAT_HUB_DATA_DIR/chroma"
-shasum -a 256 -r "$PIPECAT_HUB_DATA_DIR/chroma" | sort > /tmp/before.sha256
+find "$PIPECAT_HUB_DATA_DIR/chroma" -type f -print0 | xargs -0 shasum -a 256 | LC_ALL=C sort > /tmp/before.sha256
 
 # Test 1: serve must REFUSE the 0.6 directory with a clear, specific error.
 uv run pipecat-context-hub serve 2>&1 | tee /tmp/serve-output.log &
@@ -252,7 +266,7 @@ grep -q "refresh --force --reset-index" /tmp/serve-output.log || echo "FAIL: rem
 grep -qi "incompatible.*format\|chromadb.*0\.6" /tmp/serve-output.log || echo "FAIL: error not specific to format"
 
 # Assertion: no silent overwrite.
-shasum -a 256 -r "$PIPECAT_HUB_DATA_DIR/chroma" | sort > /tmp/after.sha256
+find "$PIPECAT_HUB_DATA_DIR/chroma" -type f -print0 | xargs -0 shasum -a 256 | LC_ALL=C sort > /tmp/after.sha256
 diff /tmp/before.sha256 /tmp/after.sha256 || echo "FAIL: serve mutated 0.6 directory"
 
 # Test 2: refresh --force --reset-index must rebuild cleanly.
@@ -266,6 +280,10 @@ uv run pipecat-context-hub serve  # now boots successfully
 - 0.6 snapshot directory is byte-identical before and after the failed `serve` (no silent mutation).
 - After `--reset-index`, serve boots and queries work.
 
+### Phase 7: Pre-merge live MCP smoke
+
+Run the full AGENTS.md "Pre-Merge Live MCP Smoke Test" against the rebuilt Chroma 1.x index. This PR touches the index backend, so the complete smoke list is required, not only `get_hub_status` or one `search_docs` call. Record the result in the PR description, including any known prerequisite caveat such as `gh` authentication for deprecation checks.
+
 ### What we are NOT testing (and why)
 
 - chromadb's internal correctness — we trust upstream after 14 months of patch releases.
@@ -275,16 +293,18 @@ uv run pipecat-context-hub serve  # now boots successfully
 
 ## Verification checklist (release blocker)
 
-- [ ] Phase 0 prerequisites: 0.6 snapshot + hash captured; v0.0.20 baseline JSON committed; 1.0 → 1.5.9 release notes reviewed.
+- [ ] Phase 0 prerequisites: 0.6 snapshot + hash captured; parity harness committed; v0.0.20 parity reference saved to `/tmp/chroma-v0.0.20-parity-results.json`; v0.0.20 baseline JSON committed with required metrics; 1.0 → 1.5.9 release notes reviewed.
 - [ ] Phase 1 spike passes; resolved dep tree noted.
 - [ ] Phase 2a failures triaged into categories (a/b/c); no (d) findings.
 - [ ] Phase 2b suite green; metadata enumeration committed; identity test passing.
 - [ ] Phase 3 layer A parity: top-1 ≥ 95%, top-10 Jaccard ≥ 0.9, distance within 1e-6.
 - [ ] Phase 3 layer B parity: similarity within ±0.01; reranker top-K Jaccard ≥ 0.85.
-- [ ] Phase 4 integration green; `serve` boots; dashboard pipeline runs; telemetry no-op verified via `lsof`; Windows CI green; concurrent reader test passes.
+- [ ] Phase 4 integration green; `serve` boots; dashboard pipeline runs through the shared Chroma-open path; telemetry no-op verified across refresh/query/dashboard by `tests/integration/test_no_telemetry_egress.sh`; Windows CI green; concurrent reader test passes.
 - [ ] Phase 5 perf within tolerance (build ±20%, query p50 ±20%, p95 ±50%, RSS ±30%).
-- [ ] Phase 6 migration: clear error on 0.6 directory containing `refresh --force --reset-index`; format-specific wording; snapshot hash unchanged; `--reset-index` recovers cleanly.
+- [ ] Phase 6 pre-merge migration: clear error on 0.6 directory containing `refresh --force --reset-index`; format-specific wording; snapshot hash unchanged; `--reset-index` recovers cleanly.
+- [ ] Phase 7 full AGENTS.md live MCP smoke passes against the Chroma 1.x index and is recorded in the PR description.
 - [ ] `get_hub_status` reports expected counts after re-index.
+- [ ] `pyproject.toml` version and `src/pipecat_context_hub/server/main.py::_SERVER_VERSION` both report `0.1.0`.
 - [ ] CLAUDE.md `Windows tips` section reviewed — remove items 1.x fixes.
 - [ ] CHANGELOG.md entry calls out the format break + `refresh --force --reset-index` requirement prominently.
 - [ ] `docs/dev_plans/README.md` row moved from Current to Completed.
