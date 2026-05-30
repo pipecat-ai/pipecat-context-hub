@@ -330,3 +330,32 @@ If steps 3-6 are not all in the same commit, CI may green-light a Python version
 - The `requires-python` ceiling, CHANGELOG entry, and CI matrix must all move together when the cap lifts. v0.0.20 established this convention.
 - This plan deliberately leaves out "consider switching vector backends" — that's `docs/decisions/vector-backend.md`, re-open separately if 1.x reveals fundamental problems.
 <!-- reviewed: 2026-05-29 @ 188eb5cdd3887fc40b29e1903bb284d9a9d2114d -->
+
+## Progress
+
+_Workspace below the review marker — does not affect the contract hash. Driven interactively (not `/conduct`: the contract section above lacks the Implementation-Checklist / per-phase Impl-Test-command slots conduct requires)._
+
+- [x] **Phase 0.1** — 0.6 chroma snapshot captured. `cp -a ~/.pipecat-context-hub/chroma → /tmp/chroma-0.6-snapshot` (6 files, integrity_check `ok`); sorted sha256 manifest at `/tmp/chroma-0.6-snapshot.sha256`. Collection `latest`, 39,768 records. (Live `serve` PID held the sqlite open read-side; no `-wal`/`-shm` on chroma.sqlite3 so the copy is consistent.)
+- [x] **Phase 0.5** — chromadb 1.0→1.5.x breaking-change research done (see Findings below).
+- [ ] **Phase 0.2** — v0.0.20 perf baseline (harness does not exist yet; building full per user decision).
+- [ ] **Phase 0.3** — parity harness + 0.6 reference.
+- [ ] **Phase 1–7** — migration + verification.
+
+## Findings (Phase 0)
+
+### Plan defects discovered during prerequisites — require contract amendment
+
+1. **`PIPECAT_HUB_DATA_DIR` is not implemented.** It appears only in this plan (Phase 4 line ~216, Phase 6 lines ~254–269), never in `src/`. `StorageConfig.data_dir` defaults to `~/.pipecat-context-hub` with no env override and no `--data-dir` CLI flag. **Impact:** Phase 4 and Phase 6 isolation are no-ops — `export PIPECAT_HUB_DATA_DIR=...` does nothing, so `refresh`/`serve` hit the real index and Phase 6's migration test (cp snapshot → `$PIPECAT_HUB_DATA_DIR/chroma`) would validate against an unused path. **Fix (new migration scope):** wire `PIPECAT_HUB_DATA_DIR` into `StorageConfig.data_dir` (with a unit test) before Phases 4/6. Minimal + reused by the perf harness for subprocess isolation. Add `src/pipecat_context_hub/shared/config.py` to Files-to-Modify.
+2. **Phase 5 perf harness does not exist.** `benchmark-stability-report` runs `test_runtime_stability.py`, which is a **leak detector** (steady-state RSS/thread/fd *deltas* across mocked refresh/serve cycles in temp dirs) — it emits none of Phase 5's 5 metrics (build duration, query p50/p95, refresh peak RSS, dashboard peak RSS). `test_latency.py` measures median/min/max latency over a 100-record *synthetic* store, no p95, no JSON. **Fix:** build a dedicated perf harness (`test_chromadb_perf.py` + justfile recipe) invoked identically for baseline (0.6) and Phase 5 (1.x). Caveat to record in Phase 5 interpretation: a full-pipeline `refresh` is **embedding-compute dominated** (MiniLM over ~39.8k records, identical 0.6↔1.x), so build-duration is a weak chromadb signal; chroma upsert/query/bulk-get are the discriminating paths.
+
+### chromadb 1.x breaking-change research (web sources; verify against the pinned 1.5.x during Phase 1 spike)
+
+- **Telemetry (corrects risk #1):** `chromadb.telemetry.product.{ProductTelemetryClient, ProductTelemetryEvent}` are **still present** on `main` (not removed). `Settings(anonymized_telemetry=False)` and `chroma_product_telemetry_impl` remain valid fields. Our import path may survive — verify against the actual pin before assuming removal.
+- **`include=` defaults (risk #4 confirmed):** `query()` default = documents/metadatas/distances; `get()` default = documents/metadatas; **embeddings excluded by default**. `ids` always returned, so `include=[]` works for existence checks.
+- **Format break (risk #5 confirmed):** chroma #4217 — a 0.6.3 dir raises `InternalError` under 1.x. Irreversible, no downgrade. Validates the format-detection probe.
+- **HNSW config moved (risk #7/#8 — bigger than stated):** config moved to `configuration={"hnsw":{"space":"cosine",...}}` in 1.0; legacy `metadata={"hnsw:space":"cosine"}` still accepted but **deprecated**; **default space is L2, not cosine** — MUST set cosine explicitly. Defaults: ef_construction=100, ef_search=100, max_neighbors(M)=16.
+- **Metadata None rejected (risk #9 confirmed):** 1.x raises on `None` metadata values (#3644) — strip None before upsert.
+- **`get_or_create_collection` hazard (risk #11 — worse):** passing call-site metadata that differs from stored metadata can SIGSEGV the Rust bindings (third-party report). Safer pattern: `get_collection()` then `create_collection()` on not-found.
+- **Deps:** `posthog` removed (CVE surface ↓ ✓). **`onnxruntime` still core, NOT optional** (corrects risk #14 hope). `kubernetes` still core. `chroma-hnswlib` now optional/dev.
+- **Lifecycle (risk #6):** `_system.stop()` / `clear_system_cache()` are unstable internals (Rust rewrite); no reliable public `close()` (#5868); `reset()` needs `allow_reset=True` and has 1.x bugs (#6030). Keep private teardown but guard it.
+- **`get(limit/offset)` ordering** changed in 0.5.11 to internal-id order (was user-id) — affects any pagination assumptions in tests.
