@@ -309,7 +309,13 @@ class ServerConfig(BaseModel):
         """
         if os.environ.get(_IDLE_TIMEOUT_ENV, "").strip():
             return True
-        return self.idle_timeout_secs != _DEFAULT_IDLE_TIMEOUT_SECS
+        # `model_fields_set` is the precise pydantic signal for "the
+        # caller passed this field" — it stays True even when the value
+        # equals the default, so an embedder who deliberately pins the
+        # default is still honored (a value comparison could not tell
+        # that apart from "never set"). Env binding is handled above
+        # because the timeout is read from os.environ, not pydantic.
+        return "idle_timeout_secs" in self.model_fields_set
 
     @computed_field  # type: ignore[prop-decorator]
     @property

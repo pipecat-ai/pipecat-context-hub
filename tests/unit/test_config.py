@@ -151,6 +151,15 @@ class TestServerConfigIdleTimeoutExplicitlySet:
         monkeypatch.delenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", raising=False)
         assert ServerConfig(idle_timeout_secs=300.0).idle_timeout_explicitly_set is True
 
+    def test_true_when_field_explicitly_set_to_default_value(self, monkeypatch):
+        # An embedder who deliberately pins the default must still be
+        # honored — `model_fields_set` distinguishes this from "never set".
+        monkeypatch.delenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", raising=False)
+        from pipecat_context_hub.shared.config import _DEFAULT_IDLE_TIMEOUT_SECS
+
+        cfg = ServerConfig(idle_timeout_secs=_DEFAULT_IDLE_TIMEOUT_SECS)
+        assert cfg.idle_timeout_explicitly_set is True
+
 
 class TestServerConfigEffectiveParentWatchInterval:
     def test_default_when_unset(self, monkeypatch):

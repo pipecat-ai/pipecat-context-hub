@@ -289,6 +289,23 @@ async def run_stdio(
             except Exception:
                 logger.exception("on_watchdog_shutdown raised during %s", context)
 
+        # Single-shot guard for the pre-exit atexit cleanup. Both the
+        # graceful main thread and the hard-exit timer thread reach an
+        # `os._exit(0)`; in the narrow window where graceful close
+        # finishes right as the 2.5s timer fires, both could otherwise
+        # run `atexit._run_exitfuncs()` concurrently (double-invoking
+        # handlers on the unguarded CPython registry). Run it at most
+        # once — whichever thread gets there first.
+        atexit_lock = threading.Lock()
+        atexit_started = [False]
+
+        def _run_atexit_once() -> None:
+            with atexit_lock:
+                if atexit_started[0]:
+                    return
+                atexit_started[0] = True
+            _run_atexit_bounded(_ATEXIT_CLEANUP_TIMEOUT_SECS)
+
         if shutdown_reason is not None and exit_on_watchdog_shutdown:
             logger.info("Shutting down: %s", shutdown_reason)
             # Arm a watchdog-of-the-watchdog: a plain OS thread that
@@ -371,8 +388,9 @@ async def run_stdio(
                 # Let loky/multiprocessing release resource-tracker
                 # semaphores so the spurious "leaked semaphore" warning
                 # does not print. Bounded so a blocking handler cannot
-                # re-defeat the watchdog.
-                _run_atexit_bounded(_ATEXIT_CLEANUP_TIMEOUT_SECS)
+                # re-defeat the watchdog; single-shot so it cannot race
+                # the graceful path's own call.
+                _run_atexit_once()
                 os._exit(0)
 
             threading.Thread(
@@ -451,8 +469,9 @@ async def run_stdio(
             # release their resource-tracker semaphores — `os._exit`
             # otherwise skips atexit and prints a spurious "leaked
             # semaphore" warning. Bounded so a blocking handler cannot
-            # reintroduce the very hang we exit to avoid.
-            _run_atexit_bounded(_ATEXIT_CLEANUP_TIMEOUT_SECS)
+            # reintroduce the very hang we exit to avoid; single-shot so
+            # it cannot race the hard-exit timer's own call.
+            _run_atexit_once()
             os._exit(0)
 
         # Surface server-task exceptions (e.g. unexpected protocol error)
