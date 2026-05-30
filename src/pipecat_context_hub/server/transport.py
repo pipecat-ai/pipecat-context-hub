@@ -63,11 +63,15 @@ _INTERMEDIATE_LAUNCHERS = frozenset(
 # Enforce the COMM-truncation constraint at import time. A frozenset
 # cannot carry a Pydantic validator, so without this a contributor could
 # add a >15-char launcher that silently never matches on Linux (where
-# `ps -o comm=` truncates to the COMM limit). Fail loudly at import/CI
-# instead.
-assert all(len(name) <= 15 for name in _INTERMEDIATE_LAUNCHERS), (
-    "_INTERMEDIATE_LAUNCHERS entries must be <=15 chars (Linux ps COMM truncation)"
-)
+# `ps -o comm=` truncates to the COMM limit). Raise rather than `assert`
+# so the guard survives `python -O` (which strips asserts). Fail loudly
+# at import/CI instead.
+_overlong_launchers = sorted(n for n in _INTERMEDIATE_LAUNCHERS if len(n) > 15)
+if _overlong_launchers:
+    raise ValueError(
+        "_INTERMEDIATE_LAUNCHERS entries must be <=15 chars "
+        f"(Linux ps COMM truncation): {_overlong_launchers}"
+    )
 
 
 def _inspect_process(pid: int) -> tuple[int | None, str | None]:
