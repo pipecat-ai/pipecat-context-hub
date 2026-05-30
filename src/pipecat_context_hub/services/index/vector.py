@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -21,6 +22,7 @@ from chromadb.config import Settings as ChromaSettings
 from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryEvent
 from overrides import override
 
+from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,47 @@ COLLECTION_NAME = "latest"
 
 # ChromaDB limits batch operations to ~5,461 embeddings. Use a safe limit.
 _CHROMA_BATCH_SIZE = 5000
+
+# chromadb 1.0 introduced sysdb schema migration 10 (00010-collection-schema).
+# A persisted index whose highest applied sysdb migration is below this was
+# written by a pre-1.0 (0.6-era) chromadb and is not loadable by 1.x.
+_MIN_SUPPORTED_SYSDB_MIGRATION = 10
+
+
+def _detect_incompatible_format(chroma_path: Path) -> None:
+    """Raise :class:`IncompatibleIndexFormatError` for a pre-1.0 Chroma dir.
+
+    Non-mutating: opens ``chroma.sqlite3`` read-only and ``immutable`` (no
+    ``-wal``/``-shm`` creation, no schema writes) and inspects the sysdb
+    migration version. Must run *before* ``chromadb.PersistentClient(...)``,
+    which would otherwise raise an opaque ``InternalError`` or rewrite state.
+
+    Stays silent (lets chromadb surface its own error) when the directory has
+    no ``chroma.sqlite3``, the file is not a readable SQLite database, or it has
+    no recognizable ``migrations`` table.
+    """
+    db_path = chroma_path / "chroma.sqlite3"
+    if not db_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
+    except sqlite3.Error:
+        return
+    try:
+        has_migrations = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='migrations'"
+        ).fetchone()
+        if has_migrations is None:
+            return
+        row = conn.execute("SELECT MAX(version) FROM migrations WHERE dir='sysdb'").fetchone()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+    max_version = row[0] if row else None
+    if max_version is not None and max_version < _MIN_SUPPORTED_SYSDB_MIGRATION:
+        raise IncompatibleIndexFormatError(chroma_path, detected_sysdb_migration=max_version)
 
 
 class NoOpProductTelemetryClient(ProductTelemetryClient):
@@ -313,6 +356,9 @@ class VectorIndex:
 
     def _open_client(self) -> None:
         """Open the persistent Chroma client and the ``latest`` collection."""
+        # Probe for a pre-1.0 on-disk format BEFORE constructing the client,
+        # which would otherwise crash opaquely or rewrite 0.6 state.
+        _detect_incompatible_format(self._chroma_path)
         self._chroma_path.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(
             path=str(self._chroma_path),

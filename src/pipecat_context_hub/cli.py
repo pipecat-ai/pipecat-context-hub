@@ -43,7 +43,7 @@ def _redact_home(path: Path | str) -> str:
         s = str(path)
         home = str(Path.home())
         if home and (s == home or s.startswith(home + os.sep)):
-            return "~" + s[len(home):]
+            return "~" + s[len(home) :]
         return s
     except Exception:
         return str(path)
@@ -81,24 +81,16 @@ def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None
     warmup_start = time.monotonic()
     try:
         embedding_svc.embed_query("warmup")  # type: ignore[attr-defined]
-        _module_logger.info(
-            "Embedding model pre-warmed in %.1fs", time.monotonic() - warmup_start
-        )
+        _module_logger.info("Embedding model pre-warmed in %.1fs", time.monotonic() - warmup_start)
     except Exception:
-        _module_logger.exception(
-            "Embedding model pre-warm failed; falling back to lazy load"
-        )
+        _module_logger.exception("Embedding model pre-warm failed; falling back to lazy load")
     if cross_encoder is not None:
         ce_start = time.monotonic()
         try:
             cross_encoder.ensure_model()  # type: ignore[attr-defined]
-            _module_logger.info(
-                "Cross-encoder pre-warmed in %.1fs", time.monotonic() - ce_start
-            )
+            _module_logger.info("Cross-encoder pre-warmed in %.1fs", time.monotonic() - ce_start)
         except Exception:
-            _module_logger.exception(
-                "Cross-encoder pre-warm failed; falling back to lazy load"
-            )
+            _module_logger.exception("Cross-encoder pre-warm failed; falling back to lazy load")
 
 
 def _load_dotenv() -> None:
@@ -185,6 +177,7 @@ def serve(ctx: click.Context) -> None:
     from pipecat_context_hub.server.transport import serve_stdio
     from pipecat_context_hub.shared.tracking import IdleTracker
     from pipecat_context_hub.services.embedding import EmbeddingService
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
@@ -197,6 +190,16 @@ def serve(ctx: click.Context) -> None:
     try:
         index_store = IndexStore(config.storage)
         stats = index_store.get_index_stats()
+    except IncompatibleIndexFormatError as exc:
+        # Specific, non-mutating signal: the on-disk Chroma format predates 1.x.
+        # The probe ran before PersistentClient, so nothing was written.
+        if index_store is not None:
+            try:
+                index_store.close()
+            except Exception:
+                logger.exception("Failed to close partially-opened index store")
+        logger.error("%s", exc)
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         # IndexStore.__init__ opens two backends (Chroma + SQLite) without
         # rolling back on partial failure; close() whatever did come up.
@@ -349,6 +352,7 @@ def serve(ctx: click.Context) -> None:
             reranker_status_provider=_reranker_status,
             idle_tracker=idle_tracker,
         )
+
         def _close_index_store_on_watchdog_shutdown() -> None:
             """Release index handles on any watchdog-triggered shutdown.
 
@@ -393,12 +397,15 @@ def serve(ctx: click.Context) -> None:
     "Can also be set via PIPECAT_HUB_FRAMEWORK_VERSION env var.",
 )
 @click.pass_context
-def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_version: str | None) -> None:
+def refresh(
+    ctx: click.Context, force: bool, reset_index: bool, framework_version: str | None
+) -> None:
     """Rebuild the index, skipping unchanged sources when possible."""
     from pipecat_context_hub.services.embedding import (
         EmbeddingIndexWriter,
         EmbeddingService,
     )
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
     from pipecat_context_hub.services.ingest.github_ingest import (
@@ -430,7 +437,14 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
         force = True
 
     # Build the ingestion pipeline
-    index_store = IndexStore(config.storage)
+    try:
+        index_store = IndexStore(config.storage)
+    except IncompatibleIndexFormatError as exc:
+        # A pre-1.0 Chroma dir cannot be opened by 1.x. --reset-index deletes
+        # storage above before this point, so this only fires on a plain
+        # refresh against a stale 0.6 index — point the user at the rebuild.
+        logger.error("%s", exc)
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
 
@@ -520,7 +534,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
         all_meta = index_store.get_all_metadata()
         for meta_key in all_meta:
             if meta_key.startswith("repo:") and meta_key.endswith(":commit_sha"):
-                slug = meta_key[len("repo:"):-len(":commit_sha")]
+                slug = meta_key[len("repo:") : -len(":commit_sha")]
                 if slug not in configured:
                     if slug in tainted_repos:
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
@@ -583,11 +597,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                 frozen_sha_repos.add(repo_slug)
                 continue
 
-            if (
-                not force
-                and stored_sha == commit_sha
-                and repo_slug not in github.recovered_repos
-            ):
+            if not force and stored_sha == commit_sha and repo_slug not in github.recovered_repos:
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
                     repo_slug,
@@ -635,7 +645,8 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
 
             # Code ingest (per-repo for error tracking)
             code_result = await github.ingest(
-                repos=[repo_slug], prefetched=prefetched,
+                repos=[repo_slug],
+                prefetched=prefetched,
             )
             total_upserted += code_result.records_upserted
             repo_upserted += code_result.records_upserted
@@ -703,23 +714,20 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
         if framework_slug in prefetched:
             fw_path, fw_sha = prefetched[framework_slug]
             dep_map = build_deprecation_map_from_source(fw_path, commit_sha=fw_sha)
-            dep_map = build_deprecation_map_from_releases(
-                framework_slug, dep_map
-            )
+            dep_map = build_deprecation_map_from_releases(framework_slug, dep_map)
             changelog = fw_path / "CHANGELOG.md"
-            dep_map = build_deprecation_map_from_changelog(
-                changelog, dep_map, repo_root=fw_path
-            )
+            dep_map = build_deprecation_map_from_changelog(changelog, dep_map, repo_root=fw_path)
             dep_map.save(dep_map_path)
         else:
             # Framework repo not cloned — still try release notes via gh
             from pipecat_context_hub.services.ingest.deprecation_map import (
                 DeprecationMap,
             )
-            existing = DeprecationMap.load(dep_map_path) if dep_map_path.is_file() else DeprecationMap()
-            dep_map = build_deprecation_map_from_releases(
-                framework_slug, existing
+
+            existing = (
+                DeprecationMap.load(dep_map_path) if dep_map_path.is_file() else DeprecationMap()
             )
+            dep_map = build_deprecation_map_from_releases(framework_slug, existing)
             if dep_map.entries:
                 dep_map.save(dep_map_path)
                 logger.info(
@@ -840,10 +848,7 @@ def _print_refresh_summary(
     name_width = max(len(name) for name in source_status)
     name_width = max(name_width, len("Repository"))
 
-    hr = (
-        f"{_safe_hr(name_width)}  {_safe_hr(8)}  {_safe_hr(10)}  "
-        f"{_safe_hr(8)}  {_safe_hr(8)}"
-    )
+    hr = f"{_safe_hr(name_width)}  {_safe_hr(8)}  {_safe_hr(10)}  {_safe_hr(8)}  {_safe_hr(8)}"
     placeholder = _safe_placeholder()
 
     # Header
@@ -895,13 +900,9 @@ def _print_refresh_summary(
     click.echo()
     if recovered_repos:
         click.echo(
-            f"Recovered {len(recovered_repos)} corrupt clone(s): "
-            f"{', '.join(recovered_repos)}"
+            f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
         )
-    click.echo(
-        f"Refresh complete: {total_upserted:,} upserted, "
-        f"{error_count} errors, {duration}s."
-    )
+    click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 
 
 if __name__ == "__main__":
