@@ -25,6 +25,10 @@ benchmark-stability:
 benchmark-stability-report out="artifacts/benchmarks/runtime-stability.json":
     PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK=1 PIPECAT_HUB_STABILITY_OUTPUT={{out}} uv run pytest tests/benchmarks/test_runtime_stability.py -m benchmark -v -s
 
+# Run the chromadb performance benchmark and persist a JSON report
+benchmark-perf-report out="artifacts/benchmarks/chromadb-perf.json":
+    PIPECAT_HUB_ENABLE_PERF_BENCHMARK=1 PIPECAT_HUB_PERF_OUTPUT={{out}} uv run pytest tests/benchmarks/test_chromadb_perf.py -m benchmark -v -s
+
 # Lint with ruff
 lint:
     uv run ruff check src/ tests/
