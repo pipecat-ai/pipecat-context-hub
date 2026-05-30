@@ -337,9 +337,17 @@ _Workspace below the review marker — does not affect the contract hash. Driven
 
 - [x] **Phase 0.1** — 0.6 chroma snapshot captured. `cp -a ~/.pipecat-context-hub/chroma → /tmp/chroma-0.6-snapshot` (6 files, integrity_check `ok`); sorted sha256 manifest at `/tmp/chroma-0.6-snapshot.sha256`. Collection `latest`, 39,768 records. (Live `serve` PID held the sqlite open read-side; no `-wal`/`-shm` on chroma.sqlite3 so the copy is consistent.)
 - [x] **Phase 0.5** — chromadb 1.0→1.5.x breaking-change research done (see Findings below).
-- [ ] **Phase 0.2** — v0.0.20 perf baseline (harness does not exist yet; building full per user decision).
-- [ ] **Phase 0.3** — parity harness + 0.6 reference.
-- [ ] **Phase 1–7** — migration + verification.
+- [x] **Defect 1 fix** — `PIPECAT_HUB_DATA_DIR` wired into `StorageConfig.data_dir` (+5 unit tests). Commit `692b49c`.
+- [x] **Phase 0.3 + 0.4** — parity harness `tests/benchmarks/test_chromadb_parity.py` committed (`bf968c7`); 0.6 reference captured to `/tmp/chroma-v0.0.20-parity-results.json` (15 queries, 39,768 records, Layer A dist 0.18–0.49; not committed per plan).
+- [x] **Phase 0.2 harness** — `tests/benchmarks/test_chromadb_perf.py` + `just benchmark-perf-report` recipe committed (`bf968c7`). Mechanics self-tested (RSS sampler, percentiles).
+- [~] **Phase 0.2 baseline** — `just benchmark-perf-report tests/benchmarks/baselines/v0.0.20.json` running against isolated `/tmp/pch-perf-0.6` (real refresh, ~27 min). Pending commit on completion.
+- [ ] **Phase 1–7** — migration + verification. **Phase 1 (pin bump + `uv lock`) is the point of no return for the live 0.6 env.**
+
+### Migration scope additions (from Findings)
+- Wire `PIPECAT_HUB_DATA_DIR` — **done early** (`692b49c`), unblocks Phase 4/6 isolation.
+- Dashboard scripts (`extract_embeddings.py`, `extract_dashboard.py`) hardcode `~/.pipecat-context-hub` and ignore the data-dir env — route through shared config in Phase 4 (already in Files-to-Modify).
+- Telemetry import likely survives in 1.x (verify at Phase 1 spike before assuming removal).
+- HNSW: default space is **L2** in 1.x — must set cosine explicitly; config moved to `configuration={"hnsw":{...}}` (legacy metadata form deprecated but accepted).
 
 ## Findings (Phase 0)
 
