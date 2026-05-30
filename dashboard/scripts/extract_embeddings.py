@@ -2,20 +2,23 @@
 
 import json
 import os
-import sys
 import time
 
 import chromadb
 import numpy as np
 import umap
 
+from pipecat_context_hub.shared.config import StorageConfig
+
 
 def main() -> None:
-    data_dir = os.path.expanduser("~/.pipecat-context-hub")
+    # Route through StorageConfig so PIPECAT_HUB_DATA_DIR is honoured (keeps the
+    # dashboard pipeline consistent with refresh/serve and isolated test runs).
+    chroma_path = StorageConfig().chroma_path
     out_path = os.path.join(os.path.dirname(__file__), "..", "public", "embeddings_3d.json")
 
     print("Connecting to ChromaDB...")
-    client = chromadb.PersistentClient(path=os.path.join(data_dir, "chroma"))
+    client = chromadb.PersistentClient(path=str(chroma_path))
     col = client.get_collection("latest")
     total = col.count()
     print(f"Collection has {total:,} records")
@@ -82,20 +85,22 @@ def main() -> None:
             else:
                 chunk_type = "function"
 
-        points.append({
-            "id": all_ids[i],
-            "x": float(coords_3d[i, 0]),
-            "y": float(coords_3d[i, 1]),
-            "z": float(coords_3d[i, 2]),
-            "content_type": content_type,
-            "chunk_type": chunk_type,
-            "repo": meta.get("repo", ""),
-            "path": meta.get("path", ""),
-            "class_name": meta.get("class_name", ""),
-            "method_name": meta.get("method_name", ""),
-            "module_path": meta.get("module_path", ""),
-            "preview": preview,
-        })
+        points.append(
+            {
+                "id": all_ids[i],
+                "x": float(coords_3d[i, 0]),
+                "y": float(coords_3d[i, 1]),
+                "z": float(coords_3d[i, 2]),
+                "content_type": content_type,
+                "chunk_type": chunk_type,
+                "repo": meta.get("repo", ""),
+                "path": meta.get("path", ""),
+                "class_name": meta.get("class_name", ""),
+                "method_name": meta.get("method_name", ""),
+                "module_path": meta.get("module_path", ""),
+                "preview": preview,
+            }
+        )
 
     export = {
         "total": len(points),
