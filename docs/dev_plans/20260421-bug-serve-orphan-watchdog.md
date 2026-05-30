@@ -99,6 +99,13 @@ While implementing the P2 fix, a third defect surfaced:
 
 ## Known Gap: `uv run` wrapper
 
+> **RESOLVED (2026-05-30).** Closed by the grandparent-death watchdog in
+> [`20260530-fix-serve-uv-run-grandparent-watchdog.md`](20260530-fix-serve-uv-run-grandparent-watchdog.md):
+> `serve` now detects an intermediate launcher (`uv`/`uvx`) and watches the
+> grandparent (the real client) directly, so it exits when the client dies
+> even though `getppid()` never flips. The idle timeout below is demoted to
+> a fallback for cases where client-death detection is unavailable.
+
 The watchdog polls the *immediate* PPID. When `serve` is launched via `uv run pipecat-context-hub serve` (the default invocation in this project's docs and most MCP-client configs), `uv` stays alive as an intermediate parent. When the outer client dies, `uv` is reparented to init but does not itself exit. Python's `getppid()` therefore never flips — the watchdog does not fire.
 
 Real-world impact: the 10+ zombie pairs that motivated this fix all ran under `uv run`. This PR does **not** clean those up. It does prevent accumulation in deployments where Python is launched directly (e.g. MCP config pointing at `.venv/bin/pipecat-context-hub serve` with `exec`).

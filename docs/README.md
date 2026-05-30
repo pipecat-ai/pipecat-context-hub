@@ -195,7 +195,7 @@ PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 uv run pipecat-context-hub refresh
 | `PIPECAT_HUB_TAINTED_REFS` | *(empty)* | Comma-separated `org/repo@ref` entries to skip |
 | `PIPECAT_HUB_RERANKER_ENABLED` | `1` | Set to `0` to disable cross-encoder reranking |
 | `PIPECAT_HUB_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Swap reranker model. Allowed: `cross-encoder/ms-marco-MiniLM-L-6-v2` (~80 MB), `cross-encoder/ms-marco-MiniLM-L-12-v2` (~130 MB), `cross-encoder/ms-marco-TinyBERT-L-2-v2` (~17 MB) |
-| `PIPECAT_HUB_IDLE_TIMEOUT_SECS` | `1800` | Exit `serve` if no MCP request arrives for this many seconds (30 min default). Set to `0` to disable. |
+| `PIPECAT_HUB_IDLE_TIMEOUT_SECS` | `1800` | Idle backstop: exit `serve` if no MCP request arrives for this many seconds. **Auto-disabled** when `serve` has reliable client-death detection (direct-parent launch, or `uv run` with a resolvable grandparent) — it would otherwise reap a warm hub mid-session. Stays armed when detection is unavailable (Windows, parent-watch disabled, unresolved grandparent). Set an explicit value (incl. `0`) to override the auto-decision. |
 | `PIPECAT_HUB_PARENT_WATCH_INTERVAL` | `2.0` | Hidden tuning knob (primarily for tests): poll interval (seconds) for the parent-death watchdog. Floored at `0.1s` when non-zero. Set to `0` to disable the watchdog. |
 | `PIPECAT_HUB_WARMUP` | `1` | Pre-warm embedding + cross-encoder at `serve` boot so the first MCP query doesn't pay the cold-start cost (matters most on Windows CPU, where cold loads can take 30-130s). Set to `0` to skip (faster boot, slower first query). |
 
@@ -205,7 +205,14 @@ into your `.env`.
 ## MCP Client Configuration
 
 Two ways to point an MCP client (Claude Code, Cursor, Zed, etc.) at this
-hub. They differ in how cleanly the server exits when the client goes away.
+hub. Both exit cleanly within ~2s when the client goes away; they differ
+only in convenience.
+
+> **Note:** an MCP server is a subprocess the client spawns over stdio — it
+> cannot restart *itself*. If you want the hub back after it exits, that is
+> the MCP client's job (most clients respawn on the next request). The hub's
+> contribution is to (a) stay alive for the whole session and (b) exit
+> cleanly so the client can respawn without errors.
 
 **Recommended — direct invocation (instant orphan cleanup):**
 
@@ -237,13 +244,14 @@ exits cleanly, releasing the Chroma + SQLite handles.
 }
 ```
 
-Convenient (no need to know the venv path) but `uv` stays alive as an
-intermediate parent, so the parent-death watchdog cannot detect client
-death from inside Python. The 30-minute idle-timeout backstop
-(`PIPECAT_HUB_IDLE_TIMEOUT_SECS`) still fires, so orphans don't
-accumulate forever — they just take longer to clear. Tune the env var
-down (e.g. `300` for 5 minutes) if you spawn lots of short-lived
-sessions.
+Convenient (no need to know the venv path). `uv` stays alive as an
+intermediate parent, so `getppid()` never flips when the client dies —
+but `serve` detects the `uv` launcher and watches the **grandparent**
+(the real client) directly, so it still exits within ~2s of the client
+going away. The idle timeout is auto-disabled in this case (it is no
+longer needed for cleanup), so the hub stays warm through quiet stretches
+of an active session. Set `PIPECAT_HUB_IDLE_TIMEOUT_SECS` if you still
+want an idle backstop.
 
 ## Data Sources
 
