@@ -37,11 +37,13 @@ _DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Allowlisted cross-encoder models. Kept in the shared config layer so both
 # the config resolver and the reranker service import it from the same place
 # (single source of truth, upward dependency direction).
-_ALLOWED_RERANKER_MODELS: frozenset[str] = frozenset({
-    _DEFAULT_RERANKER_MODEL,
-    "cross-encoder/ms-marco-MiniLM-L-12-v2",
-    "cross-encoder/ms-marco-TinyBERT-L-2-v2",
-})
+_ALLOWED_RERANKER_MODELS: frozenset[str] = frozenset(
+    {
+        _DEFAULT_RERANKER_MODEL,
+        "cross-encoder/ms-marco-MiniLM-L-12-v2",
+        "cross-encoder/ms-marco-TinyBERT-L-2-v2",
+    }
+)
 
 # Environment variable for pinning the framework repo to a specific git tag.
 _FRAMEWORK_VERSION_ENV = "PIPECAT_HUB_FRAMEWORK_VERSION"
@@ -167,6 +169,7 @@ class RerankerConfig(BaseModel):
         if env in ("1", "true", "yes"):
             return True
         return self.enabled
+
     cross_encoder_model: str = Field(
         default=_DEFAULT_RERANKER_MODEL,
         description="Cross-encoder model name from sentence-transformers. "
@@ -242,7 +245,9 @@ class RerankerConfig(BaseModel):
 class ServerConfig(BaseModel):
     """MCP server settings."""
 
-    transport: Literal["stdio"] = Field(default="stdio", description="Transport type (stdio only in v0).")
+    transport: Literal["stdio"] = Field(
+        default="stdio", description="Transport type (stdio only in v0)."
+    )
     log_level: str = Field(default="INFO", description="Logging level.")
     idle_timeout_secs: float = Field(
         default=_DEFAULT_IDLE_TIMEOUT_SECS,
@@ -290,6 +295,21 @@ class ServerConfig(BaseModel):
             )
             return max(0.0, self.idle_timeout_secs)
         return max(0.0, parsed)
+
+    @property
+    def idle_timeout_explicitly_set(self) -> bool:
+        """Whether the operator chose an idle timeout (vs. the default).
+
+        ``serve`` disables the idle watchdog when reliable client-death
+        detection is active (it would only kill a warm server during a
+        quiet stretch of an active session). That auto-disable must
+        never override an operator who deliberately configured a value —
+        either via ``PIPECAT_HUB_IDLE_TIMEOUT_SECS`` or by setting the
+        field away from its default.
+        """
+        if os.environ.get(_IDLE_TIMEOUT_ENV, "").strip():
+            return True
+        return self.idle_timeout_secs != _DEFAULT_IDLE_TIMEOUT_SECS
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -380,9 +400,7 @@ class SourceConfig(BaseModel):
     @property
     def tainted_repos(self) -> list[str]:
         """Repos explicitly blocked from refresh by local policy."""
-        return _dedupe_preserve_order(
-            _split_csv_env(os.environ.get(_TAINTED_REPOS_ENV, ""))
-        )
+        return _dedupe_preserve_order(_split_csv_env(os.environ.get(_TAINTED_REPOS_ENV, "")))
 
     @computed_field  # type: ignore[prop-decorator]
     @property

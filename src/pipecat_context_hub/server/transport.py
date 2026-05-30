@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import os
+import subprocess  # nosec B404 - used only for a fixed-arg, timeout-guarded `ps` probe
 import sys
 import threading
 from typing import Callable
@@ -30,20 +32,150 @@ _HARD_EXIT_TIMEOUT_SECS = 2.5
 # defeating the watchdog — on-disk state is crash-consistent.
 _SHUTDOWN_CB_TIMEOUT_SECS = 1.0
 
+# Budget for running atexit handlers before a hard os._exit(0). Lets
+# loky/multiprocessing release their resource-tracker semaphores (so the
+# spurious "leaked semaphore" warning does not print) without letting a
+# blocking handler defeat the watchdog's "client gone, die" guarantee.
+_ATEXIT_CLEANUP_TIMEOUT_SECS = 1.0
 
-async def _watch_parent(original_ppid: int, interval: float) -> str:
-    """Poll for parent-process death; return a reason string when detected.
+# Direct-parent process names that are *intermediate launchers* rather
+# than the real MCP client. When the hub is started as
+# `uv run pipecat-context-hub serve`, `uv` stays alive as the hub's
+# parent, so os.getppid() never flips when the real client (the
+# grandparent) dies — the parent-death watchdog cannot fire. For these,
+# we watch the grandparent PID directly instead. Compared by basename.
+_INTERMEDIATE_LAUNCHERS = frozenset({"uv", "uvx"})
 
-    Posix: when the parent exits, the child is reparented to PID 1
-    (init/launchd), so getppid() flips. Windows lacks the reparent
-    semantics — getppid() may return stale PIDs — so the caller skips
-    spawning this watchdog there.
+
+def _inspect_process(pid: int) -> tuple[int | None, str | None]:
+    """Best-effort ``(ppid, command-basename)`` for ``pid`` via ``ps``.
+
+    One fixed-argument, timeout-guarded ``ps`` call. Returns
+    ``(None, None)`` on any failure (ps missing, non-zero exit, parse
+    error) so callers degrade to the idle-timeout fallback rather than
+    crash. Not used on Windows (callers gate on ``sys.platform``).
+    """
+    try:
+        out = subprocess.run(  # nosec B603 B607 - fixed args, no shell, trusted PATH
+            ["ps", "-p", str(pid), "-o", "ppid=,comm="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except Exception:
+        return (None, None)
+    line = out.stdout.strip()
+    if not line:
+        return (None, None)
+    parts = line.split(None, 1)
+    ppid: int | None = None
+    comm: str | None = None
+    try:
+        ppid = int(parts[0])
+    except (ValueError, IndexError):
+        ppid = None
+    if len(parts) > 1 and parts[1].strip():
+        comm = os.path.basename(parts[1].strip())
+    return (ppid, comm)
+
+
+def resolve_watch_plan(parent_pid: int) -> tuple[int | None, bool]:
+    """Decide what process death proves the client is gone.
+
+    Returns ``(client_watch_pid, death_detection_reliable)``:
+
+    - **Direct launch** (parent is the real client): ``(None, True)`` —
+      the existing parent-death watchdog (``os.getppid()`` flips to 1)
+      covers orphan cleanup; no extra PID to watch.
+    - **Intermediate launcher** (parent is ``uv``/``uvx``) with a
+      resolvable grandparent > 1: ``(grandparent_pid, True)`` — watch the
+      grandparent (the real client) for death, since ``getppid()`` will
+      not flip while ``uv`` lingers.
+    - **Intermediate launcher with an unresolvable grandparent**
+      (``ps`` failed, or grandparent is already PID 1):
+      ``(None, False)`` — we cannot reliably detect client death, so the
+      caller keeps the idle-timeout fallback armed.
+    """
+    grandparent, comm = _inspect_process(parent_pid)
+    if comm in _INTERMEDIATE_LAUNCHERS:
+        if grandparent is not None and grandparent > 1:
+            return (grandparent, True)
+        return (None, False)
+    # Direct parent is the client (or an unknown launcher we treat as the
+    # client); parent-death detection applies.
+    return (None, True)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether ``pid`` is still a live process. Best-effort, no subprocess.
+
+    ``os.kill(pid, 0)`` sends no signal but performs the existence +
+    permission check: ``ProcessLookupError`` means the process is gone;
+    ``PermissionError`` means it exists but is owned by another user
+    (still alive). Any other ``OSError`` is treated as alive to avoid a
+    false-positive shutdown.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _run_atexit_bounded(timeout: float) -> None:
+    """Run registered ``atexit`` handlers in a bounded daemon thread.
+
+    Called just before a hard ``os._exit(0)``. ``os._exit`` skips
+    ``atexit``, which leaves loky/multiprocessing resource-tracker
+    semaphores unreleased and prints a spurious "leaked semaphore"
+    warning (the resource_tracker child reaps them anyway). Running the
+    handlers first avoids the warning. We run them off-thread with a
+    timeout so a handler that blocks (e.g. one that tries to join the
+    stuck stdin reader on Linux) cannot defeat the watchdog — after the
+    budget we proceed to ``os._exit`` regardless.
+    """
+    done = threading.Event()
+
+    def _run() -> None:
+        try:
+            atexit._run_exitfuncs()
+        except Exception:  # nosec B110 - best-effort cleanup before hard exit
+            pass  # nosec B110
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, name="hub-atexit-cleanup", daemon=True).start()
+    done.wait(timeout)
+
+
+async def _watch_parent(original_ppid: int, interval: float, client_pid: int | None = None) -> str:
+    """Poll for client-process death; return a reason string when detected.
+
+    Two detection modes run together:
+
+    - **Parent death** (always): when the parent exits, posix reparents
+      the child to PID 1 (init/launchd), so getppid() flips. Windows
+      lacks the reparent semantics — getppid() may return stale PIDs —
+      so the caller skips spawning this watchdog there.
+    - **Grandparent death** (when ``client_pid`` is set): under an
+      intermediate launcher like ``uv run`` the chain is
+      ``client → uv → hub``. ``uv`` lingers after the client dies, so
+      getppid() never flips. We watch the real client (the grandparent)
+      directly via ``_pid_alive`` so the hub still exits when the client
+      goes away. See ``resolve_watch_plan``.
     """
     while True:
         await asyncio.sleep(interval)
         current = os.getppid()
         if current != original_ppid:
             return f"parent_died original_ppid={original_ppid} current_ppid={current}"
+        if client_pid is not None and not _pid_alive(client_pid):
+            return f"client_died client_pid={client_pid} intermediate_ppid={original_ppid}"
 
 
 async def _watch_idle(tracker: IdleTracker, timeout: float, interval: float) -> str:
@@ -52,10 +184,7 @@ async def _watch_idle(tracker: IdleTracker, timeout: float, interval: float) -> 
         await asyncio.sleep(interval)
         idle = tracker.seconds_since_last()
         if idle >= timeout:
-            return (
-                f"idle_timeout idle_seconds={idle:.0f} "
-                f"timeout_seconds={timeout:.0f}"
-            )
+            return f"idle_timeout idle_seconds={idle:.0f} timeout_seconds={timeout:.0f}"
 
 
 async def run_stdio(
@@ -64,6 +193,7 @@ async def run_stdio(
     idle_tracker: IdleTracker | None = None,
     parent_watch_interval_secs: float = 0.0,
     idle_timeout_secs: float = 0.0,
+    client_watch_pid: int | None = None,
     on_watchdog_shutdown: Callable[[], None] | None = None,
     exit_on_watchdog_shutdown: bool = False,
 ) -> str | None:
@@ -81,6 +211,11 @@ async def run_stdio(
     work), because startup can take several seconds and the client may
     die during that window — if we snapshotted here, we'd lock in the
     already-reparented PID and the watchdog would never fire.
+
+    ``client_watch_pid`` is the grandparent (real client) PID to watch
+    for death when the hub runs under an intermediate launcher such as
+    ``uv run`` (where ``getppid()`` never flips). ``None`` for direct
+    launches. Resolved by the caller via ``resolve_watch_plan``.
 
     ``parent_watch_interval_secs`` and ``idle_timeout_secs`` are
     resolved by the caller (typically from ``ServerConfig`` env-aware
@@ -113,7 +248,7 @@ async def run_stdio(
         idle_task: asyncio.Task[str] | None = None
         if enable_watchdog:
             watchdog_task = asyncio.create_task(
-                _watch_parent(original_ppid, parent_watch_interval_secs),
+                _watch_parent(original_ppid, parent_watch_interval_secs, client_watch_pid),
                 name="parent-death-watchdog",
             )
             tasks.append(watchdog_task)
@@ -152,9 +287,7 @@ async def run_stdio(
             try:
                 on_watchdog_shutdown()
             except Exception:
-                logger.exception(
-                    "on_watchdog_shutdown raised during %s", context
-                )
+                logger.exception("on_watchdog_shutdown raised during %s", context)
 
         if shutdown_reason is not None and exit_on_watchdog_shutdown:
             logger.info("Shutting down: %s", shutdown_reason)
@@ -204,9 +337,11 @@ async def run_stdio(
                 # the shutdown reason.
                 try:
                     sys.stderr.write(
-                        "pipecat-context-hub: graceful shutdown timed out, "
-                        "hard-exiting (stdin reader stuck in uninterruptible "
-                        "read(0))\n"
+                        "pipecat-context-hub: client gone; fast-exiting after "
+                        f"{_HARD_EXIT_TIMEOUT_SECS:g}s graceful-unwind budget. "
+                        "This is expected (the watchdog forces exit so the hub "
+                        "does not linger when its client is gone); exit code 0, "
+                        "on-disk state is intact.\n"
                     )
                     sys.stderr.flush()
                 except Exception:  # nosec B110 - best-effort diagnostic before hard exit
@@ -233,6 +368,11 @@ async def run_stdio(
                     daemon=True,
                 ).start()
                 cb_done.wait(_SHUTDOWN_CB_TIMEOUT_SECS)
+                # Let loky/multiprocessing release resource-tracker
+                # semaphores so the spurious "leaked semaphore" warning
+                # does not print. Bounded so a blocking handler cannot
+                # re-defeat the watchdog.
+                _run_atexit_bounded(_ATEXIT_CLEANUP_TIMEOUT_SECS)
                 os._exit(0)
 
             threading.Thread(
@@ -306,6 +446,13 @@ async def run_stdio(
             # exiting directly. We do this from the main thread (not
             # the daemon timer) so the call is guaranteed to execute
             # even under GIL-holding C code.
+            #
+            # Run atexit handlers first (bounded) so loky/multiprocessing
+            # release their resource-tracker semaphores — `os._exit`
+            # otherwise skips atexit and prints a spurious "leaked
+            # semaphore" warning. Bounded so a blocking handler cannot
+            # reintroduce the very hang we exit to avoid.
+            _run_atexit_bounded(_ATEXIT_CLEANUP_TIMEOUT_SECS)
             os._exit(0)
 
         # Surface server-task exceptions (e.g. unexpected protocol error)
@@ -324,6 +471,7 @@ def serve_stdio(
     idle_tracker: IdleTracker | None = None,
     parent_watch_interval_secs: float = 0.0,
     idle_timeout_secs: float = 0.0,
+    client_watch_pid: int | None = None,
     on_watchdog_shutdown: Callable[[], None] | None = None,
     exit_on_watchdog_shutdown: bool = False,
 ) -> str | None:
@@ -332,6 +480,9 @@ def serve_stdio(
     ``original_ppid`` should be captured by the caller at process entry
     (before any index/service construction) so that a parent-death that
     happens during startup is still detected by the watchdog.
+    ``client_watch_pid`` is the grandparent (real client) PID to watch
+    when launched under an intermediate launcher like ``uv run``; the
+    caller resolves it via ``resolve_watch_plan``.
     ``idle_tracker`` is the request-touch tracker used by the idle
     watchdog; the caller passes the same instance to ``create_server``.
     The two timeouts come from ``ServerConfig`` env-aware computed
@@ -369,6 +520,7 @@ def serve_stdio(
             idle_tracker=idle_tracker,
             parent_watch_interval_secs=parent_watch_interval_secs,
             idle_timeout_secs=idle_timeout_secs,
+            client_watch_pid=client_watch_pid,
             on_watchdog_shutdown=on_watchdog_shutdown,
             exit_on_watchdog_shutdown=exit_on_watchdog_shutdown,
         )

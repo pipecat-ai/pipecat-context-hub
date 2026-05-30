@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -241,6 +242,153 @@ def test_idle_timeout_exits_serve(seeded_home: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="orphan-reparent semantics differ on Windows")
+def test_uv_run_client_death_exits_via_grandparent_watchdog(
+    tmp_path: Path, seeded_home: Path
+) -> None:
+    """The `uv run` headline fix: when the real client dies but stdin
+    stays open, `serve` must exit via the *grandparent*-death watchdog —
+    NOT the idle timeout (which the smart-idle policy disables here).
+
+    Topology: ``wrapper(client) → uv → serve``. ``serve``'s parent is
+    ``uv`` (which lingers), so the old PPID-flip watchdog could never
+    fire — only the idle timeout reaped it (the documented gap). Now
+    ``serve`` watches its grandparent (the wrapper) directly.
+
+    Strategy mirrors ``test_orphaned_serve_exits_via_watchdog``:
+
+    1. Wrapper holds ``serve``'s stdin open via a separate holder
+       subprocess, so EOF cannot be the exit cause.
+    2. Wrapper launches ``uv run … serve`` and resolves ``serve``'s real
+       PID (``pgrep -P <uv_pid>``) after ``initialize`` round-trips.
+    3. Crucially it sets **no** ``PIPECAT_HUB_IDLE_TIMEOUT_SECS`` — so
+       the smart-idle policy disables the idle watchdog (reliable
+       client-death detection is active). If `serve` still exits, it can
+       only be the grandparent watchdog.
+    4. Wrapper exits without closing the pipe; the grandparent (wrapper)
+       death must make `serve` exit within the watch interval.
+    """
+    if shutil.which("uv") is None:
+        pytest.skip("uv not on PATH")
+
+    wrapper = tmp_path / "uv_wrapper.py"
+    init_payload = _initialize_payload().decode()
+    wrapper.write_text(
+        textwrap.dedent(
+            f"""
+            import os, select, subprocess, sys, time
+            r, w = os.pipe()
+            out_r, out_w = os.pipe()
+            holder = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(120)"],
+                pass_fds=(w, out_r),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            env = os.environ.copy()
+            env["HOME"] = {str(seeded_home)!r}
+            env["USERPROFILE"] = {str(seeded_home)!r}
+            env["PIPECAT_HUB_WARMUP"] = "0"
+            env["PIPECAT_HUB_PARENT_WATCH_INTERVAL"] = "0.5"
+            # No PIPECAT_HUB_IDLE_TIMEOUT_SECS: smart-idle must disable the
+            # idle watchdog, leaving the grandparent watchdog as the only
+            # thing that can exit serve.
+            proc = subprocess.Popen(
+                {_serve_cmd(direct=False)!r},
+                stdin=r,
+                stdout=out_w,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            os.close(r)
+            os.close(out_w)
+            os.write(w, {init_payload!r}.encode())
+            deadline = time.time() + 60
+            buf = b""
+            while b"\\n" not in buf:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    sys.stderr.write(f"wrapper: no initialize response; buf={{buf!r}}\\n")
+                    os._exit(2)
+                ready, _, _ = select.select([out_r], [], [], remaining)
+                if not ready:
+                    continue
+                chunk = os.read(out_r, 4096)
+                if not chunk:
+                    sys.stderr.write("wrapper: serve closed stdout before responding\\n")
+                    os._exit(3)
+                buf += chunk
+            # serve is the child of uv (proc.pid). Resolve its real PID.
+            serve_pid = None
+            for _ in range(20):
+                out = subprocess.run(
+                    ["pgrep", "-P", str(proc.pid)],
+                    capture_output=True, text=True,
+                )
+                pids = [p for p in out.stdout.split() if p.strip()]
+                if pids:
+                    serve_pid = pids[0]
+                    break
+                time.sleep(0.25)
+            if serve_pid is None:
+                sys.stderr.write(f"wrapper: could not resolve serve pid under uv {{proc.pid}}\\n")
+                os._exit(4)
+            os.close(w)
+            os.close(out_r)
+            print(f"{{serve_pid}} {{holder.pid}}", flush=True)
+            os._exit(0)
+            """
+        )
+    )
+
+    try:
+        wrapper_proc = subprocess.run(
+            [sys.executable, str(wrapper)],
+            capture_output=True,
+            timeout=90,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        pytest.fail(
+            f"wrapper exited with {exc.returncode}. stderr:\n{exc.stderr.decode(errors='replace')}"
+        )
+    serve_pid_str, holder_pid_str = wrapper_proc.stdout.decode().strip().split()
+    serve_pid = int(serve_pid_str)
+    holder_pid = int(holder_pid_str)
+
+    try:
+        try:
+            os.kill(holder_pid, 0)
+        except ProcessLookupError:
+            pytest.fail(
+                f"holder PID {holder_pid} died unexpectedly — test would "
+                "have exercised the stdin-EOF path, not the watchdog"
+            )
+
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            try:
+                os.kill(serve_pid, 0)
+            except ProcessLookupError:
+                return  # serve exited via the grandparent watchdog
+            time.sleep(0.5)
+
+        try:
+            os.kill(serve_pid, 9)
+        except ProcessLookupError:
+            pass
+        pytest.fail(
+            f"serve PID {serve_pid} still alive 20s after its client "
+            f"(grandparent) died under uv run — grandparent watchdog did not fire"
+        )
+    finally:
+        try:
+            os.kill(holder_pid, 9)
+        except ProcessLookupError:
+            pass
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="orphan-reparent semantics differ on Windows")
 def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) -> None:
     """Orphan `serve` (parent dies without closing stdio) must exit via watchdog.
 
@@ -335,8 +483,7 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
         )
     except subprocess.CalledProcessError as exc:
         pytest.fail(
-            f"wrapper exited with {exc.returncode}. "
-            f"stderr:\n{exc.stderr.decode(errors='replace')}"
+            f"wrapper exited with {exc.returncode}. stderr:\n{exc.stderr.decode(errors='replace')}"
         )
     serve_pid_str, holder_pid_str = wrapper_proc.stdout.decode().strip().split()
     serve_pid = int(serve_pid_str)
