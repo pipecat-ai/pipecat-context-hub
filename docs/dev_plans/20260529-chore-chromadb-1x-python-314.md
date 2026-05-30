@@ -329,3 +329,4 @@ If steps 3-6 are not all in the same commit, CI may green-light a Python version
 - The current `Settings` construction passes **only** `anonymized_telemetry=False` and `chroma_product_telemetry_impl="...NoOpProductTelemetryClient"`. It does **not** pass `allow_reset=True` (the v1 draft of this plan claimed it did; that was incorrect — caught by Codex review).
 - The `requires-python` ceiling, CHANGELOG entry, and CI matrix must all move together when the cap lifts. v0.0.20 established this convention.
 - This plan deliberately leaves out "consider switching vector backends" — that's `docs/decisions/vector-backend.md`, re-open separately if 1.x reveals fundamental problems.
+<!-- reviewed: 2026-05-29 @ 188eb5cdd3887fc40b29e1903bb284d9a9d2114d -->
