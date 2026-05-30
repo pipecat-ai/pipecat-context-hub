@@ -362,7 +362,20 @@ _Workspace below the review marker — does not affect the contract hash. Driven
 - [x] **Phase 7 — representative subset PASS (7/7)** against the 1.x index: `get_hub_status` (v0.1.0, recent refresh), `get_doc` assembled page (13 KB) + section slice, `search_api` `send_dtmf`/`DailyTransport` (prefix + class filter), `search_examples domain=backend`, `search_docs "TTS + STT"` (multi-concept), `search_api WebSocketTransport` (TS). **The full 40-item AGENTS.md live smoke remains a maintainer step** — it requires the reconnected MCP client; run it against the rebuilt live index before merge/tag.
 - [x] **Docs/CI** — Windows smoke job added to `.github/workflows/ci.yml` (validates chromadb 1.5.9 wheels on Windows + runs unit/integration suite that builds a real index, exercises the probe, boots `serve`, queries; a full network `refresh` is intentionally not CI-gated). `docs/dev_plans/README.md` row → "In Review". CLAUDE.md "Windows tips" reviewed: all three items are git-clone-recovery / console-encoding / model-prewarm — none are chromadb-0.6-specific, nothing to remove. `docs/README.md` says "ChromaDB + SQLite FTS5" (no version) — no material change.
 - [x] **Release housekeeping** — parked PR #67/#69 work folded into CHANGELOG `[0.1.0]` (Added/Changed/Fixed), `[Unreleased]` left empty.
-- [ ] **Remaining** — remove merged `/tmp/pcmcp-spike-1x` worktree; open PR; (maintainer) run full AGENTS.md live smoke against the rebuilt live index; on merge move the `docs/dev_plans/README.md` row to Completed.
+- [x] **PR opened — #70** (`chore/chromadb-1x-python-314` → `main`). CI green after three fixes found post-open: (1) the Windows-job insertion had dropped the `security:` job header — a duplicate `steps:` key that `yaml.safe_load` silently collapses but GitHub Actions rejects; (2) `pip-audit` flagged **CVE-2026-45829** (chromadb server-mode pre-auth RCE, no fixed release) — unreachable here (embedded `PersistentClient`, no server/endpoint/embedding-functions), ignored with justification + CHANGELOG Security note; (3) the Windows job's full `tests/unit/` run surfaced ~27 pre-existing POSIX path-assumption failures — scoped the job to the chromadb tests (index_store / format_detection / metadata_types, all green on Windows) since `Sync dependencies` already proves the 1.5.9 wheel installs.
+- [ ] **Remaining** — (maintainer) run full AGENTS.md live MCP smoke against the rebuilt live index; on merge move the `docs/dev_plans/README.md` row to Completed.
+
+### Follow-up (out of scope here) — Windows path-handling hardening
+The Windows CI job exposed ~27 pre-existing unit failures (`test_taxonomy`,
+`test_github_ingest`, `test_cli`, `test_hub_status`) that assert `/`-separated
+paths under Windows `\\` separators. Some are test-only assertions, but a few
+(e.g. taxonomy lookup `KeyError: 'examples/foundational/01-hello'` vs the
+`\\`-discovered key) suggest the ingest/taxonomy code **mixes separators on
+Windows** — a potential real production bug, not just a test artefact. Predates
+and is unrelated to the chromadb bump (the repo had no Windows CI before). Worth
+a dedicated cross-platform pass (normalise discovered paths to POSIX form before
+taxonomy lookup; audit `os.path.join` vs `/`-joins) before claiming first-class
+Windows support.
 
 ### Migration scope additions (from Findings)
 - Wire `PIPECAT_HUB_DATA_DIR` — **done early** (`692b49c`), unblocks Phase 4/6 isolation.
