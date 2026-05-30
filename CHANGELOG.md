@@ -7,6 +7,15 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Updated default indexed sources** (PR #67). Added `pipecat-ai/pipecat-flows`
+  (conversation flow framework). Renamed `pipecat-ai/small-webrtc-prebuilt` to
+  its new slug `pipecat-ai/pipecat-prebuilt`. Removed `pipecat-ai/pipecat-flows-editor`
+  and the archived `pipecat-ai/web-client-ui` from the defaults. Run
+  `refresh --force` to re-index; data for removed repos is cleaned up automatically
+  on the next refresh. Any of these can still be re-added via `PIPECAT_HUB_EXTRA_REPOS`.
+
 ## [0.0.20] - 2026-05-29
 
 > **Security + compat release.** Batches four upstream security bumps that

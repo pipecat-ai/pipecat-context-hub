@@ -252,8 +252,9 @@ The default index includes:
 - **Pipecat documentation** — `docs.pipecat.ai` (200+ pages)
 - **Pipecat framework** — `pipecat-ai/pipecat` (Python AST-indexed: classes, methods, imports, call graphs)
 - **Pipecat examples** — `pipecat-ai/pipecat-examples` (project-level code examples)
+- **Pipecat Flows** — `pipecat-ai/pipecat-flows` (conversation flow framework, Python AST-indexed)
 - **Daily Python SDK** — `daily-co/daily-python` (`.pyi` stubs + RST type definitions)
-- **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `voice-ui-kit`, and more (tree-sitter-indexed)
+- **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `voice-ui-kit`, `pipecat-prebuilt` (tree-sitter-indexed)
 
 Add more repos via `PIPECAT_HUB_EXTRA_REPOS`.
 
