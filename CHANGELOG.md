@@ -78,6 +78,20 @@ This project uses [Semantic Versioning](https://semver.org/).
   hard-exit stderr line was also reworded so a normal client-gone fast-exit
   no longer reads as a crash.
 
+### Security
+
+- **chromadb CVE-2026-45829 (GHSA-f4j7-r4q5-qw2c) — audited, not exploitable
+  here, no fix available.** chromadb 1.0.0–1.5.9 carry a pre-authentication code
+  injection in **HTTP server mode**: an unauthenticated attacker can execute code
+  via the `/api/v2/.../collections` endpoint by supplying a malicious model repo
+  with `trust_remote_code=true`. There is no fixed release yet (1.5.9 is the
+  latest 1.x). The hub runs the **embedded `PersistentClient` only** — no server,
+  no HTTP endpoint, no network listener — and never uses chromadb's embedding
+  functions or `trust_remote_code`, so the vulnerable path is unreachable. The CI
+  dependency audit ignores it with this justification; the unfiltered biweekly
+  `security-audit.yml` re-surfaces it so the ignore cannot outlive an upstream
+  fix.
+
 ### Notes
 
 - **Python ceiling unchanged** (`requires-python = ">=3.11,<3.14"`). Lifting it
