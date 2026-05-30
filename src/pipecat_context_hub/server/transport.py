@@ -9,7 +9,7 @@ import os
 import subprocess  # nosec B404 - used only for a fixed-arg, timeout-guarded `ps` probe
 import sys
 import threading
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from mcp import stdio_server
 from mcp.server.lowlevel import Server
@@ -60,6 +60,15 @@ _INTERMEDIATE_LAUNCHERS = frozenset(
     {"uv", "uvx", "pipx", "poetry", "pdm", "hatch", "rye", "pipenv"}
 )
 
+# Enforce the COMM-truncation constraint at import time. A frozenset
+# cannot carry a Pydantic validator, so without this a contributor could
+# add a >15-char launcher that silently never matches on Linux (where
+# `ps -o comm=` truncates to the COMM limit). Fail loudly at import/CI
+# instead.
+assert all(len(name) <= 15 for name in _INTERMEDIATE_LAUNCHERS), (
+    "_INTERMEDIATE_LAUNCHERS entries must be <=15 chars (Linux ps COMM truncation)"
+)
+
 
 def _inspect_process(pid: int) -> tuple[int | None, str | None]:
     """Best-effort ``(ppid, command-basename)`` for ``pid`` via ``ps``.
@@ -94,31 +103,53 @@ def _inspect_process(pid: int) -> tuple[int | None, str | None]:
     return (ppid, comm)
 
 
-def resolve_watch_plan(parent_pid: int) -> tuple[int | None, bool]:
+class WatchPlan(NamedTuple):
+    """Outcome of :func:`resolve_watch_plan`.
+
+    A named 2-tuple (not a bare tuple) so the cross-module caller in
+    ``cli.py`` reads the fields by name and stays resilient if the plan
+    ever gains a third field. Still unpacks positionally for existing
+    callers/tests.
+
+    - ``client_watch_pid``: the grandparent (real client) PID to watch
+      for death under an intermediate launcher, or ``None`` when the
+      existing parent-death watchdog already covers cleanup (direct
+      launch) or no reliable PID could be resolved.
+    - ``detection_reliable``: whether client-death detection is reliable.
+      ``False`` means the caller must keep the idle-timeout fallback
+      armed.
+    """
+
+    client_watch_pid: int | None
+    detection_reliable: bool
+
+
+def resolve_watch_plan(parent_pid: int) -> WatchPlan:
     """Decide what process death proves the client is gone.
 
-    Returns ``(client_watch_pid, death_detection_reliable)``:
+    Returns a :class:`WatchPlan`:
 
-    - **Direct launch** (parent is the real client): ``(None, True)`` —
-      the existing parent-death watchdog (``os.getppid()`` flips to 1)
-      covers orphan cleanup; no extra PID to watch.
+    - **Direct launch** (parent is the real client):
+      ``WatchPlan(None, True)`` — the existing parent-death watchdog
+      (``os.getppid()`` flips to 1) covers orphan cleanup; no extra PID
+      to watch.
     - **Intermediate launcher** (parent is ``uv``/``uvx``) with a
-      resolvable grandparent > 1: ``(grandparent_pid, True)`` — watch the
-      grandparent (the real client) for death, since ``getppid()`` will
-      not flip while ``uv`` lingers.
+      resolvable grandparent > 1: ``WatchPlan(grandparent_pid, True)`` —
+      watch the grandparent (the real client) for death, since
+      ``getppid()`` will not flip while ``uv`` lingers.
     - **Intermediate launcher with an unresolvable grandparent**
       (``ps`` failed, or grandparent is already PID 1):
-      ``(None, False)`` — we cannot reliably detect client death, so the
-      caller keeps the idle-timeout fallback armed.
+      ``WatchPlan(None, False)`` — we cannot reliably detect client
+      death, so the caller keeps the idle-timeout fallback armed.
     """
     grandparent, comm = _inspect_process(parent_pid)
     if comm in _INTERMEDIATE_LAUNCHERS:
         if grandparent is not None and grandparent > 1:
-            return (grandparent, True)
-        return (None, False)
+            return WatchPlan(grandparent, True)
+        return WatchPlan(None, False)
     # Direct parent is the client (or an unknown launcher we treat as the
     # client); parent-death detection applies.
-    return (None, True)
+    return WatchPlan(None, True)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -171,6 +202,28 @@ def _run_atexit_bounded(timeout: float) -> None:
 
     threading.Thread(target=_run, name="hub-atexit-cleanup", daemon=True).start()
     done.wait(timeout)
+
+
+class _OnceFlag:
+    """Thread-safe single-shot latch.
+
+    ``acquire()`` returns ``True`` exactly once — for the first caller —
+    and ``False`` for every later call. Used to guard one-shot shutdown
+    operations that can be reached from both the graceful main thread and
+    the hard-exit timer thread without hand-rolling a lock+flag pair at
+    each site.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._fired = False
+
+    def acquire(self) -> bool:
+        with self._lock:
+            if self._fired:
+                return False
+            self._fired = True
+            return True
 
 
 async def _watch_parent(
@@ -296,16 +349,13 @@ async def run_stdio(
         # in-process path below also invokes the callback on the
         # graceful unwind, and we want identical one-shot semantics in
         # both modes.
-        shutdown_cb_lock = threading.Lock()
-        shutdown_cb_started = [False]
+        shutdown_cb_once = _OnceFlag()
 
         def _invoke_shutdown_cb_once(context: str) -> None:
             if on_watchdog_shutdown is None:
                 return
-            with shutdown_cb_lock:
-                if shutdown_cb_started[0]:
-                    return
-                shutdown_cb_started[0] = True
+            if not shutdown_cb_once.acquire():
+                return
             try:
                 on_watchdog_shutdown()
             except Exception:
@@ -318,14 +368,11 @@ async def run_stdio(
         # run `atexit._run_exitfuncs()` concurrently (double-invoking
         # handlers on the unguarded CPython registry). Run it at most
         # once — whichever thread gets there first.
-        atexit_lock = threading.Lock()
-        atexit_started = [False]
+        atexit_once = _OnceFlag()
 
         def _run_atexit_once() -> None:
-            with atexit_lock:
-                if atexit_started[0]:
-                    return
-                atexit_started[0] = True
+            if not atexit_once.acquire():
+                return
             _run_atexit_bounded(_ATEXIT_CLEANUP_TIMEOUT_SECS)
 
         if shutdown_reason is not None and exit_on_watchdog_shutdown:

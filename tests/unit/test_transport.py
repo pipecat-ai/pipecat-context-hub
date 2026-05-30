@@ -87,6 +87,16 @@ class TestResolveWatchPlan:
         assert client_pid is None
         assert reliable is True
 
+    def test_returns_named_watch_plan(self) -> None:
+        # The return is a WatchPlan NamedTuple: named-field access works
+        # and it still compares equal to / unpacks as a plain tuple.
+        with patch.object(transport, "_inspect_process", return_value=(777, "uv")):
+            plan = transport.resolve_watch_plan(1234)
+        assert isinstance(plan, transport.WatchPlan)
+        assert plan.client_watch_pid == 777
+        assert plan.detection_reliable is True
+        assert plan == (777, True)
+
     def test_uv_parent_resolves_grandparent(self) -> None:
         # Parent is `uv`; grandparent (the real client) is watched.
         with patch.object(transport, "_inspect_process", return_value=(777, "uv")):
@@ -180,6 +190,51 @@ class TestRunAtexitBounded:
         with patch.object(atexit, "_run_exitfuncs", _fake_run_exitfuncs):
             transport._run_atexit_bounded(1.0)
         assert calls == ["ran"]
+
+
+class TestOnceFlag:
+    """`_OnceFlag` latches exactly one caller — the shared one-shot guard
+    behind the shutdown-callback and atexit-cleanup paths, which can be
+    reached from both the graceful main thread and the hard-exit timer.
+    """
+
+    def test_first_acquire_true_rest_false(self) -> None:
+        flag = transport._OnceFlag()
+        assert flag.acquire() is True
+        assert flag.acquire() is False
+        assert flag.acquire() is False
+
+    def test_concurrent_acquire_latches_once(self) -> None:
+        """Under concurrent contention, exactly one thread wins."""
+        import threading
+
+        flag = transport._OnceFlag()
+        winners: list[bool] = []
+        lock = threading.Lock()
+        start = threading.Event()
+
+        def _try() -> None:
+            start.wait()
+            won = flag.acquire()
+            with lock:
+                winners.append(won)
+
+        threads = [threading.Thread(target=_try) for _ in range(20)]
+        for t in threads:
+            t.start()
+        start.set()
+        for t in threads:
+            t.join()
+        assert sum(winners) == 1, f"expected exactly one winner, got {sum(winners)}"
+
+
+class TestIntermediateLaunchers:
+    def test_all_entries_within_comm_truncation_limit(self) -> None:
+        """Linux `ps -o comm=` truncates to 15 chars; a longer entry
+        would silently never match. Mirrors the import-time assert.
+        """
+        too_long = [n for n in transport._INTERMEDIATE_LAUNCHERS if len(n) > 15]
+        assert too_long == [], f"launcher names exceed COMM limit: {too_long}"
 
 
 class TestIdleTracker:

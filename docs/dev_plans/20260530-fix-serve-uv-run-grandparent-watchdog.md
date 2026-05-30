@@ -39,15 +39,15 @@ A stdio MCP server **cannot restart itself** (it's a subprocess the client spawn
 
 - `src/pipecat_context_hub/server/transport.py`
   - `_inspect_process(pid)` → `(ppid, comm_basename)` via one best-effort `ps -p PID -o ppid=,comm=` (timeout-guarded). Returns `(None, None)` on any failure.
-  - `_INTERMEDIATE_LAUNCHERS = frozenset({"uv", "uvx"})`.
-  - `resolve_watch_plan(parent_pid)` → `(client_watch_pid: int | None, death_detection_reliable: bool)`.
+  - `_INTERMEDIATE_LAUNCHERS = frozenset({"uv", "uvx", "pipx", "poetry", "pdm", "hatch", "rye", "pipenv"})` (asserted ≤15 chars at import).
+  - `resolve_watch_plan(parent_pid)` → `WatchPlan(client_watch_pid: int | None, detection_reliable: bool)` (a `NamedTuple`, so it still unpacks positionally).
   - `_pid_alive(pid)` via `os.kill(pid, 0)` (ProcessLookupError → dead; PermissionError/other → alive).
   - `_watch_parent(original_ppid, interval, client_pid=None)` — also fire on `not _pid_alive(client_pid)` → `"client_died ..."`.
   - `_run_atexit_bounded(timeout)` helper; call before both `os._exit(0)` sites.
   - Reword the hard-exit stderr message.
   - Thread `client_watch_pid` through `run_stdio` / `serve_stdio`.
 - `src/pipecat_context_hub/cli.py` (`serve`)
-  - After capturing `_original_ppid`, compute `resolve_watch_plan(...)` (gated on non-win32 + parent_watch > 0).
+  - `_resolve_watch_and_idle_plan(config, original_ppid, logger)` helper encapsulates the watch-plan + idle-gating policy and returns `(client_watch_pid, idle_timeout_secs)`. Called at process entry, **before** the slow index/model startup (gated on non-win32 + parent_watch > 0) so a client that dies during cold-start is captured while its PID is still live.
   - Disable the default idle timeout when detection is reliable and the operator did not set it explicitly; `logger.info` the decision. Pass `client_watch_pid` to `serve_stdio`.
 - `src/pipecat_context_hub/shared/config.py`
   - `idle_timeout_explicitly_set` property (env var present **or** field ≠ default) so smart gating never overrides an operator's explicit value.
