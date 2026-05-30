@@ -43,7 +43,7 @@ def _redact_home(path: Path | str) -> str:
         s = str(path)
         home = str(Path.home())
         if home and (s == home or s.startswith(home + os.sep)):
-            return "~" + s[len(home):]
+            return "~" + s[len(home) :]
         return s
     except Exception:
         return str(path)
@@ -81,24 +81,16 @@ def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None
     warmup_start = time.monotonic()
     try:
         embedding_svc.embed_query("warmup")  # type: ignore[attr-defined]
-        _module_logger.info(
-            "Embedding model pre-warmed in %.1fs", time.monotonic() - warmup_start
-        )
+        _module_logger.info("Embedding model pre-warmed in %.1fs", time.monotonic() - warmup_start)
     except Exception:
-        _module_logger.exception(
-            "Embedding model pre-warm failed; falling back to lazy load"
-        )
+        _module_logger.exception("Embedding model pre-warm failed; falling back to lazy load")
     if cross_encoder is not None:
         ce_start = time.monotonic()
         try:
             cross_encoder.ensure_model()  # type: ignore[attr-defined]
-            _module_logger.info(
-                "Cross-encoder pre-warmed in %.1fs", time.monotonic() - ce_start
-            )
+            _module_logger.info("Cross-encoder pre-warmed in %.1fs", time.monotonic() - ce_start)
         except Exception:
-            _module_logger.exception(
-                "Cross-encoder pre-warm failed; falling back to lazy load"
-            )
+            _module_logger.exception("Cross-encoder pre-warm failed; falling back to lazy load")
 
 
 def _load_dotenv() -> None:
@@ -170,6 +162,55 @@ def main(ctx: click.Context, log_level: str) -> None:
         ctx.invoke(serve)
 
 
+def _resolve_watch_and_idle_plan(
+    config: HubConfig, original_ppid: int, logger: logging.Logger
+) -> tuple[int | None, float]:
+    """Resolve the client-death watch plan and the gated idle timeout.
+
+    Centralizes the policy that sits between the config layer (operator
+    intent) and the transport layer (process topology): when a reliable
+    client-death watchdog is active, the idle timeout is redundant and
+    would only reap a warm hub during a quiet stretch of an active
+    session, so it is disabled — unless the operator set it explicitly.
+    Returns ``(client_watch_pid, idle_timeout_secs)`` for ``serve_stdio``.
+
+    Call this at process entry, *before* the slow index/model startup.
+    ``resolve_watch_plan`` probes the parent with ``ps``; a client that
+    dies during the cold-start window would, by the time startup
+    finishes, have left ``uv`` reparented to PID 1 — unresolvable — so
+    the grandparent watch would never be installed. Resolving early
+    captures the grandparent while its PID is still live.
+    """
+    from pipecat_context_hub.server.transport import resolve_watch_plan
+
+    idle_timeout_secs = config.server.effective_idle_timeout_secs
+    parent_watch_secs = config.server.effective_parent_watch_interval_secs
+    # Reliable client-death detection is only available off-Windows with
+    # the parent-watch enabled; otherwise the idle timeout stays as the
+    # sole fallback and is never auto-disabled.
+    if sys.platform == "win32" or parent_watch_secs <= 0:
+        return (None, idle_timeout_secs)
+
+    plan = resolve_watch_plan(original_ppid)
+    if (
+        plan.detection_reliable
+        and idle_timeout_secs > 0
+        and not config.server.idle_timeout_explicitly_set
+    ):
+        target = (
+            "direct-parent death"
+            if plan.client_watch_pid is None
+            else f"client pid {plan.client_watch_pid} (intermediate launcher)"
+        )
+        logger.info(
+            "Idle watchdog disabled: watching %s for client exit. "
+            "Set PIPECAT_HUB_IDLE_TIMEOUT_SECS to re-enable an idle backstop.",
+            target,
+        )
+        idle_timeout_secs = 0.0
+    return (plan.client_watch_pid, idle_timeout_secs)
+
+
 @main.command()
 @click.pass_context
 def serve(ctx: click.Context) -> None:
@@ -192,6 +233,15 @@ def serve(ctx: click.Context) -> None:
     config: HubConfig = ctx.obj["config"]
     logger = logging.getLogger(__name__)
     logger.info("Starting server with transport=%s", config.server.transport)
+
+    # Resolve the client-death watch plan now, before the slow index +
+    # model startup below. A client that dies during cold-start would
+    # leave `uv` reparented to PID 1 (unresolvable) by the time startup
+    # finishes, so the grandparent watch would never be installed. See
+    # _resolve_watch_and_idle_plan.
+    client_watch_pid, idle_timeout_secs = _resolve_watch_and_idle_plan(
+        config, _original_ppid, logger
+    )
 
     index_store: IndexStore | None = None
     try:
@@ -349,6 +399,7 @@ def serve(ctx: click.Context) -> None:
             reranker_status_provider=_reranker_status,
             idle_tracker=idle_tracker,
         )
+
         def _close_index_store_on_watchdog_shutdown() -> None:
             """Release index handles on any watchdog-triggered shutdown.
 
@@ -365,12 +416,17 @@ def serve(ctx: click.Context) -> None:
             except Exception:
                 logger.exception("Failed to close index store on watchdog shutdown")
 
+        # `client_watch_pid` and the gated `idle_timeout_secs` were
+        # resolved at process entry (see _resolve_watch_and_idle_plan),
+        # before the slow startup above, so a client that died during
+        # cold-start was still captured while its PID was live.
         serve_stdio(
             server,
             original_ppid=_original_ppid,
             idle_tracker=idle_tracker,
             parent_watch_interval_secs=config.server.effective_parent_watch_interval_secs,
-            idle_timeout_secs=config.server.effective_idle_timeout_secs,
+            idle_timeout_secs=idle_timeout_secs,
+            client_watch_pid=client_watch_pid,
             on_watchdog_shutdown=_close_index_store_on_watchdog_shutdown,
             exit_on_watchdog_shutdown=True,
         )
@@ -393,7 +449,9 @@ def serve(ctx: click.Context) -> None:
     "Can also be set via PIPECAT_HUB_FRAMEWORK_VERSION env var.",
 )
 @click.pass_context
-def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_version: str | None) -> None:
+def refresh(
+    ctx: click.Context, force: bool, reset_index: bool, framework_version: str | None
+) -> None:
     """Rebuild the index, skipping unchanged sources when possible."""
     from pipecat_context_hub.services.embedding import (
         EmbeddingIndexWriter,
@@ -520,7 +578,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
         all_meta = index_store.get_all_metadata()
         for meta_key in all_meta:
             if meta_key.startswith("repo:") and meta_key.endswith(":commit_sha"):
-                slug = meta_key[len("repo:"):-len(":commit_sha")]
+                slug = meta_key[len("repo:") : -len(":commit_sha")]
                 if slug not in configured:
                     if slug in tainted_repos:
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
@@ -583,11 +641,7 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
                 frozen_sha_repos.add(repo_slug)
                 continue
 
-            if (
-                not force
-                and stored_sha == commit_sha
-                and repo_slug not in github.recovered_repos
-            ):
+            if not force and stored_sha == commit_sha and repo_slug not in github.recovered_repos:
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
                     repo_slug,
@@ -635,7 +689,8 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
 
             # Code ingest (per-repo for error tracking)
             code_result = await github.ingest(
-                repos=[repo_slug], prefetched=prefetched,
+                repos=[repo_slug],
+                prefetched=prefetched,
             )
             total_upserted += code_result.records_upserted
             repo_upserted += code_result.records_upserted
@@ -703,23 +758,20 @@ def refresh(ctx: click.Context, force: bool, reset_index: bool, framework_versio
         if framework_slug in prefetched:
             fw_path, fw_sha = prefetched[framework_slug]
             dep_map = build_deprecation_map_from_source(fw_path, commit_sha=fw_sha)
-            dep_map = build_deprecation_map_from_releases(
-                framework_slug, dep_map
-            )
+            dep_map = build_deprecation_map_from_releases(framework_slug, dep_map)
             changelog = fw_path / "CHANGELOG.md"
-            dep_map = build_deprecation_map_from_changelog(
-                changelog, dep_map, repo_root=fw_path
-            )
+            dep_map = build_deprecation_map_from_changelog(changelog, dep_map, repo_root=fw_path)
             dep_map.save(dep_map_path)
         else:
             # Framework repo not cloned — still try release notes via gh
             from pipecat_context_hub.services.ingest.deprecation_map import (
                 DeprecationMap,
             )
-            existing = DeprecationMap.load(dep_map_path) if dep_map_path.is_file() else DeprecationMap()
-            dep_map = build_deprecation_map_from_releases(
-                framework_slug, existing
+
+            existing = (
+                DeprecationMap.load(dep_map_path) if dep_map_path.is_file() else DeprecationMap()
             )
+            dep_map = build_deprecation_map_from_releases(framework_slug, existing)
             if dep_map.entries:
                 dep_map.save(dep_map_path)
                 logger.info(
@@ -840,10 +892,7 @@ def _print_refresh_summary(
     name_width = max(len(name) for name in source_status)
     name_width = max(name_width, len("Repository"))
 
-    hr = (
-        f"{_safe_hr(name_width)}  {_safe_hr(8)}  {_safe_hr(10)}  "
-        f"{_safe_hr(8)}  {_safe_hr(8)}"
-    )
+    hr = f"{_safe_hr(name_width)}  {_safe_hr(8)}  {_safe_hr(10)}  {_safe_hr(8)}  {_safe_hr(8)}"
     placeholder = _safe_placeholder()
 
     # Header
@@ -895,13 +944,9 @@ def _print_refresh_summary(
     click.echo()
     if recovered_repos:
         click.echo(
-            f"Recovered {len(recovered_repos)} corrupt clone(s): "
-            f"{', '.join(recovered_repos)}"
+            f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
         )
-    click.echo(
-        f"Refresh complete: {total_upserted:,} upserted, "
-        f"{error_count} errors, {duration}s."
-    )
+    click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 
 
 if __name__ == "__main__":

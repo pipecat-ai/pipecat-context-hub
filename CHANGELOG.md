@@ -7,8 +7,37 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`serve` no longer self-terminates mid-session under `uv run`.** When
+  launched as `uv run pipecat-context-hub serve`, `uv` lingers as an
+  intermediate parent, so `os.getppid()` never flips when the real client
+  dies — the parent-death watchdog could not fire, and the 30-minute idle
+  timeout was the only (blunt) backstop. It would reap a perfectly healthy
+  hub during a quiet stretch of an active session, after which the client
+  had to cold-start a new one. `serve` now detects an intermediate launcher
+  (`uv`/`uvx`/`pipx`/`poetry`/`pdm`/`hatch`/`rye`/`pipenv`) and watches the
+  **grandparent** (the real client) for death instead, so it exits promptly
+  when — and only when — the client actually goes away. Closes the "Known
+  Gap: `uv run` wrapper" from the v0.0.18 orphan-watchdog work.
+- **No more spurious "leaked semaphore" warning on watchdog shutdown.** A
+  watchdog-triggered exit calls `os._exit(0)`, which skips `atexit` and left
+  loky/multiprocessing (reached via the cross-encoder → `torch`/`sklearn`)
+  resource-tracker semaphores unreleased, printing a benign-but-alarming
+  `resource_tracker: ... leaked semaphore` warning. `serve` now runs
+  `atexit` handlers in a bounded daemon thread before the hard exit. The
+  hard-exit stderr line was also reworded so a normal client-gone fast-exit
+  no longer reads as a crash.
+
 ### Changed
 
+- **Idle watchdog is now a fallback, not the default orphan-cleanup path.**
+  When reliable client-death detection is active (direct-parent launch, or
+  an intermediate launcher with a resolved grandparent), `serve` disables
+  the idle timeout — it would only kill a warm hub mid-session. It stays
+  armed when detection is unavailable (Windows, parent-watch disabled, or an
+  unresolved grandparent). Set `PIPECAT_HUB_IDLE_TIMEOUT_SECS` to force an
+  idle backstop back on; an explicitly-configured value is always honored.
 - **Updated default indexed sources** (PR #67). Added `pipecat-ai/pipecat-flows`
   (conversation flow framework). Renamed `pipecat-ai/small-webrtc-prebuilt` to
   its new slug `pipecat-ai/pipecat-prebuilt`. Removed `pipecat-ai/pipecat-flows-editor`

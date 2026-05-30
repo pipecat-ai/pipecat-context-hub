@@ -129,6 +129,38 @@ class TestServerConfigEffectiveIdleTimeout:
         assert ServerConfig(idle_timeout_secs=42.0).effective_idle_timeout_secs == 42.0
 
 
+class TestServerConfigIdleTimeoutExplicitlySet:
+    """Gates the smart auto-disable: serve only disables the idle
+    watchdog when the operator did NOT choose a value themselves.
+    """
+
+    def test_false_at_default(self, monkeypatch):
+        monkeypatch.delenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", raising=False)
+        assert ServerConfig().idle_timeout_explicitly_set is False
+
+    def test_true_when_env_set(self, monkeypatch):
+        monkeypatch.setenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", "60")
+        assert ServerConfig().idle_timeout_explicitly_set is True
+
+    def test_true_when_env_set_to_zero(self, monkeypatch):
+        # Operator explicitly disabling it still counts as explicit.
+        monkeypatch.setenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", "0")
+        assert ServerConfig().idle_timeout_explicitly_set is True
+
+    def test_true_when_field_non_default(self, monkeypatch):
+        monkeypatch.delenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", raising=False)
+        assert ServerConfig(idle_timeout_secs=300.0).idle_timeout_explicitly_set is True
+
+    def test_true_when_field_explicitly_set_to_default_value(self, monkeypatch):
+        # An embedder who deliberately pins the default must still be
+        # honored — `model_fields_set` distinguishes this from "never set".
+        monkeypatch.delenv("PIPECAT_HUB_IDLE_TIMEOUT_SECS", raising=False)
+        from pipecat_context_hub.shared.config import _DEFAULT_IDLE_TIMEOUT_SECS
+
+        cfg = ServerConfig(idle_timeout_secs=_DEFAULT_IDLE_TIMEOUT_SECS)
+        assert cfg.idle_timeout_explicitly_set is True
+
+
 class TestServerConfigEffectiveParentWatchInterval:
     def test_default_when_unset(self, monkeypatch):
         monkeypatch.delenv("PIPECAT_HUB_PARENT_WATCH_INTERVAL", raising=False)
@@ -144,7 +176,9 @@ class TestServerConfigEffectiveParentWatchInterval:
 
     def test_env_invalid_falls_back_to_field(self, monkeypatch):
         monkeypatch.setenv("PIPECAT_HUB_PARENT_WATCH_INTERVAL", "garbage")
-        assert ServerConfig(parent_watch_interval_secs=1.5).effective_parent_watch_interval_secs == 1.5
+        assert (
+            ServerConfig(parent_watch_interval_secs=1.5).effective_parent_watch_interval_secs == 1.5
+        )
 
     def test_env_negative_clamped_to_zero(self, monkeypatch):
         monkeypatch.setenv("PIPECAT_HUB_PARENT_WATCH_INTERVAL", "-1")
@@ -161,11 +195,15 @@ class TestServerConfigEffectiveParentWatchInterval:
 
     def test_env_nan_falls_back_to_field(self, monkeypatch):
         monkeypatch.setenv("PIPECAT_HUB_PARENT_WATCH_INTERVAL", "nan")
-        assert ServerConfig(parent_watch_interval_secs=1.5).effective_parent_watch_interval_secs == 1.5
+        assert (
+            ServerConfig(parent_watch_interval_secs=1.5).effective_parent_watch_interval_secs == 1.5
+        )
 
     def test_env_inf_falls_back_to_field(self, monkeypatch):
         monkeypatch.setenv("PIPECAT_HUB_PARENT_WATCH_INTERVAL", "inf")
-        assert ServerConfig(parent_watch_interval_secs=1.5).effective_parent_watch_interval_secs == 1.5
+        assert (
+            ServerConfig(parent_watch_interval_secs=1.5).effective_parent_watch_interval_secs == 1.5
+        )
 
 
 class TestSourceConfig:
@@ -241,7 +279,9 @@ class TestSourceConfig:
         """Tainted refs are parsed from org/repo@ref entries."""
         with patch.dict(
             os.environ,
-            {_TAINTED_REFS_ENV: "pipecat-ai/pipecat@v0.0.9,pipecat-ai/pipecat@deadbeef,broken-entry"},
+            {
+                _TAINTED_REFS_ENV: "pipecat-ai/pipecat@v0.0.9,pipecat-ai/pipecat@deadbeef,broken-entry"
+            },
         ):
             s = SourceConfig()
             assert s.tainted_refs_by_repo == {

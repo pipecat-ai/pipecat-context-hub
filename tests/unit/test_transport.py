@@ -43,6 +43,199 @@ class TestWatchParent:
         with pytest.raises(asyncio.CancelledError):
             await task
 
+    @pytest.mark.asyncio
+    async def test_fires_on_grandparent_death_under_uv_run(self) -> None:
+        """The `uv run` case the old watchdog missed: getppid() stays
+        stable (uv lingers) but the watched grandparent (real client)
+        dies. _watch_parent must fire `client_died`.
+        """
+        original = os.getppid()  # stable — uv stays alive
+        with patch.object(os, "kill", side_effect=ProcessLookupError):
+            result = await asyncio.wait_for(
+                transport._watch_parent(original, interval=0.01, client_watch_pid=4242),
+                timeout=1.0,
+            )
+        assert "client_died" in result
+        assert "client_pid=4242" in result
+
+    @pytest.mark.asyncio
+    async def test_does_not_fire_while_grandparent_alive(self) -> None:
+        """With a live grandparent and a stable ppid, the watchdog stays
+        quiet — it must not reap a hub during an active session.
+        """
+        original = os.getppid()
+        # os.kill(pid, 0) succeeds → grandparent alive.
+        task = asyncio.create_task(
+            transport._watch_parent(original, interval=0.01, client_watch_pid=os.getpid())
+        )
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+class TestResolveWatchPlan:
+    """`resolve_watch_plan` decides what process death proves the client
+    is gone. Mocks `_inspect_process` so no real `ps` call is needed.
+    """
+
+    def test_direct_parent_is_client(self) -> None:
+        # Parent is a normal client (not an intermediate launcher).
+        with patch.object(transport, "_inspect_process", return_value=(500, "node")):
+            client_pid, reliable = transport.resolve_watch_plan(1234)
+        assert client_pid is None
+        assert reliable is True
+
+    def test_returns_named_watch_plan(self) -> None:
+        # The return is a WatchPlan NamedTuple: named-field access works
+        # and it still compares equal to / unpacks as a plain tuple.
+        with patch.object(transport, "_inspect_process", return_value=(777, "uv")):
+            plan = transport.resolve_watch_plan(1234)
+        assert isinstance(plan, transport.WatchPlan)
+        assert plan.client_watch_pid == 777
+        assert plan.detection_reliable is True
+        assert plan == (777, True)
+
+    def test_uv_parent_resolves_grandparent(self) -> None:
+        # Parent is `uv`; grandparent (the real client) is watched.
+        with patch.object(transport, "_inspect_process", return_value=(777, "uv")):
+            client_pid, reliable = transport.resolve_watch_plan(1234)
+        assert client_pid == 777
+        assert reliable is True
+
+    def test_uvx_parent_resolves_grandparent(self) -> None:
+        with patch.object(transport, "_inspect_process", return_value=(888, "uvx")):
+            client_pid, reliable = transport.resolve_watch_plan(1234)
+        assert client_pid == 888
+        assert reliable is True
+
+    def test_other_lingering_launchers_resolve_grandparent(self) -> None:
+        # Common Python launchers that may linger as the parent must also
+        # be recognized, otherwise idle would be disabled with no working
+        # death detection (zombie regression for non-uv launchers).
+        for launcher in ("pipx", "poetry", "pdm", "hatch", "rye", "pipenv"):
+            with patch.object(transport, "_inspect_process", return_value=(999, launcher)):
+                client_pid, reliable = transport.resolve_watch_plan(1234)
+            assert client_pid == 999, launcher
+            assert reliable is True, launcher
+
+    def test_uv_parent_unresolved_grandparent_is_unreliable(self) -> None:
+        # `ps` failed to give us the grandparent → cannot watch it.
+        with patch.object(transport, "_inspect_process", return_value=(None, "uv")):
+            client_pid, reliable = transport.resolve_watch_plan(1234)
+        assert client_pid is None
+        assert reliable is False
+
+    def test_uv_parent_grandparent_is_init_is_unreliable(self) -> None:
+        # Grandparent already reparented to PID 1 → nothing meaningful to watch.
+        with patch.object(transport, "_inspect_process", return_value=(1, "uv")):
+            client_pid, reliable = transport.resolve_watch_plan(1234)
+        assert client_pid is None
+        assert reliable is False
+
+    def test_ps_failure_treated_as_direct(self) -> None:
+        # Unknown parent (ps unavailable) → treat as direct; parent-death covers it.
+        with patch.object(transport, "_inspect_process", return_value=(None, None)):
+            client_pid, reliable = transport.resolve_watch_plan(1234)
+        assert client_pid is None
+        assert reliable is True
+
+
+class TestPidAlive:
+    def test_live_process(self) -> None:
+        assert transport._pid_alive(os.getpid()) is True
+
+    def test_dead_process(self) -> None:
+        with patch.object(os, "kill", side_effect=ProcessLookupError):
+            assert transport._pid_alive(424242) is False
+
+    def test_permission_error_means_alive(self) -> None:
+        # Process exists but is owned by another user.
+        with patch.object(os, "kill", side_effect=PermissionError):
+            assert transport._pid_alive(1) is True
+
+
+class TestRunAtexitBounded:
+    def test_returns_within_budget_even_if_handler_blocks(self) -> None:
+        """A blocking atexit handler must not let `_run_atexit_bounded`
+        exceed its budget — otherwise it could re-defeat the watchdog.
+
+        We stub `atexit._run_exitfuncs` with a blocking fake rather than
+        registering a real handler: the real function would fire every
+        atexit handler registered in the pytest process (closing fds,
+        tearing down logging/multiprocessing) and corrupt the run.
+        """
+        import atexit
+        import time
+
+        def _blocking_run_exitfuncs() -> None:
+            time.sleep(5.0)
+
+        with patch.object(atexit, "_run_exitfuncs", _blocking_run_exitfuncs):
+            start = time.monotonic()
+            transport._run_atexit_bounded(0.2)
+            elapsed = time.monotonic() - start
+        assert elapsed < 1.0, f"bounded atexit took too long: {elapsed:.2f}s"
+
+    def test_runs_registered_handlers(self) -> None:
+        """The bounded wrapper actually invokes atexit handling (stubbed)."""
+        import atexit
+
+        calls: list[str] = []
+
+        def _fake_run_exitfuncs() -> None:
+            calls.append("ran")
+
+        with patch.object(atexit, "_run_exitfuncs", _fake_run_exitfuncs):
+            transport._run_atexit_bounded(1.0)
+        assert calls == ["ran"]
+
+
+class TestOnceFlag:
+    """`_OnceFlag` latches exactly one caller — the shared one-shot guard
+    behind the shutdown-callback and atexit-cleanup paths, which can be
+    reached from both the graceful main thread and the hard-exit timer.
+    """
+
+    def test_first_acquire_true_rest_false(self) -> None:
+        flag = transport._OnceFlag()
+        assert flag.acquire() is True
+        assert flag.acquire() is False
+        assert flag.acquire() is False
+
+    def test_concurrent_acquire_latches_once(self) -> None:
+        """Under concurrent contention, exactly one thread wins."""
+        import threading
+
+        flag = transport._OnceFlag()
+        winners: list[bool] = []
+        lock = threading.Lock()
+        start = threading.Event()
+
+        def _try() -> None:
+            start.wait()
+            won = flag.acquire()
+            with lock:
+                winners.append(won)
+
+        threads = [threading.Thread(target=_try) for _ in range(20)]
+        for t in threads:
+            t.start()
+        start.set()
+        for t in threads:
+            t.join()
+        assert sum(winners) == 1, f"expected exactly one winner, got {sum(winners)}"
+
+
+class TestIntermediateLaunchers:
+    def test_all_entries_within_comm_truncation_limit(self) -> None:
+        """Linux `ps -o comm=` truncates to 15 chars; a longer entry
+        would silently never match. Mirrors the import-time assert.
+        """
+        too_long = [n for n in transport._INTERMEDIATE_LAUNCHERS if len(n) > 15]
+        assert too_long == [], f"launcher names exceed COMM limit: {too_long}"
+
 
 class TestIdleTracker:
     def test_starts_at_zero_seconds_idle(self) -> None:
@@ -189,6 +382,46 @@ class TestRunStdioWatchdogWiring:
                 )
 
     @pytest.mark.asyncio
+    async def test_grandparent_death_cancels_server_task(self) -> None:
+        """End-to-end `uv run` wiring: ppid stays stable (uv lingers) but
+        the watched grandparent dies; run_stdio must cancel the server
+        task and unwind. This is the path the idle-timeout workaround
+        used to cover.
+        """
+        from collections.abc import AsyncIterator
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+            yield (None, None)
+
+        with patch.object(transport, "stdio_server", fake_stdio_server):
+
+            class FakeServer:
+                def create_initialization_options(self) -> object:
+                    return object()
+
+                async def run(self, *_args: object, **_kwargs: object) -> None:
+                    await asyncio.sleep(60)
+
+            real_ppid = os.getppid()
+            # ppid never flips (uv stays alive); the grandparent is dead.
+            with (
+                patch.object(os, "getppid", return_value=real_ppid),
+                patch.object(os, "kill", side_effect=ProcessLookupError),
+            ):
+                result = await asyncio.wait_for(
+                    transport.run_stdio(
+                        cast(Any, FakeServer()),
+                        original_ppid=real_ppid,
+                        parent_watch_interval_secs=0.02,
+                        client_watch_pid=4242,
+                    ),
+                    timeout=5.0,
+                )
+        assert result is not None and result.startswith("client_died")
+
+    @pytest.mark.asyncio
     async def test_graceful_shutdown_disarms_hard_exit_timer(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -237,9 +470,7 @@ class TestRunStdioWatchdogWiring:
         # Wait past the 2.5s backstop window; graceful_done.set() should
         # have disarmed the timer so os._exit stays uncalled.
         await asyncio.sleep(3.0)
-        assert exit_calls == [], (
-            f"hard-exit timer fired after graceful shutdown: {exit_calls}"
-        )
+        assert exit_calls == [], f"hard-exit timer fired after graceful shutdown: {exit_calls}"
 
     @pytest.mark.asyncio
     async def test_safe_mode_does_not_close_stdin_or_exit(
