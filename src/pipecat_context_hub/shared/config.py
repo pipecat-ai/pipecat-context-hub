@@ -355,14 +355,13 @@ class SourceConfig(BaseModel):
         default=[
             "pipecat-ai/pipecat",
             "pipecat-ai/pipecat-examples",
+            "pipecat-ai/pipecat-flows",
             "daily-co/daily-python",
             # Core TypeScript SDKs
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
             "pipecat-ai/voice-ui-kit",
-            "pipecat-ai/pipecat-flows-editor",
-            "pipecat-ai/web-client-ui",
-            "pipecat-ai/small-webrtc-prebuilt",
+            "pipecat-ai/pipecat-prebuilt",
         ],
         description="GitHub repos to ingest.",
     )

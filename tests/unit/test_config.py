@@ -176,13 +176,12 @@ class TestSourceConfig:
         assert s.repos == [
             "pipecat-ai/pipecat",
             "pipecat-ai/pipecat-examples",
+            "pipecat-ai/pipecat-flows",
             "daily-co/daily-python",
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
             "pipecat-ai/voice-ui-kit",
-            "pipecat-ai/pipecat-flows-editor",
-            "pipecat-ai/web-client-ui",
-            "pipecat-ai/small-webrtc-prebuilt",
+            "pipecat-ai/pipecat-prebuilt",
         ]
 
     def test_custom_llms_txt_url(self):
