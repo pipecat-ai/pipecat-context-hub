@@ -63,11 +63,11 @@ Retrieval:
 - `pipecat-ai/pipecat` — framework repo (Python AST-indexed)
   - Supports flat file layout and subdirectory layout in `examples/`
 - `pipecat-ai/pipecat-examples` — project-level examples
+- `pipecat-ai/pipecat-flows` — conversation flow framework (Python AST-indexed)
 - `daily-co/daily-python` — Daily Python SDK (`.pyi` stubs + RST type definitions)
 - **TypeScript SDK repos** (default since v0.0.12):
   - `pipecat-ai/pipecat-client-web`, `pipecat-ai/pipecat-client-web-transports`,
-    `pipecat-ai/voice-ui-kit`, `pipecat-ai/pipecat-flows-editor`,
-    `pipecat-ai/web-client-ui`, `pipecat-ai/small-webrtc-prebuilt`
+    `pipecat-ai/voice-ui-kit`, `pipecat-ai/pipecat-prebuilt`
   - Tree-sitter-extracted: interfaces, classes, types, functions, enums, const exports
     with individual method chunks and full signatures
 - Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var

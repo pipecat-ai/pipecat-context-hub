@@ -318,6 +318,31 @@ class ServerConfig(BaseModel):
             return max(0.0, self.idle_timeout_secs)
         return max(0.0, parsed)
 
+    # Plain @property, not @computed_field: this is a meta-query about
+    # configuration *intent*, not a resolved setting, so it is
+    # deliberately excluded from model_dump() (unlike the effective_*
+    # computed fields above). Do not promote it to @computed_field.
+    @property
+    def idle_timeout_explicitly_set(self) -> bool:
+        """Whether the operator chose an idle timeout (vs. the default).
+
+        ``serve`` disables the idle watchdog when reliable client-death
+        detection is active (it would only kill a warm server during a
+        quiet stretch of an active session). That auto-disable must
+        never override an operator who deliberately configured a value —
+        either via ``PIPECAT_HUB_IDLE_TIMEOUT_SECS`` or by setting the
+        field away from its default.
+        """
+        if os.environ.get(_IDLE_TIMEOUT_ENV, "").strip():
+            return True
+        # `model_fields_set` is the precise pydantic signal for "the
+        # caller passed this field" — it stays True even when the value
+        # equals the default, so an embedder who deliberately pins the
+        # default is still honored (a value comparison could not tell
+        # that apart from "never set"). Env binding is handled above
+        # because the timeout is read from os.environ, not pydantic.
+        return "idle_timeout_secs" in self.model_fields_set
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def effective_parent_watch_interval_secs(self) -> float:
@@ -382,14 +407,13 @@ class SourceConfig(BaseModel):
         default=[
             "pipecat-ai/pipecat",
             "pipecat-ai/pipecat-examples",
+            "pipecat-ai/pipecat-flows",
             "daily-co/daily-python",
             # Core TypeScript SDKs
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
             "pipecat-ai/voice-ui-kit",
-            "pipecat-ai/pipecat-flows-editor",
-            "pipecat-ai/web-client-ui",
-            "pipecat-ai/small-webrtc-prebuilt",
+            "pipecat-ai/pipecat-prebuilt",
         ],
         description="GitHub repos to ingest.",
     )

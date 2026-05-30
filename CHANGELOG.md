@@ -17,17 +17,9 @@ This project uses [Semantic Versioning](https://semver.org/).
 > ```
 > uv run pipecat-context-hub refresh --force --reset-index
 > ```
-
-### Changed
-
-- **ChromaDB pinned `>=1.5,<2.0`** (was `>=0.6,<1.0`), resolving to 1.5.9. The
-  vector-store backend is otherwise behaviourally unchanged (cosine similarity,
-  the `latest` collection, query/upsert semantics). `VectorIndex` teardown now
-  uses chromadb's public `Client.close()` instead of the private 0.6 internals.
-- **Leaner dependency tree.** chromadb 1.x drops its embedded server stack, so
-  `posthog`, `fastapi`, `asgiref`, `chroma-hnswlib`, and several
-  `opentelemetry-instrumentation-*` packages are no longer installed. Removing
-  `posthog` also removes one telemetry/CVE surface.
+>
+> This release also batches the `serve` watchdog fixes and default-source
+> updates that were held back for the migration (PRs #67, #69).
 
 ### Added
 
@@ -39,6 +31,52 @@ This project uses [Semantic Versioning](https://semver.org/).
 - **`PIPECAT_HUB_DATA_DIR`** environment variable to override the local data
   directory (defaults to `~/.pipecat-context-hub`), for isolated/throwaway
   corpora.
+
+### Changed
+
+- **ChromaDB pinned `>=1.5,<2.0`** (was `>=0.6,<1.0`), resolving to 1.5.9. The
+  vector-store backend is otherwise behaviourally unchanged (cosine similarity,
+  the `latest` collection, query/upsert semantics). `VectorIndex` teardown now
+  uses chromadb's public `Client.close()` instead of the private 0.6 internals.
+- **Leaner dependency tree.** chromadb 1.x drops its embedded server stack, so
+  `posthog`, `fastapi`, `asgiref`, `chroma-hnswlib`, and several
+  `opentelemetry-instrumentation-*` packages are no longer installed. Removing
+  `posthog` also removes one telemetry/CVE surface.
+- **Idle watchdog is now a fallback, not the default orphan-cleanup path**
+  (PR #69). When reliable client-death detection is active (direct-parent
+  launch, or an intermediate launcher with a resolved grandparent), `serve`
+  disables the idle timeout — it would only kill a warm hub mid-session. It
+  stays armed when detection is unavailable (Windows, parent-watch disabled, or
+  an unresolved grandparent). Set `PIPECAT_HUB_IDLE_TIMEOUT_SECS` to force an
+  idle backstop back on; an explicitly-configured value is always honored.
+- **Updated default indexed sources** (PR #67). Added `pipecat-ai/pipecat-flows`
+  (conversation flow framework). Renamed `pipecat-ai/small-webrtc-prebuilt` to
+  its new slug `pipecat-ai/pipecat-prebuilt`. Removed `pipecat-ai/pipecat-flows-editor`
+  and the archived `pipecat-ai/web-client-ui` from the defaults. Run
+  `refresh --force` to re-index; data for removed repos is cleaned up automatically
+  on the next refresh. Any of these can still be re-added via `PIPECAT_HUB_EXTRA_REPOS`.
+
+### Fixed
+
+- **`serve` no longer self-terminates mid-session under `uv run`** (PR #69). When
+  launched as `uv run pipecat-context-hub serve`, `uv` lingers as an
+  intermediate parent, so `os.getppid()` never flips when the real client
+  dies — the parent-death watchdog could not fire, and the 30-minute idle
+  timeout was the only (blunt) backstop. It would reap a perfectly healthy
+  hub during a quiet stretch of an active session, after which the client
+  had to cold-start a new one. `serve` now detects an intermediate launcher
+  (`uv`/`uvx`/`pipx`/`poetry`/`pdm`/`hatch`/`rye`/`pipenv`) and watches the
+  **grandparent** (the real client) for death instead, so it exits promptly
+  when — and only when — the client actually goes away. Closes the "Known
+  Gap: `uv run` wrapper" from the v0.0.18 orphan-watchdog work.
+- **No more spurious "leaked semaphore" warning on watchdog shutdown** (PR #69). A
+  watchdog-triggered exit calls `os._exit(0)`, which skips `atexit` and left
+  loky/multiprocessing (reached via the cross-encoder → `torch`/`sklearn`)
+  resource-tracker semaphores unreleased, printing a benign-but-alarming
+  `resource_tracker: ... leaked semaphore` warning. `serve` now runs
+  `atexit` handlers in a bounded daemon thread before the hard exit. The
+  hard-exit stderr line was also reworded so a normal client-gone fast-exit
+  no longer reads as a crash.
 
 ### Notes
 
