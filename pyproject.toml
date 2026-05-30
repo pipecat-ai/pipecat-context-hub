@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipecat-context-hub"
-version = "0.0.20"
+version = "0.1.0"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"
@@ -16,7 +16,7 @@ dependencies = [
     "pydantic>=2.0,<3.0",
     "mcp>=1.0,<2.0",
     "httpx>=0.27,<1.0",
-    "chromadb>=0.6,<1.0",
+    "chromadb>=1.5,<2.0",
     "sentence-transformers>=4.0,<6.0",
     "gitpython>=3.1.49,<4.0",
     "click>=8.0,<9.0",
