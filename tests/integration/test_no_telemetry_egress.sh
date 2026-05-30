@@ -88,7 +88,13 @@ sample_peers() {
 }
 
 # Continuously sample a process tree's peers into a file until a sentinel file
-# is removed. Runs in the background.
+# is removed. Runs in the background; sets SAMPLER_PID to the background PID.
+#
+# NB: we set a global instead of echoing the PID. Capturing via SAMPLER=$(...)
+# would hang: command substitution waits for the backgrounded subshell to close
+# its inherited stdout, which never happens until the sampler loop ends. The
+# `>/dev/null 2>&1` redirect also detaches the subshell from any caller pipe.
+SAMPLER_PID=""
 start_sampler() {
   local root=$1 outfile=$2 sentinel=$3
   : > "$outfile"
@@ -97,8 +103,8 @@ start_sampler() {
       sample_peers "$root" >> "$outfile"
       sleep 0.3
     done
-  ) &
-  echo $!
+  ) >/dev/null 2>&1 &
+  SAMPLER_PID=$!
 }
 
 # Classify captured peers for a window. Args: window-name outfile policy
@@ -156,7 +162,7 @@ else
   SENT=$(mktemp); OUT=$(mktemp)
   uv run pipecat-context-hub refresh --force --reset-index >/tmp/egress-refresh.log 2>&1 &
   RPID=$!
-  SAMPLER=$(start_sampler "$RPID" "$OUT" "$SENT")
+  start_sampler "$RPID" "$OUT" "$SENT"; SAMPLER=$SAMPLER_PID
   wait "$RPID"; RRC=$?
   rm -f "$SENT"; wait "$SAMPLER" 2>/dev/null || true
   [ "$RRC" -eq 0 ] || fail "refresh" "refresh exited non-zero ($RRC); see /tmp/egress-refresh.log"
@@ -173,56 +179,82 @@ SENT=$(mktemp); OUT=$(mktemp)
 # driver writes the serve PID to $PIDFILE so the sampler targets the right tree.
 PIDFILE=$(mktemp)
 uv run python - "$PIDFILE" <<'PYEOF' &
-import json, os, subprocess, sys, time
+import json, os, subprocess, sys, threading, time
 
 pidfile = sys.argv[1]
+# Disable model pre-warm: it blocks the initialize response for 1-3 minutes on a
+# cold CPU (and would only inflate this window's wall-clock). The telemetry check
+# cares about sockets, not latency; the embedding model still loads lazily on the
+# first search_docs call, which is all we need.
+#
+# Force HuggingFace offline: the embedding + cross-encoder are already cached, so
+# loading them on the first query must NOT touch the network. Without this, the
+# HF hub revision check egresses to its CloudFront CDN — legitimate model traffic,
+# but it would mask the very thing this window asserts. With HF pinned offline,
+# ANY non-loopback egress in this window is, by elimination, telemetry.
+serve_env = {
+    **os.environ,
+    "PIPECAT_HUB_WARMUP": "0",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+}
+# bufsize=0 (unbuffered): a buffered iterator (`for line in stdout`) does hidden
+# read-ahead and would not yield serve's small initialize/query responses until
+# the buffer fills or the stream closes — a deadlock. We read byte-by-byte.
 proc = subprocess.Popen(
     ["uv", "run", "pipecat-context-hub", "serve"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    env=serve_env, bufsize=0,
 )
 with open(pidfile, "w") as f:
     f.write(str(proc.pid))
+
+# A dedicated reader thread continuously drains serve's stdout so the OS pipe
+# never fills and we never deadlock waiting to write. It signals `got_query`
+# once the tools/call response (id=2) arrives.
+got_query = threading.Event()
+
+def reader():
+    buf = b""
+    while True:
+        ch = proc.stdout.read(1)
+        if not ch:
+            return
+        buf += ch
+        if ch == b"\n":
+            try:
+                msg = json.loads(buf)
+            except Exception:
+                buf = b""
+                continue
+            if msg.get("id") == 2:
+                got_query.set()
+            buf = b""
+
+threading.Thread(target=reader, daemon=True).start()
 
 def send(obj):
     proc.stdin.write((json.dumps(obj) + "\n").encode())
     proc.stdin.flush()
 
-def readline(timeout=60.0):
-    # crude line read with timeout via select
-    import select
-    end = time.time() + timeout
-    buf = b""
-    while time.time() < end:
-        r, _, _ = select.select([proc.stdout], [], [], 0.2)
-        if r:
-            ch = proc.stdout.read(1)
-            if not ch:
-                break
-            buf += ch
-            if ch == b"\n":
-                return buf
-    return buf
+# Hard self-watchdog: never let this driver hang the smoke script.
+def watchdog():
+    time.sleep(180.0)
+    if proc.poll() is None:
+        proc.kill()
+
+threading.Thread(target=watchdog, daemon=True).start()
 
 send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
       "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                  "clientInfo": {"name": "egress-smoke", "version": "0"}}})
-readline()  # initialize response
+time.sleep(2.0)  # let initialize round-trip (fast with warmup disabled)
 send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 time.sleep(1.0)
 send({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
       "params": {"name": "search_docs", "arguments": {"query": "pipeline", "limit": 3}}})
-# read until we get id:2 or timeout
-end = time.time() + 90
-while time.time() < end:
-    line = readline(5.0)
-    if not line:
-        continue
-    try:
-        msg = json.loads(line)
-    except Exception:
-        continue
-    if msg.get("id") == 2:
-        break
+# Wait for the query response (lazy model load on first query can take ~30s).
+got_query.wait(timeout=150.0)
 time.sleep(1.0)
 try:
     proc.stdin.close()
@@ -235,7 +267,7 @@ DRIVER=$!
 for _ in $(seq 1 50); do [ -s "$PIDFILE" ] && break; sleep 0.2; done
 SPID=$(cat "$PIDFILE" 2>/dev/null || true)
 if [ -n "$SPID" ]; then
-  SAMPLER=$(start_sampler "$SPID" "$OUT" "$SENT")
+  start_sampler "$SPID" "$OUT" "$SENT"; SAMPLER=$SAMPLER_PID
   wait "$DRIVER" 2>/dev/null || true
   rm -f "$SENT"; wait "$SAMPLER" 2>/dev/null || true
   classify "serve+query" "$OUT" "strict"
@@ -252,7 +284,7 @@ echo "--- window: dashboard extraction ---"
 SENT=$(mktemp); OUT=$(mktemp)
 uv run python dashboard/scripts/extract_dashboard.py >/tmp/egress-dashboard.log 2>&1 &
 DPID=$!
-SAMPLER=$(start_sampler "$DPID" "$OUT" "$SENT")
+start_sampler "$DPID" "$OUT" "$SENT"; SAMPLER=$SAMPLER_PID
 wait "$DPID"; DRC=$?
 rm -f "$SENT"; wait "$SAMPLER" 2>/dev/null || true
 [ "$DRC" -eq 0 ] || fail "dashboard" "extract_dashboard.py exited non-zero ($DRC); see /tmp/egress-dashboard.log"
