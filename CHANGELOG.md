@@ -7,6 +7,45 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-30
+
+> **ChromaDB 1.x upgrade — on-disk format break.** Migrates the vector store from
+> chromadb 0.6 to 1.5.x. The 1.x on-disk format is **not** backward-compatible:
+> existing indexes will be refused at startup with a clear error. After
+> upgrading you **must** rebuild the index:
+>
+> ```
+> uv run pipecat-context-hub refresh --force --reset-index
+> ```
+
+### Changed
+
+- **ChromaDB pinned `>=1.5,<2.0`** (was `>=0.6,<1.0`), resolving to 1.5.9. The
+  vector-store backend is otherwise behaviourally unchanged (cosine similarity,
+  the `latest` collection, query/upsert semantics). `VectorIndex` teardown now
+  uses chromadb's public `Client.close()` instead of the private 0.6 internals.
+- **Leaner dependency tree.** chromadb 1.x drops its embedded server stack, so
+  `posthog`, `fastapi`, `asgiref`, `chroma-hnswlib`, and several
+  `opentelemetry-instrumentation-*` packages are no longer installed. Removing
+  `posthog` also removes one telemetry/CVE surface.
+
+### Added
+
+- **Pre-1.0 index detection.** A non-mutating probe inspects the persisted
+  SQLite schema before opening it and raises a typed
+  `IncompatibleIndexFormatError` naming the format mismatch and the
+  `refresh --force --reset-index` remediation, surfaced by both `serve` and
+  `refresh`. The 0.6 directory is left byte-identical (no silent overwrite).
+- **`PIPECAT_HUB_DATA_DIR`** environment variable to override the local data
+  directory (defaults to `~/.pipecat-context-hub`), for isolated/throwaway
+  corpora.
+
+### Notes
+
+- **Python ceiling unchanged** (`requires-python = ">=3.11,<3.14"`). Lifting it
+  to 3.14 is a separate follow-up release gated on torch + onnxruntime cp314
+  wheels.
+
 ## [0.0.20] - 2026-05-29
 
 > **Security + compat release.** Batches four upstream security bumps that
