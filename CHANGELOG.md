@@ -77,6 +77,23 @@ This project uses [Semantic Versioning](https://semver.org/).
   `atexit` handlers in a bounded daemon thread before the hard exit. The
   hard-exit stderr line was also reworded so a normal client-gone fast-exit
   no longer reads as a crash.
+- **Clear error when an older chromadb has corrupted a 1.x index dir.** If a
+  chromadb **0.6** process (e.g. a stale global `pipecat-context-hub` install)
+  writes to a 1.x data directory, it leaves a collection config that 1.x cannot
+  parse — chromadb raises an opaque `KeyError: '_type'` deep in its sysdb on the
+  next open. The pre-open migration probe can't see this (the `migrations` table
+  is still 1.x; only the `collections` row is damaged), so `VectorIndex` now
+  catches the config-parse failure and raises the typed
+  `IncompatibleIndexFormatError` with the `refresh --force --reset-index`
+  remediation, the same as the pre-1.0-directory case.
+- **Logical paths are now forward-slash on every platform.** The GitHub ingest
+  built repo-relative `path` / `source_url` / taxonomy-lookup keys with
+  `str(Path.relative_to(...))`, which yields backslashes on Windows — producing
+  malformed `source_url`s and breaking taxonomy joins there. These now use
+  `Path.as_posix()` (matching `source_ingest`), so stored paths are
+  `"/"`-separated regardless of OS. The Windows CI job now runs the previously
+  path-sensitive test files (`test_taxonomy`, `test_github_ingest`, `test_cli`,
+  `test_hub_status`) to keep this from regressing.
 
 ### Security
 

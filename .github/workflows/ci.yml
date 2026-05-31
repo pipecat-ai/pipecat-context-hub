@@ -62,24 +62,30 @@ jobs:
         run: uv sync --frozen --extra dev --group dev
 
       - name: ChromaDB index smoke
-        # Scope: the chromadb 1.5.9 cross-platform risk surface. `Sync
-        # dependencies` above already proved the wheel installs on Windows; these
-        # tests then build real ChromaDB 1.x indexes in temp dirs and exercise the
-        # upsert/query/get paths + Client.close lifecycle, the non-mutating
-        # format-detection probe (reads chroma.sqlite3), and metadata typing.
+        # Scope: the chromadb 1.5.9 cross-platform risk surface plus the
+        # path-handling tests that previously assumed POSIX separators. `Sync
+        # dependencies` above already proved the wheel installs on Windows; the
+        # chromadb tests then build real ChromaDB 1.x indexes in temp dirs and
+        # exercise the upsert/query/get paths + Client.close lifecycle, the
+        # non-mutating format-detection probe (reads chroma.sqlite3), and
+        # metadata typing.
         #
-        # We deliberately do NOT run the whole unit suite on Windows: ~27 tests in
-        # test_taxonomy / test_github_ingest / test_cli / test_hub_status assert
-        # POSIX-style "/"-separated paths and fail under Windows "\\" separators.
-        # That is pre-existing cross-platform test debt (the repo had no Windows
-        # CI before) unrelated to the chromadb bump — tracked separately, not a
-        # blocker for this migration. tests/integration/ is also excluded (its
-        # serve tests use POSIX-only select() on pipes); Linux CI runs everything.
+        # test_taxonomy / test_github_ingest / test_cli / test_hub_status are now
+        # included: the ingest layer normalizes logical repo-relative paths to
+        # forward slashes via Path.as_posix() (github_ingest.py, taxonomy.py), so
+        # stored `path` / `source_url` / taxonomy keys are "/"-separated on every
+        # platform and these tests pass under Windows "\\". tests/integration/ is
+        # still excluded (its serve tests use POSIX-only select() on pipes);
+        # Linux CI runs everything.
         run: >-
           uv run pytest -v
           tests/unit/test_index_store.py
           tests/unit/test_format_detection.py
           tests/unit/test_metadata_types.py
+          tests/unit/test_taxonomy.py
+          tests/unit/test_github_ingest.py
+          tests/unit/test_cli.py
+          tests/unit/test_hub_status.py
 
   security:
     name: Security

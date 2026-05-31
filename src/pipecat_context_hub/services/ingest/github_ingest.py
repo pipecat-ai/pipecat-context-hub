@@ -968,7 +968,7 @@ class GitHubRepoIngester:
 
         for ex_dir in example_dirs:
             # Look up taxonomy entry at the directory level.
-            rel_ex_dir = str(ex_dir.relative_to(repo_path))
+            rel_ex_dir = ex_dir.relative_to(repo_path).as_posix()
             dir_taxonomy_entry = taxonomy_lookup.get(rel_ex_dir)
             if dir_taxonomy_entry is None:
                 logger.warning(
@@ -1011,7 +1011,7 @@ class GitHubRepoIngester:
                     errors.append(f"Error reading {code_file.relative_to(repo_path)}: {exc}")
                     continue
 
-                rel_path = str(code_file.relative_to(repo_path))
+                rel_path = code_file.relative_to(repo_path).as_posix()
                 # Try per-file taxonomy lookup first (flat files like a
                 # legacy ``examples/foundational/01-say-one-thing.py`` or a
                 # topic dir containing flat ``.py`` files), then fall back
@@ -1100,7 +1100,7 @@ class GitHubRepoIngester:
                     errors.append(f"Error reading {code_file.relative_to(repo_path)}: {exc}")
                     continue
 
-                rel_path = str(code_file.relative_to(repo_path))
+                rel_path = code_file.relative_to(repo_path).as_posix()
                 taxonomy_entry = taxonomy_lookup.get(rel_path) or root_taxonomy
                 source_url = f"https://github.com/{repo_slug}/blob/{commit_sha}/{rel_path}"
                 language = _EXTENSION_TO_LANGUAGE.get(code_file.suffix)

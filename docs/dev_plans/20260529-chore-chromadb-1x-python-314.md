@@ -363,19 +363,41 @@ _Workspace below the review marker — does not affect the contract hash. Driven
 - [x] **Docs/CI** — Windows smoke job added to `.github/workflows/ci.yml` (validates chromadb 1.5.9 wheels on Windows + runs unit/integration suite that builds a real index, exercises the probe, boots `serve`, queries; a full network `refresh` is intentionally not CI-gated). `docs/dev_plans/README.md` row → "In Review". CLAUDE.md "Windows tips" reviewed: all three items are git-clone-recovery / console-encoding / model-prewarm — none are chromadb-0.6-specific, nothing to remove. `docs/README.md` says "ChromaDB + SQLite FTS5" (no version) — no material change.
 - [x] **Release housekeeping** — parked PR #67/#69 work folded into CHANGELOG `[0.1.0]` (Added/Changed/Fixed), `[Unreleased]` left empty.
 - [x] **PR opened — #70** (`chore/chromadb-1x-python-314` → `main`). CI green after three fixes found post-open: (1) the Windows-job insertion had dropped the `security:` job header — a duplicate `steps:` key that `yaml.safe_load` silently collapses but GitHub Actions rejects; (2) `pip-audit` flagged **CVE-2026-45829** (chromadb server-mode pre-auth RCE, no fixed release) — unreachable here (embedded `PersistentClient`, no server/endpoint/embedding-functions), ignored with justification + CHANGELOG Security note; (3) the Windows job's full `tests/unit/` run surfaced ~27 pre-existing POSIX path-assumption failures — scoped the job to the chromadb tests (index_store / format_detection / metadata_types, all green on Windows) since `Sync dependencies` already proves the 1.5.9 wheel installs.
-- [ ] **Remaining** — (maintainer) run full AGENTS.md live MCP smoke against the rebuilt live index; on merge move the `docs/dev_plans/README.md` row to Completed.
+- [x] **Live MCP smoke — PASS (20/20)** against the rebuilt 1.x index (37,169
+  records) via a single fresh `serve` process: page assembly + section slice,
+  `search_api` prefix/`type_definition`/TS, `get_code_snippet` (Py+TS),
+  multi-concept `search_docs`, `search_examples` domain + version scoring, the
+  new `pipecat-flows` items (33a/33b/33c), and `check_deprecation` 34–37.
+- [x] **Two hardening fixes landed on-branch before tag** (see below).
+- [ ] **Remaining** — (maintainer) merge #70 (regular `--merge`, not squash);
+  move the `docs/dev_plans/README.md` row to Completed; tag v0.1.0.
 
-### Follow-up (out of scope here) — Windows path-handling hardening
-The Windows CI job exposed ~27 pre-existing unit failures (`test_taxonomy`,
-`test_github_ingest`, `test_cli`, `test_hub_status`) that assert `/`-separated
-paths under Windows `\\` separators. Some are test-only assertions, but a few
-(e.g. taxonomy lookup `KeyError: 'examples/foundational/01-hello'` vs the
-`\\`-discovered key) suggest the ingest/taxonomy code **mixes separators on
-Windows** — a potential real production bug, not just a test artefact. Predates
-and is unrelated to the chromadb bump (the repo had no Windows CI before). Worth
-a dedicated cross-platform pass (normalise discovered paths to POSIX form before
-taxonomy lookup; audit `os.path.join` vs `/`-joins) before claiming first-class
-Windows support.
+### Pre-tag hardening (landed on this branch)
+
+**1. Windows path-handling — FIXED.** Root cause confirmed: the GitHub ingest
+built repo-relative `path` / `source_url` / taxonomy-lookup keys with
+`str(Path.relative_to(...))`, which emits `\\` on Windows — malformed
+`source_url`s and broken taxonomy joins, a real production bug (not just a test
+artefact). Fixed at `github_ingest.py` (3 sites) and `taxonomy.py` (1 site) with
+`Path.as_posix()` (matching `source_ingest`, already correct). The Windows CI job
+now runs the previously path-sensitive files (`test_taxonomy`, `test_github_ingest`,
+`test_cli`, `test_hub_status`) so it can't regress.
+
+**2. Cross-version index corruption — DETECTED gracefully.** Discovered while
+debugging an intermittent live-index failure: a stale **global
+`pipecat-context-hub` v0.0.6 (chromadb 0.6.3)** install kept writing 0.6-format
+collection config (`config_json_str = '{}'`, no `_type`) into the shared 1.x
+`~/.pipecat-context-hub`. On the next 1.x open, chromadb raised an opaque
+`KeyError: '_type'` from its sysdb. The Phase-6 pre-open migration probe can't see
+this — the `migrations` table is still 1.x; only the `collections` row is damaged.
+`VectorIndex._open_client` now catches the config-parse failure and raises the
+typed `IncompatibleIndexFormatError` with the `--reset-index` remediation, the
+same UX as the pre-1.0-dir case. (The migration code itself was proven correct: a
+clean cross-process create→upsert→cold-open round-trips fine.) **Note:** this is
+*detection*, not *prevention* — a legacy 0.6 binary can still write to a 1.x dir
+(it doesn't honor any 1.x guard). A data-dir version stamp or single-instance lock
+to actually *prevent* cross-version writes remains a possible follow-up, but is a
+contained cross-platform effort deferred past v0.1.0.
 
 ### Migration scope additions (from Findings)
 - Wire `PIPECAT_HUB_DATA_DIR` — **done early** (`692b49c`), unblocks Phase 4/6 isolation.

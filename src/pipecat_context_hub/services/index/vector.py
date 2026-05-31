@@ -369,10 +369,31 @@ class VectorIndex:
                 ),
             ),
         )
-        self._collection = self._client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+        try:
+            self._collection = self._client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+        except (KeyError, ValueError) as exc:
+            # The persisted collection configuration is unreadable. This is the
+            # one corruption the pre-open sysdb-migration probe cannot catch:
+            # an older chromadb (0.6) process that wrote to this 1.x directory
+            # leaves a ``config_json_str`` without the ``_type`` discriminator,
+            # so chromadb's own ``CollectionConfigurationInternal.from_json``
+            # raises ``KeyError: '_type'`` (or a ValueError on an unknown type)
+            # while loading the existing collection. A fresh/empty directory
+            # never hits this path (creation does not parse an existing config),
+            # so translating it here only ever fires on a genuinely poisoned
+            # index. Surface the typed, actionable error instead of the opaque
+            # one so ``serve``/``refresh`` print the reset remediation.
+            raise IncompatibleIndexFormatError(
+                self._chroma_path,
+                reason=(
+                    "the persisted collection configuration is unreadable "
+                    f"({exc!r}); this happens when an older chromadb (0.6) "
+                    "process writes to a 1.x index directory"
+                ),
+            ) from exc
         self._closed = False
         logger.info("VectorIndex initialized at %s", self._chroma_path)
 
