@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-05-29 | chore | chromadb 1.x migration + Python 3.14 prep (format break) | In Review (Phases 0–7 done) | vr000m | `chore/chromadb-1x-python-314` | `20260529-chore-chromadb-1x-python-314.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

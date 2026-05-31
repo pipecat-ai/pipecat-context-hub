@@ -62,7 +62,8 @@ surface against real indexed data.
     truncated at the parameter list)
 22. `search_api("SmallWebRTCTransport", class_name="SmallWebRTCTransport")` —
     returns TS class from `pipecat-ai/pipecat-client-web-transports` (verifies
-    nested-package TS detection for `small-webrtc-prebuilt`)
+    nested-package TS detection for `pipecat-prebuilt`, formerly
+    `small-webrtc-prebuilt` — renamed in PR #67)
 23. `search_api("connect", class_name="PipecatClient")` — returns TS method
     chunk with `method_signature` from `pipecat-ai/pipecat-client-web`
     (Phase 2 tree-sitter method extraction)
@@ -92,15 +93,35 @@ Use `chunk_type="class_overview"` (tests 25-26) when class-level ranking
 matters.
 
 30. `search_examples("TTS pipeline", pipecat_version="0.0.95", domain="backend")`
-    — all hits have `version_compatibility: "newer_required"` (framework pins
-    are 0.0.108+)
+    — all hits have `version_compatibility: "newer_required"` (framework
+    examples now pin pipecat `1.3.0`, and community examples pin `>=0.0.98` /
+    `>=1.0.0` — all newer than the queried 0.0.95)
 31. `search_examples("TTS pipeline", pipecat_version="0.0.110", domain="backend")`
-    — all hits have `version_compatibility: "compatible"`
+    — mixed by pin: framework `pipecat`/`pipecat-examples` hits pin `1.3.0` so
+    they score `newer_required` at 0.0.110; sub-1.0 community pins (e.g.
+    finchvox `>=0.0.98`) score `compatible`. (Pre-PR-#67 this returned all
+    `compatible` when the framework still pinned 0.0.x.)
 32. `search_examples("TTS pipeline", pipecat_version="0.0.110",
     version_filter="compatible_only", domain="backend")` — no
     `newer_required` hits pass through the filter
 33. `search_examples("TTS pipeline")` (no version) — all hits have
     `version_compatibility: null`
+
+New-source coverage (repos added in PR #67 — guards against a future
+re-index silently dropping them):
+
+33a. `search_api("FlowsFunctionSchema")` — top hit is from
+    `module_path: pipecat_flows.types` with `is_dataclass: true` (confirms the
+    `pipecat-ai/pipecat-flows` source is indexed and its Python AST /
+    dataclass extraction works)
+33b. `search_api("set_node", class_name="FlowManager")` — returns
+    `FlowManager.set_node_from_config` from `pipecat_flows.manager` (verifies
+    `class_name` prefix filtering against a pipecat-flows class)
+33c. `search_examples("flow manager conversation node", domain="backend")` —
+    top hits come from `repo: pipecat-ai/pipecat-flows` (e.g.
+    `examples/warm_transfer.py`, with a 1.x `pipecat_version_pin` such as
+    `"<2,>=1.3.0"`),
+    confirming the flows example set is indexed and domain-filtered
 **Prerequisite:** Tests 34-37 require that `gh` CLI was authenticated during
 the last `refresh`. Without `gh`, release-note-derived deprecation entries
 will be absent and these assertions will fail. Test 36 (`DailyTransport`)

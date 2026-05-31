@@ -7,15 +7,19 @@ from statistics import mean
 
 import chromadb
 
+from pipecat_context_hub.shared.config import StorageConfig
+
 
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), "..", "public")
 OUTPUT = os.path.join(PUBLIC_DIR, "dashboard_data.json")
 
 
 def main() -> None:
-    data_dir = os.path.expanduser("~/.pipecat-context-hub")
+    # Route through StorageConfig so PIPECAT_HUB_DATA_DIR is honoured (keeps the
+    # dashboard pipeline consistent with refresh/serve and isolated test runs).
+    chroma_path = StorageConfig().chroma_path
     print("Connecting to ChromaDB...")
-    client = chromadb.PersistentClient(path=os.path.join(data_dir, "chroma"))
+    client = chromadb.PersistentClient(path=str(chroma_path))
     col = client.get_collection("latest")
     total = col.count()
     print(f"Collection has {total:,} records")
@@ -99,9 +103,7 @@ def main() -> None:
         cumulative.append(s)
 
     pct_under_10 = round(bins[0] / method_count * 100, 1) if method_count else 0
-    pct_under_100 = (
-        round((method_count - bins[7]) / method_count * 100, 1) if method_count else 0
-    )
+    pct_under_100 = round((method_count - bins[7]) / method_count * 100, 1) if method_count else 0
 
     # Chunk size stats per content type
     sizes: dict[str, list[int]] = {"doc": [], "code": [], "source": []}

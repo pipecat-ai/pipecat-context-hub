@@ -7,9 +7,58 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-30
+
+> **ChromaDB 1.x upgrade — on-disk format break.** Migrates the vector store from
+> chromadb 0.6 to 1.5.x. The 1.x on-disk format is **not** backward-compatible:
+> existing indexes will be refused at startup with a clear error. After
+> upgrading you **must** rebuild the index:
+>
+> ```
+> uv run pipecat-context-hub refresh --force --reset-index
+> ```
+>
+> This release also batches the `serve` watchdog fixes and default-source
+> updates that were held back for the migration (PRs #67, #69).
+
+### Added
+
+- **Pre-1.0 index detection.** A non-mutating probe inspects the persisted
+  SQLite schema before opening it and raises a typed
+  `IncompatibleIndexFormatError` naming the format mismatch and the
+  `refresh --force --reset-index` remediation, surfaced by both `serve` and
+  `refresh`. The 0.6 directory is left byte-identical (no silent overwrite).
+- **`PIPECAT_HUB_DATA_DIR`** environment variable to override the local data
+  directory (defaults to `~/.pipecat-context-hub`), for isolated/throwaway
+  corpora.
+
+### Changed
+
+- **ChromaDB pinned `>=1.5,<2.0`** (was `>=0.6,<1.0`), resolving to 1.5.9. The
+  vector-store backend is otherwise behaviourally unchanged (cosine similarity,
+  the `latest` collection, query/upsert semantics). `VectorIndex` teardown now
+  uses chromadb's public `Client.close()` instead of the private 0.6 internals.
+- **Leaner dependency tree.** chromadb 1.x drops its embedded server stack, so
+  `posthog`, `fastapi`, `asgiref`, `chroma-hnswlib`, and several
+  `opentelemetry-instrumentation-*` packages are no longer installed. Removing
+  `posthog` also removes one telemetry/CVE surface.
+- **Idle watchdog is now a fallback, not the default orphan-cleanup path**
+  (PR #69). When reliable client-death detection is active (direct-parent
+  launch, or an intermediate launcher with a resolved grandparent), `serve`
+  disables the idle timeout — it would only kill a warm hub mid-session. It
+  stays armed when detection is unavailable (Windows, parent-watch disabled, or
+  an unresolved grandparent). Set `PIPECAT_HUB_IDLE_TIMEOUT_SECS` to force an
+  idle backstop back on; an explicitly-configured value is always honored.
+- **Updated default indexed sources** (PR #67). Added `pipecat-ai/pipecat-flows`
+  (conversation flow framework). Renamed `pipecat-ai/small-webrtc-prebuilt` to
+  its new slug `pipecat-ai/pipecat-prebuilt`. Removed `pipecat-ai/pipecat-flows-editor`
+  and the archived `pipecat-ai/web-client-ui` from the defaults. Run
+  `refresh --force` to re-index; data for removed repos is cleaned up automatically
+  on the next refresh. Any of these can still be re-added via `PIPECAT_HUB_EXTRA_REPOS`.
+
 ### Fixed
 
-- **`serve` no longer self-terminates mid-session under `uv run`.** When
+- **`serve` no longer self-terminates mid-session under `uv run`** (PR #69). When
   launched as `uv run pipecat-context-hub serve`, `uv` lingers as an
   intermediate parent, so `os.getppid()` never flips when the real client
   dies — the parent-death watchdog could not fire, and the 30-minute idle
@@ -20,7 +69,7 @@ This project uses [Semantic Versioning](https://semver.org/).
   **grandparent** (the real client) for death instead, so it exits promptly
   when — and only when — the client actually goes away. Closes the "Known
   Gap: `uv run` wrapper" from the v0.0.18 orphan-watchdog work.
-- **No more spurious "leaked semaphore" warning on watchdog shutdown.** A
+- **No more spurious "leaked semaphore" warning on watchdog shutdown** (PR #69). A
   watchdog-triggered exit calls `os._exit(0)`, which skips `atexit` and left
   loky/multiprocessing (reached via the cross-encoder → `torch`/`sklearn`)
   resource-tracker semaphores unreleased, printing a benign-but-alarming
@@ -28,22 +77,43 @@ This project uses [Semantic Versioning](https://semver.org/).
   `atexit` handlers in a bounded daemon thread before the hard exit. The
   hard-exit stderr line was also reworded so a normal client-gone fast-exit
   no longer reads as a crash.
+- **Clear error when an older chromadb has corrupted a 1.x index dir.** If a
+  chromadb **0.6** process (e.g. a stale global `pipecat-context-hub` install)
+  writes to a 1.x data directory, it leaves a collection config that 1.x cannot
+  parse — chromadb raises an opaque `KeyError: '_type'` deep in its sysdb on the
+  next open. The pre-open migration probe can't see this (the `migrations` table
+  is still 1.x; only the `collections` row is damaged), so `VectorIndex` now
+  catches the config-parse failure and raises the typed
+  `IncompatibleIndexFormatError` with the `refresh --force --reset-index`
+  remediation, the same as the pre-1.0-directory case.
+- **Logical paths are now forward-slash on every platform.** The GitHub ingest
+  built repo-relative `path` / `source_url` / taxonomy-lookup keys with
+  `str(Path.relative_to(...))`, which yields backslashes on Windows — producing
+  malformed `source_url`s and breaking taxonomy joins there. These now use
+  `Path.as_posix()` (matching `source_ingest`), so stored paths are
+  `"/"`-separated regardless of OS. The Windows CI job now runs the previously
+  path-sensitive test files (`test_taxonomy`, `test_github_ingest`, `test_cli`,
+  `test_hub_status`) to keep this from regressing.
 
-### Changed
+### Security
 
-- **Idle watchdog is now a fallback, not the default orphan-cleanup path.**
-  When reliable client-death detection is active (direct-parent launch, or
-  an intermediate launcher with a resolved grandparent), `serve` disables
-  the idle timeout — it would only kill a warm hub mid-session. It stays
-  armed when detection is unavailable (Windows, parent-watch disabled, or an
-  unresolved grandparent). Set `PIPECAT_HUB_IDLE_TIMEOUT_SECS` to force an
-  idle backstop back on; an explicitly-configured value is always honored.
-- **Updated default indexed sources** (PR #67). Added `pipecat-ai/pipecat-flows`
-  (conversation flow framework). Renamed `pipecat-ai/small-webrtc-prebuilt` to
-  its new slug `pipecat-ai/pipecat-prebuilt`. Removed `pipecat-ai/pipecat-flows-editor`
-  and the archived `pipecat-ai/web-client-ui` from the defaults. Run
-  `refresh --force` to re-index; data for removed repos is cleaned up automatically
-  on the next refresh. Any of these can still be re-added via `PIPECAT_HUB_EXTRA_REPOS`.
+- **chromadb CVE-2026-45829 (GHSA-f4j7-r4q5-qw2c) — audited, not exploitable
+  here, no fix available.** chromadb 1.0.0–1.5.9 carry a pre-authentication code
+  injection in **HTTP server mode**: an unauthenticated attacker can execute code
+  via the `/api/v2/.../collections` endpoint by supplying a malicious model repo
+  with `trust_remote_code=true`. There is no fixed release yet (1.5.9 is the
+  latest 1.x). The hub runs the **embedded `PersistentClient` only** — no server,
+  no HTTP endpoint, no network listener — and never uses chromadb's embedding
+  functions or `trust_remote_code`, so the vulnerable path is unreachable. The CI
+  dependency audit ignores it with this justification; the unfiltered biweekly
+  `security-audit.yml` re-surfaces it so the ignore cannot outlive an upstream
+  fix.
+
+### Notes
+
+- **Python ceiling unchanged** (`requires-python = ">=3.11,<3.14"`). Lifting it
+  to 3.14 is a separate follow-up release gated on torch + onnxruntime cp314
+  wheels.
 
 ## [0.0.20] - 2026-05-29
 

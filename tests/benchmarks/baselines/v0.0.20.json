@@ -1,0 +1,17 @@
+{
+  "config": {
+    "iterations": 5,
+    "query_count": 12,
+    "record_count": 39786
+  },
+  "metrics": {
+    "dashboard_peak_rss_bytes": 2398339072,
+    "index_build_seconds": 404.8589142500423,
+    "query_p50_ms": 6.093729520216584,
+    "query_p95_ms": 6.91280378960073,
+    "refresh_peak_rss_bytes": 1537622016
+  },
+  "notes": "build time is embedding-compute dominated (model identical across chromadb versions); query latency + dashboard RSS are the chromadb-discriminating signals. dashboard RSS is UMAP-dominated and measured against the live index (dashboard scripts do not yet honor PIPECAT_HUB_DATA_DIR).",
+  "schema_version": 1,
+  "warnings": []
+}

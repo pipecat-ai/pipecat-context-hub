@@ -214,10 +214,13 @@ class TestHandleGetHubStatus:
     async def test_index_path_returned(self):
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 
-        store = self._mock_index_store(data_dir=Path("/home/user/.pipecat-context-hub"))
+        # index_path echoes the OS-native data dir (a Windows data dir is a
+        # backslash path), so compare against str(Path(...)), not a POSIX literal.
+        data_dir = Path("/home/user/.pipecat-context-hub")
+        store = self._mock_index_store(data_dir=data_dir)
         result_json = await handle_get_hub_status({}, store)
         output = HubStatusOutput.model_validate_json(result_json)
-        assert output.index_path == "/home/user/.pipecat-context-hub"
+        assert output.index_path == str(data_dir)
 
     async def test_returns_valid_json(self):
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status

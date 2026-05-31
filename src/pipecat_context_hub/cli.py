@@ -226,6 +226,7 @@ def serve(ctx: click.Context) -> None:
     from pipecat_context_hub.server.transport import serve_stdio
     from pipecat_context_hub.shared.tracking import IdleTracker
     from pipecat_context_hub.services.embedding import EmbeddingService
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
@@ -247,6 +248,16 @@ def serve(ctx: click.Context) -> None:
     try:
         index_store = IndexStore(config.storage)
         stats = index_store.get_index_stats()
+    except IncompatibleIndexFormatError as exc:
+        # Specific, non-mutating signal: the on-disk Chroma format predates 1.x.
+        # The probe ran before PersistentClient, so nothing was written.
+        if index_store is not None:
+            try:
+                index_store.close()
+            except Exception:
+                logger.exception("Failed to close partially-opened index store")
+        logger.error("%s", exc)
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         # IndexStore.__init__ opens two backends (Chroma + SQLite) without
         # rolling back on partial failure; close() whatever did come up.
@@ -457,6 +468,7 @@ def refresh(
         EmbeddingIndexWriter,
         EmbeddingService,
     )
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
     from pipecat_context_hub.services.ingest.github_ingest import (
@@ -488,7 +500,14 @@ def refresh(
         force = True
 
     # Build the ingestion pipeline
-    index_store = IndexStore(config.storage)
+    try:
+        index_store = IndexStore(config.storage)
+    except IncompatibleIndexFormatError as exc:
+        # A pre-1.0 Chroma dir cannot be opened by 1.x. --reset-index deletes
+        # storage above before this point, so this only fires on a plain
+        # refresh against a stale 0.6 index — point the user at the rebuild.
+        logger.error("%s", exc)
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
 

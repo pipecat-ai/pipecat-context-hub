@@ -396,7 +396,7 @@ class TaxonomyBuilder:
         ``<topic>`` contains direct code files, emit one entry for
         ``<topic>``; otherwise emit one entry per subdirectory under
         ``<topic>``. Every emitted entry has
-        ``path == str(ex_dir.relative_to(repo_root))`` where
+        ``path == ex_dir.relative_to(repo_root).as_posix()`` where
         ``repo_root`` is the parent of ``examples_dir``.
 
         Args:
@@ -595,7 +595,7 @@ class TaxonomyBuilder:
         ``github_ingest._discover_under_examples`` so the Seam 1 contract
         (``taxonomy_lookup[rel]`` has an entry for every discovered dir)
         holds by construction — one walk, not two. Every emitted entry has
-        ``path == str(ex_dir.relative_to(repo_root))``.
+        ``path == ex_dir.relative_to(repo_root).as_posix()``.
 
         ``skip_names`` excludes discovered dirs whose first path component
         under ``examples_dir`` is listed (used to skip ``foundational`` on
@@ -648,7 +648,7 @@ class TaxonomyBuilder:
     ) -> TaxonomyEntry:
         """Build a TaxonomyEntry for an example discovered under a topic dir.
 
-        The ``path`` is ``str(example_dir.relative_to(repo_root))`` — this is
+        The ``path`` is ``example_dir.relative_to(repo_root).as_posix()`` — this is
         the load-bearing invariant: ``github_ingest._build_taxonomy_lookup``
         keys entries by the same relative path that
         ``_discover_under_examples`` produces. ``foundational_class`` stays
@@ -656,7 +656,7 @@ class TaxonomyBuilder:
         """
         dirname = example_dir.name
         example_id = f"example-{dirname}"
-        rel_path = str(example_dir.relative_to(repo_root))
+        rel_path = example_dir.relative_to(repo_root).as_posix()
 
         tags: list[CapabilityTag] = []
         # Primary source: the topic dir name (with compound-topic overrides).

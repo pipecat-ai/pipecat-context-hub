@@ -709,7 +709,7 @@ class TestTaxonomyBuilderMixedLayout:
 
         example_dirs = _find_example_dirs(mixed_repo_dir)
         for ex_dir in example_dirs:
-            rel_path = str(ex_dir.relative_to(mixed_repo_dir))
+            rel_path = ex_dir.relative_to(mixed_repo_dir).as_posix()
             assert rel_path in lookup, (
                 f"Taxonomy has no entry for {rel_path!r}; "
                 f"available: {sorted(lookup.keys())}"
@@ -947,7 +947,7 @@ class TestTaxonomyBuilderTopicLayout:
     def test_topic_layout_paths_are_relative_to_repo_root(
         self, topic_repo_dir: Path
     ):
-        """Every entry.path must equal str(ex_dir.relative_to(repo_root))."""
+        """Every entry.path must equal ex_dir.relative_to(repo_root).as_posix()."""
         builder = TaxonomyBuilder()
         entries = builder.build_from_directory(
             topic_repo_dir, repo="pipecat-ai/pipecat"
@@ -955,7 +955,7 @@ class TestTaxonomyBuilderTopicLayout:
         for entry in entries:
             full = topic_repo_dir / entry.path
             assert full.is_dir(), f"entry.path {entry.path!r} does not resolve"
-            assert entry.path == str(full.relative_to(topic_repo_dir))
+            assert entry.path == full.relative_to(topic_repo_dir).as_posix()
 
     def test_topic_layout_foundational_class_is_none(self, topic_repo_dir: Path):
         builder = TaxonomyBuilder()
@@ -1128,7 +1128,7 @@ class TestTaxonomyBuilderTopicLayout:
         discovered = _discover_under_examples(topic_repo_dir / "examples")
         assert discovered, "fixture must produce at least one discovered dir"
         for ex_dir in discovered:
-            rel = str(ex_dir.relative_to(topic_repo_dir))
+            rel = ex_dir.relative_to(topic_repo_dir).as_posix()
             assert rel in taxonomy_lookup, (
                 f"No taxonomy entry for discovered dir {rel!r}; "
                 f"available keys: {sorted(taxonomy_lookup.keys())}"
@@ -1153,7 +1153,7 @@ class TestTaxonomyBuilderTopicLayout:
         )
         assert discovered
         for ex_dir in discovered:
-            rel = str(ex_dir.relative_to(topic_repo_with_flat_topic_dir))
+            rel = ex_dir.relative_to(topic_repo_with_flat_topic_dir).as_posix()
             assert rel in taxonomy_lookup, (
                 f"No taxonomy entry for discovered dir {rel!r}; "
                 f"available keys: {sorted(taxonomy_lookup.keys())}"
@@ -1185,7 +1185,7 @@ class TestTaxonomyBuilderTopicLayout:
         discovered = _discover_under_examples(tmp_path / "examples")
         assert discovered
         for ex_dir in discovered:
-            rel = str(ex_dir.relative_to(tmp_path))
+            rel = ex_dir.relative_to(tmp_path).as_posix()
             assert rel in taxonomy_lookup, (
                 f"No taxonomy entry for discovered dir {rel!r}; "
                 f"available keys: {sorted(taxonomy_lookup.keys())}"

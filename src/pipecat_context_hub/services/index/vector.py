@@ -10,17 +10,19 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryEvent
 from overrides import override
 
+from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,47 @@ COLLECTION_NAME = "latest"
 
 # ChromaDB limits batch operations to ~5,461 embeddings. Use a safe limit.
 _CHROMA_BATCH_SIZE = 5000
+
+# chromadb 1.0 introduced sysdb schema migration 10 (00010-collection-schema).
+# A persisted index whose highest applied sysdb migration is below this was
+# written by a pre-1.0 (0.6-era) chromadb and is not loadable by 1.x.
+_MIN_SUPPORTED_SYSDB_MIGRATION = 10
+
+
+def _detect_incompatible_format(chroma_path: Path) -> None:
+    """Raise :class:`IncompatibleIndexFormatError` for a pre-1.0 Chroma dir.
+
+    Non-mutating: opens ``chroma.sqlite3`` read-only and ``immutable`` (no
+    ``-wal``/``-shm`` creation, no schema writes) and inspects the sysdb
+    migration version. Must run *before* ``chromadb.PersistentClient(...)``,
+    which would otherwise raise an opaque ``InternalError`` or rewrite state.
+
+    Stays silent (lets chromadb surface its own error) when the directory has
+    no ``chroma.sqlite3``, the file is not a readable SQLite database, or it has
+    no recognizable ``migrations`` table.
+    """
+    db_path = chroma_path / "chroma.sqlite3"
+    if not db_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
+    except sqlite3.Error:
+        return
+    try:
+        has_migrations = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='migrations'"
+        ).fetchone()
+        if has_migrations is None:
+            return
+        row = conn.execute("SELECT MAX(version) FROM migrations WHERE dir='sysdb'").fetchone()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+    max_version = row[0] if row else None
+    if max_version is not None and max_version < _MIN_SUPPORTED_SYSDB_MIGRATION:
+        raise IncompatibleIndexFormatError(chroma_path, detected_sysdb_migration=max_version)
 
 
 class NoOpProductTelemetryClient(ProductTelemetryClient):
@@ -75,7 +118,14 @@ def _record_to_metadata(
     if version_pin is not None:
         meta["pipecat_version_pin"] = str(version_pin)
     # Source API metadata fields
-    for key in ("module_path", "class_name", "chunk_type", "method_name", "method_signature", "return_type"):
+    for key in (
+        "module_path",
+        "class_name",
+        "chunk_type",
+        "method_name",
+        "method_signature",
+        "return_type",
+    ):
         val = record.metadata.get(key)
         if val is not None:
             meta[key] = str(val)
@@ -132,7 +182,14 @@ def _metadata_to_record_fields(
         val = meta.get(key)
         if val is not None:
             extra_meta[key] = int(val)
-    for key in ("module_path", "class_name", "chunk_type", "method_name", "method_signature", "return_type"):
+    for key in (
+        "module_path",
+        "class_name",
+        "chunk_type",
+        "method_name",
+        "method_signature",
+        "return_type",
+    ):
         val = meta.get(key)
         if val is not None:
             extra_meta[key] = val
@@ -234,9 +291,7 @@ def _build_where_clause(filters: dict[str, Any]) -> dict[str, Any] | None:
     return {"$and": conditions}
 
 
-def _apply_post_filters(
-    results: list[IndexResult], filters: dict[str, Any]
-) -> list[IndexResult]:
+def _apply_post_filters(results: list[IndexResult], filters: dict[str, Any]) -> list[IndexResult]:
     """Apply filters that ChromaDB cannot handle natively.
 
     - path: prefix match
@@ -251,19 +306,19 @@ def _apply_post_filters(
     if "capability_tags" in filters:
         tag = filters["capability_tags"]
         tags_to_match: list[str] = tag if isinstance(tag, list) else [str(tag)]
-        filtered = [
-            r
-            for r in filtered
-            if _record_has_tags(r, tags_to_match)
-        ]
+        filtered = [r for r in filtered if _record_has_tags(r, tags_to_match)]
 
     if "class_name" in filters:
         prefix = filters["class_name"]
-        filtered = [r for r in filtered if r.chunk.metadata.get("class_name", "").startswith(prefix)]
+        filtered = [
+            r for r in filtered if r.chunk.metadata.get("class_name", "").startswith(prefix)
+        ]
 
     if "module_path" in filters:
         prefix = filters["module_path"]
-        filtered = [r for r in filtered if r.chunk.metadata.get("module_path", "").startswith(prefix)]
+        filtered = [
+            r for r in filtered if r.chunk.metadata.get("module_path", "").startswith(prefix)
+        ]
 
     if "yields" in filters:
         val = filters["yields"]
@@ -291,20 +346,19 @@ class VectorIndex:
     so indexes survive process restarts.
     """
 
-    _client_refcounts: ClassVar[dict[str, int]] = {}
-    _client_refcounts_lock: ClassVar[threading.Lock] = threading.Lock()
-
     def __init__(self, chroma_path: Path) -> None:
         self._chroma_path = chroma_path
         self._client: Any = None
         self._collection: Any = None
-        self._client_identifier: str | None = None
         self._closed = True
         self._op_lock = threading.RLock()
         self._open_client()
 
     def _open_client(self) -> None:
-        """Open the persistent Chroma client and register a local reference."""
+        """Open the persistent Chroma client and the ``latest`` collection."""
+        # Probe for a pre-1.0 on-disk format BEFORE constructing the client,
+        # which would otherwise crash opaquely or rewrite 0.6 state.
+        _detect_incompatible_format(self._chroma_path)
         self._chroma_path.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(
             path=str(self._chroma_path),
@@ -315,52 +369,56 @@ class VectorIndex:
                 ),
             ),
         )
-        self._collection = self._client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
-        identifier = str(getattr(self._client, "_identifier", self._chroma_path))
-        with self._client_refcounts_lock:
-            self._client_refcounts[identifier] = self._client_refcounts.get(identifier, 0) + 1
-        self._client_identifier = identifier
+        try:
+            self._collection = self._client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+        except (KeyError, ValueError) as exc:
+            # The persisted collection configuration is unreadable. This is the
+            # one corruption the pre-open sysdb-migration probe cannot catch:
+            # an older chromadb (0.6) process that wrote to this 1.x directory
+            # leaves a ``config_json_str`` without the ``_type`` discriminator,
+            # so chromadb's own ``CollectionConfigurationInternal.from_json``
+            # raises ``KeyError: '_type'`` (or a ValueError on an unknown type)
+            # while loading the existing collection. A fresh/empty directory
+            # never hits this path (creation does not parse an existing config),
+            # so translating it here only ever fires on a genuinely poisoned
+            # index. Surface the typed, actionable error instead of the opaque
+            # one so ``serve``/``refresh`` print the reset remediation.
+            raise IncompatibleIndexFormatError(
+                self._chroma_path,
+                reason=(
+                    "the persisted collection configuration is unreadable "
+                    f"({exc!r}); this happens when an older chromadb (0.6) "
+                    "process writes to a 1.x index directory"
+                ),
+            ) from exc
         self._closed = False
         logger.info("VectorIndex initialized at %s", self._chroma_path)
 
-    def _release_client(self, *, clear_cache: bool = False) -> None:
-        """Release this client's Chroma resources.
+    def _release_client(self) -> None:
+        """Release this client's Chroma resources via the public close API.
 
-        ChromaDB 0.6.3 does not expose a public close API. We stop its
-        internal shared system only when this is the last in-process client
-        for the persistence path. When resetting storage, the system cache
-        must be cleared after stop(); clearing it first removes the shared
-        system mapping that stop() relies on.
+        ChromaDB 1.x exposes ``Client.close()``, which is refcount-aware: it
+        stops the underlying shared System and evicts it from
+        ``SharedSystemClient._identifier_to_system`` only when the last client
+        for the persistence path closes. This eviction is essential — calling
+        the private ``_system.stop()`` directly (the 0.6 workaround) left a
+        dead Rust-backed system in the cache, so the next ``PersistentClient``
+        on the same path reused it and failed tenant validation with
+        ``'RustBindingsAPI' object has no attribute 'bindings'``.
         """
         if self._closed:
             return
 
         client = self._client
-        identifier = self._client_identifier
-        stop_system = False
-        if identifier is not None:
-            with self._client_refcounts_lock:
-                remaining = self._client_refcounts.get(identifier, 0)
-                if remaining <= 1:
-                    self._client_refcounts.pop(identifier, None)
-                    stop_system = True
-                else:
-                    self._client_refcounts[identifier] = remaining - 1
-
-        if stop_system and client is not None:
+        if client is not None:
             try:
-                # Verified against ChromaDB 0.6.3 internals: there is still
-                # no public client.close(), so shutdown goes through _system.
-                client._system.stop()
-                if clear_cache:
-                    client.clear_system_cache()
+                client.close()
             except Exception:
-                logger.exception("Failed to stop Chroma system at %s", self._chroma_path)
+                logger.exception("Failed to close Chroma client at %s", self._chroma_path)
 
-        self._client_identifier = None
         self._collection = None
         self._client = None
         self._closed = True
@@ -368,27 +426,18 @@ class VectorIndex:
     def close(self) -> None:
         """Release this client's Chroma resources."""
         with self._op_lock:
-            self._release_client(clear_cache=False)
+            self._release_client()
 
     def reset(self) -> None:
         """Delete persisted Chroma state and recreate the collection.
 
         Reset is intended for exclusive maintenance flows such as
-        ``refresh --reset-index``. Refuse to run when another in-process
-        client is still using the same persistence path.
+        ``refresh --reset-index``. ``Client.close()`` evicts this path's
+        System from ChromaDB's shared cache, so the subsequent ``_open_client``
+        rebuilds a fresh System over the recreated directory.
         """
-        identifier = self._client_identifier
-        if identifier is not None:
-            with self._client_refcounts_lock:
-                # Best-effort guard only: reset is reserved for exclusive
-                # maintenance flows and is not safe for concurrent clients.
-                if self._client_refcounts.get(identifier, 0) > 1:
-                    raise RuntimeError(
-                        "Cannot reset Chroma storage while another client is using it."
-                    )
-
         with self._op_lock:
-            self._release_client(clear_cache=True)
+            self._release_client()
             shutil.rmtree(self._chroma_path, ignore_errors=True)
             self._open_client()
             logger.info("VectorIndex reset at %s", self._chroma_path)
@@ -419,6 +468,10 @@ class VectorIndex:
                 continue
             ids.append(record.chunk_id)
             documents.append(record.content)
+            # chromadb 1.x metadata must be str | int | float | bool (None is
+            # rejected). _record_to_metadata enforces this by omitting absent
+            # fields; the exact field->type map is pinned in
+            # tests/unit/test_metadata_types.py::EXPECTED_METADATA_TYPES.
             metadatas.append(_record_to_metadata(record))
             embeddings.append(record.embedding)
 
@@ -450,7 +503,9 @@ class VectorIndex:
                 for i in range(0, count, _CHROMA_BATCH_SIZE):
                     batch = ids[i : i + _CHROMA_BATCH_SIZE]
                     self._collection.delete(ids=batch)
-                logger.debug("Deleted %d records from vector index for content_type=%s", count, content_type)
+                logger.debug(
+                    "Deleted %d records from vector index for content_type=%s", count, content_type
+                )
             return count
 
     def delete_by_repo(self, repo: str) -> int:
@@ -478,7 +533,9 @@ class VectorIndex:
                 for i in range(0, count, _CHROMA_BATCH_SIZE):
                     batch = ids[i : i + _CHROMA_BATCH_SIZE]
                     self._collection.delete(ids=batch)
-                logger.debug("Deleted %d records from vector index for source %s", count, source_url)
+                logger.debug(
+                    "Deleted %d records from vector index for source %s", count, source_url
+                )
             return count
 
     def search(self, query: IndexQuery) -> list[IndexResult]:
@@ -488,7 +545,10 @@ class VectorIndex:
             return []
 
         with self._op_lock:
-            needs_post_filter = any(k in query.filters for k in ("path", "capability_tags", "class_name", "module_path", "yields", "calls"))
+            needs_post_filter = any(
+                k in query.filters
+                for k in ("path", "capability_tags", "class_name", "module_path", "yields", "calls")
+            )
             where = _build_where_clause(query.filters)
 
             # Clamp n_results to collection size to prevent ChromaDB crash
@@ -516,9 +576,7 @@ class VectorIndex:
         result_metas = results["metadatas"][0] if results["metadatas"] else []
         result_dists = results["distances"][0] if results["distances"] else []
 
-        for chunk_id, doc, meta, dist in zip(
-            result_ids, result_docs, result_metas, result_dists
-        ):
+        for chunk_id, doc, meta, dist in zip(result_ids, result_docs, result_metas, result_dists):
             # ChromaDB cosine distance: 0 = identical, 2 = opposite
             # Convert to similarity score: 1 - (distance / 2) gives 0..1 range
             score = 1.0 - (dist / 2.0)

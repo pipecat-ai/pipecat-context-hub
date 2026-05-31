@@ -14,6 +14,7 @@ from pipecat_context_hub.shared.config import (
     ServerConfig,
     SourceConfig,
     StorageConfig,
+    _DATA_DIR_ENV,
     _DEFAULT_RERANKER_MODEL,
     _EXTRA_REPOS_ENV,
     _RERANKER_MODEL_ENV,
@@ -61,10 +62,33 @@ class TestEmbeddingConfig:
 
 class TestStorageConfig:
     def test_defaults(self):
-        s = StorageConfig()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(_DATA_DIR_ENV, None)
+            s = StorageConfig()
         assert s.data_dir == Path.home() / ".pipecat-context-hub"
         assert s.sqlite_filename == "metadata.db"
         assert s.chroma_dirname == "chroma"
+
+    def test_data_dir_env_override(self):
+        with patch.dict(os.environ, {_DATA_DIR_ENV: "/tmp/hub-override"}):
+            s = StorageConfig()
+        assert s.data_dir == Path("/tmp/hub-override")
+        assert s.chroma_path == Path("/tmp/hub-override/chroma")
+
+    def test_explicit_data_dir_beats_env(self):
+        with patch.dict(os.environ, {_DATA_DIR_ENV: "/tmp/hub-override"}):
+            s = StorageConfig(data_dir=Path("/tmp/explicit"))
+        assert s.data_dir == Path("/tmp/explicit")
+
+    def test_data_dir_env_blank_falls_back(self):
+        with patch.dict(os.environ, {_DATA_DIR_ENV: "   "}):
+            s = StorageConfig()
+        assert s.data_dir == Path.home() / ".pipecat-context-hub"
+
+    def test_data_dir_env_expands_user(self):
+        with patch.dict(os.environ, {_DATA_DIR_ENV: "~/scratch-hub"}):
+            s = StorageConfig()
+        assert s.data_dir == Path.home() / "scratch-hub"
 
     def test_computed_paths(self):
         s = StorageConfig(data_dir=Path("/tmp/test-hub"))

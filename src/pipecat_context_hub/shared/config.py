@@ -48,6 +48,25 @@ _ALLOWED_RERANKER_MODELS: frozenset[str] = frozenset(
 # Environment variable for pinning the framework repo to a specific git tag.
 _FRAMEWORK_VERSION_ENV = "PIPECAT_HUB_FRAMEWORK_VERSION"
 
+# Environment variable for overriding the local data directory. Used to isolate
+# refresh/serve/dashboard runs from the default ~/.pipecat-context-hub index
+# (e.g. migration tests, perf baselines, throwaway corpora). An explicit
+# StorageConfig(data_dir=...) still wins — the env var only sets the default.
+_DATA_DIR_ENV = "PIPECAT_HUB_DATA_DIR"
+
+
+def _default_data_dir() -> Path:
+    """Resolve the default data dir, honouring ``PIPECAT_HUB_DATA_DIR``.
+
+    Falls back to ``~/.pipecat-context-hub`` when the env var is unset or blank.
+    ``~`` in the override is expanded so values like ``~/scratch`` work.
+    """
+    override = os.environ.get(_DATA_DIR_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".pipecat-context-hub"
+
+
 # `serve` lifetime knobs. Idle timeout is user-facing (default 30 min;
 # 0 disables). Parent-watch interval is hidden / for tests, but lives
 # here for consistency with how every other env var is resolved.
@@ -123,8 +142,11 @@ class StorageConfig(BaseModel):
     """Local storage paths."""
 
     data_dir: Path = Field(
-        default=Path.home() / ".pipecat-context-hub",
-        description="Root directory for all local data.",
+        default_factory=_default_data_dir,
+        description=(
+            "Root directory for all local data. Defaults to "
+            "~/.pipecat-context-hub, overridable via PIPECAT_HUB_DATA_DIR."
+        ),
     )
     sqlite_filename: str = Field(default="metadata.db", description="SQLite database filename.")
     chroma_dirname: str = Field(default="chroma", description="ChromaDB persistence directory.")
