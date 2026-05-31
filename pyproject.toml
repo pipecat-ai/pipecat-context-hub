@@ -11,7 +11,7 @@ license = "BSD-2-Clause"
 # Upper bound: chromadb 0.6.x's Pydantic-v1 BaseSettings shim crashes on 3.14, and
 # torch (via sentence-transformers/transformers) has no cp314 wheels yet. Lift once
 # the chromadb 1.x migration lands and the compiled stack ships 3.14 wheels.
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0,<3.0",
     "mcp>=1.0,<2.0",
