@@ -7,6 +7,17 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-30
+
+### Changed
+- **Python 3.14 support** — lifted the `requires-python` ceiling from `<3.14` to
+  `<3.15`. The `<3.14` cap (PR #65) was a workaround for chromadb 0.6.x's
+  Pydantic-v1 shim crashing on 3.14 and the absence of cp314 wheels for the
+  compiled stack. Both are resolved: chromadb 1.x (pydantic-v2) shipped in
+  v0.1.0, and torch 2.12 / tokenizers 0.23 / onnxruntime 1.26 now publish cp314
+  wheels for macOS, Linux, and Windows. Full suite passes on 3.14.5 (1071
+  passed). CI now runs the quality and Windows-smoke jobs on a 3.12 + 3.14 matrix.
+
 ## [0.1.0] - 2026-05-30
 
 > **ChromaDB 1.x upgrade — on-disk format break.** Migrates the vector store from
