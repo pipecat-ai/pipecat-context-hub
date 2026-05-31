@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-30
+
 ### Changed
 - **Python 3.14 support** — lifted the `requires-python` ceiling from `<3.14` to
   `<3.15`. The `<3.14` cap (PR #65) was a workaround for chromadb 0.6.x's

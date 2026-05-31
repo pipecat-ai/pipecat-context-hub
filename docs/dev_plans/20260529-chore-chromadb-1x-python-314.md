@@ -426,19 +426,19 @@ contained cross-platform effort deferred past v0.1.0.
 
 ## Follow-up: Python 3.14 cap lift — STAGED (2026-05-30)
 
-The "Follow-up release" checklist above is satisfied and **staged under
-CHANGELOG `[Unreleased]`** (version intentionally held at 0.1.0; the 0.1.1 bump
-+ tag is deferred to an actual release per maintainer decision). Note: the
-contract section above names this `v0.2.0`, but the actual next version is
-**0.1.1** — a backward-compatible pin relaxation is a patch under SemVer:
+The "Follow-up release" checklist above is satisfied and folded into this branch
+as **v0.1.1** (the version bump is included here so the release doesn't need a
+separate docs-only PR). Note: the contract section above names this `v0.2.0`,
+but the actual version is **0.1.1** — a backward-compatible pin relaxation is a
+patch under SemVer. Only the git tag is deferred to merge time:
 
 1. ✅ torch cp314 wheels on PyPI — 2.12.0 (macOS-arm64, manylinux x86_64/aarch64, win_amd64).
 2. ✅ onnxruntime cp314 wheels on PyPI — 1.26.0 (macosx, manylinux, win). tokenizers 0.23.1 ships cp314/abi3.
 3. ✅ `requires-python` → `>=3.11,<3.15`; comment block rewritten (no longer a "lift once…" TODO).
-4. ✅ CHANGELOG `[Unreleased]` → Changed entry.
+4. ✅ CHANGELOG `[0.1.1] - 2026-05-30` Changed entry; version bumped in `pyproject.toml` + `_SERVER_VERSION` (consistency test passes).
 5. ✅ CI: `quality` and `windows-smoke` jobs now `["3.12","3.14"]` matrices (Linux full suite + Windows chromadb/path scope on both).
 6. ✅ `uv.lock` re-locked in the same change (170 packages, no conflict).
-7. ⏸️ `v0.1.1` tag — deferred (not part of this branch).
+7. ⏸️ `v0.1.1` git tag — deferred to merge time (tag the merge commit on `main`).
 
 Evidence: full suite **1071 passed, 6 skipped** on cpython-3.14.5 (macOS-arm64)
 in an isolated env; `uv lock` resolves all platforms. Only warning is an upstream
