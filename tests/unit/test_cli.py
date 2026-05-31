@@ -108,28 +108,28 @@ class TestRedactHome:
     """Tests for the home-directory redaction helper used in startup telemetry."""
 
     def test_replaces_home_prefix_with_tilde(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         nested = tmp_path / "Library" / "Application Support" / "hub" / "data"
         assert _redact_home(nested) == "~" + str(nested)[len(str(tmp_path)):]
 
     def test_exact_home_path_becomes_tilde(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert _redact_home(tmp_path) == "~"
 
     def test_non_home_path_unchanged(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         unrelated = Path("/var/lib/hub/data")
-        assert _redact_home(unrelated) == "/var/lib/hub/data"
+        assert _redact_home(unrelated) == str(unrelated)
 
     def test_sibling_of_home_not_redacted(self, monkeypatch, tmp_path: Path):
         # /home/alice should not match /home/alicebob as a prefix.
-        monkeypatch.setenv("HOME", str(tmp_path / "alice"))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "alice")
         (tmp_path / "alice").mkdir()
         sibling = tmp_path / "alicebob" / "data"
         assert _redact_home(sibling) == str(sibling)
 
     def test_accepts_string_input(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert _redact_home(str(tmp_path / "foo")) == "~" + os.sep + "foo"
 
 

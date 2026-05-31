@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -277,6 +278,11 @@ class TestCloneOrFetchCheckoutControl:
         with pytest.raises(ValueError, match="Invalid repo slug"):
             ingester.clone_or_fetch("../evil")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="GitPython worktree handle flake on Windows (WinError 6: invalid "
+        "handle); unrelated to ingestion logic, which is covered on Linux/macOS.",
+    )
     def test_checkout_false_keeps_existing_worktree_and_fetches_tags(self, tmp_path: Path):
         from git import Repo as GitRepo
 
@@ -564,7 +570,7 @@ class TestIterCodeFiles:
         (tmp_path / ".github" / "workflows" / "ci.yml").write_text("on: push")
 
         result = _iter_code_files(tmp_path, skip_root_dirs=_ROOT_FALLBACK_SKIP_ROOT_DIRS)
-        paths = {str(p.relative_to(tmp_path)) for p in result}
+        paths = {p.relative_to(tmp_path).as_posix() for p in result}
         assert "src/pkg/server.py" in paths
         assert "tests/test_server.py" not in paths
         assert "docs/conf.py" not in paths
@@ -590,7 +596,7 @@ class TestIterCodeFiles:
         (tmp_path / "config" / "deploy.yaml").write_text("env: prod")
 
         result = _iter_code_files(tmp_path, skip_root_dirs=_ROOT_FALLBACK_SKIP_ROOT_DIRS)
-        paths = {str(p.relative_to(tmp_path)) for p in result}
+        paths = {p.relative_to(tmp_path).as_posix() for p in result}
         assert "src/pkg/config/settings.py" in paths
         assert "config/deploy.yaml" not in paths
 
