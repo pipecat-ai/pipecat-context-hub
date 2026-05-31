@@ -46,6 +46,23 @@ jobs:
       - name: Pytest
         run: uv run pytest tests/ -v
 
+  # Stable required-status-check name. Branch protection requires "Quality";
+  # the matrix above reports per-leg names ("Quality (py3.12)", …), so this
+  # gate aggregates them under the single name protection expects. Bump the
+  # matrix without touching branch-protection settings.
+  quality-gate:
+    name: Quality
+    runs-on: ubuntu-latest
+    needs: [quality]
+    if: always()
+    steps:
+      - name: Require all Quality matrix legs to pass
+        env:
+          RESULT: ${{ needs.quality.result }}
+        run: |
+          echo "Quality matrix aggregate result: $RESULT"
+          test "$RESULT" = "success"
+
   windows-smoke:
     name: Windows smoke (chromadb 1.x, py${{ matrix.python-version }})
     runs-on: windows-latest
