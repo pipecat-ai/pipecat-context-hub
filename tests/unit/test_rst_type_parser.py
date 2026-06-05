@@ -152,7 +152,6 @@ NextType
         assert err.kind == "alias"
         assert err.description == ""  # alias prose is never stored
 
-
     def test_alias_never_renders_prose(self, tmp_path: Path):
         """Alias content must never include untrusted RST prose."""
         rst_file = tmp_path / "types.rst"
@@ -294,9 +293,12 @@ class TestParseLiveFile:
     """Test against the actual daily-python types.rst if available."""
 
     def test_parses_real_file(self):
-        rst_path = Path.home() / ".pipecat-context-hub/repos/daily-co_daily-python/docs/src/types.rst"
+        rst_path = (
+            Path.home() / ".pipecat-context-hub/repos/daily-co_daily-python/docs/src/types.rst"
+        )
         if not rst_path.is_file():
             import pytest
+
             pytest.skip("daily-python not cloned locally")
 
         types = parse_rst_types(rst_path)
@@ -304,12 +306,15 @@ class TestParseLiveFile:
         # Should find many types
         assert len(types) >= 50
 
-        # Check known types exist
+        # Check known types exist. These are core enums/errors/settings that
+        # have survived multiple daily-python releases — unlike volatile media
+        # settings types (e.g. AudioInputSettings, removed in 0.29.0). The
+        # ``dict_or`` parsing shape is covered by ``test_parses_or_alternatives``
+        # against a synthetic fixture, so it does not need a live anchor here.
         names = {t.name for t in types}
         assert "DialoutSendDtmfSettings" in names
         assert "CallState" in names
         assert "CallClientError" in names
-        assert "AudioInputSettings" in names
 
         # Check DialoutSendDtmfSettings fields
         dtmf = next(t for t in types if t.name == "DialoutSendDtmfSettings")
@@ -317,8 +322,3 @@ class TestParseLiveFile:
         field_keys = [f.key for f in dtmf.fields]
         assert "sessionId" in field_keys
         assert "tones" in field_keys
-
-        # Check AudioInputSettings has "or" pattern
-        ais = next(t for t in types if t.name == "AudioInputSettings")
-        assert ais.kind == "dict_or"
-        assert len(ais.alternatives) >= 2
