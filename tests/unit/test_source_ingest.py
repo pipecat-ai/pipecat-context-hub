@@ -128,6 +128,7 @@ class TestSanitizeSlug:
     def test_matches_github_ingest_regex(self):
         """Produces identical output to re.sub(r'[^a-zA-Z0-9_-]', '_', slug)."""
         import re
+
         slugs = [
             "pipecat-ai/pipecat",
             "org/repo.v2",
@@ -149,8 +150,12 @@ class TestMakeChunkId:
 
     def test_deterministic(self):
         """Same inputs produce the same ID."""
-        id1 = _make_chunk_id("org/repo", "mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
-        id2 = _make_chunk_id("org/repo", "mod.path", "class_overview", "MyClass", "", "abc123", line_start=10)
+        id1 = _make_chunk_id(
+            "org/repo", "mod.path", "class_overview", "MyClass", "", "abc123", line_start=10
+        )
+        id2 = _make_chunk_id(
+            "org/repo", "mod.path", "class_overview", "MyClass", "", "abc123", line_start=10
+        )
         assert id1 == id2
 
     def test_different_inputs_different_ids(self):
@@ -182,7 +187,10 @@ class TestMakeChunkId:
         """Chunk ID matches the expected SHA-256 prefix."""
         key = "source:org/repo:mod.path:module_overview:::abc:1"
         expected = hashlib.sha256(key.encode()).hexdigest()[:24]
-        assert _make_chunk_id("org/repo", "mod.path", "module_overview", "", "", "abc", line_start=1) == expected
+        assert (
+            _make_chunk_id("org/repo", "mod.path", "module_overview", "", "", "abc", line_start=1)
+            == expected
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -197,25 +205,20 @@ class TestMakeSourceUrl:
         """URL includes line range fragment. rel_path is repo-root-relative."""
         url = _make_source_url(_TEST_REPO_SLUG, "src/pipecat/frames/base.py", "abc123", 10, 50)
         assert url == (
-            "https://github.com/pipecat-ai/pipecat/blob/abc123"
-            "/src/pipecat/frames/base.py#L10-L50"
+            "https://github.com/pipecat-ai/pipecat/blob/abc123/src/pipecat/frames/base.py#L10-L50"
         )
 
     def test_url_without_line_range(self):
         """URL without line range when start/end are 0."""
         url = _make_source_url(_TEST_REPO_SLUG, "src/pipecat/frames/base.py", "abc123", 0, 0)
         assert url == (
-            "https://github.com/pipecat-ai/pipecat/blob/abc123"
-            "/src/pipecat/frames/base.py"
+            "https://github.com/pipecat-ai/pipecat/blob/abc123/src/pipecat/frames/base.py"
         )
 
     def test_url_root_level_pyi(self):
         """Root-level .pyi files get correct URLs (no src/ prefix)."""
         url = _make_source_url("daily-co/daily-python", "daily.pyi", "def456", 27, 33)
-        assert url == (
-            "https://github.com/daily-co/daily-python/blob/def456"
-            "/daily.pyi#L27-L33"
-        )
+        assert url == ("https://github.com/daily-co/daily-python/blob/def456/daily.pyi#L27-L33")
 
 
 # ---------------------------------------------------------------------------
@@ -310,8 +313,13 @@ class TestBuildChunks:
         """All chunks have required metadata fields."""
         chunks = self._get_chunks()
         required_keys = {
-            "module_path", "chunk_type", "class_name", "method_name",
-            "language", "line_start", "line_end",
+            "module_path",
+            "chunk_type",
+            "class_name",
+            "method_name",
+            "language",
+            "line_start",
+            "line_end",
         }
         for chunk in chunks:
             missing = required_keys - set(chunk.metadata.keys())
@@ -466,11 +474,14 @@ class TestSourceIngester:
         (src_dir / "__init__.py").write_text('"""Pipecat package."""\n')
 
         # Init a git repo so _get_commit_sha works.
-        commit_sha = _create_git_repo(clone_dir, {
-            "src/pipecat/__init__.py": '"""Pipecat package."""\n',
-            "src/pipecat/frames/__init__.py": "",
-            "src/pipecat/frames/base.py": (frames_dir / "base.py").read_text(),
-        })
+        commit_sha = _create_git_repo(
+            clone_dir,
+            {
+                "src/pipecat/__init__.py": '"""Pipecat package."""\n',
+                "src/pipecat/frames/__init__.py": "",
+                "src/pipecat/frames/base.py": (frames_dir / "base.py").read_text(),
+            },
+        )
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
@@ -512,11 +523,14 @@ class TestSourceIngester:
         (src_dir / "tests" / "test_core.py").write_text("def test_it(): pass\n")
         (src_dir / "__init__.py").write_text("")
 
-        _create_git_repo(clone_dir, {
-            "src/pipecat/__init__.py": "",
-            "src/pipecat/core/main.py": "class Core:\n    pass\n",
-            "src/pipecat/tests/test_core.py": "def test_it(): pass\n",
-        })
+        _create_git_repo(
+            clone_dir,
+            {
+                "src/pipecat/__init__.py": "",
+                "src/pipecat/core/main.py": "class Core:\n    pass\n",
+                "src/pipecat/tests/test_core.py": "def test_it(): pass\n",
+            },
+        )
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
@@ -540,11 +554,14 @@ class TestSourceIngester:
         (src_dir / "good.py").write_text("x = 1\n")
         (src_dir / "bad.py").write_text("def broken(:\n")
 
-        _create_git_repo(clone_dir, {
-            "src/pipecat/__init__.py": "",
-            "src/pipecat/good.py": "x = 1\n",
-            "src/pipecat/bad.py": "def broken(:\n",
-        })
+        _create_git_repo(
+            clone_dir,
+            {
+                "src/pipecat/__init__.py": "",
+                "src/pipecat/good.py": "x = 1\n",
+                "src/pipecat/bad.py": "def broken(:\n",
+            },
+        )
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
@@ -566,10 +583,13 @@ class TestSourceIngester:
         (src_dir / "__init__.py").write_text("")
         (src_dir / "mod.py").write_text("x = 1\n")
 
-        _create_git_repo(clone_dir, {
-            "src/pipecat/__init__.py": "",
-            "src/pipecat/mod.py": "x = 1\n",
-        })
+        _create_git_repo(
+            clone_dir,
+            {
+                "src/pipecat/__init__.py": "",
+                "src/pipecat/mod.py": "x = 1\n",
+            },
+        )
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
@@ -590,10 +610,13 @@ class TestSourceIngester:
         (src_dir / "__init__.py").write_text("")
         (src_dir / "mod.py").write_text("class A:\n    pass\n")
 
-        _create_git_repo(clone_dir, {
-            "src/pipecat/__init__.py": "",
-            "src/pipecat/mod.py": "class A:\n    pass\n",
-        })
+        _create_git_repo(
+            clone_dir,
+            {
+                "src/pipecat/__init__.py": "",
+                "src/pipecat/mod.py": "class A:\n    pass\n",
+            },
+        )
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
@@ -617,10 +640,13 @@ class TestSourceIngester:
         (clone_dir / "src" / "pipecat" / "__init__.py").write_text("")
         (src_dir / "__init__.py").write_text('"""Frames package."""\n')
 
-        _create_git_repo(clone_dir, {
-            "src/pipecat/__init__.py": "",
-            "src/pipecat/frames/__init__.py": '"""Frames package."""\n',
-        })
+        _create_git_repo(
+            clone_dir,
+            {
+                "src/pipecat/__init__.py": "",
+                "src/pipecat/frames/__init__.py": '"""Frames package."""\n',
+            },
+        )
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
@@ -654,10 +680,13 @@ class TestSourceIngester:
             "        return self.state\n"
         )
 
-        _create_git_repo(clone_dir, {
-            "src/my_pkg/__init__.py": '"""My package."""\n',
-            "src/my_pkg/agent.py": (src_dir / "agent.py").read_text(),
-        })
+        _create_git_repo(
+            clone_dir,
+            {
+                "src/my_pkg/__init__.py": '"""My package."""\n',
+                "src/my_pkg/agent.py": (src_dir / "agent.py").read_text(),
+            },
+        )
 
         config = self._make_config(tmp_path)
         writer = _make_mock_writer()
@@ -699,6 +728,115 @@ class TestSourceIngester:
         assert result.errors == []
         assert result.records_upserted == 0
         writer.upsert.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Default-repo layout smoke tests
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultRepoLayouts:
+    """Chunk-yield guards for repos added to the default ingest set.
+
+    A repo added to ``SourceConfig.repos`` is worthless if its on-disk layout
+    falls through the ingester's discovery dispatch and yields zero chunks
+    (the failure mode of the Swift/Kotlin/C++ client SDKs, which clone but
+    produce nothing). These tests reproduce the layouts of the two repos
+    promoted to defaults and assert the ingester actually emits source chunks,
+    so a future upstream restructure that breaks discovery fails loudly here
+    rather than silently shipping an empty slice of the index.
+    """
+
+    def _make_config(self, tmp_path: Path) -> MagicMock:
+        config = MagicMock()
+        config.storage.data_dir = tmp_path
+        return config
+
+    async def test_react_native_transports_ts_monorepo_yields_chunks(self, tmp_path: Path):
+        """``pipecat-client-react-native-transports`` shape: root package.json +
+        TypeScript transport sources under ``transports/<name>/src/``.
+
+        Mirrors the verified upstream layout (transport.ts / index.tsx living
+        below a repo-root package.json, no ``src/`` Python package). The TS repo
+        detector keys on package.json/tsconfig at root or an immediate subdir.
+        """
+        slug = "pipecat-ai/pipecat-client-react-native-transports"
+        clone_dir = tmp_path / "repos" / _sanitize_slug(slug)
+        files = {
+            "package.json": '{"name": "pipecat-react-native-transports"}\n',
+            "transports/daily/src/transport.ts": (
+                "export class DailyTransport {\n"
+                "  private url: string;\n"
+                "  constructor(url: string) {\n"
+                "    this.url = url;\n"
+                "  }\n"
+                "  async connect(): Promise<void> {\n"
+                "    await fetch(this.url);\n"
+                "  }\n"
+                "}\n"
+            ),
+            "transports/daily/src/index.tsx": ("export { DailyTransport } from './transport';\n"),
+        }
+        _create_git_repo(clone_dir, files)
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = SourceIngester(config, writer, slug)
+
+        result = await ingester.ingest()
+
+        assert result.errors == []
+        assert result.records_upserted > 0, (
+            "TS transports monorepo yielded zero chunks — discovery dispatch "
+            "likely no longer recognises the root-package.json layout"
+        )
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        assert all(rec.content_type == "source" for rec in records)
+        assert all(rec.repo == slug for rec in records)
+
+    async def test_pipecat_cli_python_package_yields_chunks(self, tmp_path: Path):
+        """``pipecat-cli`` shape: ``src/pipecat_cli/`` package with sub-packages.
+
+        Mirrors the verified upstream layout — the AST discovery walker keys on
+        ``src/<pkg>/__init__.py``, so a flattened or renamed package root would
+        regress here.
+        """
+        slug = "pipecat-ai/pipecat-cli"
+        clone_dir = tmp_path / "repos" / _sanitize_slug(slug)
+        files = {
+            "src/pipecat_cli/__init__.py": '"""Pipecat CLI."""\n',
+            "src/pipecat_cli/commands/__init__.py": "",
+            "src/pipecat_cli/commands/serve.py": (
+                '"""Serve command."""\n\n\n'
+                "class ServeCommand:\n"
+                '    """Run the MCP server."""\n\n'
+                "    def __init__(self, host: str, port: int):\n"
+                "        self.host = host\n"
+                "        self.port = port\n\n"
+                "    def run(self) -> int:\n"
+                '        """Start the server and return an exit code."""\n'
+                "        return self._serve(self.host, self.port)\n\n"
+                "    def _serve(self, host: str, port: int) -> int:\n"
+                "        return 0\n"
+            ),
+        }
+        _create_git_repo(clone_dir, files)
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = SourceIngester(config, writer, slug)
+
+        result = await ingester.ingest()
+
+        assert result.errors == []
+        assert result.records_upserted > 0, (
+            "pipecat-cli Python package yielded zero chunks — discovery walker "
+            "likely no longer recognises the src/<pkg>/__init__.py layout"
+        )
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        assert all(rec.repo == slug for rec in records)
+        chunk_types = {rec.metadata["chunk_type"] for rec in records}
+        assert "class_overview" in chunk_types
 
 
 # ---------------------------------------------------------------------------
@@ -807,8 +945,13 @@ class TestCallGraphMetadata:
         """Existing required metadata fields still present after adding new fields."""
         chunks = self._get_chunks()
         required_keys = {
-            "module_path", "chunk_type", "class_name", "method_name",
-            "language", "line_start", "line_end",
+            "module_path",
+            "chunk_type",
+            "class_name",
+            "method_name",
+            "language",
+            "line_start",
+            "line_end",
         }
         for chunk in chunks:
             missing = required_keys - set(chunk.metadata.keys())
