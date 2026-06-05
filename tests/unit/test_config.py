@@ -242,8 +242,10 @@ class TestSourceConfig:
             "daily-co/daily-python",
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
+            "pipecat-ai/pipecat-client-react-native-transports",
             "pipecat-ai/voice-ui-kit",
             "pipecat-ai/pipecat-prebuilt",
+            "pipecat-ai/pipecat-cli",
         ]
 
     def test_custom_llms_txt_url(self):

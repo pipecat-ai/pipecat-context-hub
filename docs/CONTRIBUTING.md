@@ -67,10 +67,17 @@ Retrieval:
 - `daily-co/daily-python` — Daily Python SDK (`.pyi` stubs + RST type definitions)
 - **TypeScript SDK repos** (default since v0.0.12):
   - `pipecat-ai/pipecat-client-web`, `pipecat-ai/pipecat-client-web-transports`,
+    `pipecat-ai/pipecat-client-react-native-transports`,
     `pipecat-ai/voice-ui-kit`, `pipecat-ai/pipecat-prebuilt`
   - Tree-sitter-extracted: interfaces, classes, types, functions, enums, const exports
     with individual method chunks and full signatures
+- `pipecat-ai/pipecat-cli` — official CLI (Python AST-indexed)
 - Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var
+  - Adjacent pipecat-ai repos that parse cleanly but are opt-in:
+    `pipecat-mcp-server` (Python), `pipecat-flows-editor` (TS), `pipecat-krisp` (Python)
+  - Swift/Kotlin/C++ client SDKs (`pipecat-client-ios`, `pipecat-client-android`,
+    `pipecat-client-cxx`, `pipecat-esp32`) are **not** indexable — no grammar for those
+    languages; adding them clones but yields zero chunks
   - Repos with `src/` layouts are Python AST-indexed for `search_api`
   - Repos with `.pyi` stubs at root are also AST-indexed
   - Repos with `package.json`/`tsconfig.json` are tree-sitter-indexed

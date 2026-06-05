@@ -262,9 +262,10 @@ The default index includes:
 - **Pipecat examples** — `pipecat-ai/pipecat-examples` (project-level code examples)
 - **Pipecat Flows** — `pipecat-ai/pipecat-flows` (conversation flow framework, Python AST-indexed)
 - **Daily Python SDK** — `daily-co/daily-python` (`.pyi` stubs + RST type definitions)
-- **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `voice-ui-kit`, `pipecat-prebuilt` (tree-sitter-indexed)
+- **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `pipecat-client-react-native-transports`, `voice-ui-kit`, `pipecat-prebuilt` (tree-sitter-indexed)
+- **Pipecat CLI** — `pipecat-ai/pipecat-cli` (Python AST-indexed)
 
-Add more repos via `PIPECAT_HUB_EXTRA_REPOS`.
+Add more repos via `PIPECAT_HUB_EXTRA_REPOS` (e.g. `pipecat-mcp-server`, `pipecat-flows-editor`, `pipecat-krisp`). Only Python, TypeScript, and RST are parsed — Swift/Kotlin/C++ client SDKs (iOS, Android, cxx, esp32) clone but yield zero chunks.
 
 ## Security
 
