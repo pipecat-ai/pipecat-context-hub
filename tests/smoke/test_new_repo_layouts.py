@@ -8,10 +8,12 @@ Where ``test_pipecat_layout.py`` asserts taxonomy/example-discovery invariants
 against *vendored* fixture trees, these assert the complementary invariant for
 repos added to ``SourceConfig.repos``: that the repo's on-disk layout actually
 flows through ``SourceIngester`` discovery and emits source chunks. A repo whose
-layout falls through the dispatch yields zero chunks (the failure mode of the
-Swift/Kotlin/C++ client SDKs, which clone but produce nothing). These guards use
-synthetic repo trees rather than vendored snapshots because the layout shape —
-not specific upstream content — is what must not regress.
+layout falls through the dispatch yields zero source chunks (the failure mode of
+the Swift/Kotlin/C++ client SDKs, whose source parser produces nothing — they
+get only a few README/config fallback chunks from the GitHub ingester, never
+``search_api``-visible API chunks). These guards use synthetic repo trees rather
+than vendored snapshots because the layout shape — not specific upstream
+content — is what must not regress.
 """
 
 from __future__ import annotations

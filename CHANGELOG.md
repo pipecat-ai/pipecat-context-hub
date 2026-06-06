@@ -19,7 +19,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   and the `SourceConfig` docstring now state that only Python (`.py`/`.pyi`),
   TypeScript (`.ts`/`.tsx`), and RST are parsed. Swift/Kotlin/C++ client SDKs
   (`pipecat-client-ios`, `pipecat-client-android`, `pipecat-client-cxx`,
-  `pipecat-esp32`) clone but yield zero chunks — adding them is a no-op until a
+  `pipecat-esp32`) clone but yield zero source/API chunks (only a few
+  README/config fallback chunks), so they never reach `search_api` until a
   grammar for those languages exists. Curated opt-in extras
   (`pipecat-mcp-server`, `pipecat-flows-editor`, `pipecat-krisp`) are documented
   in the `SourceConfig` docstring.

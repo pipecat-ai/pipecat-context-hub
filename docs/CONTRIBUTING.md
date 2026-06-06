@@ -76,8 +76,9 @@ Retrieval:
   - Adjacent pipecat-ai repos that parse cleanly but are opt-in:
     `pipecat-mcp-server` (Python), `pipecat-flows-editor` (TS), `pipecat-krisp` (Python)
   - Swift/Kotlin/C++ client SDKs (`pipecat-client-ios`, `pipecat-client-android`,
-    `pipecat-client-cxx`, `pipecat-esp32`) are **not** indexable — no grammar for those
-    languages; adding them clones but yields zero chunks
+    `pipecat-client-cxx`, `pipecat-esp32`) are **not** source-indexable — no grammar
+    for those languages; adding them clones but yields zero source/API chunks (only
+    a few README/config fallback chunks), so they never reach `search_api`
   - Repos with `src/` layouts are Python AST-indexed for `search_api`
   - Repos with `.pyi` stubs at root are also AST-indexed
   - Repos with `package.json`/`tsconfig.json` are tree-sitter-indexed

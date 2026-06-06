@@ -400,8 +400,11 @@ class SourceConfig(BaseModel):
     Only Python (``.py``/``.pyi``), TypeScript (``.ts``/``.tsx``), and RST
     (``docs/**.rst``) are parsed. Swift, Kotlin, and C++ client SDKs
     (``pipecat-client-ios``, ``pipecat-client-android``, ``pipecat-client-cxx``,
-    ``pipecat-esp32``) clone but yield zero chunks — adding them is a no-op
-    until a grammar for those languages is added.
+    ``pipecat-esp32``) clone but yield zero source/API chunks — the source
+    parser produces nothing for them. They may still emit a handful of README
+    and config-file (JSON/YAML/TOML) fallback chunks via the GitHub ingester,
+    so ``search_api`` / ``get_code_snippet`` stay empty for these repos until a
+    grammar for those languages is added.
 
     Entire repos can be skipped via ``PIPECAT_HUB_TAINTED_REPOS`` and
     specific upstream refs can be skipped via ``PIPECAT_HUB_TAINTED_REFS``
