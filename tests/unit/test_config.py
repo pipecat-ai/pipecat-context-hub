@@ -248,6 +248,22 @@ class TestSourceConfig:
             "pipecat-ai/pipecat-cli",
         ]
 
+    def test_default_repos_membership(self):
+        """Legibility companion to the exact-match snapshot in ``test_defaults``.
+
+        The snapshot above asserts the full ordered list (and must be edited on
+        every repo change); this names the load-bearing defaults explicitly so a
+        reader sees *which* repos are guaranteed present without diffing a list
+        literal. Covers the two repos promoted to defaults most recently.
+        """
+        repos = SourceConfig().repos
+        for slug in (
+            "pipecat-ai/pipecat",
+            "pipecat-ai/pipecat-client-react-native-transports",
+            "pipecat-ai/pipecat-cli",
+        ):
+            assert slug in repos
+
     def test_custom_llms_txt_url(self):
         s = SourceConfig(docs_llms_txt_url="https://example.com/docs.txt")
         assert s.docs_llms_txt_url == "https://example.com/docs.txt"

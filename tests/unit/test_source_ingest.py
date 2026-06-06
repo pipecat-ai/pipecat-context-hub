@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-
 from pipecat_context_hub.services.ingest.ast_extractor import extract_module_info
 from pipecat_context_hub.services.ingest.source_ingest import (
     SourceIngester,
@@ -20,36 +19,14 @@ from pipecat_context_hub.services.ingest.source_ingest import (
 )
 from pipecat_context_hub.shared.types import ChunkedRecord
 
+# Synthetic-repo scaffolding is shared with the offline smoke-layout tests
+# (tests/smoke/test_new_repo_layouts.py); see tests/_ingest_helpers.py.
+from tests._ingest_helpers import (
+    create_git_repo as _create_git_repo,
+    make_mock_writer as _make_mock_writer,
+)
+
 _TEST_REPO_SLUG = "pipecat-ai/pipecat"
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_mock_writer() -> AsyncMock:
-    """Create a mock IndexWriter."""
-    writer = AsyncMock()
-    writer.upsert = AsyncMock(side_effect=lambda records: len(records))
-    writer.delete_by_source = AsyncMock(return_value=0)
-    return writer
-
-
-def _create_git_repo(repo_dir: Path, files: dict[str, str]) -> str:
-    """Initialise a git repo at repo_dir with the given files and return commit SHA."""
-    from git import Repo as GitRepo
-
-    repo_dir.mkdir(parents=True, exist_ok=True)
-    for rel_path, content in files.items():
-        fpath = repo_dir / rel_path
-        fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(content, encoding="utf-8")
-
-    git_repo = GitRepo.init(str(repo_dir))
-    git_repo.index.add([str(repo_dir / p) for p in files])
-    git_repo.index.commit("initial commit")
-    return git_repo.head.commit.hexsha
 
 
 # ---------------------------------------------------------------------------
@@ -728,115 +705,6 @@ class TestSourceIngester:
         assert result.errors == []
         assert result.records_upserted == 0
         writer.upsert.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Default-repo layout smoke tests
-# ---------------------------------------------------------------------------
-
-
-class TestDefaultRepoLayouts:
-    """Chunk-yield guards for repos added to the default ingest set.
-
-    A repo added to ``SourceConfig.repos`` is worthless if its on-disk layout
-    falls through the ingester's discovery dispatch and yields zero chunks
-    (the failure mode of the Swift/Kotlin/C++ client SDKs, which clone but
-    produce nothing). These tests reproduce the layouts of the two repos
-    promoted to defaults and assert the ingester actually emits source chunks,
-    so a future upstream restructure that breaks discovery fails loudly here
-    rather than silently shipping an empty slice of the index.
-    """
-
-    def _make_config(self, tmp_path: Path) -> MagicMock:
-        config = MagicMock()
-        config.storage.data_dir = tmp_path
-        return config
-
-    async def test_react_native_transports_ts_monorepo_yields_chunks(self, tmp_path: Path):
-        """``pipecat-client-react-native-transports`` shape: root package.json +
-        TypeScript transport sources under ``transports/<name>/src/``.
-
-        Mirrors the verified upstream layout (transport.ts / index.tsx living
-        below a repo-root package.json, no ``src/`` Python package). The TS repo
-        detector keys on package.json/tsconfig at root or an immediate subdir.
-        """
-        slug = "pipecat-ai/pipecat-client-react-native-transports"
-        clone_dir = tmp_path / "repos" / _sanitize_slug(slug)
-        files = {
-            "package.json": '{"name": "pipecat-react-native-transports"}\n',
-            "transports/daily/src/transport.ts": (
-                "export class DailyTransport {\n"
-                "  private url: string;\n"
-                "  constructor(url: string) {\n"
-                "    this.url = url;\n"
-                "  }\n"
-                "  async connect(): Promise<void> {\n"
-                "    await fetch(this.url);\n"
-                "  }\n"
-                "}\n"
-            ),
-            "transports/daily/src/index.tsx": ("export { DailyTransport } from './transport';\n"),
-        }
-        _create_git_repo(clone_dir, files)
-
-        config = self._make_config(tmp_path)
-        writer = _make_mock_writer()
-        ingester = SourceIngester(config, writer, slug)
-
-        result = await ingester.ingest()
-
-        assert result.errors == []
-        assert result.records_upserted > 0, (
-            "TS transports monorepo yielded zero chunks — discovery dispatch "
-            "likely no longer recognises the root-package.json layout"
-        )
-        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
-        assert all(rec.content_type == "source" for rec in records)
-        assert all(rec.repo == slug for rec in records)
-
-    async def test_pipecat_cli_python_package_yields_chunks(self, tmp_path: Path):
-        """``pipecat-cli`` shape: ``src/pipecat_cli/`` package with sub-packages.
-
-        Mirrors the verified upstream layout — the AST discovery walker keys on
-        ``src/<pkg>/__init__.py``, so a flattened or renamed package root would
-        regress here.
-        """
-        slug = "pipecat-ai/pipecat-cli"
-        clone_dir = tmp_path / "repos" / _sanitize_slug(slug)
-        files = {
-            "src/pipecat_cli/__init__.py": '"""Pipecat CLI."""\n',
-            "src/pipecat_cli/commands/__init__.py": "",
-            "src/pipecat_cli/commands/serve.py": (
-                '"""Serve command."""\n\n\n'
-                "class ServeCommand:\n"
-                '    """Run the MCP server."""\n\n'
-                "    def __init__(self, host: str, port: int):\n"
-                "        self.host = host\n"
-                "        self.port = port\n\n"
-                "    def run(self) -> int:\n"
-                '        """Start the server and return an exit code."""\n'
-                "        return self._serve(self.host, self.port)\n\n"
-                "    def _serve(self, host: str, port: int) -> int:\n"
-                "        return 0\n"
-            ),
-        }
-        _create_git_repo(clone_dir, files)
-
-        config = self._make_config(tmp_path)
-        writer = _make_mock_writer()
-        ingester = SourceIngester(config, writer, slug)
-
-        result = await ingester.ingest()
-
-        assert result.errors == []
-        assert result.records_upserted > 0, (
-            "pipecat-cli Python package yielded zero chunks — discovery walker "
-            "likely no longer recognises the src/<pkg>/__init__.py layout"
-        )
-        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
-        assert all(rec.repo == slug for rec in records)
-        chunk_types = {rec.metadata["chunk_type"] for rec in records}
-        assert "class_overview" in chunk_types
 
 
 # ---------------------------------------------------------------------------

@@ -418,6 +418,7 @@ class SourceConfig(BaseModel):
     )
     repos: list[str] = Field(
         default=[
+            # Core Python framework & SDKs
             "pipecat-ai/pipecat",
             "pipecat-ai/pipecat-examples",
             "pipecat-ai/pipecat-flows",
@@ -428,7 +429,7 @@ class SourceConfig(BaseModel):
             "pipecat-ai/pipecat-client-react-native-transports",
             "pipecat-ai/voice-ui-kit",
             "pipecat-ai/pipecat-prebuilt",
-            # Official CLI (Python)
+            # Official Python CLI
             "pipecat-ai/pipecat-cli",
         ],
         description="GitHub repos to ingest.",
