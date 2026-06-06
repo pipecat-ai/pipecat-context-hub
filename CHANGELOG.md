@@ -8,13 +8,18 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Two repos added to default ingest set** — `pipecat-ai/pipecat-client-react-native-transports`
-  (TypeScript, tree-sitter-indexed) and `pipecat-ai/pipecat-cli` (Python,
-  AST-indexed). Both were verified to yield parseable chunks before being added.
-  This fills the React Native client-transport gap and makes the official CLI's
-  commands searchable via `search_api`.
+- **RN transports added to default ingest set** — `pipecat-ai/pipecat-client-react-native-transports`
+  (TypeScript, tree-sitter-indexed), verified to yield parseable chunks before
+  being added. Fills the React Native client-transport gap.
 
 ### Changed
+- **`pipecat-ai/pipecat-cli` kept opt-in, not default** — evaluated for the
+  default set but left as a `PIPECAT_HUB_EXTRA_REPOS` extra. The CLI is consumed
+  via commands (`pipecat init`, `pipecat cloud deploy`), not imported as a
+  library, and its command reference is already indexed from `docs.pipecat.ai`
+  (`/api-reference/cli/*`). Ingesting the repo source only added CLI-internal
+  plumbing to `search_examples` / `search_api` without improving CLI-usage
+  answers, so it is documented as opt-in instead.
 - **Documented ingest language limits** — `README`, `CONTRIBUTING`, `.env.example`,
   and the `SourceConfig` docstring now state that only Python (`.py`/`.pyi`),
   TypeScript (`.ts`/`.tsx`), and RST are parsed. Swift/Kotlin/C++ client SDKs

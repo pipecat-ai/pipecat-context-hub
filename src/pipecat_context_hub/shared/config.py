@@ -396,6 +396,14 @@ class SourceConfig(BaseModel):
     - ``pipecat-ai/pipecat-mcp-server`` (Python) — Pipecat MCP server
     - ``pipecat-ai/pipecat-flows-editor`` (TypeScript) — Flows web editor UI
     - ``pipecat-ai/pipecat-krisp`` (Python) — Krisp noise-cancellation wrapper
+    - ``pipecat-ai/pipecat-cli`` (Python) — official CLI. Opt-in rather than
+      default because the CLI is consumed via commands (``pipecat init``,
+      ``pipecat cloud deploy``), not imported as a library: its command
+      reference is already indexed from ``docs.pipecat.ai`` (``/api-reference/
+      cli/*``), so ingesting the repo source only adds CLI-internal plumbing
+      (``config_validator``, ``generators``) to ``search_examples`` /
+      ``search_api`` without improving CLI usage answers. Enable via
+      ``PIPECAT_HUB_EXTRA_REPOS`` if you need to read the CLI's internals.
 
     Only Python (``.py``/``.pyi``), TypeScript (``.ts``/``.tsx``), and RST
     (``docs/**.rst``) are parsed. Swift, Kotlin, and C++ client SDKs
@@ -432,8 +440,6 @@ class SourceConfig(BaseModel):
             "pipecat-ai/pipecat-client-react-native-transports",
             "pipecat-ai/voice-ui-kit",
             "pipecat-ai/pipecat-prebuilt",
-            # Official Python CLI
-            "pipecat-ai/pipecat-cli",
         ],
         description="GitHub repos to ingest.",
     )
