@@ -72,9 +72,11 @@ Retrieval:
   - Tree-sitter-extracted: interfaces, classes, types, functions, enums, const exports
     with individual method chunks and full signatures
 - Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var
-  - Adjacent pipecat-ai repos that parse cleanly but are opt-in:
-    `pipecat-cli` (Python CLI — see note below), `pipecat-mcp-server` (Python),
-    `pipecat-flows-editor` (TS), `pipecat-krisp` (Python)
+  - Adjacent pipecat-ai repos that parse cleanly but are opt-in (use the full
+    `org/repo` slug in `PIPECAT_HUB_EXTRA_REPOS`):
+    `pipecat-ai/pipecat-cli` (Python CLI — see note below),
+    `pipecat-ai/pipecat-mcp-server` (Python),
+    `pipecat-ai/pipecat-flows-editor` (TS), `pipecat-ai/pipecat-krisp` (Python)
   - `pipecat-ai/pipecat-cli` is opt-in rather than default: the CLI is used via
     commands (`pipecat init`, `pipecat cloud deploy`), not imported, and its
     command reference is already indexed from `docs.pipecat.ai`

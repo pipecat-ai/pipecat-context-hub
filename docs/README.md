@@ -264,7 +264,7 @@ The default index includes:
 - **Daily Python SDK** — `daily-co/daily-python` (`.pyi` stubs + RST type definitions)
 - **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `pipecat-client-react-native-transports`, `voice-ui-kit`, `pipecat-prebuilt` (tree-sitter-indexed)
 
-CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `docs.pipecat.ai` pages (`/api-reference/cli/*`); the `pipecat-ai/pipecat-cli` repo itself is opt-in (it adds only CLI-internal source). Add more repos via `PIPECAT_HUB_EXTRA_REPOS` (e.g. `pipecat-cli`, `pipecat-mcp-server`, `pipecat-flows-editor`, `pipecat-krisp`). Only Python, TypeScript, and RST are parsed — Swift/Kotlin/C++ client SDKs (iOS, Android, cxx, esp32) clone but yield zero source/API chunks (only a few README/config fallback chunks), so they don't surface in `search_api` / `get_code_snippet`.
+CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `docs.pipecat.ai` pages (`/api-reference/cli/*`); the `pipecat-ai/pipecat-cli` repo itself is opt-in (it adds only CLI-internal source). Add more repos via `PIPECAT_HUB_EXTRA_REPOS` (full `org/repo` slugs, e.g. `pipecat-ai/pipecat-cli`, `pipecat-ai/pipecat-mcp-server`, `pipecat-ai/pipecat-flows-editor`, `pipecat-ai/pipecat-krisp`). Only Python, TypeScript, and RST are parsed — Swift/Kotlin/C++ client SDKs (iOS, Android, cxx, esp32) clone but yield zero source/API chunks (only a few README/config fallback chunks), so they don't surface in `search_api` / `get_code_snippet`.
 
 ## Security
 
