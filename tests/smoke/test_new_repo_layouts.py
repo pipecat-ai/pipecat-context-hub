@@ -1,0 +1,72 @@
+"""Offline chunk-yield smoke guards for repos in the default ingest set.
+
+Like ``test_pipecat_layout.py``, these ALWAYS run on every ``pytest`` call and
+must stay offline, deterministic, and fast (mocked ``IndexWriter`` — no
+embedding model, no Chroma, no network; only a local ``git init``).
+
+Where ``test_pipecat_layout.py`` asserts taxonomy/example-discovery invariants
+against *vendored* fixture trees, these assert the complementary invariant for
+repos added to ``SourceConfig.repos``: that the repo's on-disk layout actually
+flows through ``SourceIngester`` discovery and emits source chunks. A repo whose
+layout falls through the dispatch yields zero source chunks (the failure mode of
+the Swift/Kotlin/C++ client SDKs, whose source parser produces nothing — they
+get only a few README/config fallback chunks from the GitHub ingester, never
+``search_api``-visible API chunks). These guards use synthetic repo trees rather
+than vendored snapshots because the layout shape — not specific upstream
+content — is what must not regress.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pipecat_context_hub.services.ingest.source_ingest import (
+    SourceIngester,
+    _sanitize_slug,
+)
+from pipecat_context_hub.shared.types import ChunkedRecord
+
+from tests._ingest_helpers import create_git_repo, make_config, make_mock_writer
+
+
+async def test_react_native_transports_ts_monorepo_yields_chunks(tmp_path: Path) -> None:
+    """``pipecat-client-react-native-transports`` shape: root package.json +
+    TypeScript transport sources under ``transports/<name>/src/``.
+
+    Mirrors the verified upstream layout (transport.ts / index.tsx living below a
+    repo-root package.json, no ``src/`` Python package). The TS repo detector
+    keys on package.json/tsconfig at root or an immediate subdir.
+    """
+    slug = "pipecat-ai/pipecat-client-react-native-transports"
+    clone_dir = tmp_path / "repos" / _sanitize_slug(slug)
+    files = {
+        "package.json": '{"name": "pipecat-react-native-transports"}\n',
+        "transports/daily/src/transport.ts": (
+            "export class DailyTransport {\n"
+            "  private url: string;\n"
+            "  constructor(url: string) {\n"
+            "    this.url = url;\n"
+            "  }\n"
+            "  async connect(): Promise<void> {\n"
+            "    await fetch(this.url);\n"
+            "  }\n"
+            "}\n"
+        ),
+        "transports/daily/src/index.tsx": ("export { DailyTransport } from './transport';\n"),
+    }
+    create_git_repo(clone_dir, files)
+
+    config = make_config(tmp_path)
+    writer = make_mock_writer()
+    ingester = SourceIngester(config, writer, slug)
+
+    result = await ingester.ingest()
+
+    assert result.errors == []
+    assert result.records_upserted > 0, (
+        "TS transports monorepo yielded zero chunks — discovery dispatch "
+        "likely no longer recognises the root-package.json layout"
+    )
+    records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+    assert all(rec.content_type == "source" for rec in records)
+    assert all(rec.repo == slug for rec in records)

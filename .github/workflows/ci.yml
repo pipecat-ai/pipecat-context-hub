@@ -135,6 +135,11 @@ jobs:
         run: uv sync --frozen --extra dev --group dev
 
       - name: Dependency Audit
+        # KEEP IN SYNC with the `audit-deps` recipe in justfile — the local
+        # recipe must mirror this --ignore-vuln set exactly so `just audit-deps`
+        # passes iff this gate passes. Enforced by tests/unit/test_audit_sync.py
+        # (drift fails the suite).
+        #
         # PYSEC-2026-139 (torch, CVE-2026-4538): local-only pt2-loader
         # deserialization with no upstream fix released. Reached only via
         # sentence-transformers; the hub never loads untrusted pt2 artifacts.

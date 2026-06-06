@@ -7,6 +7,7 @@
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-06-06 | feat | Add RN transports to default ingest; keep pipecat-cli opt-in; pip-audit fix + justfile↔CI ignore parity | Complete (Unreleased) | vr000m | `feat/ingest-rn-transports-and-cli` | _(no plan file)_ |
 | 2026-05-30 | chore | chromadb 1.x migration + Python 3.14 prep (format break) | Complete (v0.1.0) | vr000m | `chore/chromadb-1x-python-314` | `20260529-chore-chromadb-1x-python-314.md` |
 | 2026-05-30 | fix | Bound `serve` lifetime to real client under `uv run` (grandparent-death watchdog) | Complete (v0.1.0) | vr000m | `fix/serve-uv-run-grandparent-watchdog` | `20260530-fix-serve-uv-run-grandparent-watchdog.md` |
 | 2026-04-21 | bug | Bound `serve` process lifetime to its client (parent-death watchdog) | Complete (v0.0.18) | vr000m | `feature/serve-orphan-watchdog` | `20260421-bug-serve-orphan-watchdog.md` |

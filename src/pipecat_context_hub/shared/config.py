@@ -390,6 +390,30 @@ class SourceConfig(BaseModel):
     ``PIPECAT_HUB_EXTRA_REPOS="vr000m/decartai-sidekick,vr000m/pipecat-mcp-server"``).
     They are appended to the default repos list.
 
+    Adjacent pipecat-ai repos that parse cleanly (Python/TypeScript) but are
+    niche enough to be opt-in rather than default:
+
+    - ``pipecat-ai/pipecat-mcp-server`` (Python) — Pipecat MCP server
+    - ``pipecat-ai/pipecat-flows-editor`` (TypeScript) — Flows web editor UI
+    - ``pipecat-ai/pipecat-krisp`` (Python) — Krisp noise-cancellation wrapper
+    - ``pipecat-ai/pipecat-cli`` (Python) — official CLI. Opt-in rather than
+      default because the CLI is consumed via commands (``pipecat init``,
+      ``pipecat cloud deploy``), not imported as a library: its command
+      reference is already indexed from ``docs.pipecat.ai`` (``/api-reference/
+      cli/*``), so ingesting the repo source only adds CLI-internal plumbing
+      (``config_validator``, ``generators``) to ``search_examples`` /
+      ``search_api`` without improving CLI usage answers. Enable via
+      ``PIPECAT_HUB_EXTRA_REPOS`` if you need to read the CLI's internals.
+
+    Only Python (``.py``/``.pyi``), TypeScript (``.ts``/``.tsx``), and RST
+    (``docs/**.rst``) are parsed. Swift, Kotlin, and C++ client SDKs
+    (``pipecat-client-ios``, ``pipecat-client-android``, ``pipecat-client-cxx``,
+    ``pipecat-esp32``) clone but yield zero source/API chunks — the source
+    parser produces nothing for them. They may still emit a handful of README
+    and config-file (JSON/YAML/TOML) fallback chunks via the GitHub ingester,
+    so ``search_api`` / ``get_code_snippet`` stay empty for these repos until a
+    grammar for those languages is added.
+
     Entire repos can be skipped via ``PIPECAT_HUB_TAINTED_REPOS`` and
     specific upstream refs can be skipped via ``PIPECAT_HUB_TAINTED_REFS``
     using ``org/repo@ref`` entries where ``ref`` is a tag or commit SHA/prefix.
@@ -405,6 +429,7 @@ class SourceConfig(BaseModel):
     )
     repos: list[str] = Field(
         default=[
+            # Core Python framework & SDKs
             "pipecat-ai/pipecat",
             "pipecat-ai/pipecat-examples",
             "pipecat-ai/pipecat-flows",
@@ -412,6 +437,7 @@ class SourceConfig(BaseModel):
             # Core TypeScript SDKs
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
+            "pipecat-ai/pipecat-client-react-native-transports",
             "pipecat-ai/voice-ui-kit",
             "pipecat-ai/pipecat-prebuilt",
         ],
