@@ -122,6 +122,19 @@ re-index silently dropping them):
     `examples/warm_transfer.py`, with a 1.x `pipecat_version_pin` such as
     `"<2,>=1.3.0"`),
     confirming the flows example set is indexed and domain-filtered
+
+New-source coverage (repo added in PR #74 — guards against a future re-index
+silently dropping it):
+
+33d. `search_api("RNDailyTransport")` — top hits are from
+    `class_name: RNDailyTransport` in
+    `pipecat-ai/pipecat-client-react-native-transports`
+    (`transports/daily/src/transport.ts`), confirming the React Native
+    transports repo is indexed and tree-sitter TS extraction produced real
+    source chunks. `search_api("RNSmallWebRTCTransport")` likewise returns the
+    `RNSmallWebRTCTransport` class. (`pipecat-cli` is intentionally NOT a
+    default — its CLI usage is covered by `docs.pipecat.ai`; do not add a
+    smoke assertion expecting `pipecat-ai/pipecat-cli` source chunks.)
 **Prerequisite:** Tests 34-37 require that `gh` CLI was authenticated during
 the last `refresh`. Without `gh`, release-note-derived deprecation entries
 will be absent and these assertions will fail. Test 36 (`DailyTransport`)
@@ -263,6 +276,8 @@ in future reviews unless the underlying circumstances change.
 - **[Security] resolved**: `starlette` medium-severity advisory PYSEC-2026-161 / GHSA-86qp-5c8j-p5mr (missing Host-header validation poisons `request.url.path`, bypassing path-based security checks) resolved by flooring the transitive entry to `starlette>=1.0.1` (lock resolves to `1.1.0`) via PR #64 (2026-05-24). Unlike the other transitive bumps this one **requires a `[tool.uv] constraint-dependencies` entry**, not a lock-only bump: a plain re-lock regresses to the vulnerable `0.52.1` because the prior `fastapi 0.129.0` capped starlette below `1.0`. The constraint forces the resolver to also lift `fastapi` to `0.136.3`. `starlette` is reached only via `mcp` / `fastapi` / `sse-starlette`; no exploitable path from hub code — the hub speaks MCP over stdio and never serves HTTP via Starlette.
 
 - **[Security] won't-fix**: `torch` advisory PYSEC-2026-139 / CVE-2026-4538 — local-only deserialization in the pt2 loading handler, no upstream fix released (latest `2.10.0` is still affected; upstream "has not reacted yet"). Ignored via `--ignore-vuln PYSEC-2026-139` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe. `torch` is reached only via `sentence-transformers` for local embedding inference, and the hub never deserializes untrusted `pt2` artifacts. The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched `torch` release ships. (2026-05-24)
+
+- **[Security] won't-fix**: `chromadb` CVE-2026-45829 / GHSA-f4j7-r4q5-qw2c — pre-authentication code injection in chromadb's HTTP **server** mode (arbitrary code execution via the `/api/v2/.../collections` endpoint with a malicious model repo and `trust_remote_code=true`). Affects 1.0.0–1.5.9 with no fixed release yet (1.5.9 is the latest 1.x). Unreachable here: the hub runs the embedded `PersistentClient` only (no server, no HTTP endpoint, no listener) and never uses chromadb's embedding functions / `trust_remote_code`. Ignored via `--ignore-vuln CVE-2026-45829` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe (parity enforced by `tests/unit/test_audit_sync.py`). The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched chromadb release ships. (2026-06-06)
 
 - **[Security] resolved**: `transformers` CVE-2026-1839 — resolved by `sentence-transformers` lifting its `transformers<5.0` pin; the tree now resolves `transformers 5.5.0` (>=5.0 carries the fix). The advisory no longer surfaces under `pip-audit` (verified with zero ignores), so the `--ignore-vuln CVE-2026-1839` entry was removed from the justfile `audit-deps` recipe; CI no longer references it either. The `audit-deps` recipe and the ci.yml "Dependency Audit" step now carry reciprocal KEEP-IN-SYNC notes. (resolved 2026-06-06)
 

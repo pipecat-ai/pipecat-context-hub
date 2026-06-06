@@ -30,6 +30,21 @@ This project uses [Semantic Versioning](https://semver.org/).
   (`pipecat-mcp-server`, `pipecat-flows-editor`, `pipecat-krisp`) are documented
   in the `SourceConfig` docstring.
 
+### Security
+- **Dependency bumps** — `pip` `26.1.1 → 26.1.2` (PYSEC-2026-196) and `pyjwt`
+  `2.12.1 → 2.13.0` (PYSEC-2026-175/177/178/179, via `mcp`'s `pyjwt[crypto]`),
+  resolving the `pip-audit` findings surfaced on this branch. Both were open
+  upper bounds, so a targeted re-lock pulled the fixes with no constraint pin.
+- **`chromadb` CVE-2026-45829 audited, not exploitable** — pre-auth RCE in
+  chromadb's optional HTTP-server mode; the hub uses only the embedded
+  `PersistentClient` and never starts an HTTP endpoint. Added
+  `--ignore-vuln CVE-2026-45829` to the `pip-audit` gate (ci.yml) and the
+  `audit-deps` justfile recipe; documented in the AGENTS.md Review Checklist.
+- **pip-audit ignore parity enforced** — `tests/unit/test_audit_sync.py` fails
+  the suite if the `justfile` and `ci.yml` `--ignore-vuln` sets drift, closing
+  the gap that had left a stale `CVE-2026-1839` ignore in the justfile after CI
+  dropped it (now resolved: `transformers 5.5.0`).
+
 ## [0.1.1] - 2026-05-30
 
 ### Changed
