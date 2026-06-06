@@ -53,6 +53,7 @@ audit-deps:
     # KEEP IN SYNC with the "Dependency Audit" step in .github/workflows/ci.yml —
     # this recipe must mirror the CI gate exactly so a local `just audit-deps`
     # passes iff CI passes. The --ignore-vuln set and rationale live in ci.yml.
+    # Enforced by tests/unit/test_audit_sync.py (drift fails the suite).
     #   PYSEC-2026-139: torch pt2-loader deserialization, no upstream fix.
     #   CVE-2026-45829: chromadb HTTP-server pre-auth RCE — unreachable (embedded
     #                   PersistentClient only, no server/endpoint).
