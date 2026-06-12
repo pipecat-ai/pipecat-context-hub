@@ -220,6 +220,19 @@ always passes regardless of `gh` availability.
     `deprecated: false`. These are the *replacements*; the old parser keyed
     them as deprecated, telling agents the current API is deprecated — the
     worst failure mode this tool has (PR #78).
+47. **Replacement names + class-rename direction (PR #78 coverage gap).**
+    `check_deprecation(symbol="PipelineRunner")` — beyond `deprecated: true`
+    (item 45), `replacement` must *name* `WorkerRunner` /
+    `pipecat.workers.runner` (not be null): agents need the positive
+    replacement, not just the deprecated flag.
+    `check_deprecation(symbol="WorkerRunner")` — `deprecated: false`: the
+    replacement *class* (item 46 freezes only its module
+    `pipecat.workers.runner`).
+    `check_deprecation(symbol="BotInterruptionFrame")` — `deprecated: true`
+    with `InterruptionTaskFrame` in `replacement`: the deprecated *original*
+    of the frame whose replacement item 46 checks. Freezes the class-name
+    side of the renames the token classifier fixed (the symbols agents
+    actually import). Requires a refreshed index.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

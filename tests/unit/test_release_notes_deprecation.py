@@ -369,6 +369,8 @@ class TestRenamedToBullets:
         assert "pipecat.pipeline.runner" in entries
         assert "WorkerRunner" not in entries
         assert "pipecat.workers.runner" not in entries
+        # The replacement is recorded under the deprecated class, not dropped.
+        assert "WorkerRunner" in (entries["PipelineRunner"].new_path or "")
 
     def test_use_instead_keys_only_the_deprecated_frame(self) -> None:
         entries = self._entries(self._FRAME_BULLET)
