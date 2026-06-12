@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Matches: DeprecatedModuleProxy(globals(), "old", "new")
 # Captures the old and new string arguments (handles multi-line, trailing comma).
 _PROXY_RE = re.compile(
-    r'DeprecatedModuleProxy\s*\(\s*globals\(\)\s*,\s*'
+    r"DeprecatedModuleProxy\s*\(\s*globals\(\)\s*,\s*"
     r'"([^"]+)"\s*,\s*"([^"]+)"\s*,?\s*\)',
     re.DOTALL,
 )
@@ -119,13 +119,15 @@ class DeprecationMap:
         if isinstance(raw_notes, list):
             for val in raw_notes:
                 if isinstance(val, dict):
-                    changelog_notes.append(DeprecationEntry(
-                        old_path=str(val.get("old_path", "")),
-                        new_path=val.get("new_path"),
-                        deprecated_in=val.get("deprecated_in"),
-                        removed_in=val.get("removed_in"),
-                        note=val.get("note", ""),
-                    ))
+                    changelog_notes.append(
+                        DeprecationEntry(
+                            old_path=str(val.get("old_path", "")),
+                            new_path=val.get("new_path"),
+                            deprecated_in=val.get("deprecated_in"),
+                            removed_in=val.get("removed_in"),
+                            note=val.get("note", ""),
+                        )
+                    )
         commit_sha = data.get("pipecat_commit_sha", "")
         return cls(
             entries=entries,
@@ -334,13 +336,15 @@ def build_deprecation_map_from_changelog(
             changelog_entries.append((current_version, current_section, line.strip()[2:]))
 
     for version, section, description in changelog_entries:
-        result.changelog_notes.append(DeprecationEntry(
-            old_path=description[:80],
-            new_path=None,
-            deprecated_in=version if section == "Deprecated" else None,
-            removed_in=version if section == "Removed" else None,
-            note=description,
-        ))
+        result.changelog_notes.append(
+            DeprecationEntry(
+                old_path=description[:80],
+                new_path=None,
+                deprecated_in=version if section == "Deprecated" else None,
+                removed_in=version if section == "Removed" else None,
+                note=description,
+            )
+        )
 
     logger.info("Added %d CHANGELOG deprecation/removal notes", len(changelog_entries))
     return result
@@ -350,10 +354,115 @@ def build_deprecation_map_from_changelog(
 _MODULE_PATH_RE = re.compile(r"`(pipecat\.[a-zA-Z0-9_.]+)`")
 
 # Matches backtick-wrapped class/function names like `GrokLLMService`
-_SYMBOL_NAME_RE = re.compile(r"`([A-Z][a-zA-Z0-9]+(?:Service|Processor|Transport|Filter|Strategy|Analyzer|Observer|Frame|Params|Settings))`")
+_SYMBOL_NAME_RE = re.compile(
+    r"`([A-Z][a-zA-Z0-9]+(?:Service|Processor|Transport|Filter|Strategy|Analyzer|Observer|Frame|Params|Settings))`"
+)
 
 # Matches backtick-wrapped dotted identifiers like `SimliVideoService.InputParams`
 _DOTTED_SYMBOL_RE = re.compile(r"`([A-Z][a-zA-Z0-9]+(?:\.[A-Z][a-zA-Z0-9]+)+)`")
+
+# Phrases that separate deprecated names (before) from their replacements
+# (after) in a deprecation bullet. The parser previously keyed on the literal
+# word "use" alone, which misread every pipecat 1.3.0 rename bullet
+# ("`PipelineTask` … ha[s] been renamed to `PipelineWorker`",
+# "Import `WorkerRunner` from `pipecat.workers.runner`"): the *replacements*
+# were keyed as deprecated and the deprecated class names were dropped.
+_BOUNDARY_RE = re.compile(
+    r"\b(?:[Uu]se|renamed\s+to|replaced\s+(?:by|with)|moved\s+to|in\s+favou?r\s+of|"
+    r"[Ii]mport|migrate\s+to|superseded\s+by)\b"
+)
+
+# A backticked token introduced as the old/legacy name is deprecated wherever
+# it appears, even after the boundary ("The old `pipecat.pipeline.runner`
+# module still re-exports both names …").
+_OLD_MARKED_RE = re.compile(
+    r"\b(?:old|former|previous|legacy)\b[^`]{0,24}`([^`\s]+)`", re.IGNORECASE
+)
+
+# Mirror rescue: a token introduced as the new/replacement name is a
+# replacement wherever it appears ("…, use the new `PipelineTask` parameter
+# `observers`"), and takes precedence — keying a current API as deprecated is
+# the worst failure mode. Window kept tight so prose like "the new symbols)
+# but constructing `PipelineTask`" doesn't false-match.
+_NEW_MARKED_RE = re.compile(r"\b(?:new|current|replacement)\b[^`]{0,16}`([^`\s]+)`", re.IGNORECASE)
+
+# Any backticked token, with position (the classifier decides which are API names).
+_BACKTICK_TOKEN_RE = re.compile(r"`([^`\s]+)`")
+
+# CamelCase identifiers that appear in deprecation prose but are never the
+# pipecat API under discussion.
+_SYMBOL_BLOCKLIST = frozenset(
+    {
+        "DeprecationWarning",
+        "FutureWarning",
+        "PendingDeprecationWarning",
+        "UserWarning",
+        "RuntimeWarning",
+        "Warning",
+        "TypeError",
+        "ValueError",
+        "RuntimeError",
+        "Pipecat",
+        "Python",
+        "GitHub",
+    }
+)
+
+
+def _is_api_token(token: str) -> bool:
+    """Whether a backticked token looks like a pipecat API name worth keying.
+
+    Module paths (``pipecat.…``), dotted CamelCase identifiers
+    (``SimliVideoService.InputParams``), or single CamelCase identifiers with
+    at least two capitals and a lowercase letter (``PipelineTask``,
+    ``STTService`` — but not prose words or bare suffixes like ``Settings``).
+    """
+    if token in _SYMBOL_BLOCKLIST:
+        return False
+    if token.startswith("pipecat."):
+        return True
+    parts = token.split(".")
+    if len(parts) > 1:
+        # Dotted identifier: every segment must look like a class/attr name.
+        return all(p and p[0].isupper() and p.isidentifier() for p in parts)
+    return (
+        token.isidentifier()
+        and token[0].isupper()
+        and any(c.islower() for c in token)
+        and sum(c.isupper() for c in token) >= 2
+    )
+
+
+def _classify_tokens(text: str) -> tuple[list[str], list[str]]:
+    """Split a bullet's API tokens into ``(deprecated, replacements)``.
+
+    Position relative to the first boundary phrase decides the default —
+    deprecated names are written before "use"/"renamed to"/…, replacements
+    after — with two corrections: a token classifies by its *first* mention
+    (old names are often repeated later in the bullet), and a token
+    introduced as "the old/former/legacy `X`" is deprecated wherever it
+    appears.
+    """
+    boundary = _BOUNDARY_RE.search(text)
+    cut = boundary.start() if boundary else len(text)
+    old_marked = set(_OLD_MARKED_RE.findall(text))
+    new_marked = set(_NEW_MARKED_RE.findall(text))
+
+    deprecated: list[str] = []
+    replacements: list[str] = []
+    seen: set[str] = set()
+    for match in _BACKTICK_TOKEN_RE.finditer(text):
+        token = match.group(1)
+        if token in seen or not _is_api_token(token):
+            continue
+        seen.add(token)
+        if token in new_marked:
+            replacements.append(token)
+        elif token in old_marked or match.start() < cut:
+            deprecated.append(token)
+        else:
+            replacements.append(token)
+    return deprecated, replacements
 
 
 def _extract_module_paths(text: str) -> list[str]:
@@ -421,8 +530,17 @@ def _fetch_release_notes(
     try:
         # Step 1: get tag names
         list_result = subprocess.run(  # nosec B603 B607 — hardcoded gh CLI, no user input
-            ["gh", "release", "list", "--repo", repo_slug, "--limit", str(limit),
-             "--json", "tagName"],
+            [
+                "gh",
+                "release",
+                "list",
+                "--repo",
+                repo_slug,
+                "--limit",
+                str(limit),
+                "--json",
+                "tagName",
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -430,7 +548,8 @@ def _fetch_release_notes(
         if list_result.returncode != 0:
             logger.warning(
                 "gh release list failed (auth issue?) — release-note deprecation data "
-                "will be incomplete: %s", list_result.stderr.strip(),
+                "will be incomplete: %s",
+                list_result.stderr.strip(),
             )
             return []
 
@@ -441,8 +560,18 @@ def _fetch_release_notes(
         for tag in tags:
             try:
                 view_result = subprocess.run(  # nosec B603 B607
-                    ["gh", "release", "view", tag, "--repo", repo_slug,
-                     "--json", "body", "-q", ".body"],
+                    [
+                        "gh",
+                        "release",
+                        "view",
+                        tag,
+                        "--repo",
+                        repo_slug,
+                        "--json",
+                        "body",
+                        "-q",
+                        ".body",
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=15,
@@ -486,52 +615,36 @@ def _parse_release_body(
         if not current_item_lines or not current_section:
             return
         text = " ".join(current_item_lines)
-        all_paths = _extract_module_paths(text)
-        # Split paths into deprecated vs replacement by finding the "use"
-        # boundary. All pipecat paths after "use" are replacements.
-        use_match = re.search(r"\b[Uu]se\b", text)
-        if use_match:
-            after_use = text[use_match.start():]
-            replacement_paths = set(_MODULE_PATH_RE.findall(after_use))
-        else:
-            replacement_paths = set()
-        deprecated_paths = [p for p in all_paths if p not in replacement_paths]
-        replacement = ", ".join(sorted(replacement_paths)) if replacement_paths else None
+        # Module paths and class names are classified together: deprecated
+        # names key entries, replacement names go into new_path. Keying a
+        # replacement as deprecated is the worst failure here — it tells an
+        # agent the *current* API is deprecated (see _BOUNDARY_RE note).
+        deprecated_tokens, replacement_tokens = _classify_tokens(text)
+        replacement = ", ".join(replacement_tokens) if replacement_tokens else None
 
-        if deprecated_paths:
-            # Create one entry per deprecated module path
-            for path in deprecated_paths:
-                entries.append(DeprecationEntry(
-                    old_path=path,
-                    new_path=replacement,
-                    deprecated_in=version if current_section == "Deprecated" else None,
-                    removed_in=version if current_section == "Removed" else None,
-                    note=text[:500],
-                ))
-        else:
-            # No module paths found — extract class/symbol names
-            # Try dotted identifiers first (e.g. SimliVideoService.InputParams)
-            dotted = _DOTTED_SYMBOL_RE.findall(text)
-            symbols = _SYMBOL_NAME_RE.findall(text)
-            all_symbols = list(dict.fromkeys(dotted + symbols))  # dedup, order preserved
-            if all_symbols:
-                for sym in all_symbols:
-                    entries.append(DeprecationEntry(
-                        old_path=sym,
+        if deprecated_tokens:
+            # One entry per deprecated module path / class name.
+            for token in deprecated_tokens:
+                entries.append(
+                    DeprecationEntry(
+                        old_path=token,
                         new_path=replacement,
                         deprecated_in=version if current_section == "Deprecated" else None,
                         removed_in=version if current_section == "Removed" else None,
                         note=text[:500],
-                    ))
-            else:
-                # Fall back to storing with a description key
-                entries.append(DeprecationEntry(
+                    )
+                )
+        else:
+            # Fall back to storing with a description key
+            entries.append(
+                DeprecationEntry(
                     old_path=f"release:{version}:{text[:60]}",
                     new_path=replacement,
                     deprecated_in=version if current_section == "Deprecated" else None,
                     removed_in=version if current_section == "Removed" else None,
                     note=text[:500],
-                ))
+                )
+            )
 
     for line in body.splitlines():
         section_match = section_re.match(line)
@@ -574,7 +687,11 @@ def build_deprecation_map_from_releases(
     Entries from release notes do NOT overwrite existing entries (e.g.,
     from ``DeprecatedModuleProxy`` source parsing), but missing lifecycle
     fields (``deprecated_in``, ``removed_in``, ``new_path``) are merged
-    into existing entries when the release notes provide them.
+    into existing entries when the release notes provide them. Releases
+    are processed newest-first, so when a symbol appears in several
+    releases the most recent entry is primary for guidance (note,
+    new_path) while the earliest mention supplies the lifecycle versions
+    (deprecated_in / removed_in — when it *became* deprecated).
 
     Args:
         repo_slug: GitHub repo slug (e.g., ``pipecat-ai/pipecat``).
@@ -593,8 +710,16 @@ def build_deprecation_map_from_releases(
         logger.info("No release notes fetched — deprecation map unchanged")
         return result
 
-    # Sort oldest-first so earliest deprecated_in/removed_in wins
-    releases.sort(key=lambda r: r[0])
+    # Sort newest-first (numeric, not lexicographic — "0.0.108" > "0.0.9") so
+    # the most recent release's entry wins for a re-mentioned symbol: its
+    # note, new_path, and version reflect current guidance. Older mentions
+    # still backfill genuinely missing lifecycle fields via the merge below.
+    # (Oldest-first let a misparsed 0.0.58 bullet shadow the real 1.3.0
+    # `PipelineTask` → `PipelineWorker` rename entry.)
+    def _version_key(release: tuple[str, str]) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", release[0]))
+
+    releases.sort(key=_version_key, reverse=True)
 
     added = 0
     merged = 0
@@ -612,14 +737,20 @@ def build_deprecation_map_from_releases(
                 result.entries[entry.old_path] = entry
                 added += 1
             else:
-                # Merge missing lifecycle fields into the existing entry
+                # Newest-first processing means `existing` came from a newer
+                # release: keep its note/new_path (current guidance), but let
+                # this older mention supply the lifecycle versions — the
+                # *earliest* announcement is when something became deprecated
+                # or removed.
                 changed = False
-                if not existing.deprecated_in and entry.deprecated_in:
-                    existing.deprecated_in = entry.deprecated_in
-                    changed = True
-                if not existing.removed_in and entry.removed_in:
-                    existing.removed_in = entry.removed_in
-                    changed = True
+                if entry.deprecated_in:
+                    if existing.deprecated_in != entry.deprecated_in:
+                        existing.deprecated_in = entry.deprecated_in
+                        changed = True
+                if entry.removed_in:
+                    if existing.removed_in != entry.removed_in:
+                        existing.removed_in = entry.removed_in
+                        changed = True
                 if not existing.new_path and entry.new_path:
                     existing.new_path = entry.new_path
                     changed = True
@@ -627,8 +758,7 @@ def build_deprecation_map_from_releases(
                     merged += 1
 
     logger.info(
-        "Added %d deprecation entries from %d release notes "
-        "(%d merged, %d unmatched to notes)",
+        "Added %d deprecation entries from %d release notes (%d merged, %d unmatched to notes)",
         added,
         len(releases),
         merged,

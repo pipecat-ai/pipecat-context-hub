@@ -7,6 +7,28 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`check_deprecation` misread "renamed to" release bullets** — the
+  release-notes parser split deprecated names from replacements on the
+  literal word "use" only, and extracted class names only when a bullet had
+  no module paths. Every pipecat 1.3.0 rename bullet ("`PipelineTask` …
+  ha[s] been renamed to `PipelineWorker`", "Import `WorkerRunner` from
+  `pipecat.workers.runner`") was misread: the *replacements*
+  (`pipecat.pipeline.worker`, `pipecat.workers.runner`,
+  `InterruptionTaskFrame`) were keyed as deprecated — telling agents the
+  current API is deprecated — while the actually-deprecated names
+  (`PipelineTask`, `PipelineTaskParams`, `PipelineRunner`) returned
+  `deprecated: false`. The parser now classifies every backticked module
+  path *and* CamelCase symbol against a richer boundary ("use", "renamed
+  to", "replaced by/with", "moved to", "import", …), with "the old `X`" /
+  "the new `X`" phrasing rescues, a prose-identifier blocklist
+  (`DeprecationWarning`, …), and populated `new_path` replacements.
+  Releases are also now processed newest-first with numeric version
+  ordering (lexicographic sorting put `0.0.9` after `0.0.108`): the newest
+  mention's note/new_path are primary, the earliest mention supplies
+  `deprecated_in`/`removed_in`. Verified against the live index: all 1.3.0
+  renames now resolve correctly in both directions.
+
 ### Added
 - **Staleness footer on tool responses** — when the local index is older than
   a threshold (default 7 days; `PIPECAT_HUB_STALE_AFTER_DAYS`, `0` disables),

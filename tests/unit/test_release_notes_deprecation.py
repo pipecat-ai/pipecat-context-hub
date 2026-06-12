@@ -48,10 +48,7 @@ class TestExtractReplacement:
     """Test _extract_replacement from deprecation text."""
 
     def test_finds_replacement(self) -> None:
-        text = (
-            "`pipecat.services.grok.llm` is deprecated. "
-            "Use `pipecat.services.xai.llm` instead."
-        )
+        text = "`pipecat.services.grok.llm` is deprecated. Use `pipecat.services.xai.llm` instead."
         deprecated = ["pipecat.services.grok.llm"]
         assert _extract_replacement(text, deprecated) == "pipecat.services.xai.llm"
 
@@ -136,12 +133,14 @@ class TestParseReleaseBody:
 
     def test_dotted_symbol_queryable(self) -> None:
         """Dotted symbol entries can be found via DeprecationMap.check()."""
-        dm = DeprecationMap(entries={
-            "SimliVideoService.InputParams": DeprecationEntry(
-                old_path="SimliVideoService.InputParams",
-                deprecated_in="0.0.110",
-            ),
-        })
+        dm = DeprecationMap(
+            entries={
+                "SimliVideoService.InputParams": DeprecationEntry(
+                    old_path="SimliVideoService.InputParams",
+                    deprecated_in="0.0.110",
+                ),
+            }
+        )
         result = dm.check("SimliVideoService.InputParams")
         assert result is not None
         assert result.deprecated_in == "0.0.110"
@@ -204,18 +203,24 @@ class TestBuildFromReleases:
 
     def test_populates_from_mock_releases(self) -> None:
         mock_releases = [
-            ("0.0.108", (
-                "### Deprecated\n"
-                "- `pipecat.services.grok.llm` is deprecated. "
-                "Use `pipecat.services.xai.llm` instead.\n"
-                "### Removed\n"
-                "- Removed `SambaNovaSTTService`.\n"
-            )),
-            ("0.0.106", (
-                "### Deprecated\n"
-                "- Deprecated `WakeCheckFilter` in favor of "
-                "`WakePhraseUserTurnStartStrategy`.\n"
-            )),
+            (
+                "0.0.108",
+                (
+                    "### Deprecated\n"
+                    "- `pipecat.services.grok.llm` is deprecated. "
+                    "Use `pipecat.services.xai.llm` instead.\n"
+                    "### Removed\n"
+                    "- Removed `SambaNovaSTTService`.\n"
+                ),
+            ),
+            (
+                "0.0.106",
+                (
+                    "### Deprecated\n"
+                    "- Deprecated `WakeCheckFilter` in favor of "
+                    "`WakePhraseUserTurnStartStrategy`.\n"
+                ),
+            ),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
@@ -246,18 +251,13 @@ class TestBuildFromReleases:
             }
         )
         mock_releases = [
-            ("0.0.108", (
-                "### Deprecated\n"
-                "- `pipecat.services.grok` is deprecated.\n"
-            )),
+            ("0.0.108", ("### Deprecated\n- `pipecat.services.grok` is deprecated.\n")),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
             return_value=mock_releases,
         ):
-            dm = build_deprecation_map_from_releases(
-                "pipecat-ai/pipecat", existing
-            )
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat", existing)
 
         # Should keep the original entry's note, not overwrite
         assert dm.entries["pipecat.services.grok"].note == "From DeprecatedModuleProxy"
@@ -276,22 +276,20 @@ class TestBuildFromReleases:
             }
         )
         mock_releases = [
-            ("0.0.105", (
-                "### Deprecated\n"
-                "- `pipecat.services.old` is deprecated. Use `pipecat.services.new`.\n"
-            )),
-            ("0.0.110", (
-                "### Removed\n"
-                "- `pipecat.services.old` has been removed.\n"
-            )),
+            (
+                "0.0.105",
+                (
+                    "### Deprecated\n"
+                    "- `pipecat.services.old` is deprecated. Use `pipecat.services.new`.\n"
+                ),
+            ),
+            ("0.0.110", ("### Removed\n- `pipecat.services.old` has been removed.\n")),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
             return_value=mock_releases,
         ):
-            dm = build_deprecation_map_from_releases(
-                "pipecat-ai/pipecat", existing
-            )
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat", existing)
 
         entry = dm.entries["pipecat.services.old"]
         assert entry.note == "From source"  # not overwritten
@@ -302,14 +300,8 @@ class TestBuildFromReleases:
         """When a symbol appears in multiple releases, earliest deprecated_in wins."""
         # Feed releases in reverse-chronological order (as gh returns them)
         mock_releases = [
-            ("0.0.110", (
-                "### Deprecated\n"
-                "- `pipecat.services.old.thing` is deprecated.\n"
-            )),
-            ("0.0.105", (
-                "### Deprecated\n"
-                "- `pipecat.services.old.thing` is deprecated.\n"
-            )),
+            ("0.0.110", ("### Deprecated\n- `pipecat.services.old.thing` is deprecated.\n")),
+            ("0.0.105", ("### Deprecated\n- `pipecat.services.old.thing` is deprecated.\n")),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
@@ -324,10 +316,10 @@ class TestBuildFromReleases:
     def test_synthetic_keys_go_to_notes(self) -> None:
         """Unmatched prose entries go to changelog_notes, not entries."""
         mock_releases = [
-            ("0.0.108", (
-                "### Deprecated\n"
-                "- Some general deprecation notice without backtick paths.\n"
-            )),
+            (
+                "0.0.108",
+                ("### Deprecated\n- Some general deprecation notice without backtick paths.\n"),
+            ),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
@@ -363,9 +355,7 @@ class TestRealReleaseNotes:
         if not releases:
             return  # gh not available or not authenticated
 
-        dm = build_deprecation_map_from_releases(
-            "pipecat-ai/pipecat", limit=5
-        )
+        dm = build_deprecation_map_from_releases("pipecat-ai/pipecat", limit=5)
         # v0.0.104-108 all have deprecations, so we should get entries
         assert len(dm.entries) >= 3, (
             f"Expected >= 3 entries from real releases, got {len(dm.entries)}"
@@ -377,3 +367,131 @@ class TestRealReleaseNotes:
             assert grok.deprecated_in == "0.0.108"
             assert grok.new_path is not None
             assert "xai" in grok.new_path
+
+
+class TestRenamedToBullets:
+    """Regression: pipecat 1.3.0 rename bullets, which the old parser misread.
+
+    The old/new split keyed on the literal word "use"; bullets phrased as
+    "renamed to" / "Import X from Y" got every token keyed as deprecated
+    (false positives on the *replacements* — pipecat.pipeline.worker,
+    pipecat.workers.runner) while the deprecated class names (PipelineTask,
+    PipelineRunner) were never keyed at all (false negatives). Texts below
+    are the real v1.3.0 release bullets.
+    """
+
+    _TASK_BULLET = (
+        "`PipelineTask`, `PipelineTaskParams`, and the `pipecat.pipeline.task` "
+        "module have been renamed to `PipelineWorker`, `WorkerParams`, and "
+        "`pipecat.pipeline.worker`. The old names still resolve (the module "
+        "re-exports the new symbols) but constructing `PipelineTask` / "
+        "`PipelineTaskParams` emits a `DeprecationWarning`; they will be "
+        "removed in a future release."
+    )
+
+    _RUNNER_BULLET = (
+        "`PipelineRunner` has been renamed to `WorkerRunner` and moved to "
+        "`pipecat.workers.runner`, since the runner now runs workers (of which "
+        "`PipelineWorker` is one kind), not just pipelines. Import "
+        "`WorkerRunner` from `pipecat.workers.runner`. The old "
+        "`pipecat.pipeline.runner` module still re-exports both names, and "
+        "`PipelineRunner` still works as a subclass alias, but it emits a "
+        "`DeprecationWarning` and will be removed in a future release."
+    )
+
+    _FRAME_BULLET = "`BotInterruptionFrame` is now deprecated, use `InterruptionTaskFrame` instead."
+
+    def _entries(self, bullet: str) -> dict[str, DeprecationEntry]:
+        body = f"### Deprecated\n- {bullet}\n"
+        return {e.old_path: e for e in _parse_release_body("1.3.0", body)}
+
+    def test_renamed_to_keys_old_names_not_new(self) -> None:
+        entries = self._entries(self._TASK_BULLET)
+        # Deprecated names (class names AND module path) are keyed.
+        assert "PipelineTask" in entries
+        assert "PipelineTaskParams" in entries
+        assert "pipecat.pipeline.task" in entries
+        # Replacements must NOT be keyed — a deprecated verdict on the
+        # current API misdirects agents away from the right answer.
+        assert "PipelineWorker" not in entries
+        assert "WorkerParams" not in entries
+        assert "pipecat.pipeline.worker" not in entries
+        # Prose identifiers never become keys.
+        assert "DeprecationWarning" not in entries
+        # The replacement is recorded.
+        assert "pipecat.pipeline.worker" in (entries["PipelineTask"].new_path or "")
+
+    def test_old_marked_module_after_boundary_is_deprecated(self) -> None:
+        entries = self._entries(self._RUNNER_BULLET)
+        assert "PipelineRunner" in entries
+        # "The old `pipecat.pipeline.runner` module" appears *after* the
+        # boundary but is rescued by the old/legacy marker.
+        assert "pipecat.pipeline.runner" in entries
+        assert "WorkerRunner" not in entries
+        assert "pipecat.workers.runner" not in entries
+
+    def test_use_instead_keys_only_the_deprecated_frame(self) -> None:
+        entries = self._entries(self._FRAME_BULLET)
+        assert "BotInterruptionFrame" in entries
+        # The replacement frame must not be keyed (the old parser keyed both).
+        assert "InterruptionTaskFrame" not in entries
+        assert entries["BotInterruptionFrame"].new_path == "InterruptionTaskFrame"
+
+    def test_check_resolves_renamed_class(self) -> None:
+        body = f"### Deprecated\n- {self._TASK_BULLET}\n"
+        dm = DeprecationMap()
+        for e in _parse_release_body("1.3.0", body):
+            dm.entries[e.old_path] = e
+        hit = dm.check("PipelineTask")
+        assert hit is not None and hit.deprecated_in == "1.3.0"
+        assert dm.check("PipelineWorker") is None
+
+
+class TestNewestReleaseWins:
+    """Re-mentioned symbols take the newest release's entry as primary.
+
+    Regression: releases were sorted oldest-first (and lexicographically, so
+    "0.0.9" sorted after "0.0.108"), letting a misparsed 0.0.58 bullet that
+    mentioned `PipelineTask` in passing shadow the real 1.3.0 rename entry.
+    """
+
+    def test_newest_entry_is_primary(self) -> None:
+        old_body = (
+            "### Deprecated\n"
+            "- `PipelineParams.observers` is now deprecated, you the new "
+            "`PipelineTask` parameter `observers`.\n"
+        )
+        new_body = (
+            "### Deprecated\n"
+            "- `PipelineTask`, `PipelineTaskParams`, and the "
+            "`pipecat.pipeline.task` module have been renamed to "
+            "`PipelineWorker`, `WorkerParams`, and `pipecat.pipeline.worker`.\n"
+        )
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
+            return_value=[("0.0.58", old_body), ("1.3.0", new_body)],
+        ):
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat")
+        entry = dm.entries["PipelineTask"]
+        assert entry.deprecated_in == "1.3.0"
+        assert "renamed to" in entry.note
+        assert "PipelineWorker" in (entry.new_path or "")
+
+    def test_version_sort_is_numeric(self) -> None:
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
+            return_value=[
+                ("0.0.9", "### Deprecated\n- `OldThingService` is deprecated.\n"),
+                (
+                    "0.0.108",
+                    "### Deprecated\n- `OldThingService` is deprecated, use "
+                    "`NewThingService` instead.\n",
+                ),
+            ],
+        ):
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat")
+        # 0.0.108 is numerically newer than 0.0.9 (a lexicographic sort gets
+        # this backwards), so its guidance (new_path) is primary — while
+        # deprecated_in is the earliest announcement.
+        assert dm.entries["OldThingService"].deprecated_in == "0.0.9"
+        assert dm.entries["OldThingService"].new_path == "NewThingService"
