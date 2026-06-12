@@ -28,6 +28,18 @@ This project uses [Semantic Versioning](https://semver.org/).
   mention's note/new_path are primary, the earliest mention supplies
   `deprecated_in`/`removed_in`. Verified against the live index: all 1.3.0
   renames now resolve correctly in both directions.
+  Two further lifecycle corruptions found in live follow-up: historical
+  *member* bullets keyed the owning class ("`PipelineTask` events … are now
+  deprecated" / "Removed … events from `PipelineTask`" supplied bogus
+  `deprecated_in: 0.0.86` and `removed_in: 1.0.0` for the class itself) —
+  fixed with owner-context detection ("of/from/on/to `X`", "`X`
+  events/method/parameter/constructor…" are skipped on the deprecated
+  side); and hand-written release bodies mix heading levels (v0.0.87 has
+  `## Fixed` as h2), which left the Deprecated section open and parsed
+  Fixed bullets as deprecations — section headings now accept h2–h4 and
+  *any* heading closes the current section. `PipelineTask` now reports
+  `deprecated_in: 1.3.0`, `removed_in: null`, matching the pipecat
+  changelog.
 
 ### Added
 - **Staleness footer on tool responses** — when the local index is older than

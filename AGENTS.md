@@ -205,12 +205,15 @@ always passes regardless of `gh` availability.
     loads can take 30-130s and exceed Claude Code's tool-permission
     window).
 45. `check_deprecation(symbol="PipelineTask")` — returns `deprecated: true`
-    with `PipelineWorker` in `replacement` and a "renamed to" note.
-    `check_deprecation(symbol="PipelineRunner")` — `deprecated: true`.
-    Regression guard for PR #78: the release-notes parser split old/new on
-    the literal word "use" only, so the 1.3.0 "renamed to" bullets keyed
-    nothing for these and they reported clean. Requires a refreshed index
-    (the map rebuilds on `refresh`).
+    with `PipelineWorker` in `replacement`, a "renamed to" note, **and**
+    `deprecated_in: "1.3.0"` / `removed_in: null` — the lifecycle fields
+    matter: historical member bullets ("`PipelineTask` events … are now
+    deprecated", "Removed … events from `PipelineTask`", under a release
+    body whose `## Fixed` h2 heading didn't close the Deprecated section)
+    once supplied bogus `deprecated_in: 0.0.86/0.0.87` and
+    `removed_in: 1.0.0`. `check_deprecation(symbol="PipelineRunner")` —
+    `deprecated: true`. Regression guard for PR #78. Requires a refreshed
+    index (the map rebuilds on `refresh`).
 46. `check_deprecation(symbol="pipecat.pipeline.worker")`,
     `check_deprecation(symbol="pipecat.workers.runner")`, and
     `check_deprecation(symbol="InterruptionTaskFrame")` — all return

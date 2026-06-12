@@ -495,3 +495,100 @@ class TestNewestReleaseWins:
         # deprecated_in is the earliest announcement.
         assert dm.entries["OldThingService"].deprecated_in == "0.0.9"
         assert dm.entries["OldThingService"].new_path == "NewThingService"
+
+
+class TestOwnerContextNotKeyed:
+    """Member-deprecation bullets must not key the owning class.
+
+    Regression: `PipelineTask` reported `deprecated_in: 0.0.86` and
+    `removed_in: 1.0.0` because historical bullets deprecating its *events*
+    keyed the class itself, and the earliest-mention lifecycle merge then
+    inherited those versions. Texts are the real v0.0.86 / v1.0.0 bullets.
+    """
+
+    _EVENTS_DEPRECATED_BULLET = (
+        "`PipelineTask` events `on_pipeline_stopped`, `on_pipeline_ended` and "
+        "`on_pipeline_cancelled` are now deprecated. Use "
+        "`on_pipeline_finished` instead."
+    )
+
+    _EVENTS_REMOVED_BULLET = (
+        "⚠️ Removed deprecated `on_pipeline_ended`, `on_pipeline_cancelled`, "
+        "and `on_pipeline_stopped` events from `PipelineTask`. Use "
+        "`on_pipeline_finished` instead."
+    )
+
+    _OBSERVERS_REMOVED_BULLET = (
+        "⚠️ Removed deprecated `observers` field from `PipelineParams`. Pass "
+        "observers directly to `PipelineTask` constructor instead."
+    )
+
+    def test_owner_before_member_nouns_is_skipped(self) -> None:
+        body = f"### Deprecated\n- {self._EVENTS_DEPRECATED_BULLET}\n"
+        keys = {e.old_path for e in _parse_release_body("0.0.86", body)}
+        assert "PipelineTask" not in keys
+
+    def test_owner_after_from_is_skipped(self) -> None:
+        body = f"### Removed\n- {self._EVENTS_REMOVED_BULLET}\n"
+        keys = {e.old_path for e in _parse_release_body("1.0.0", body)}
+        assert "PipelineTask" not in keys
+
+    def test_owner_of_field_and_constructor_target_are_skipped(self) -> None:
+        body = f"### Removed\n- {self._OBSERVERS_REMOVED_BULLET}\n"
+        keys = {e.old_path for e in _parse_release_body("1.0.0", body)}
+        assert "PipelineParams" not in keys
+        assert "PipelineTask" not in keys
+
+    def test_lifecycle_not_corrupted_by_member_bullets(self) -> None:
+        """The full history: member bullets must not pollute the class's
+        deprecated_in/removed_in once the real 1.3.0 rename keys it."""
+        rename_bullet = (
+            "`PipelineTask`, `PipelineTaskParams`, and the "
+            "`pipecat.pipeline.task` module have been renamed to "
+            "`PipelineWorker`, `WorkerParams`, and `pipecat.pipeline.worker`."
+        )
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
+            return_value=[
+                ("0.0.86", f"### Deprecated\n- {self._EVENTS_DEPRECATED_BULLET}\n"),
+                (
+                    "1.0.0",
+                    f"### Removed\n- {self._EVENTS_REMOVED_BULLET}\n"
+                    f"- {self._OBSERVERS_REMOVED_BULLET}\n",
+                ),
+                ("1.3.0", f"### Deprecated\n- {rename_bullet}\n"),
+            ],
+        ):
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat")
+        entry = dm.entries["PipelineTask"]
+        assert entry.deprecated_in == "1.3.0"
+        assert entry.removed_in is None
+        assert "PipelineWorker" in (entry.new_path or "")
+
+
+class TestInconsistentHeadingLevels:
+    """Hand-written release bodies mix heading levels (real v0.0.87 layout).
+
+    Regression: the section tracker only exited on `### `, so an `## Fixed`
+    (h2) heading left the Deprecated section open and every Fixed bullet was
+    parsed as a deprecation ("Fixed a `PipelineTask` issue …" keyed
+    PipelineTask as deprecated in 0.0.87).
+    """
+
+    def test_h2_heading_ends_deprecated_section(self) -> None:
+        body = (
+            "### Deprecated\n"
+            "- `GladiaSTTService` arg is deprecated.\n"
+            "## Fixed\n"
+            "- Fixed a `PipelineTask` issue that could prevent the "
+            "application to exit if `task.cancel()` was called when the "
+            "task was already finished.\n"
+        )
+        keys = {e.old_path for e in _parse_release_body("0.0.87", body)}
+        assert "PipelineTask" not in keys
+
+    def test_h2_deprecated_section_is_accepted(self) -> None:
+        body = "## Deprecated\n- `OldNameService` is deprecated, use `NewNameService` instead.\n"
+        entries = {e.old_path: e for e in _parse_release_body("0.0.99", body)}
+        assert "OldNameService" in entries
+        assert entries["OldNameService"].new_path == "NewNameService"

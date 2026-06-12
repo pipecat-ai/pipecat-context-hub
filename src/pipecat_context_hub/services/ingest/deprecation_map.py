@@ -386,6 +386,28 @@ _OLD_MARKED_RE = re.compile(
 # but constructing `PipelineTask`" doesn't false-match.
 _NEW_MARKED_RE = re.compile(r"\b(?:new|current|replacement)\b[^`]{0,16}`([^`\s]+)`", re.IGNORECASE)
 
+# Owner-context detection: a token that merely *owns* the thing being
+# deprecated must not be keyed as deprecated itself. Two phrasings cover the
+# common member-deprecation bullets:
+#   "Removed deprecated `on_pipeline_ended` … events from `PipelineTask`"
+#   "`PipelineTask` events `on_pipeline_stopped`, … are now deprecated"
+#   "Pass observers directly to `PipelineTask` constructor instead"
+# Without this, every historical member bullet supplied bogus lifecycle
+# versions for the owner class (PipelineTask reported deprecated_in 0.0.86 /
+# removed_in 1.0.0 from its *events'* lifecycle).
+_OWNER_BEFORE_RE = re.compile(
+    r"\b(?:of|from|on|to|in)\s+(?:the\s+|a\s+|an\s+)?`([^`\s]+)`", re.IGNORECASE
+)
+# Member nouns that may follow an owner token ("`PipelineTask` events …",
+# "`PipelineTask` constructor"). Deliberately excludes "module" — "the
+# `pipecat.pipeline.task` module have been renamed" deprecates the module
+# itself.
+_OWNER_AFTER_RE = re.compile(
+    r"`([^`\s]+)`\s+(?:events?|methods?|functions?|fields?|parameters?|params?|"
+    r"args?|arguments?|propert(?:y|ies)|attributes?|constructors?|settings?|kwargs?)\b",
+    re.IGNORECASE,
+)
+
 # Any backticked token, with position (the classifier decides which are API names).
 _BACKTICK_TOKEN_RE = re.compile(r"`([^`\s]+)`")
 
@@ -438,15 +460,18 @@ def _classify_tokens(text: str) -> tuple[list[str], list[str]]:
 
     Position relative to the first boundary phrase decides the default —
     deprecated names are written before "use"/"renamed to"/…, replacements
-    after — with two corrections: a token classifies by its *first* mention
-    (old names are often repeated later in the bullet), and a token
-    introduced as "the old/former/legacy `X`" is deprecated wherever it
-    appears.
+    after — with three corrections: a token classifies by its *first* mention
+    (old names are often repeated later in the bullet); a token introduced as
+    "the old/former/legacy `X`" is deprecated wherever it appears; and an
+    *owner-context* token ("events from `PipelineTask`", "`PipelineTask`
+    constructor") is skipped entirely — the bullet deprecates its member, not
+    the owner.
     """
     boundary = _BOUNDARY_RE.search(text)
     cut = boundary.start() if boundary else len(text)
     old_marked = set(_OLD_MARKED_RE.findall(text))
     new_marked = set(_NEW_MARKED_RE.findall(text))
+    owner_context = set(_OWNER_BEFORE_RE.findall(text)) | set(_OWNER_AFTER_RE.findall(text))
 
     deprecated: list[str] = []
     replacements: list[str] = []
@@ -458,7 +483,15 @@ def _classify_tokens(text: str) -> tuple[list[str], list[str]]:
         seen.add(token)
         if token in new_marked:
             replacements.append(token)
-        elif token in old_marked or match.start() < cut:
+        elif token in old_marked:
+            deprecated.append(token)
+        elif match.start() < cut:
+            if token in owner_context:
+                # Owner of a deprecated member ("events from `PipelineTask`")
+                # — not the deprecation subject; skip. Only applies on the
+                # deprecated side: after the boundary, "renamed to
+                # `PipelineWorker`" must still count as a replacement.
+                continue
             deprecated.append(token)
         else:
             replacements.append(token)
@@ -600,12 +633,20 @@ def _parse_release_body(
     version: str,
     body: str,
 ) -> list[DeprecationEntry]:
-    """Parse ### Deprecated and ### Removed sections from a release body.
+    """Parse Deprecated and Removed sections from a release body.
 
     Extracts module paths from backtick-wrapped text and creates
     DeprecationEntry objects keyed by module path when possible.
+
+    Release bodies are hand-written, so heading levels are inconsistent —
+    v0.0.87 has ``### Deprecated`` followed by ``## Fixed`` (h2). Accept
+    h2–h4 section headings, and end the current section on *any* heading;
+    matching only ``### `` left the Deprecated section open across an
+    ``## Fixed`` heading and attributed every Fixed bullet to it
+    ("Fixed a `PipelineTask` issue …" keyed PipelineTask as deprecated
+    in 0.0.87).
     """
-    section_re = re.compile(r"^###\s+(Deprecated|Removed)", re.MULTILINE)
+    section_re = re.compile(r"^#{2,4}\s+(Deprecated|Removed)\b")
     entries: list[DeprecationEntry] = []
 
     current_section: str | None = None
@@ -653,7 +694,8 @@ def _parse_release_body(
             current_item_lines = []
             current_section = section_match.group(1)
             continue
-        if line.startswith("### "):
+        if line.startswith("#"):
+            # Any other heading — at any level — ends the current section.
             _flush_item()
             current_item_lines = []
             current_section = None
