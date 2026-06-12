@@ -212,17 +212,3 @@ CLAUDE.md for the standardised format. Every release needs:
 To dry-run the publish pipeline without touching PyPI, trigger the Release
 workflow manually (`workflow_dispatch`) — it publishes to **TestPyPI**
 instead. Note TestPyPI rejects re-uploads of an existing version.
-
-### One-time PyPI setup (maintainers)
-
-Publishing uses [trusted publishing](https://docs.pypi.org/trusted-publishers/)
-(OIDC) — no API tokens are stored in the repo. Before the first release, a
-maintainer must register the trusted publisher on pypi.org (and test.pypi.org
-for the dry-run path) under the project's **Publishing** settings:
-
-- owner `pipecat-ai`, repository `pipecat-context-hub`
-- workflow `release.yml`
-- environment `pypi` (`testpypi` on test.pypi.org)
-
-Until that exists, the publish jobs fail with an OIDC error; the build job
-still validates the artifacts.

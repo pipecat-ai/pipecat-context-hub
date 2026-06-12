@@ -10,8 +10,14 @@ name: Release
 #     the build and the trusted-publishing wiring without touching the real
 #     index.
 #
-# One-time setup (repo owner, on pypi.org / test.pypi.org under the project's
-# "Publishing" settings): add a GitHub trusted publisher with
+# Naming: the PyPI distribution is `pipecat-ai-context-hub` (org convention —
+# official packages are pipecat-ai*); the command and MCP server name stay
+# `pipecat-context-hub`. A console-script alias makes
+# `uvx pipecat-ai-context-hub <cmd>` resolve.
+#
+# One-time setup (repo owner, on pypi.org / test.pypi.org under the
+# pipecat-ai-context-hub project's "Publishing" settings): add a GitHub
+# trusted publisher with
 #   owner: pipecat-ai, repository: pipecat-context-hub,
 #   workflow: release.yml, environment: pypi (testpypi on test.pypi.org).
 # Until that exists, the publish jobs fail with an OIDC error — the build job
@@ -95,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/pipecat-context-hub/
+      url: https://pypi.org/project/pipecat-ai-context-hub/
     permissions:
       # Trusted publishing: PyPI validates the workflow's OIDC token instead
       # of an API key. Requires the trusted-publisher config described at the
@@ -122,7 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: testpypi
-      url: https://test.pypi.org/project/pipecat-context-hub/
+      url: https://test.pypi.org/project/pipecat-ai-context-hub/
     permissions:
       id-token: write
     steps:

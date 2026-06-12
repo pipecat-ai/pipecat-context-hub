@@ -29,6 +29,10 @@ cd pipecat-context-hub
 uv sync
 ```
 
+> **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat
+> packages are `pipecat-ai*`); the command and MCP server name are
+> `pipecat-context-hub`.
+
 ## Populate the Local Index
 
 Before the server can answer queries, build the local index:

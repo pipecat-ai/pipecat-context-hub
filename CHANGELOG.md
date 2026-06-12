@@ -43,6 +43,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   manual `workflow_dispatch` publishes to TestPyPI as a dry run. See
   `docs/CONTRIBUTING.md` "Release Process" for the flow and the one-time
   trusted-publisher setup.
+- **Distribution renamed to `pipecat-ai-context-hub`** ahead of the first PyPI
+  release, matching the org convention (official packages are `pipecat-ai*`).
+  Nothing user-facing changes after install: the command, MCP server name,
+  data dir, and env vars all stay `pipecat-context-hub`, and a new
+  console-script alias makes `uvx pipecat-ai-context-hub <cmd>` resolve
+  directly. Clone-based installs are unaffected (`uv sync` picks up the new
+  name; both command spellings work).
 - **RN transports added to default ingest set** — `pipecat-ai/pipecat-client-react-native-transports`
   (TypeScript, tree-sitter-indexed), verified to yield parseable chunks before
   being added. Fills the React Native client-transport gap.
