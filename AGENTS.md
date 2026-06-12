@@ -10,6 +10,11 @@ local index. Unit tests mock the retrieval layer and cannot catch page
 assembly, filter semantics, schema issues, or stale tool metadata that only
 surface against real indexed data.
 
+**When a live failure is found in the field, freeze it twice:** a unit
+regression test (with the real input text frozen into the test) *and* the
+failing query added here as a numbered item — so any future change to the
+harness gets re-checked against the exact query that once broke.
+
 1. `get_hub_status()` — returns a non-empty index and a recent
    `last_refresh_at`, so smoke-test failures are not caused by a stale or empty
    local corpus
@@ -199,6 +204,19 @@ always passes regardless of `gh` availability.
     opt-out escape hatch works (matters on Windows CPU where cold
     loads can take 30-130s and exceed Claude Code's tool-permission
     window).
+45. `check_deprecation(symbol="PipelineTask")` — returns `deprecated: true`
+    with `PipelineWorker` in `replacement` and a "renamed to" note.
+    `check_deprecation(symbol="PipelineRunner")` — `deprecated: true`.
+    Regression guard for PR #78: the release-notes parser split old/new on
+    the literal word "use" only, so the 1.3.0 "renamed to" bullets keyed
+    nothing for these and they reported clean. Requires a refreshed index
+    (the map rebuilds on `refresh`).
+46. `check_deprecation(symbol="pipecat.pipeline.worker")`,
+    `check_deprecation(symbol="pipecat.workers.runner")`, and
+    `check_deprecation(symbol="InterruptionTaskFrame")` — all return
+    `deprecated: false`. These are the *replacements*; the old parser keyed
+    them as deprecated, telling agents the current API is deprecated — the
+    worst failure mode this tool has (PR #78).
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
