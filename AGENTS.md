@@ -214,7 +214,7 @@ live local index:
 2. `uv run pipecat-context-hub status` — `total_records` non-zero,
    `last_refresh_at` recent, reranker fields populated
 3. `uv run pipecat-context-hub search-api "WebsocketServerParams" --limit 3`
-   — hits include `pipecat.transports.websocket.server` (models load; ~5s)
+   — hits include `pipecat.transports.websocket.server` (models load; ~3s)
 4. `uv run pipecat-context-hub get-doc` (no flags) — exit 1, one-line
    validation message on stderr, empty stdout
 5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —

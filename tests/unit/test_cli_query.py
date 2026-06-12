@@ -143,6 +143,80 @@ class TestDispatch:
         assert sent.limit == 5
 
 
+class TestQuietOutput:
+    """Query commands keep captured output lean — it lands in agent context."""
+
+    def test_default_log_level_downgrades_to_warning(self, tmp_path):
+        import logging
+
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            logging.getLogger().setLevel(logging.INFO)
+            result = runner.invoke(main, ["check-deprecation", "X"])
+            assert result.exit_code == 0, result.stderr
+            assert logging.getLogger().level == logging.WARNING
+
+    def test_explicit_log_level_is_honored(self, tmp_path):
+        import logging
+
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            logging.getLogger().setLevel(logging.INFO)
+            result = runner.invoke(main, ["--log-level", "INFO", "check-deprecation", "X"])
+            assert result.exit_code == 0, result.stderr
+            assert logging.getLogger().level == logging.INFO
+
+    def test_model_loading_noise_env_defaults_applied(self, tmp_path):
+        import os
+
+        env = {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            # patch.dict restores os.environ wholesale on exit, including
+            # keys the command sets itself.
+            patch.dict("os.environ", env, clear=False),
+        ):
+            for var in (
+                "HF_HUB_OFFLINE",
+                "HF_HUB_DISABLE_PROGRESS_BARS",
+                "TRANSFORMERS_VERBOSITY",
+            ):
+                os.environ.pop(var, None)
+            result = runner.invoke(main, ["check-deprecation", "X"])
+            assert result.exit_code == 0, result.stderr
+            assert os.environ["HF_HUB_OFFLINE"] == "1"
+            assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "1"
+            assert os.environ["TRANSFORMERS_VERBOSITY"] == "error"
+
+    def test_explicit_env_wins_over_defaults(self, tmp_path):
+        import os
+
+        env = {"PIPECAT_HUB_DATA_DIR": str(tmp_path), "HF_HUB_OFFLINE": "0"}
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch.dict("os.environ", env, clear=False),
+        ):
+            result = runner.invoke(main, ["check-deprecation", "X"])
+            assert result.exit_code == 0, result.stderr
+            assert os.environ["HF_HUB_OFFLINE"] == "0"
+
+
 class TestBadInput:
     """Validation failures exit 1 with a message, not a traceback."""
 

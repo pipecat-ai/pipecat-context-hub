@@ -224,6 +224,16 @@ def serve(ctx: click.Context) -> None:
     # in the already-reparented PID and never fire.
     _original_ppid = os.getppid()
 
+    # Quiet, offline-first model loading (must precede the heavy imports):
+    # skips huggingface_hub's network revalidation of already-cached models
+    # (~20 HEAD requests, seconds off every boot) and keeps progress bars and
+    # the transformers load report out of the MCP logs. setdefault semantics —
+    # an explicit env (e.g. HF_HUB_OFFLINE=0) always wins. `refresh` must NOT
+    # do this: it is the code path that downloads models.
+    from pipecat_context_hub.shared.model_loading import quiet_model_loading
+
+    quiet_model_loading()
+
     from pipecat_context_hub.server.main import create_server
     from pipecat_context_hub.server.transport import serve_stdio
     from pipecat_context_hub.shared.tracking import IdleTracker

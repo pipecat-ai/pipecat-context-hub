@@ -16,6 +16,11 @@ Design notes:
   and error messages go to stderr. Exit codes: 0 on success, 1 on invalid
   input, ``_EXIT_INDEX_UNREADY`` (2) when the local index is missing, empty,
   or unreadable.
+- Quiet by default: query commands downgrade logging to WARNING (explicit
+  ``--log-level`` wins) and silence third-party model-loading chatter, since
+  the captured stderr of a one-shot command lands in an agent's context.
+  ``HF_HUB_OFFLINE=1`` additionally skips huggingface_hub's per-load network
+  revalidation of already-cached models (see ``_quiet_model_loading``).
 - The embedding model (and cross-encoder reranker, when enabled and cached)
   load only for the semantic commands (``search-docs``, ``search-examples``,
   ``search-api``, ``get-code-snippet``). The lookup commands
@@ -29,12 +34,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import click
+
+from pipecat_context_hub.shared.model_loading import quiet_model_loading
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -70,6 +78,28 @@ class _QueryRuntime:
     retriever: HybridRetriever
     index_store: IndexStore
     reranker_status: RerankerStatus
+
+
+def _quiet_query_logging(ctx: click.Context) -> None:
+    """Default one-shot query commands to WARNING-level logging.
+
+    Stdout is the data; stderr should carry only problems. The INFO chatter
+    that's useful in a long-lived ``serve`` (index init, model loads, httpx
+    requests) is pure context noise for an agent capturing a one-shot
+    command's output. An explicit ``--log-level`` always wins — only the
+    click *default* is downgraded.
+    """
+    parent = ctx.parent
+    if parent is None:
+        return
+    if parent.get_parameter_source("log_level") == click.core.ParameterSource.DEFAULT:
+        logging.getLogger().setLevel(logging.WARNING)
+
+
+# Quiet/offline model-loading env defaults — shared with `serve`, which pays
+# the same HF revalidation cost at boot. Kept under the local name so the
+# `_invoke` call site reads as part of this module's quieting story.
+_quiet_model_loading = quiet_model_loading
 
 
 def _resolve_reranker(
@@ -214,6 +244,9 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
     code 1 — not a traceback.
     """
     from pydantic import ValidationError
+
+    _quiet_query_logging(ctx)
+    _quiet_model_loading()
 
     config: HubConfig = ctx.obj["config"]
     # Drop None/empty values so handler-side pydantic models see absent

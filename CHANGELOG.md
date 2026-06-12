@@ -21,6 +21,19 @@ This project uses [Semantic Versioning](https://semver.org/).
   check-deprecation PipelineTask` from any shell — with the MCP server
   remaining the warm, session-long front door. A parity test enforces that
   every MCP tool has a CLI command, so the two surfaces cannot drift.
+  Query commands are quiet by default: logging downgrades to WARNING (an
+  explicit `--log-level` wins), third-party model-loading chatter (progress
+  bars, transformers load reports) is silenced, and `HF_HUB_OFFLINE=1` skips
+  huggingface_hub's network revalidation of already-cached models — cutting
+  semantic-query latency roughly in half (~5.4s → ~2.8s) and keeping a
+  one-shot command's captured output to exactly the JSON payload.
+  The offline/quiet model loading also applies to `serve` (shared helper
+  `shared/model_loading.py`): faster boot (embedding pre-warm ~1.4s, no
+  network), and MCP logs keep the one-line telemetry without progress bars
+  or load reports. `refresh` is deliberately excluded — it is the code path
+  that downloads models, and its progress bars are for the human watching a
+  multi-minute run. All env defaults use `setdefault`, so an explicit
+  environment (e.g. `HF_HUB_OFFLINE=0`) always wins.
 - **RN transports added to default ingest set** — `pipecat-ai/pipecat-client-react-native-transports`
   (TypeScript, tree-sitter-indexed), verified to yield parseable chunks before
   being added. Fills the React Native client-transport gap.
