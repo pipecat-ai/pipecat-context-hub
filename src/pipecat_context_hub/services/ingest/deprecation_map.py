@@ -83,8 +83,16 @@ class DeprecationMap:
         """
         if symbol in self.entries:
             return self.entries[symbol]
+        # A bare class name ("GladiaSTTService") must only match exactly. The
+        # reverse-prefix branch below ("pipecat.services" → "pipecat.services.grok")
+        # is meant for broad *module-path* queries; for a class it would match a
+        # deprecated *nested member* ("GladiaSTTService.InputParams") and report
+        # the still-current owner class as deprecated — the worst failure mode.
+        symbol_is_bare_class = "." not in symbol and symbol[:1].isupper()
         for key, entry in self.entries.items():
-            if symbol.startswith(key + ".") or key.startswith(symbol + "."):
+            if symbol.startswith(key + "."):
+                return entry
+            if not symbol_is_bare_class and key.startswith(symbol + "."):
                 return entry
         return None
 
@@ -409,7 +417,9 @@ _OLD_FROM_RE = re.compile(
 # `observers`"), and takes precedence — keying a current API as deprecated is
 # the worst failure mode. Window kept tight so prose like "the new symbols)
 # but constructing `PipelineTask`" doesn't false-match.
-_NEW_MARKED_RE = re.compile(r"\b(?:new|current|replacement)\b[^`]{0,16}`([^`\s]+)`", re.IGNORECASE)
+_NEW_MARKED_RE = re.compile(
+    r"\b(?:new|newer|latest|current|replacement)\b[^`]{0,16}`([^`\s]+)`", re.IGNORECASE
+)
 
 # Mirror guard for the target-first rename phrasing ("`New` was renamed from
 # `Old`"): the leading token is the *replacement*, so mark it new. Without
@@ -438,12 +448,88 @@ _OWNER_BEFORE_RE = re.compile(
 # Member nouns that may follow an owner token ("`PipelineTask` events …",
 # "`PipelineTask` constructor"). Deliberately excludes "module" — "the
 # `pipecat.pipeline.task` module have been renamed" deprecates the module
-# itself.
-_OWNER_AFTER_RE = re.compile(
-    r"`([^`\s]+)`\s+(?:events?|methods?|functions?|fields?|parameters?|params?|"
-    r"args?|arguments?|propert(?:y|ies)|attributes?|constructors?|settings?|kwargs?)\b",
-    re.IGNORECASE,
+# itself. Excludes "class" too — "Removed deprecated `UserResponseAggregator`
+# class" deprecates the class itself, so a member-noun skip there would be wrong.
+_MEMBER_NOUNS = (
+    r"events?|methods?|functions?|fields?|parameters?|params?|"
+    r"args?|arguments?|propert(?:y|ies)|attributes?|constructors?|settings?|kwargs?|options?"
 )
+_OWNER_AFTER_RE = re.compile(rf"`([^`\s]+)`\s+(?:{_MEMBER_NOUNS})\b", re.IGNORECASE)
+
+# Adjacent owner+member: "`SimliVideoService` `simli_config` parameter" — the
+# owner token, then a (lower- or CamelCase) member token, then a member noun.
+# The intervening member backtick is why plain _OWNER_AFTER_RE misses it.
+_OWNER_ADJACENT_RE = re.compile(rf"`([^`\s]+)`\s+`[^`\s]+`\s+(?:{_MEMBER_NOUNS})\b", re.IGNORECASE)
+
+# Possessive owner: "`GladiaSTTService`'s `confidence` arg is deprecated" — the
+# possessive marks ``X`` as the owner of the deprecated member.
+_OWNER_POSSESSIVE_RE = re.compile(r"`([^`\s]+)`['’]s\b", re.IGNORECASE)
+
+# Trailing owner: "`english_normalization` input parameter for `X`" — a member
+# noun followed by "for `X`" names X as the owner. Scoped to a preceding member
+# noun so a bare "Removed support for `Service`" (genuine removal) is untouched.
+_OWNER_MEMBER_FOR_RE = re.compile(
+    rf"(?:{_MEMBER_NOUNS})\s+for\s+(?:the\s+|a\s+|an\s+)?`([^`\s]+)`", re.IGNORECASE
+)
+
+# Owner-list propagation: once a preposition has introduced an owner
+# ("removed `x` from `A`, `B`, and `C`"), every backticked token in the
+# immediately-following delimiter-joined list shares that owner context. The
+# single-token _OWNER_BEFORE_RE only caught `A`, leaking `B`/`C` as bogus
+# deprecations (StartFrame, FrameProcessor, CartesiaHttpTTSService,
+# UserStoppedSpeakingFrame …). Anchored via re.match(text, pos) so it walks one
+# list element at a time and never leaps across unrelated prose.
+# The delimiter group repeats so a doubled separator ("`A`, and `B`" — comma
+# *and* "and") doesn't break the walk after the first element.
+_OWNER_LIST_CONTINUE_RE = re.compile(
+    r"(?:\s*(?:,|/|;|&|\band\b|\bor\b))+\s*`([^`\s]+)`", re.IGNORECASE
+)
+
+# Owner-header phrasings that name the *owning* class while deprecating one of
+# its members (usually a lowercase init param):
+#   "`TTSService`: `text_aggregator`, `text_filter` init params"  (colon header)
+#   "For `SpeechmaticsSTTService`, the `end_of_utterance_mode` parameter is …"
+# Anchored at the start of the bullet and requiring the trailing ``:`` / ``,`` so
+# they only fire on the member-list convention, never on a leading deprecation
+# subject ("`NimLLMService` is now deprecated", "`PollyTTSService` alias").
+_OWNER_COLON_RE = re.compile(r"^\s*`([^`\s]+)`\s*:")
+_OWNER_SUBJECT_RE = re.compile(r"^\s*(?:For|In|With)\s+`([^`\s]+)`\s*,", re.IGNORECASE)
+
+
+def _owner_context_tokens(text: str) -> set[str]:
+    r"""Backticked tokens that merely *own* the deprecated member, not the
+    deprecation subject — they must not be keyed as deprecated.
+
+    Covers: a member noun after the token (``\`X\` events``), an adjacent
+    owner+member (``\`X\` \`member\` parameter``), a possessive owner
+    (``\`X\`'s \`member\```), a member noun followed by ``for \`X\```, a token
+    right after a preposition (``from \`X\```), a delimiter-joined list of such
+    tokens (``from \`A\`, \`B\`, and \`C\```), a leading ``For/In/With \`X\`,``
+    subject clause, and a leading ``\`X\`:`` member-list header — in which the
+    convention only ever deprecates the header class's members, so *every* class
+    token in that bullet is owner context, not a deprecation.
+    """
+    owners: set[str] = set(_OWNER_AFTER_RE.findall(text))
+    owners |= set(_OWNER_ADJACENT_RE.findall(text))
+    owners |= set(_OWNER_POSSESSIVE_RE.findall(text))
+    owners |= set(_OWNER_MEMBER_FOR_RE.findall(text))
+
+    if _OWNER_COLON_RE.match(text):
+        # "`Service`: <members…>" — nothing in the bullet is a top-level
+        # deprecation, only members of the header class. Skip every token.
+        owners |= set(_BACKTICK_TOKEN_RE.findall(text))
+    subject = _OWNER_SUBJECT_RE.match(text)
+    if subject:
+        owners.add(subject.group(1))
+
+    for match in _OWNER_BEFORE_RE.finditer(text):
+        owners.add(match.group(1))
+        pos = match.end()
+        while (cont := _OWNER_LIST_CONTINUE_RE.match(text, pos)) is not None:
+            owners.add(cont.group(1))
+            pos = cont.end()
+    return owners
+
 
 # Any backticked token, with position (the classifier decides which are API names).
 _BACKTICK_TOKEN_RE = re.compile(r"`([^`\s]+)`")
@@ -508,7 +594,7 @@ def _classify_tokens(text: str) -> tuple[list[str], list[str]]:
     cut = boundary.start() if boundary else len(text)
     old_marked = set(_OLD_MARKED_RE.findall(text)) | set(_OLD_FROM_RE.findall(text))
     new_marked = set(_NEW_MARKED_RE.findall(text)) | set(_NEW_RENAME_RE.findall(text))
-    owner_context = set(_OWNER_BEFORE_RE.findall(text)) | set(_OWNER_AFTER_RE.findall(text))
+    owner_context = _owner_context_tokens(text)
 
     deprecated: list[str] = []
     replacements: list[str] = []

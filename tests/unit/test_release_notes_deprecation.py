@@ -526,6 +526,113 @@ class TestOwnerContextNotKeyed:
         assert "PipelineWorker" in (entry.new_path or "")
 
 
+class TestOwnerOfMemberPhrasings:
+    """Owner-of-member bullets in phrasings beyond the original `from `X`` /
+    `X` events forms must not key the owning class as deprecated.
+
+    Each text is a real pipecat release/changelog bullet that previously
+    produced a current-API false positive (AGENTS.md item #48). The genuine
+    deprecation in every case is a *member* (usually a lowercase init param),
+    not the class. Regression guards for the four owner phrasings and the
+    delimiter-list propagation added on top of the original owner-context skip.
+    """
+
+    @staticmethod
+    def _keys(text: str, section: str = "Deprecated") -> set[str]:
+        body = f"### {section}\n- {text}\n"
+        return {e.old_path for e in _parse_release_body("9.9.9", body)}
+
+    def test_colon_header_skips_owner_class(self) -> None:
+        keys = self._keys("`TTSService`: `text_aggregator`, `text_filter` init params")
+        assert "TTSService" not in keys
+
+    def test_colon_header_skips_nested_class_member(self) -> None:
+        # The colon-header convention only ever deprecates the header class's
+        # members, so a CamelCase member (`InputParams`) is owner context too.
+        keys = self._keys("`GoogleVertexLLMService`: `InputParams` class with `location` fields")
+        assert "GoogleVertexLLMService" not in keys
+        assert "InputParams" not in keys
+
+    def test_possessive_owner_skipped(self) -> None:
+        keys = self._keys("`GladiaSTTService`'s `confidence` arg is deprecated.")
+        assert "GladiaSTTService" not in keys
+
+    def test_adjacent_owner_member_skipped(self) -> None:
+        keys = self._keys(
+            "`SimliVideoService` `simli_config` parameter is deprecated. "
+            "Use `api_key` and `face_id` parameters instead."
+        )
+        assert "SimliVideoService" not in keys
+
+    def test_member_for_owner_skipped(self) -> None:
+        keys = self._keys(
+            "`english_normalization` input parameter for `MiniMaxHttpTTSService` "
+            "is deprecated, use `text_normalization` instead."
+        )
+        assert "MiniMaxHttpTTSService" not in keys
+
+    def test_for_subject_clause_skipped(self) -> None:
+        keys = self._keys(
+            "For `SpeechmaticsSTTService`, the `end_of_utterance_mode` parameter "
+            "is deprecated. Use the new `turn_detection_mode` parameter instead."
+        )
+        assert "SpeechmaticsSTTService" not in keys
+
+    def test_delimiter_list_after_preposition_skips_all_owners(self) -> None:
+        # Only the first token (`PipelineParams`) was owner-skipped before;
+        # `StartFrame` and `FrameProcessor` leaked through the comma/"and" list.
+        keys = self._keys(
+            "Removed deprecated `allow_interruptions` parameter from "
+            "`PipelineParams`, `StartFrame`, and `FrameProcessor`. Use "
+            "`LLMUserAggregator` parameters.",
+            section="Removed",
+        )
+        assert "PipelineParams" not in keys
+        assert "StartFrame" not in keys
+        assert "FrameProcessor" not in keys
+
+    def test_slash_separated_owner_list_skipped(self) -> None:
+        # The genuine removals (`Emulate…` frames) are kept; the slash-listed
+        # owners of the `emulated` field are skipped.
+        keys = self._keys(
+            "Removed deprecated `EmulateUserStartedSpeakingFrame` and "
+            "`EmulateUserStoppedSpeakingFrame` frames, and the `emulated` field "
+            "from `UserStartedSpeakingFrame` / `UserStoppedSpeakingFrame`.",
+            section="Removed",
+        )
+        assert "UserStartedSpeakingFrame" not in keys
+        assert "UserStoppedSpeakingFrame" not in keys
+        assert "EmulateUserStartedSpeakingFrame" in keys
+        assert "EmulateUserStoppedSpeakingFrame" in keys
+
+    def test_newer_marks_replacement_not_deprecated(self) -> None:
+        keys = self._keys(
+            "The `expect_stripped_words` parameter of `LLMAssistantAggregatorParams` "
+            "is ignored when used with the newer `LLMAssistantAggregator`."
+        )
+        assert "LLMAssistantAggregator" not in keys
+
+    def test_genuine_list_removal_before_preposition_is_kept(self) -> None:
+        # Regression guard: a genuine multi-class removal where the deprecated
+        # list *precedes* the preposition must still be keyed.
+        keys = self._keys(
+            "Removed deprecated `STTMuteFilter`, `STTMuteConfig`, and "
+            "`STTMuteStrategy` from `pipecat.processors.filters.stt_mute_filter`.",
+            section="Removed",
+        )
+        assert {"STTMuteFilter", "STTMuteConfig", "STTMuteStrategy"} <= keys
+
+    def test_genuine_class_removal_with_class_noun_is_kept(self) -> None:
+        # "class" is deliberately excluded from member nouns so a genuine class
+        # removal is not mistaken for an owner.
+        keys = self._keys(
+            "Removed deprecated `UserResponseAggregator` class from "
+            "`pipecat.processors.aggregators.user_response`. Use `LLMUserAggregator`.",
+            section="Removed",
+        )
+        assert "UserResponseAggregator" in keys
+
+
 class TestInconsistentHeadingLevels:
     """Hand-written release bodies mix heading levels (real v0.0.87 layout).
 

@@ -240,13 +240,38 @@ always passes regardless of `gh` availability.
     `check_deprecation(symbol="SileroVADAnalyzer")` — all `false`. A false
     positive here (current API flagged deprecated) is the worst failure mode
     this tool has; these stable classes are a regression canary independent of
-    the rename cases in #45–#47. **Known gap (not yet fixed):** member/param
-    deprecation bullets still mis-key their *owner* class — e.g.
-    `check_deprecation(symbol="TTSService")` and
-    `check_deprecation(symbol="DeepgramSTTService")` wrongly return
-    `deprecated: true` from `` `TTSService`: `text_aggregator` init param ``
-    style bullets. Do NOT add those as passing canaries until the owner-of-
-    member parsing is fixed; tracked separately.
+    the rename cases in #45–#47.
+
+    **Owner-of-member canaries (fixed — must stay `false`).** Member/param
+    deprecation bullets name the *owning* class but deprecate a member; the
+    class must not be keyed. All of these must return `deprecated: false`:
+    `check_deprecation(symbol="DeepgramSTTService")` (`` `X`: `member` `` colon
+    header), `check_deprecation(symbol="GladiaSTTService")` and
+    `check_deprecation(symbol="SimliVideoService")` (possessive / adjacent
+    bullets *and* the `check()` reverse-prefix fix — a bare class name must not
+    inherit a deprecated nested member like `GladiaSTTService.InputParams`),
+    `check_deprecation(symbol="MiniMaxHttpTTSService")`
+    (`` `member` parameter for `X` ``), `check_deprecation(symbol="SpeechmaticsSTTService")`
+    (`For `X`, the `member` …`), and `check_deprecation(symbol="StartFrame")`,
+    `check_deprecation(symbol="FrameProcessor")`,
+    `check_deprecation(symbol="CartesiaHttpTTSService")` (delimiter-list owners
+    after a preposition: `from `A`, `B`, and `C``).
+
+    **Known gap (still mis-keyed — "replacement-kept" / Gap D).** A class named
+    as a *kept replacement* in a removal bullet is still wrongly keyed; these
+    need semantic phrasing detection, not heuristics, and are deferred to a
+    follow-up. Do NOT add them as passing canaries yet:
+    `OpenAILLMService` ("can still be used with `OpenAILLMService`"),
+    `WebsocketTTSService` ("Subclass `WebsocketTTSService` directly"),
+    `TTSService` (colon bullet is fixed, but a separate 0.0.105 bullet — "part
+    of the base `TTSService`" — keeps it mis-keyed),
+    `LLMContext` ("now built into `LLMContext`"), and
+    `LocalSmartTurnAnalyzerV3` ("`transformers` … now always installed").
+
+    **Runnable smoke:** `uv run python scripts/smoke_check_deprecation.py`
+    exercises all of the above against the **live local index** (requires a
+    prior `refresh`; not part of the pytest gate). Exit 0 = all canaries pass;
+    add `--known-gaps` to also report the deferred Gap-D residuals.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

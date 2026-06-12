@@ -45,6 +45,29 @@ This project uses [Semantic Versioning](https://semver.org/).
   ("renamed from `X`") is also keyed correctly now, not dropped by the
   owner-context skip. `PipelineTask` now reports `deprecated_in: 1.3.0`,
   `removed_in: null`, matching the pipecat changelog.
+- **`check_deprecation` reported ~17 current APIs as deprecated** (owner-of-
+  member false positives) — the worst failure mode the tool has. Owner-context
+  detection only recognised a single token right after a preposition, so other
+  member-deprecation phrasings leaked the owning class: `` `TTSService`:
+  `text_aggregator` init param `` (colon header), `` `GladiaSTTService`'s
+  `confidence` arg `` (possessive), `` `SimliVideoService` `simli_config`
+  parameter `` (adjacent owner+member), `` `english_normalization` parameter
+  for `MiniMaxHttpTTSService` `` (trailing `for X`), `For `SpeechmaticsSTTService`,
+  the `…` parameter` (subject clause), and delimiter-joined owner lists
+  (`from `PipelineParams`, `StartFrame`, and `FrameProcessor``, `from `A` /
+  `B``) where only the first token was skipped. All are now treated as owner
+  context. The colon-header convention skips *every* class token in the bullet
+  (so nested `` `InputParams` class `` members no longer leak), and "newer"/
+  "latest" join the replacement markers. Separately, `check()`'s reverse-prefix
+  fuzzy match no longer fires for a bare class name, so an owner class
+  (`GladiaSTTService`) is not reported deprecated just because a nested member
+  (`GladiaSTTService.InputParams`) is. Genuine removals are preserved (verified
+  by a full release-notes rebuild: 17 false-positive keys dropped, zero genuine
+  removals lost). A residual "replacement-kept" class (e.g. a class named only
+  as a still-usable alternative: "can still be used with `OpenAILLMService`") is
+  documented as a known gap (needs semantic phrasing detection) in AGENTS.md
+  item #48, with a runnable live-hub smoke at
+  `scripts/smoke_check_deprecation.py`.
 
 ### Added
 - **Staleness footer on tool responses** — when the local index is older than

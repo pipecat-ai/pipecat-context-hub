@@ -647,3 +647,31 @@ markers, owner-context exclusion, prose blocklist) — `_classify_tokens` in
 design the unstructured fallback as a first-class parsing problem, not a
 best-effort supplement — and key the data model on the unit the *source*
 actually uses (symbols), not the unit that's convenient to match (paths).
+
+### Follow-up (2026-06-12, PR #78) — owner-of-member false positives
+
+A live-hub smoke over all 155 map entries surfaced a *second* class of
+current-API false positive, orthogonal to the rename direction: ~17 entries
+keyed the **owning class of a deprecated member** instead of the member. The
+original owner-context skip only recognised a single backticked token right
+after a preposition (`from `X``), so the other phrasings pipecat's changelog
+uses all leaked the class — colon header (`` `TTSService`: `text_aggregator`
+init param ``), possessive (`` `GladiaSTTService`'s `confidence` arg ``),
+adjacent owner+member (`` `SimliVideoService` `simli_config` parameter ``),
+trailing `for `X``, `For `X`, the …` subject clauses, and delimiter-joined
+owner lists (`from `A`, `B`, and `C``, `from `A` / `B``). All are now folded
+into `_owner_context_tokens`; the colon-header convention skips every class
+token in the bullet.
+
+This also confirmed the prediction above (line ~619): `check()`'s
+**reverse-prefix** match (`key.startswith(symbol + ".")`) reported an owner
+class as deprecated whenever a nested member was — `check("GladiaSTTService")`
+inherited `GladiaSTTService.InputParams`'s verdict. Reverse-prefix is now
+suppressed for bare class-name symbols (kept for broad module-path queries).
+
+Verified by a full release-notes rebuild diff (17 FP keys dropped, 0 genuine
+removals lost) and a runnable live-hub smoke (`scripts/smoke_check_deprecation.py`).
+**Still deferred:** the "replacement-kept" residue (a class named only as a
+still-usable alternative — "can still be used with `OpenAILLMService`", "now
+built into `LLMContext`") needs phrase-level semantic detection; documented as
+a known gap in AGENTS.md item #48.
