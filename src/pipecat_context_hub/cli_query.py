@@ -254,6 +254,8 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
     """
     from pydantic import ValidationError
 
+    from pipecat_context_hub.shared.staleness import annotate_response
+
     _quiet_query_logging(ctx)
     quiet_model_loading()
 
@@ -267,6 +269,11 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         except (ValidationError, ValueError) as exc:
             click.echo(f"Error: {exc}", err=True)
             raise SystemExit(_EXIT_BAD_INPUT) from exc
+        # Same staleness footer the MCP door attaches (status excluded — it
+        # *is* the staleness report). Inside the runtime block: the store
+        # must still be open to read its metadata.
+        if tool != "get_hub_status":
+            result = annotate_response(result, runtime.index_store)
     click.echo(result)
 
 
