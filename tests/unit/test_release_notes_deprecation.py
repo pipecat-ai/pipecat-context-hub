@@ -592,3 +592,38 @@ class TestInconsistentHeadingLevels:
         entries = {e.old_path: e for e in _parse_release_body("0.0.99", body)}
         assert "OldNameService" in entries
         assert entries["OldNameService"].new_path == "NewNameService"
+
+
+class TestHeadingDecorations:
+    """Hand-finished markdown decorates headings; parsing must tolerate it.
+
+    pipecat's real CHANGELOG has '## [0.0.96] - 2025-11-26 🦃 "Happy
+    Thanksgiving!" 🦃' and v0.0.96's release body opens with an h2 banner.
+    """
+
+    def test_decorated_section_heading_is_parsed(self) -> None:
+        body = "### ⚠️ Deprecated\n- `OldThingService` is deprecated.\n"
+        entries = {e.old_path for e in _parse_release_body("1.0.0", body)}
+        assert "OldThingService" in entries
+
+    def test_changelog_decorated_version_and_h2_section(self, tmp_path) -> None:
+        from pipecat_context_hub.services.ingest.deprecation_map import (
+            build_deprecation_map_from_changelog,
+        )
+
+        changelog = tmp_path / "CHANGELOG.md"
+        changelog.write_text(
+            '## [0.0.96] - 2025-11-26 🦃 "Happy Thanksgiving!" 🦃\n'
+            "\n"
+            "## Deprecated\n"
+            "- `OldThingService` is deprecated.\n"
+            "## Fixed\n"
+            "- Fixed `CurrentThingService`.\n",
+            encoding="utf-8",
+        )
+        dm = build_deprecation_map_from_changelog(changelog)
+        notes = {(n.deprecated_in, n.note) for n in dm.changelog_notes}
+        # The decorated version heading still yields 0.0.96; the h2 section
+        # is accepted; the h2 Fixed heading ends it (no Fixed bleed).
+        assert ("0.0.96", "`OldThingService` is deprecated.") in notes
+        assert not any("CurrentThingService" in n.note for n in dm.changelog_notes)

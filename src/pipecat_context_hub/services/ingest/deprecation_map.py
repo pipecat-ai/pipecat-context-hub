@@ -22,6 +22,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# A Deprecated/Removed section heading in hand-finished release/changelog
+# markdown: tolerates levels h2-h4 and leading decorations
+# ("### ⚠️ Deprecated"); trailing decoration is tolerated by not anchoring
+# the end. Shared by the release-body and CHANGELOG parsers.
+_SECTION_HEADING_RE = re.compile(r"^#{2,4}\s+(?:[^\w\s]+\s*)*(Deprecated|Removed)\b")
+
 # Matches: DeprecatedModuleProxy(globals(), "old", "new")
 # Captures the old and new string arguments (handles multi-line, trailing comma).
 _PROXY_RE = re.compile(
@@ -312,8 +318,8 @@ def build_deprecation_map_from_changelog(
         return result
 
     # Parse version sections: ## [0.0.100] - 2024-xx-xx
+    # (Trailing decoration is fine — "## [0.0.96] - 2025-11-26 🦃 …" parses.)
     version_re = re.compile(r"^##\s+\[([^\]]+)\]", re.MULTILINE)
-    section_re = re.compile(r"^###\s+(Deprecated|Removed)", re.MULTILINE)
 
     current_version: str | None = None
     current_section: str | None = None
@@ -325,11 +331,13 @@ def build_deprecation_map_from_changelog(
             current_version = version_match.group(1)
             current_section = None
             continue
-        section_match = section_re.match(line)
+        section_match = _SECTION_HEADING_RE.match(line)
         if section_match:
             current_section = section_match.group(1)
             continue
-        if line.startswith("### "):
+        if line.startswith("#"):
+            # Any other heading — at any level — ends the current section
+            # (same hardening as the release-body parser).
             current_section = None
             continue
         if current_version and current_section and line.strip().startswith("- "):
@@ -646,7 +654,7 @@ def _parse_release_body(
     ("Fixed a `PipelineTask` issue …" keyed PipelineTask as deprecated
     in 0.0.87).
     """
-    section_re = re.compile(r"^#{2,4}\s+(Deprecated|Removed)\b")
+    section_re = _SECTION_HEADING_RE
     entries: list[DeprecationEntry] = []
 
     current_section: str | None = None
