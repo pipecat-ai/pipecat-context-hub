@@ -34,6 +34,15 @@ This project uses [Semantic Versioning](https://semver.org/).
   that downloads models, and its progress bars are for the human watching a
   multi-minute run. All env defaults use `setdefault`, so an explicit
   environment (e.g. `HF_HUB_OFFLINE=0`) always wins.
+- **PyPI release workflow** — publishing a GitHub release now builds, verifies,
+  and uploads the package to PyPI via trusted publishing (OIDC, no stored
+  tokens). The build job checks distribution metadata (`twine check --strict`),
+  enforces that the release tag matches the version baked into the wheel, and
+  smoke-tests the built wheel from a clean venv outside the checkout (console
+  script runs; `serve` on an empty index exits 2 with the refresh hint). A
+  manual `workflow_dispatch` publishes to TestPyPI as a dry run. See
+  `docs/CONTRIBUTING.md` "Release Process" for the flow and the one-time
+  trusted-publisher setup.
 - **RN transports added to default ingest set** — `pipecat-ai/pipecat-client-react-native-transports`
   (TypeScript, tree-sitter-indexed), verified to yield parseable chunks before
   being added. Fills the React Native client-transport gap.

@@ -84,6 +84,8 @@ The version lives in **two places** — both must be updated together on every r
 2. `src/pipecat_context_hub/server/main.py` → `_SERVER_VERSION`
 
 A test (`tests/unit/test_server.py::TestVersionConsistency`) enforces they match.
+The release tag must be `v<that version>` — the Release workflow
+(`.github/workflows/release.yml`) refuses to publish to PyPI on a mismatch.
 
 ## Project Layout
 
