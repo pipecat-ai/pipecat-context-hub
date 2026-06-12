@@ -20,7 +20,7 @@ Design notes:
   ``--log-level`` wins) and silence third-party model-loading chatter, since
   the captured stderr of a one-shot command lands in an agent's context.
   ``HF_HUB_OFFLINE=1`` additionally skips huggingface_hub's per-load network
-  revalidation of already-cached models (see ``_quiet_model_loading``).
+  revalidation of already-cached models (see ``quiet_model_loading``).
 - The embedding model (and cross-encoder reranker, when enabled and cached)
   load only for the semantic commands (``search-docs``, ``search-examples``,
   ``search-api``, ``get-code-snippet``). The lookup commands
@@ -35,7 +35,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -97,12 +96,6 @@ def _quiet_query_logging(ctx: click.Context) -> None:
         logging.getLogger().setLevel(logging.WARNING)
 
 
-# Quiet/offline model-loading env defaults — shared with `serve`, which pays
-# the same HF revalidation cost at boot. Kept under the local name so the
-# `_invoke` call site reads as part of this module's quieting story.
-_quiet_model_loading = quiet_model_loading
-
-
 def _resolve_reranker(
     config: HubConfig, *, construct: bool
 ) -> tuple[CrossEncoderReranker | None, RerankerStatus]:
@@ -110,23 +103,18 @@ def _resolve_reranker(
 
     With ``construct=False`` this only *probes* (config + HF cache check) and
     reports the status a query run would see, without paying the model load —
-    used by ``status``, which must stay cheap.
+    used by ``status``, which must stay cheap. The config/cache decision is
+    shared with ``serve`` via :func:`probe_reranker` so the two cannot drift on
+    which reasons disable the reranker.
     """
     from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
-    from pipecat_context_hub.shared.config import _RERANKER_MODEL_ENV
+    from pipecat_context_hub.shared.reranker import probe_reranker
     from pipecat_context_hub.shared.types import RerankerStatus
 
-    active_model = config.reranker.effective_model
-    requested = os.environ.get(_RERANKER_MODEL_ENV, "").strip() or (
-        config.reranker.cross_encoder_model
-    )
-    if not config.reranker.effective_enabled:
+    active_model, requested, disabled_reason = probe_reranker(config)
+    if disabled_reason is not None:
         return None, RerankerStatus(
-            enabled=False, configured_model=requested, disabled_reason="config_disabled"
-        )
-    if not CrossEncoderReranker.is_model_cached(active_model):
-        return None, RerankerStatus(
-            enabled=False, configured_model=requested, disabled_reason="not_cached"
+            enabled=False, configured_model=requested, disabled_reason=disabled_reason
         )
     status = RerankerStatus(enabled=True, model=active_model, configured_model=requested)
     if not construct:
@@ -152,15 +140,25 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
 
+    # IndexStore.__init__ opens two backends (Chroma + SQLite) and does not roll
+    # back if a *post-construction* call (get_index_stats) then raises, so close
+    # whatever came up before exiting — mirrors the guarded close `serve` does.
+    index_store: IndexStore | None = None
     try:
         index_store = IndexStore(config.storage)
         stats = index_store.get_index_stats()
     except IncompatibleIndexFormatError as exc:
+        if index_store is not None:
+            with contextlib.suppress(Exception):
+                index_store.close()
         # exc.__str__ embeds the absolute chroma_path, so redact the whole
         # composed message (not just a data_dir token, which is absent here).
         click.echo(redact_home_in_text(f"Error: {exc}"), err=True)
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
+        if index_store is not None:
+            with contextlib.suppress(Exception):
+                index_store.close()
         # Both the data_dir token and the {exc} rendering (e.g. a
         # FileNotFoundError carrying .../chroma.sqlite3) can leak an absolute
         # path, so redact the full formatted string, not a single argument.
@@ -207,7 +205,8 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
             retriever=retriever, index_store=index_store, reranker_status=reranker_status
         )
     finally:
-        index_store.close()
+        if index_store is not None:
+            index_store.close()
 
 
 def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
@@ -256,7 +255,7 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
     from pydantic import ValidationError
 
     _quiet_query_logging(ctx)
-    _quiet_model_loading()
+    quiet_model_loading()
 
     config: HubConfig = ctx.obj["config"]
     # Drop None/empty values so handler-side pydantic models see absent

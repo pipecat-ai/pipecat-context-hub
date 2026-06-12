@@ -225,6 +225,19 @@ class RerankerConfig(BaseModel):
             return self.cross_encoder_model
         return _DEFAULT_RERANKER_MODEL
 
+    @property
+    def requested_model(self) -> str:
+        """The operator's raw requested model — env var over field, *before*
+        allowlist validation/fallback.
+
+        Distinct from :attr:`effective_model` (which silently falls back to an
+        allowlisted value): this surfaces what the operator actually asked for,
+        so ``get_hub_status`` can report a typo'd env var via ``configured_model``
+        even when the active model fell back to the default. Both ``serve`` and
+        the one-shot CLI read this instead of re-deriving the env-or-field value.
+        """
+        return os.environ.get(_RERANKER_MODEL_ENV, "").strip() or self.cross_encoder_model
+
     @model_validator(mode="after")
     def _warn_on_invalid_model(self) -> "RerankerConfig":
         """Emit configuration warnings exactly once, at construction time.

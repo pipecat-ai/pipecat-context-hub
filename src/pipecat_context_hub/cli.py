@@ -273,8 +273,8 @@ def serve(ctx: click.Context) -> None:
         logger.error(
             "Failed to open index at %s: %s. "
             "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild.",
-            config.storage.data_dir,
-            exc,
+            _redact_home(config.storage.data_dir),
+            redact_home_in_text(str(exc)),
         )
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
 
@@ -283,7 +283,7 @@ def serve(ctx: click.Context) -> None:
             "Index at %s is empty (0 records). "
             "MCP clients would hang waiting for results. "
             "Run 'uv run pipecat-context-hub refresh' before 'serve'.",
-            config.storage.data_dir,
+            _redact_home(config.storage.data_dir),
         )
         index_store.close()
         raise SystemExit(_EXIT_INDEX_UNREADY)
@@ -316,34 +316,23 @@ def serve(ctx: click.Context) -> None:
     try:
         embedding_svc = EmbeddingService(config.embedding)
 
-        # Optional cross-encoder reranker (env var or config)
-        from pipecat_context_hub.shared.config import _RERANKER_MODEL_ENV
-        from pipecat_context_hub.shared.types import (
-            RerankerDisabledReason,
-            RerankerStatus,
-        )
+        # Optional cross-encoder reranker (env var or config). The config/cache
+        # decision (and the operator's raw requested_model, surfaced by
+        # get_hub_status even on a typo'd env var) is shared with the one-shot
+        # CLI via probe_reranker so the two front doors cannot drift on which
+        # reasons disable the reranker.
+        from pipecat_context_hub.shared.reranker import probe_reranker
+        from pipecat_context_hub.shared.types import RerankerStatus
 
         cross_encoder: CrossEncoderReranker | None = None
-        active_model = config.reranker.effective_model  # post-validation, in allowlist
-        # Capture the operator's raw request so get_hub_status can surface
-        # misconfigurations (e.g. typo in env var) even when silently falling
-        # back to the default. Env wins over field when set.
-        env_request = os.environ.get(_RERANKER_MODEL_ENV, "").strip()
-        requested_model = env_request or config.reranker.cross_encoder_model
-        startup_disabled_reason: RerankerDisabledReason | None = None
-        if not config.reranker.effective_enabled:
-            startup_disabled_reason = "config_disabled"
-        else:
-            # Check cache at startup — disable if model not downloaded
-            if CrossEncoderReranker.is_model_cached(active_model):
-                cross_encoder = CrossEncoderReranker(
-                    model_name=active_model,
-                    top_n=config.reranker.top_n,
-                    enabled=True,
-                )
-                logger.info("Cross-encoder reranker enabled: %s", active_model)
-            else:
-                startup_disabled_reason = "not_cached"
+        active_model, requested_model, startup_disabled_reason = probe_reranker(config)
+        if startup_disabled_reason is None:
+            cross_encoder = CrossEncoderReranker(
+                model_name=active_model,
+                top_n=config.reranker.top_n,
+                enabled=True,
+            )
+            logger.info("Cross-encoder reranker enabled: %s", active_model)
 
         # Single telemetry line when the reranker is off at boot. Operators
         # grep this from MCP traces to diagnose degraded startups without
@@ -510,7 +499,9 @@ def refresh(
         # A pre-1.0 Chroma dir cannot be opened by 1.x. --reset-index deletes
         # storage above before this point, so this only fires on a plain
         # refresh against a stale 0.6 index — point the user at the rebuild.
-        logger.error("%s", exc)
+        # exc.__str__ embeds the absolute chroma_path; redact for front-door
+        # parity with the serve / cli_query error sites.
+        logger.error("%s", redact_home_in_text(str(exc)))
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
