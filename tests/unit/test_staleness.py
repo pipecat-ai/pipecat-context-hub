@@ -50,6 +50,32 @@ class TestStalenessInfo:
         monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "0")
         assert staleness_info(_store_refreshed_days_ago(365)) is None
 
+    def test_env_negative_disables(self, monkeypatch):
+        # Negative thresholds disable the annotation like 0 (the `<= 0` guard).
+        monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "-5")
+        assert staleness_info(_store_refreshed_days_ago(365)) is None
+
+    def test_env_inf_falls_back_to_default(self, monkeypatch):
+        # `inf` would make every index look fresh (age < inf is always true),
+        # silently defeating the warning — it must fall back to the 7-day
+        # default, so a 365-day index still annotates and a fresh one stays quiet.
+        monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "inf")
+        assert staleness_info(_store_refreshed_days_ago(365)) is not None
+        assert staleness_info(_store_refreshed_days_ago(1)) is None
+
+    def test_env_nan_falls_back_to_default(self, monkeypatch):
+        # `nan` makes all comparisons false (would annotate even a fresh index)
+        # — it must fall back to the default, so a fresh index stays quiet and a
+        # stale one still annotates.
+        monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "nan")
+        assert staleness_info(_store_refreshed_days_ago(1)) is None
+        assert staleness_info(_store_refreshed_days_ago(365)) is not None
+
+    def test_env_non_numeric_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "soon")
+        assert staleness_info(_store_refreshed_days_ago(1)) is None
+        assert staleness_info(_store_refreshed_days_ago(365)) is not None
+
 
 class TestAnnotateResponse:
     def test_stale_injects_field(self):

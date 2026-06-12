@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -46,8 +47,13 @@ def _stale_after_days() -> float:
     if not raw:
         return _DEFAULT_STALE_AFTER_DAYS
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
+        value = None
+    # Reject non-numeric AND non-finite (nan/inf): `inf` would make every index
+    # look fresh (age < inf is always true) and `nan` would annotate even a
+    # fresh one (all nan comparisons are false), silently defeating the warning.
+    if value is None or not math.isfinite(value):
         logger.warning(
             "Invalid %s=%r — using default of %s days",
             _STALE_AFTER_ENV,
@@ -55,6 +61,7 @@ def _stale_after_days() -> float:
             _DEFAULT_STALE_AFTER_DAYS,
         )
         return _DEFAULT_STALE_AFTER_DAYS
+    return value
 
 
 def staleness_info(index_store: IndexStore) -> dict[str, Any] | None:
