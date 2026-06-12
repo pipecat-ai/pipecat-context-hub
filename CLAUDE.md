@@ -95,7 +95,10 @@ src/pipecat_context_hub/
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
 │   ├── interfaces.py         # IndexWriter/Reader, Retriever, Ingester
-│   └── tracking.py           # Runtime helpers (IdleTracker)
+│   ├── tracking.py           # Runtime helpers (IdleTracker)
+│   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision
+│   ├── model_loading.py      # quiet_model_loading — offline-first HF env defaults (serve + CLI)
+│   └── paths.py              # redact_home / redact_home_in_text — home-path redaction for logs
 ├── services/
 │   ├── embedding.py          # EmbeddingService
 │   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS tree-sitter, taxonomy, version extraction, deprecation map

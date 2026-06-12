@@ -80,6 +80,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   the suite if the `justfile` and `ci.yml` `--ignore-vuln` sets drift, closing
   the gap that had left a stale `CVE-2026-1839` ignore in the justfile after CI
   dropped it (now resolved: `transformers 5.5.0`).
+- **`torch` CVE-2025-3000 audited, not exploitable** — memory corruption in
+  `torch.jit.script` (GHSA-rrmf-rvhw-rf47 / PYSEC-2025-194). Low severity, no
+  upstream fix released (vulnerable `<= 2.12.0`, no patched version). Unreachable
+  here: the hub uses sentence-transformers embeddings and the cross-encoder
+  reranker and never calls `torch.jit.script`. Added `--ignore-vuln CVE-2025-3000`
+  to the `pip-audit` gate (ci.yml) and the `audit-deps` justfile recipe; the
+  unfiltered biweekly `security-audit.yml` job re-surfaces it if a fix ships.
 
 ## [0.1.1] - 2026-05-30
 

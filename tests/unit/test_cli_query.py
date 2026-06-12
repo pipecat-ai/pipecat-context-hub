@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
@@ -142,6 +144,171 @@ class TestDispatch:
         assert sent.query == "TTS + STT"
         assert sent.limit == 5
 
+    def test_get_doc_dispatches_handler_without_embeddings(self, tmp_path):
+        """Lookup path: handle_get_doc invoked, no embedding service built."""
+        handler = AsyncMock(return_value=json.dumps({"path": "/guides/x", "content": "hi"}))
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                side_effect=AssertionError("lookup commands must not load the embedding model"),
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.get_doc.handle_get_doc",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, ["get-doc", "--path", "/guides/x", "--section", "Intro"])
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["path"] == "/guides/x"
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        # None/empty options are dropped before dispatch; --doc-id was absent.
+        assert sent["path"] == "/guides/x"
+        assert sent["section"] == "Intro"
+        assert "doc_id" not in sent
+
+    def test_get_example_dispatches_handler_and_inverts_no_readme(self, tmp_path):
+        """Lookup path: --no-readme maps to include_readme=False; no embeddings."""
+        handler = AsyncMock(return_value=json.dumps({"example_id": "ex1", "files": []}))
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                side_effect=AssertionError("lookup commands must not load the embedding model"),
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.get_example.handle_get_example",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, ["get-example", "ex1", "--no-readme"])
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["example_id"] == "ex1"
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        assert sent["example_id"] == "ex1"
+        # --no-readme -> include_readme = not no_readme. Pin the inversion.
+        assert sent["include_readme"] is False
+
+    def test_search_examples_uses_embeddings_and_prints_handler_json(self, tmp_path):
+        """Semantic path: handle_search_examples invoked, embeddings built."""
+        handler = AsyncMock(return_value=json.dumps({"hits": [], "domain": "backend"}))
+        embedding = MagicMock()
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=embedding,
+            ) as embedding_cls,
+            patch(
+                "pipecat_context_hub.services.retrieval.cross_encoder."
+                "CrossEncoderReranker.is_model_cached",
+                return_value=False,
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.search_examples.handle_search_examples",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(
+                main,
+                ["search-examples", "idle timeout", "--domain", "backend", "--limit", "3"],
+            )
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["domain"] == "backend"
+        embedding_cls.assert_called_once()
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        assert sent["query"] == "idle timeout"
+        assert sent["domain"] == "backend"
+        assert sent["limit"] == 3
+
+    def test_get_code_snippet_uses_embeddings_and_prints_handler_json(self, tmp_path):
+        """Semantic path: handle_get_code_snippet invoked, embeddings built."""
+        handler = AsyncMock(return_value=json.dumps({"symbol": "DailyTransport.send_dtmf"}))
+        embedding = MagicMock()
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=embedding,
+            ) as embedding_cls,
+            patch(
+                "pipecat_context_hub.services.retrieval.cross_encoder."
+                "CrossEncoderReranker.is_model_cached",
+                return_value=False,
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.get_code_snippet.handle_get_code_snippet",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(
+                main,
+                ["get-code-snippet", "--symbol", "DailyTransport.send_dtmf", "--max-lines", "40"],
+            )
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["symbol"] == "DailyTransport.send_dtmf"
+        embedding_cls.assert_called_once()
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        assert sent["symbol"] == "DailyTransport.send_dtmf"
+        assert sent["max_lines"] == 40
+
+    def test_search_api_uses_embeddings_and_prints_handler_json(self, tmp_path):
+        """Semantic path: handle_search_api invoked, embeddings built."""
+        handler = AsyncMock(return_value=json.dumps({"hits": [], "module": "pipecat.services"}))
+        embedding = MagicMock()
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=embedding,
+            ) as embedding_cls,
+            patch(
+                "pipecat_context_hub.services.retrieval.cross_encoder."
+                "CrossEncoderReranker.is_model_cached",
+                return_value=False,
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.search_api.handle_search_api",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(
+                main,
+                ["search-api", "BaseTransport", "--module", "pipecat.services", "--limit", "7"],
+            )
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["module"] == "pipecat.services"
+        embedding_cls.assert_called_once()
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        assert sent["query"] == "BaseTransport"
+        assert sent["module"] == "pipecat.services"
+        assert sent["limit"] == 7
+
 
 class TestQuietOutput:
     """Query commands keep captured output lean — it lands in agent context."""
@@ -215,6 +382,64 @@ class TestQuietOutput:
             result = runner.invoke(main, ["check-deprecation", "X"])
             assert result.exit_code == 0, result.stderr
             assert os.environ["HF_HUB_OFFLINE"] == "0"
+
+
+class TestHomeRedaction:
+    """Stderr error paths must not leak the absolute home dir (R6).
+
+    Each test patches ``Path.home()`` to a tmp dir AND points the index
+    ``data_dir`` *under* that home (via ``PIPECAT_HUB_DATA_DIR``). Without
+    both, ``redact_home`` is a no-op and the assertions pass vacuously — the
+    review explicitly warns about this trap.
+    """
+
+    def test_open_failure_redacts_data_dir_and_embedded_exc_path(self, monkeypatch, tmp_path):
+        """:162 branch — a generic open failure whose own message embeds an
+        absolute path under home. BOTH the interpolated ``data_dir`` token and
+        the path inside ``{exc}`` must be redacted; a token-only fix leaks the
+        embedded path (the crux of R6)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        data_dir = tmp_path / ".pipecat-context-hub"
+        # An absolute path under home, embedded inside the exception message —
+        # this is what a FileNotFoundError carrying …/chroma.sqlite3 looks like.
+        embedded = data_dir / "chroma.sqlite3"
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                side_effect=FileNotFoundError(f"unable to open database file: {embedded}"),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
+        ):
+            result = runner.invoke(main, ["status"])
+
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        # Redaction happened (tilde present) and nothing leaks the literal home.
+        assert "~/" in result.stderr or "~" + os.sep in result.stderr
+        assert str(tmp_path) not in result.stderr
+        # The data_dir token is redacted.
+        assert str(data_dir) not in result.stderr
+        # The crux: the path embedded inside {exc} is redacted too.
+        assert str(embedded) not in result.stderr
+
+    def test_empty_index_redacts_data_dir(self, monkeypatch, tmp_path):
+        """:171 branch — empty index (total=0). The interpolated ``data_dir``
+        in the 'is empty' message must be home-redacted."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        data_dir = tmp_path / ".pipecat-context-hub"
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=0),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
+        ):
+            result = runner.invoke(main, ["status"])
+
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert "is empty" in result.stderr
+        assert "~/" in result.stderr or "~" + os.sep in result.stderr
+        assert str(tmp_path) not in result.stderr
+        assert str(data_dir) not in result.stderr
 
 
 class TestBadInput:
