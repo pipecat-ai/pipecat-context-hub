@@ -2,7 +2,7 @@
 
 **Status**: Complete
 **Component**: cli
-**Assigned to**: Claude (conducted)
+**Assigned to**: markbackman
 **Priority**: Medium
 **Branch**: feat/cli-query-subcommands
 **Created**: 2026-06-12
