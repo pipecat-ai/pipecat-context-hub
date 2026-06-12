@@ -203,6 +203,23 @@ always passes regardless of `gh` availability.
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
+### CLI query smoke (when `cli_query.py` or tool dispatch changes)
+
+The query subcommands share the MCP tool handlers, so the numbered checks
+above cover retrieval; these confirm the CLI front door itself against the
+live local index:
+
+1. `uv run pipecat-context-hub check-deprecation PipelineTask` — valid JSON
+   on stdout in under ~1s (no embedding-model load on lookup commands)
+2. `uv run pipecat-context-hub status` — `total_records` non-zero,
+   `last_refresh_at` recent, reranker fields populated
+3. `uv run pipecat-context-hub search-api "WebsocketServerParams" --limit 3`
+   — hits include `pipecat.transports.websocket.server` (models load; ~3s)
+4. `uv run pipecat-context-hub get-doc` (no flags) — exit 1, one-line
+   validation message on stderr, empty stdout
+5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —
+   exit 2, stderr says to run `refresh`
+
 ## Upstream Drift Check
 
 Offline smoke tests in `tests/smoke/` exercise the taxonomy builder against
@@ -276,6 +293,8 @@ in future reviews unless the underlying circumstances change.
 - **[Security] resolved**: `starlette` medium-severity advisory PYSEC-2026-161 / GHSA-86qp-5c8j-p5mr (missing Host-header validation poisons `request.url.path`, bypassing path-based security checks) resolved by flooring the transitive entry to `starlette>=1.0.1` (lock resolves to `1.1.0`) via PR #64 (2026-05-24). Unlike the other transitive bumps this one **requires a `[tool.uv] constraint-dependencies` entry**, not a lock-only bump: a plain re-lock regresses to the vulnerable `0.52.1` because the prior `fastapi 0.129.0` capped starlette below `1.0`. The constraint forces the resolver to also lift `fastapi` to `0.136.3`. `starlette` is reached only via `mcp` / `fastapi` / `sse-starlette`; no exploitable path from hub code — the hub speaks MCP over stdio and never serves HTTP via Starlette.
 
 - **[Security] won't-fix**: `torch` advisory PYSEC-2026-139 / CVE-2026-4538 — local-only deserialization in the pt2 loading handler, no upstream fix released (latest `2.10.0` is still affected; upstream "has not reacted yet"). Ignored via `--ignore-vuln PYSEC-2026-139` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe. `torch` is reached only via `sentence-transformers` for local embedding inference, and the hub never deserializes untrusted `pt2` artifacts. The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched `torch` release ships. (2026-05-24)
+
+- **[Security] won't-fix**: `torch` advisory CVE-2025-3000 / GHSA-rrmf-rvhw-rf47 / PYSEC-2025-194 — memory corruption in `torch.jit.script` on crafted input, local-only attack vector, no fixed release (pip-audit lists no fix for `2.10.0`). A 2025 CVE that only began flagging on 2026-06-12: the OSV record was modified 2026-06-10 (affected-range enrichment), which is when pip-audit's database picked it up — it failed the PR #75 Security gate despite that PR touching no dependencies. Unreachable here, same class as PYSEC-2026-139: `torch` is reached only via `sentence-transformers` for embedding inference, `src/` has zero direct `torch` references (verified by grep), and the hub never invokes the TorchScript compiler or compiles untrusted model code. Ignored via `--ignore-vuln CVE-2025-3000` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe (parity enforced by `tests/unit/test_audit_sync.py`). The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched `torch` release ships. (2026-06-12)
 
 - **[Security] won't-fix**: `chromadb` CVE-2026-45829 / GHSA-f4j7-r4q5-qw2c — pre-authentication code injection in chromadb's HTTP **server** mode (arbitrary code execution via the `/api/v2/.../collections` endpoint with a malicious model repo and `trust_remote_code=true`). Affects 1.0.0–1.5.9 with no fixed release yet (1.5.9 is the latest 1.x). Unreachable here: the hub runs the embedded `PersistentClient` only (no server, no HTTP endpoint, no listener) and never uses chromadb's embedding functions / `trust_remote_code`. Ignored via `--ignore-vuln CVE-2026-45829` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe (parity enforced by `tests/unit/test_audit_sync.py`). The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched chromadb release ships. (2026-06-06)
 

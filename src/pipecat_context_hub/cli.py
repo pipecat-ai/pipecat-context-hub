@@ -1,6 +1,7 @@
 """CLI entry point for the Pipecat Context Hub.
 
-Provides ``serve`` (default) and ``refresh`` commands.
+Provides ``serve`` (default) and ``refresh`` commands, plus the one-shot query
+subcommands registered from :mod:`pipecat_context_hub.cli_query`.
 """
 
 from __future__ import annotations
@@ -18,7 +19,15 @@ from pathlib import Path
 
 import click
 
+from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+
+# Back-compat alias: tests/unit/test_cli.py imports the underscored name and
+# the banner call sites below reference it. The redaction helper itself now
+# lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
+# import cycle); this re-export keeps that suite green and the call sites stable.
+_redact_home = redact_home
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
@@ -30,23 +39,6 @@ _MISSING_SENTINEL = "\u2014"
 _EXIT_INDEX_UNREADY = 2
 
 _module_logger = logging.getLogger(__name__)
-
-
-def _redact_home(path: Path | str) -> str:
-    """Replace the user's home-directory prefix with ``~`` for logs.
-
-    Startup telemetry is included in the "share this with maintainers"
-    guidance, so stripping usernames out of absolute paths keeps routine
-    bug reports from leaking local filesystem layout.
-    """
-    try:
-        s = str(path)
-        home = str(Path.home())
-        if home and (s == home or s.startswith(home + os.sep)):
-            return "~" + s[len(home) :]
-        return s
-    except Exception:
-        return str(path)
 
 
 # Values of PIPECAT_HUB_WARMUP that disable pre-warm. Anything else
@@ -222,6 +214,16 @@ def serve(ctx: click.Context) -> None:
     # in the already-reparented PID and never fire.
     _original_ppid = os.getppid()
 
+    # Quiet, offline-first model loading (must precede the heavy imports):
+    # skips huggingface_hub's network revalidation of already-cached models
+    # (~20 HEAD requests, seconds off every boot) and keeps progress bars and
+    # the transformers load report out of the MCP logs. setdefault semantics —
+    # an explicit env (e.g. HF_HUB_OFFLINE=0) always wins. `refresh` must NOT
+    # do this: it is the code path that downloads models.
+    from pipecat_context_hub.shared.model_loading import quiet_model_loading
+
+    quiet_model_loading()
+
     from pipecat_context_hub.server.main import create_server
     from pipecat_context_hub.server.transport import serve_stdio
     from pipecat_context_hub.shared.tracking import IdleTracker
@@ -256,7 +258,9 @@ def serve(ctx: click.Context) -> None:
                 index_store.close()
             except Exception:
                 logger.exception("Failed to close partially-opened index store")
-        logger.error("%s", exc)
+        # exc.__str__ embeds the absolute chroma_path; redact it for front-door
+        # parity with the cli_query one-shot error sites.
+        logger.error("%s", redact_home_in_text(str(exc)))
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         # IndexStore.__init__ opens two backends (Chroma + SQLite) without
@@ -269,8 +273,8 @@ def serve(ctx: click.Context) -> None:
         logger.error(
             "Failed to open index at %s: %s. "
             "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild.",
-            config.storage.data_dir,
-            exc,
+            _redact_home(config.storage.data_dir),
+            redact_home_in_text(str(exc)),
         )
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
 
@@ -279,7 +283,7 @@ def serve(ctx: click.Context) -> None:
             "Index at %s is empty (0 records). "
             "MCP clients would hang waiting for results. "
             "Run 'uv run pipecat-context-hub refresh' before 'serve'.",
-            config.storage.data_dir,
+            _redact_home(config.storage.data_dir),
         )
         index_store.close()
         raise SystemExit(_EXIT_INDEX_UNREADY)
@@ -312,34 +316,23 @@ def serve(ctx: click.Context) -> None:
     try:
         embedding_svc = EmbeddingService(config.embedding)
 
-        # Optional cross-encoder reranker (env var or config)
-        from pipecat_context_hub.shared.config import _RERANKER_MODEL_ENV
-        from pipecat_context_hub.shared.types import (
-            RerankerDisabledReason,
-            RerankerStatus,
-        )
+        # Optional cross-encoder reranker (env var or config). The config/cache
+        # decision (and the operator's raw requested_model, surfaced by
+        # get_hub_status even on a typo'd env var) is shared with the one-shot
+        # CLI via probe_reranker so the two front doors cannot drift on which
+        # reasons disable the reranker.
+        from pipecat_context_hub.shared.reranker import probe_reranker
+        from pipecat_context_hub.shared.types import RerankerStatus
 
         cross_encoder: CrossEncoderReranker | None = None
-        active_model = config.reranker.effective_model  # post-validation, in allowlist
-        # Capture the operator's raw request so get_hub_status can surface
-        # misconfigurations (e.g. typo in env var) even when silently falling
-        # back to the default. Env wins over field when set.
-        env_request = os.environ.get(_RERANKER_MODEL_ENV, "").strip()
-        requested_model = env_request or config.reranker.cross_encoder_model
-        startup_disabled_reason: RerankerDisabledReason | None = None
-        if not config.reranker.effective_enabled:
-            startup_disabled_reason = "config_disabled"
-        else:
-            # Check cache at startup — disable if model not downloaded
-            if CrossEncoderReranker.is_model_cached(active_model):
-                cross_encoder = CrossEncoderReranker(
-                    model_name=active_model,
-                    top_n=config.reranker.top_n,
-                    enabled=True,
-                )
-                logger.info("Cross-encoder reranker enabled: %s", active_model)
-            else:
-                startup_disabled_reason = "not_cached"
+        active_model, requested_model, startup_disabled_reason = probe_reranker(config)
+        if startup_disabled_reason is None:
+            cross_encoder = CrossEncoderReranker(
+                model_name=active_model,
+                top_n=config.reranker.top_n,
+                enabled=True,
+            )
+            logger.info("Cross-encoder reranker enabled: %s", active_model)
 
         # Single telemetry line when the reranker is off at boot. Operators
         # grep this from MCP traces to diagnose degraded startups without
@@ -506,7 +499,9 @@ def refresh(
         # A pre-1.0 Chroma dir cannot be opened by 1.x. --reset-index deletes
         # storage above before this point, so this only fires on a plain
         # refresh against a stale 0.6 index — point the user at the rebuild.
-        logger.error("%s", exc)
+        # exc.__str__ embeds the absolute chroma_path; redact for front-door
+        # parity with the serve / cli_query error sites.
+        logger.error("%s", redact_home_in_text(str(exc)))
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
@@ -966,6 +961,11 @@ def _print_refresh_summary(
             f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
         )
     click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
+
+
+# One-shot query subcommands (search-docs, check-deprecation, status, ...) —
+# the same tool handlers the MCP server dispatches, exposed for shell callers.
+register_query_commands(main)
 
 
 if __name__ == "__main__":
