@@ -152,12 +152,21 @@ jobs:
         # PersistentClient only (no server, no HTTP endpoint, no listener) and
         # never uses chromadb's embedding functions / trust_remote_code.
         #
-        # The unfiltered biweekly security-audit.yml job re-surfaces both so the
-        # ignores cannot silently outlive their upstream patches.
+        # CVE-2025-3000 (torch, GHSA-rrmf-rvhw-rf47 / PYSEC-2025-194): memory
+        # corruption in torch.jit.script on crafted input, local-only vector,
+        # no fixed release (pip-audit lists no fix for 2.10.0; the OSV record
+        # was modified 2026-06-10, which is when it started flagging). Reached
+        # only via sentence-transformers for embedding inference; the hub never
+        # invokes the TorchScript compiler (no torch.jit.* call sites) and
+        # compiles no untrusted model code.
+        #
+        # The unfiltered biweekly security-audit.yml job re-surfaces all of
+        # these so the ignores cannot silently outlive their upstream patches.
         run: >-
           uv run pip-audit --local --progress-spinner off
           --ignore-vuln PYSEC-2026-139
           --ignore-vuln CVE-2026-45829
+          --ignore-vuln CVE-2025-3000
 
       - name: Bandit
         run: uv run bandit -r src

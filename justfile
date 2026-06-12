@@ -57,7 +57,9 @@ audit-deps:
     #   PYSEC-2026-139: torch pt2-loader deserialization, no upstream fix.
     #   CVE-2026-45829: chromadb HTTP-server pre-auth RCE — unreachable (embedded
     #                   PersistentClient only, no server/endpoint).
-    uv run pip-audit --local --progress-spinner off --ignore-vuln PYSEC-2026-139 --ignore-vuln CVE-2026-45829
+    #   CVE-2025-3000:  torch.jit.script memory corruption, no upstream fix —
+    #                   unreachable (no torch.jit.* call sites; embeddings only).
+    uv run pip-audit --local --progress-spinner off --ignore-vuln PYSEC-2026-139 --ignore-vuln CVE-2026-45829 --ignore-vuln CVE-2025-3000
 
 # Static security scan for Python code
 audit-security:
