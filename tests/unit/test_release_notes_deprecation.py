@@ -7,69 +7,9 @@ from unittest.mock import patch
 from pipecat_context_hub.services.ingest.deprecation_map import (
     DeprecationEntry,
     DeprecationMap,
-    _extract_module_paths,
-    _extract_replacement,
     _parse_release_body,
     build_deprecation_map_from_releases,
 )
-
-
-class TestExtractModulePaths:
-    """Test _extract_module_paths from backtick-wrapped text."""
-
-    def test_single_path(self) -> None:
-        text = "Deprecated `pipecat.services.grok.llm` module."
-        assert _extract_module_paths(text) == ["pipecat.services.grok.llm"]
-
-    def test_multiple_paths(self) -> None:
-        text = (
-            "`pipecat.services.grok.llm` and `pipecat.services.grok.realtime.llm` "
-            "are deprecated. Use `pipecat.services.xai.llm` instead."
-        )
-        paths = _extract_module_paths(text)
-        assert "pipecat.services.grok.llm" in paths
-        assert "pipecat.services.grok.realtime.llm" in paths
-        assert "pipecat.services.xai.llm" in paths
-
-    def test_no_paths(self) -> None:
-        text = "Some text without any module paths."
-        assert _extract_module_paths(text) == []
-
-    def test_non_pipecat_paths_ignored(self) -> None:
-        text = "`os.path.join` and `pipecat.services.google.llm`"
-        assert _extract_module_paths(text) == ["pipecat.services.google.llm"]
-
-    def test_deduplication(self) -> None:
-        text = "`pipecat.services.grok.llm` is old, use `pipecat.services.grok.llm` elsewhere"
-        assert _extract_module_paths(text) == ["pipecat.services.grok.llm"]
-
-
-class TestExtractReplacement:
-    """Test _extract_replacement from deprecation text."""
-
-    def test_finds_replacement(self) -> None:
-        text = "`pipecat.services.grok.llm` is deprecated. Use `pipecat.services.xai.llm` instead."
-        deprecated = ["pipecat.services.grok.llm"]
-        assert _extract_replacement(text, deprecated) == "pipecat.services.xai.llm"
-
-    def test_multiple_replacements(self) -> None:
-        text = (
-            "`pipecat.services.google.llm_vertex` and `pipecat.services.google.llm_openai` "
-            "are deprecated. Use `pipecat.services.google.vertex.llm` and "
-            "`pipecat.services.google.openai.llm` instead."
-        )
-        deprecated = [
-            "pipecat.services.google.llm_vertex",
-            "pipecat.services.google.llm_openai",
-        ]
-        replacement = _extract_replacement(text, deprecated)
-        assert replacement is not None
-        assert "pipecat.services.google.vertex.llm" in replacement
-        assert "pipecat.services.google.openai.llm" in replacement
-
-    def test_no_replacement(self) -> None:
-        text = "Removed `PlayHTTTSService`. PlayHT has been shut down."
-        assert _extract_replacement(text, ["PlayHTTTSService"]) is None
 
 
 class TestParseReleaseBody:

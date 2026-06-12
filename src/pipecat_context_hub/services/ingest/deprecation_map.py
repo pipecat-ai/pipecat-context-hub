@@ -358,17 +358,6 @@ def build_deprecation_map_from_changelog(
     return result
 
 
-# Matches backtick-wrapped pipecat module paths like `pipecat.services.grok.llm`
-_MODULE_PATH_RE = re.compile(r"`(pipecat\.[a-zA-Z0-9_.]+)`")
-
-# Matches backtick-wrapped class/function names like `GrokLLMService`
-_SYMBOL_NAME_RE = re.compile(
-    r"`([A-Z][a-zA-Z0-9]+(?:Service|Processor|Transport|Filter|Strategy|Analyzer|Observer|Frame|Params|Settings))`"
-)
-
-# Matches backtick-wrapped dotted identifiers like `SimliVideoService.InputParams`
-_DOTTED_SYMBOL_RE = re.compile(r"`([A-Z][a-zA-Z0-9]+(?:\.[A-Z][a-zA-Z0-9]+)+)`")
-
 # Phrases that separate deprecated names (before) from their replacements
 # (after) in a deprecation bullet. The parser previously keyed on the literal
 # word "use" alone, which misread every pipecat 1.3.0 rename bullet
@@ -504,56 +493,6 @@ def _classify_tokens(text: str) -> tuple[list[str], list[str]]:
         else:
             replacements.append(token)
     return deprecated, replacements
-
-
-def _extract_module_paths(text: str) -> list[str]:
-    """Extract pipecat module paths from backtick-wrapped text.
-
-    Returns deduplicated list of ``pipecat.*`` module paths found in the text.
-    """
-    paths = _MODULE_PATH_RE.findall(text)
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    result: list[str] = []
-    for p in paths:
-        if p not in seen:
-            seen.add(p)
-            result.append(p)
-    return result
-
-
-_REPLACEMENT_RE = re.compile(
-    r"[Uu]se\s+`(pipecat\.[a-zA-Z0-9_.]+)`",
-)
-
-
-def _extract_replacement(text: str, deprecated_paths: list[str]) -> str | None:
-    """Try to extract the replacement path from deprecation text.
-
-    Finds the "use X instead" boundary in the text, then extracts ALL
-    pipecat module paths after that point as replacements.
-    """
-    # Find where "use" appears (case-insensitive)
-    use_pos = -1
-    for m in re.finditer(r"\b[Uu]se\b", text):
-        use_pos = m.start()
-        break
-    if use_pos < 0:
-        return None
-
-    # Extract all pipecat paths after "use"
-    after_use = text[use_pos:]
-    paths = _MODULE_PATH_RE.findall(after_use)
-    replacements = [p for p in paths if p not in deprecated_paths]
-    if replacements:
-        seen: set[str] = set()
-        unique: list[str] = []
-        for r in replacements:
-            if r not in seen:
-                seen.add(r)
-                unique.append(r)
-        return ", ".join(unique)
-    return None
 
 
 def _fetch_release_notes(
