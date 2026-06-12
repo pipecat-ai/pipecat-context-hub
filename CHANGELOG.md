@@ -8,6 +8,16 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Staleness footer on tool responses** — when the local index is older than
+  a threshold (default 7 days; `PIPECAT_HUB_STALE_AFTER_DAYS`, `0` disables),
+  every tool response on both front doors (MCP and the CLI subcommands)
+  carries an `index_staleness` field with `last_refresh_at`, `age_days`, and
+  a refresh hint. Absent when fresh, so the common case carries zero noise;
+  `get_hub_status`/`status` is never annotated (it *is* the staleness
+  report). Closes the invisible-failure mode where queries keep succeeding
+  against a quietly outdated index, without relying on callers to poll
+  status. Best-effort by construction: annotation can never break a
+  response.
 - **CLI query subcommands** — every MCP tool is now also a one-shot shell
   command: `search-docs`, `get-doc`, `search-examples`, `get-example`,
   `get-code-snippet`, `search-api`, `check-deprecation`, and `status`
