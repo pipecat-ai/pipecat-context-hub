@@ -1,6 +1,7 @@
 """CLI entry point for the Pipecat Context Hub.
 
-Provides ``serve`` (default) and ``refresh`` commands.
+Provides ``serve`` (default) and ``refresh`` commands, plus the one-shot query
+subcommands registered from :mod:`pipecat_context_hub.cli_query`.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 
 import click
 
+from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared.config import HubConfig
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
@@ -966,6 +968,11 @@ def _print_refresh_summary(
             f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
         )
     click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
+
+
+# One-shot query subcommands (search-docs, check-deprecation, status, ...) —
+# the same tool handlers the MCP server dispatches, exposed for shell callers.
+register_query_commands(main)
 
 
 if __name__ == "__main__":

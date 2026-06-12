@@ -26,6 +26,21 @@ uv run pipecat-context-hub serve                    # start MCP server
 Use `refresh --force --reset-index` when the persisted local Chroma index is
 unhealthy and needs a clean rebuild.
 
+Every MCP tool is also a **one-shot CLI subcommand** (same handlers, JSON on
+stdout, logs on stderr — see `cli_query.py`):
+
+```bash
+uv run pipecat-context-hub check-deprecation PipelineTask   # <1s (no model load)
+uv run pipecat-context-hub status                           # index health; <1s
+uv run pipecat-context-hub search-api "WebsocketServerParams" --limit 3   # ~5s (loads models)
+uv run pipecat-context-hub search-docs "TTS + STT"
+uv run pipecat-context-hub get-doc --path /guides/telephony/overview
+```
+
+Exit codes: 0 success, 1 invalid input, 2 index missing/empty (stderr says to
+run `refresh`). A parity test (`tests/unit/test_cli_query.py`) enforces that
+every MCP tool has a CLI command.
+
 A `justfile` is also available as a task runner:
 
 ```bash
@@ -75,6 +90,7 @@ A test (`tests/unit/test_server.py::TestVersionConsistency`) enforces they match
 ```
 src/pipecat_context_hub/
 ├── cli.py                    # CLI entry point (serve + refresh)
+├── cli_query.py              # One-shot query subcommands (the MCP tools as shell commands)
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields

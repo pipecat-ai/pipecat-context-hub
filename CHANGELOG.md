@@ -8,6 +8,19 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **CLI query subcommands** — every MCP tool is now also a one-shot shell
+  command: `search-docs`, `get-doc`, `search-examples`, `get-example`,
+  `get-code-snippet`, `search-api`, `check-deprecation`, and `status`
+  (`get_hub_status`). Same index, same retrieval stack, same tool handlers as
+  `serve`; stdout carries exactly the handler's JSON, logs/errors go to
+  stderr. Exit codes: 0 success, 1 invalid input, 2 index missing/empty
+  (with an actionable `refresh` hint). The embedding model and reranker load
+  only for the semantic commands; the lookup commands (`check-deprecation`,
+  `get-doc`, `get-example`, `status`) run in under a second. This gives
+  coding agents a zero-configuration path to the hub — `pipecat-context-hub
+  check-deprecation PipelineTask` from any shell — with the MCP server
+  remaining the warm, session-long front door. A parity test enforces that
+  every MCP tool has a CLI command, so the two surfaces cannot drift.
 - **RN transports added to default ingest set** — `pipecat-ai/pipecat-client-react-native-transports`
   (TypeScript, tree-sitter-indexed), verified to yield parseable chunks before
   being added. Fills the React Native client-transport gap.

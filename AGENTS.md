@@ -203,6 +203,23 @@ always passes regardless of `gh` availability.
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
+### CLI query smoke (when `cli_query.py` or tool dispatch changes)
+
+The query subcommands share the MCP tool handlers, so the numbered checks
+above cover retrieval; these confirm the CLI front door itself against the
+live local index:
+
+1. `uv run pipecat-context-hub check-deprecation PipelineTask` — valid JSON
+   on stdout in under ~1s (no embedding-model load on lookup commands)
+2. `uv run pipecat-context-hub status` — `total_records` non-zero,
+   `last_refresh_at` recent, reranker fields populated
+3. `uv run pipecat-context-hub search-api "WebsocketServerParams" --limit 3`
+   — hits include `pipecat.transports.websocket.server` (models load; ~5s)
+4. `uv run pipecat-context-hub get-doc` (no flags) — exit 1, one-line
+   validation message on stderr, empty stdout
+5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —
+   exit 2, stderr says to run `refresh`
+
 ## Upstream Drift Check
 
 Offline smoke tests in `tests/smoke/` exercise the taxonomy builder against
