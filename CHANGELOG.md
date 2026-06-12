@@ -8,6 +8,16 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Staleness footer on tool responses** — when the local index is older than
+  a threshold (default 7 days; `PIPECAT_HUB_STALE_AFTER_DAYS`, `0` disables),
+  every tool response on both front doors (MCP and the CLI subcommands)
+  carries an `index_staleness` field with `last_refresh_at`, `age_days`, and
+  a refresh hint. Absent when fresh, so the common case carries zero noise;
+  `get_hub_status`/`status` is never annotated (it *is* the staleness
+  report). Closes the invisible-failure mode where queries keep succeeding
+  against a quietly outdated index, without relying on callers to poll
+  status. Best-effort by construction: annotation can never break a
+  response.
 - **CLI query subcommands** — every MCP tool is now also a one-shot shell
   command: `search-docs`, `get-doc`, `search-examples`, `get-example`,
   `get-code-snippet`, `search-api`, `check-deprecation`, and `status`
@@ -34,11 +44,25 @@ This project uses [Semantic Versioning](https://semver.org/).
   that downloads models, and its progress bars are for the human watching a
   multi-minute run. All env defaults use `setdefault`, so an explicit
   environment (e.g. `HF_HUB_OFFLINE=0`) always wins.
+  User-facing error output is home-path redacted (`shared/paths.py`'s
+  `redact_home` / `redact_home_in_text`) at every `cli_query` stderr site and
+  the `serve`/`refresh` error branches, so a pasted bug report never leaks the
+  local username or filesystem layout — including paths embedded inside an
+  exception message, not just a directly-interpolated `data_dir`. Every one of
+  the 8 subcommands has a per-command dispatch test (lookup commands assert no
+  embedding model is constructed), so a mis-wired handler cannot pass CI.
 - **RN transports added to default ingest set** — `pipecat-ai/pipecat-client-react-native-transports`
   (TypeScript, tree-sitter-indexed), verified to yield parseable chunks before
   being added. Fills the React Native client-transport gap.
 
 ### Changed
+- **Shared reranker startup resolution** — the config + HF-cache decision that
+  enables/disables the cross-encoder reranker at boot now lives in one place
+  (`shared/reranker.py::probe_reranker`), used by both `serve` and the one-shot
+  CLI so the two front doors cannot drift on which reasons disable the reranker.
+  `RerankerConfig.requested_model` is the canonical accessor for the operator's
+  raw requested model (surfaced by `get_hub_status` as `configured_model`),
+  replacing duplicated env-or-field derivation in each caller.
 - **`pipecat-ai/pipecat-cli` kept opt-in, not default** — evaluated for the
   default set but left as a `PIPECAT_HUB_EXTRA_REPOS` extra. The CLI is consumed
   via commands (`pipecat init`, `pipecat cloud deploy`), not imported as a

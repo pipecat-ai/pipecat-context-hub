@@ -10,6 +10,7 @@ from mcp.server.lowlevel import Server
 
 from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.shared.interfaces import Retriever
+from pipecat_context_hub.shared.staleness import annotate_response
 from pipecat_context_hub.shared.tracking import IdleTracker
 from pipecat_context_hub.shared.types import (
     CheckDeprecationInput,
@@ -248,6 +249,18 @@ def create_server(
             for name, description, schema in tool_registry
         ]
 
+    def _annotate(result_json: str) -> str:
+        """Attach the index_staleness footer when the index is old.
+
+        Skipped for get_hub_status (it *is* the staleness report) by virtue
+        of that branch returning before this is called, and a no-op when no
+        index_store was provided. Best-effort: annotate_response never
+        raises.
+        """
+        if index_store is None:
+            return result_json
+        return annotate_response(result_json, index_store)
+
     @server.call_tool()  # type: ignore[untyped-decorator]
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.TextContent]:
         # Mark the call in-flight so the idle watchdog treats the whole
@@ -271,7 +284,7 @@ def create_server(
             if name == "check_deprecation":
                 dep_map = getattr(retriever, "deprecation_map", None)
                 result_json = await handle_check_deprecation(args, dep_map)
-                return [types.TextContent(type="text", text=result_json)]
+                return [types.TextContent(type="text", text=_annotate(result_json))]
 
             handler_map: dict[str, Any] = {
                 "search_docs": handle_search_docs,
@@ -286,7 +299,7 @@ def create_server(
                 raise ValueError(f"Unknown tool: {name}")
 
             result_json = await handler(args, retriever)
-            return [types.TextContent(type="text", text=result_json)]
+            return [types.TextContent(type="text", text=_annotate(result_json))]
         finally:
             if idle_tracker is not None:
                 idle_tracker.end()

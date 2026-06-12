@@ -219,6 +219,11 @@ live local index:
    validation message on stderr, empty stdout
 5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —
    exit 2, stderr says to run `refresh`
+6. `PIPECAT_HUB_STALE_AFTER_DAYS=1 uv run pipecat-context-hub search-docs "TTS"`
+   — response JSON carries `index_staleness` with `age_days >= 1` and a `hint`
+   (assuming the index is ≥1 day old); rerun without the env override on a fresh
+   index and confirm `index_staleness` is **absent**. The footer must never
+   appear on `status` / `get_hub_status` regardless of the threshold.
 
 ## Upstream Drift Check
 
