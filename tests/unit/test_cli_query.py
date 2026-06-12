@@ -144,6 +144,171 @@ class TestDispatch:
         assert sent.query == "TTS + STT"
         assert sent.limit == 5
 
+    def test_get_doc_dispatches_handler_without_embeddings(self, tmp_path):
+        """Lookup path: handle_get_doc invoked, no embedding service built."""
+        handler = AsyncMock(return_value=json.dumps({"path": "/guides/x", "content": "hi"}))
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                side_effect=AssertionError("lookup commands must not load the embedding model"),
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.get_doc.handle_get_doc",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, ["get-doc", "--path", "/guides/x", "--section", "Intro"])
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["path"] == "/guides/x"
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        # None/empty options are dropped before dispatch; --doc-id was absent.
+        assert sent["path"] == "/guides/x"
+        assert sent["section"] == "Intro"
+        assert "doc_id" not in sent
+
+    def test_get_example_dispatches_handler_and_inverts_no_readme(self, tmp_path):
+        """Lookup path: --no-readme maps to include_readme=False; no embeddings."""
+        handler = AsyncMock(return_value=json.dumps({"example_id": "ex1", "files": []}))
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                side_effect=AssertionError("lookup commands must not load the embedding model"),
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.get_example.handle_get_example",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, ["get-example", "ex1", "--no-readme"])
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["example_id"] == "ex1"
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        assert sent["example_id"] == "ex1"
+        # --no-readme -> include_readme = not no_readme. Pin the inversion.
+        assert sent["include_readme"] is False
+
+    def test_search_examples_uses_embeddings_and_prints_handler_json(self, tmp_path):
+        """Semantic path: handle_search_examples invoked, embeddings built."""
+        handler = AsyncMock(return_value=json.dumps({"hits": [], "domain": "backend"}))
+        embedding = MagicMock()
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=embedding,
+            ) as embedding_cls,
+            patch(
+                "pipecat_context_hub.services.retrieval.cross_encoder."
+                "CrossEncoderReranker.is_model_cached",
+                return_value=False,
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.search_examples.handle_search_examples",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(
+                main,
+                ["search-examples", "idle timeout", "--domain", "backend", "--limit", "3"],
+            )
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["domain"] == "backend"
+        embedding_cls.assert_called_once()
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        assert sent["query"] == "idle timeout"
+        assert sent["domain"] == "backend"
+        assert sent["limit"] == 3
+
+    def test_get_code_snippet_uses_embeddings_and_prints_handler_json(self, tmp_path):
+        """Semantic path: handle_get_code_snippet invoked, embeddings built."""
+        handler = AsyncMock(return_value=json.dumps({"symbol": "DailyTransport.send_dtmf"}))
+        embedding = MagicMock()
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=embedding,
+            ) as embedding_cls,
+            patch(
+                "pipecat_context_hub.services.retrieval.cross_encoder."
+                "CrossEncoderReranker.is_model_cached",
+                return_value=False,
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.get_code_snippet.handle_get_code_snippet",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(
+                main,
+                ["get-code-snippet", "--symbol", "DailyTransport.send_dtmf", "--max-lines", "40"],
+            )
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["symbol"] == "DailyTransport.send_dtmf"
+        embedding_cls.assert_called_once()
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        assert sent["symbol"] == "DailyTransport.send_dtmf"
+        assert sent["max_lines"] == 40
+
+    def test_search_api_uses_embeddings_and_prints_handler_json(self, tmp_path):
+        """Semantic path: handle_search_api invoked, embeddings built."""
+        handler = AsyncMock(return_value=json.dumps({"hits": [], "module": "pipecat.services"}))
+        embedding = MagicMock()
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=embedding,
+            ) as embedding_cls,
+            patch(
+                "pipecat_context_hub.services.retrieval.cross_encoder."
+                "CrossEncoderReranker.is_model_cached",
+                return_value=False,
+            ),
+            patch(
+                "pipecat_context_hub.server.tools.search_api.handle_search_api",
+                handler,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(
+                main,
+                ["search-api", "BaseTransport", "--module", "pipecat.services", "--limit", "7"],
+            )
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["module"] == "pipecat.services"
+        embedding_cls.assert_called_once()
+        handler.assert_called_once()
+        sent = handler.call_args.args[0]
+        assert sent["query"] == "BaseTransport"
+        assert sent["module"] == "pipecat.services"
+        assert sent["limit"] == 7
+
 
 class TestQuietOutput:
     """Query commands keep captured output lean — it lands in agent context."""
