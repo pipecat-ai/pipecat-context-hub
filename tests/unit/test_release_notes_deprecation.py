@@ -379,6 +379,24 @@ class TestRenamedToBullets:
         assert "InterruptionTaskFrame" not in entries
         assert entries["BotInterruptionFrame"].new_path == "InterruptionTaskFrame"
 
+    def test_renamed_from_rescues_deprecated_source(self) -> None:
+        # Target-first phrasing: the source after "from" is the deprecation,
+        # the leading token is the replacement. The owner-context skip (which
+        # fires on any token following a preposition) must NOT drop the source,
+        # and position must NOT key the leading replacement. PR #78 follow-up.
+        entries = self._entries("`WorkerRunner` was renamed from `PipelineRunner`.")
+        assert "PipelineRunner" in entries
+        assert "WorkerRunner" not in entries
+
+    def test_migrate_from_to_keys_only_the_source(self) -> None:
+        # "migrate from X to Y" has no boundary phrase, so both tokens follow a
+        # preposition and would be dropped by the owner skip. The rename-source
+        # rescue keeps X (the deprecation); Y is simply not keyed (not a false
+        # positive on the current API).
+        entries = self._entries("Migrate from `pipecat.old.thing` to `pipecat.new.thing`.")
+        assert "pipecat.old.thing" in entries
+        assert "pipecat.new.thing" not in entries
+
     def test_check_resolves_renamed_class(self) -> None:
         body = f"### Deprecated\n- {self._TASK_BULLET}\n"
         dm = DeprecationMap()

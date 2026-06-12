@@ -376,12 +376,35 @@ _OLD_MARKED_RE = re.compile(
     r"\b(?:old|former|previous|legacy)\b[^`]{0,24}`([^`\s]+)`", re.IGNORECASE
 )
 
+# Rename-source rescue: a token named as the *source* of a rename/move is the
+# deprecated name even though it follows a preposition ("renamed from `X`",
+# "migrated away from `X`"). old_marked is consulted before the owner-context
+# skip in _classify_tokens, so this guards against that skip silently dropping
+# a genuine deprecation. Scoped to explicit rename/move verbs — bare "from
+# `X`" stays owner-context (a container, e.g. "events from `PipelineTask`").
+_OLD_FROM_RE = re.compile(
+    r"\b(?:renamed|moved|migrat(?:e|ed|ing)|relocated)\b[^`]{0,16}\bfrom\s+`([^`\s]+)`",
+    re.IGNORECASE,
+)
+
 # Mirror rescue: a token introduced as the new/replacement name is a
 # replacement wherever it appears ("…, use the new `PipelineTask` parameter
 # `observers`"), and takes precedence — keying a current API as deprecated is
 # the worst failure mode. Window kept tight so prose like "the new symbols)
 # but constructing `PipelineTask`" doesn't false-match.
 _NEW_MARKED_RE = re.compile(r"\b(?:new|current|replacement)\b[^`]{0,16}`([^`\s]+)`", re.IGNORECASE)
+
+# Mirror guard for the target-first rename phrasing ("`New` was renamed from
+# `Old`"): the leading token is the *replacement*, so mark it new. Without
+# this, _OLD_FROM_RE would correctly rescue `Old` while the position-based
+# default still keyed the leading `New` as deprecated — a false positive.
+# Requires the verb to be followed by "from", so the common "renamed to"
+# direction (handled by position + boundary) is untouched.
+_NEW_RENAME_RE = re.compile(
+    r"`([^`\s]+)`[^`]{0,24}?\b(?:renamed|moved|migrat(?:e|ed|ing)|relocated)\b"
+    r"[^`]{0,16}\bfrom\b",
+    re.IGNORECASE,
+)
 
 # Owner-context detection: a token that merely *owns* the thing being
 # deprecated must not be keyed as deprecated itself. Two phrasings cover the
@@ -466,8 +489,8 @@ def _classify_tokens(text: str) -> tuple[list[str], list[str]]:
     """
     boundary = _BOUNDARY_RE.search(text)
     cut = boundary.start() if boundary else len(text)
-    old_marked = set(_OLD_MARKED_RE.findall(text))
-    new_marked = set(_NEW_MARKED_RE.findall(text))
+    old_marked = set(_OLD_MARKED_RE.findall(text)) | set(_OLD_FROM_RE.findall(text))
+    new_marked = set(_NEW_MARKED_RE.findall(text)) | set(_NEW_RENAME_RE.findall(text))
     owner_context = set(_OWNER_BEFORE_RE.findall(text)) | set(_OWNER_AFTER_RE.findall(text))
 
     deprecated: list[str] = []
