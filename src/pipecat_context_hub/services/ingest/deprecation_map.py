@@ -23,10 +23,19 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # A Deprecated/Removed section heading in hand-finished release/changelog
-# markdown: tolerates levels h2-h4 and leading decorations
-# ("### ⚠️ Deprecated"); trailing decoration is tolerated by not anchoring
-# the end. Shared by the release-body and CHANGELOG parsers.
-_SECTION_HEADING_RE = re.compile(r"^#{2,4}\s+(?:[^\w\s]+\s*)*(Deprecated|Removed)\b")
+# markdown: tolerates any heading level (h1-h6), a missing space after the
+# hashes, and leading decorations ("### ⚠️ Deprecated"); trailing decoration
+# is tolerated by not anchoring the end. pipecat's changelog has a human step
+# that introduces level slips and typos, so the match is deliberately lax.
+# Shared by the release-body and CHANGELOG parsers.
+_SECTION_HEADING_RE = re.compile(r"^#{1,6}\s*(?:[^\w\s]+\s*)*(Deprecated|Removed)\b")
+
+# A heading that mentions deprecation/removal but is NOT a clean
+# Deprecated/Removed section header (plural "Deprecations", a misspelling, an
+# unexpected format). Used to warn loudly at parse time rather than silently
+# dropping the section's entries — a malformed header otherwise yields false
+# negatives (a genuinely-deprecated API reported as fine).
+_DEPRECATION_WORD_RE = re.compile(r"(?i)\b(?:deprecat|remov)")
 
 # Matches: DeprecatedModuleProxy(globals(), "old", "new")
 # Captures the old and new string arguments (handles multi-line, trailing comma).
@@ -338,6 +347,14 @@ def build_deprecation_map_from_changelog(
         if line.startswith("#"):
             # Any other heading — at any level — ends the current section
             # (same hardening as the release-body parser).
+            if _DEPRECATION_WORD_RE.search(line):
+                logger.warning(
+                    "CHANGELOG %s: heading mentions deprecation/removal but did "
+                    "not parse as a Deprecated/Removed section (malformed "
+                    "header?) — its entries are being dropped: %r",
+                    current_version or "?",
+                    line.strip(),
+                )
             current_section = None
             continue
         if current_version and current_section and line.strip().startswith("- "):
@@ -666,6 +683,14 @@ def _parse_release_body(
             continue
         if line.startswith("#"):
             # Any other heading — at any level — ends the current section.
+            if _DEPRECATION_WORD_RE.search(line):
+                logger.warning(
+                    "Release %s: heading mentions deprecation/removal but did "
+                    "not parse as a Deprecated/Removed section (malformed "
+                    "header?) — its entries are being dropped: %r",
+                    version,
+                    line.strip(),
+                )
             _flush_item()
             current_item_lines = []
             current_section = None

@@ -587,3 +587,60 @@ class TestHeadingDecorations:
         # is accepted; the h2 Fixed heading ends it (no Fixed bleed).
         assert ("0.0.96", "`OldThingService` is deprecated.") in notes
         assert not any("CurrentThingService" in n.note for n in dm.changelog_notes)
+
+
+class TestMalformedHeadingResilience:
+    """A human step in pipecat's changelog can slip the heading level or typo
+    the word. Recognized levels are parsed; unrecognizable headings warn
+    loudly instead of silently dropping a whole Deprecated section.
+    """
+
+    def test_h1_deprecated_section_captured(self) -> None:
+        entries = {
+            e.old_path
+            for e in _parse_release_body("1.0.0", "# Deprecated\n- `OldH1Service` is deprecated.\n")
+        }
+        assert "OldH1Service" in entries
+
+    def test_h5_deprecated_section_captured(self) -> None:
+        entries = {
+            e.old_path
+            for e in _parse_release_body(
+                "1.0.0", "##### Deprecated\n- `OldH5Service` is deprecated.\n"
+            )
+        }
+        assert "OldH5Service" in entries
+
+    def test_missing_space_heading_captured(self) -> None:
+        entries = {
+            e.old_path
+            for e in _parse_release_body(
+                "1.0.0", "###Deprecated\n- `OldNoSpaceService` is deprecated.\n"
+            )
+        }
+        assert "OldNoSpaceService" in entries
+
+    def test_unparsable_deprecation_heading_warns(self, caplog) -> None:
+        import logging
+
+        body = "### Deprecations\n- `OldPluralService` is deprecated.\n"
+        with caplog.at_level(logging.WARNING):
+            entries = {e.old_path for e in _parse_release_body("9.9.9", body)}
+        # The plural heading is not a recognized section, so the entry is not
+        # captured — but the parser warns loudly rather than dropping silently.
+        assert "OldPluralService" not in entries
+        assert any(
+            "malformed header" in r.getMessage().lower() and "9.9.9" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_normal_fixed_heading_does_not_warn(self, caplog) -> None:
+        import logging
+
+        # A plain non-deprecation heading must not trip the malformed warning.
+        body = (
+            "### Deprecated\n- `OldService` is deprecated.\n## Fixed\n- Fixed `CurrentService`.\n"
+        )
+        with caplog.at_level(logging.WARNING):
+            _parse_release_body("1.0.0", body)
+        assert not any("malformed header" in r.getMessage().lower() for r in caplog.records)

@@ -36,10 +36,15 @@ This project uses [Semantic Versioning](https://semver.org/).
   events/method/parameter/constructor…" are skipped on the deprecated
   side); and hand-written release bodies mix heading levels (v0.0.87 has
   `## Fixed` as h2), which left the Deprecated section open and parsed
-  Fixed bullets as deprecations — section headings now accept h2–h4 and
-  *any* heading closes the current section. `PipelineTask` now reports
-  `deprecated_in: 1.3.0`, `removed_in: null`, matching the pipecat
-  changelog.
+  Fixed bullets as deprecations — section headings now accept any level
+  (h1–h6, tolerant of a missing space after the hashes) and *any* heading
+  closes the current section. A heading that mentions "deprecated"/"removed"
+  but does not parse as a section now **warns** at refresh instead of
+  silently dropping the section (pipecat's changelog has a human step that
+  can introduce malformed headers). A rename written *source*-first
+  ("renamed from `X`") is also keyed correctly now, not dropped by the
+  owner-context skip. `PipelineTask` now reports `deprecated_in: 1.3.0`,
+  `removed_in: null`, matching the pipecat changelog.
 
 ### Added
 - **Staleness footer on tool responses** — when the local index is older than
