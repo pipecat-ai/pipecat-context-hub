@@ -196,9 +196,10 @@ A test (`tests/unit/test_server.py::TestVersionConsistency`) enforces they match
 ## Maintainer Setup (first release only)
 
 PyPI publishing uses [trusted publishing](https://docs.pypi.org/trusted-publishers/)
-(OIDC — no API tokens stored in the repo). Before the first release can
-publish, a repo owner must register the GitHub trusted publisher once on each
-index, under the **`pipecat-ai-context-hub`** project's "Publishing" settings:
+(OIDC — **no API tokens or passwords are stored anywhere**, not in repo secrets
+either; PyPI validates the workflow's identity directly). Before the first
+release can publish, someone with owner rights in the `pipecat-ai` PyPI org must
+register the GitHub trusted publisher once on each index:
 
 | Field | Value |
 | --- | --- |
@@ -206,6 +207,14 @@ index, under the **`pipecat-ai-context-hub`** project's "Publishing" settings:
 | Repository | `pipecat-context-hub` |
 | Workflow | `release.yml` |
 | Environment | `pypi` (on pypi.org) / `testpypi` (on test.pypi.org) |
+
+**First release (`pipecat-ai-context-hub` does not exist on PyPI yet):** the
+project has no "Publishing" settings page to configure, so register it as a
+[pending publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
+— account settings → "Publishing" → "Add a pending publisher" — using the
+fields above plus the project name `pipecat-ai-context-hub`. PyPI creates the
+project automatically on the first successful publish. After that, the same
+config is editable from the project's own "Publishing" settings.
 
 Until this exists, the publish jobs fail with an OIDC error — the build job
 still validates the artifacts. The same configuration is documented in the
