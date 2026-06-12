@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 import click
 
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
+from pipecat_context_hub.shared.paths import redact_home_in_text
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -155,12 +156,19 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         index_store = IndexStore(config.storage)
         stats = index_store.get_index_stats()
     except IncompatibleIndexFormatError as exc:
-        click.echo(f"Error: {exc}", err=True)
+        # exc.__str__ embeds the absolute chroma_path, so redact the whole
+        # composed message (not just a data_dir token, which is absent here).
+        click.echo(redact_home_in_text(f"Error: {exc}"), err=True)
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
+        # Both the data_dir token and the {exc} rendering (e.g. a
+        # FileNotFoundError carrying .../chroma.sqlite3) can leak an absolute
+        # path, so redact the full formatted string, not a single argument.
         click.echo(
-            f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
-            "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.",
+            redact_home_in_text(
+                f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
+                "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild."
+            ),
             err=True,
         )
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
@@ -168,9 +176,11 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     try:
         if stats.get("total", 0) == 0:
             click.echo(
-                f"Error: the index at {config.storage.data_dir} is empty.\n"
-                "Run 'pipecat-context-hub refresh' first to build it "
-                "(the first run downloads models and indexes sources — allow a few minutes).",
+                redact_home_in_text(
+                    f"Error: the index at {config.storage.data_dir} is empty.\n"
+                    "Run 'pipecat-context-hub refresh' first to build it "
+                    "(the first run downloads models and indexes sources — allow a few minutes)."
+                ),
                 err=True,
             )
             raise SystemExit(_EXIT_INDEX_UNREADY)

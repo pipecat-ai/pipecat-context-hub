@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
@@ -215,6 +217,64 @@ class TestQuietOutput:
             result = runner.invoke(main, ["check-deprecation", "X"])
             assert result.exit_code == 0, result.stderr
             assert os.environ["HF_HUB_OFFLINE"] == "0"
+
+
+class TestHomeRedaction:
+    """Stderr error paths must not leak the absolute home dir (R6).
+
+    Each test patches ``Path.home()`` to a tmp dir AND points the index
+    ``data_dir`` *under* that home (via ``PIPECAT_HUB_DATA_DIR``). Without
+    both, ``redact_home`` is a no-op and the assertions pass vacuously — the
+    review explicitly warns about this trap.
+    """
+
+    def test_open_failure_redacts_data_dir_and_embedded_exc_path(self, monkeypatch, tmp_path):
+        """:162 branch — a generic open failure whose own message embeds an
+        absolute path under home. BOTH the interpolated ``data_dir`` token and
+        the path inside ``{exc}`` must be redacted; a token-only fix leaks the
+        embedded path (the crux of R6)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        data_dir = tmp_path / ".pipecat-context-hub"
+        # An absolute path under home, embedded inside the exception message —
+        # this is what a FileNotFoundError carrying …/chroma.sqlite3 looks like.
+        embedded = data_dir / "chroma.sqlite3"
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                side_effect=FileNotFoundError(f"unable to open database file: {embedded}"),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
+        ):
+            result = runner.invoke(main, ["status"])
+
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        # Redaction happened (tilde present) and nothing leaks the literal home.
+        assert "~/" in result.stderr or "~" + os.sep in result.stderr
+        assert str(tmp_path) not in result.stderr
+        # The data_dir token is redacted.
+        assert str(data_dir) not in result.stderr
+        # The crux: the path embedded inside {exc} is redacted too.
+        assert str(embedded) not in result.stderr
+
+    def test_empty_index_redacts_data_dir(self, monkeypatch, tmp_path):
+        """:171 branch — empty index (total=0). The interpolated ``data_dir``
+        in the 'is empty' message must be home-redacted."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        data_dir = tmp_path / ".pipecat-context-hub"
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=0),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
+        ):
+            result = runner.invoke(main, ["status"])
+
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert "is empty" in result.stderr
+        assert "~/" in result.stderr or "~" + os.sep in result.stderr
+        assert str(tmp_path) not in result.stderr
+        assert str(data_dir) not in result.stderr
 
 
 class TestBadInput:

@@ -21,6 +21,13 @@ import click
 
 from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+
+# Back-compat alias: tests/unit/test_cli.py imports the underscored name and
+# the banner call sites below reference it. The redaction helper itself now
+# lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
+# import cycle); this re-export keeps that suite green and the call sites stable.
+_redact_home = redact_home
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
@@ -32,23 +39,6 @@ _MISSING_SENTINEL = "\u2014"
 _EXIT_INDEX_UNREADY = 2
 
 _module_logger = logging.getLogger(__name__)
-
-
-def _redact_home(path: Path | str) -> str:
-    """Replace the user's home-directory prefix with ``~`` for logs.
-
-    Startup telemetry is included in the "share this with maintainers"
-    guidance, so stripping usernames out of absolute paths keeps routine
-    bug reports from leaking local filesystem layout.
-    """
-    try:
-        s = str(path)
-        home = str(Path.home())
-        if home and (s == home or s.startswith(home + os.sep)):
-            return "~" + s[len(home) :]
-        return s
-    except Exception:
-        return str(path)
 
 
 # Values of PIPECAT_HUB_WARMUP that disable pre-warm. Anything else
@@ -268,7 +258,9 @@ def serve(ctx: click.Context) -> None:
                 index_store.close()
             except Exception:
                 logger.exception("Failed to close partially-opened index store")
-        logger.error("%s", exc)
+        # exc.__str__ embeds the absolute chroma_path; redact it for front-door
+        # parity with the cli_query one-shot error sites.
+        logger.error("%s", redact_home_in_text(str(exc)))
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         # IndexStore.__init__ opens two backends (Chroma + SQLite) without
