@@ -34,6 +34,11 @@ from pipecat_context_hub.server.tools.search_examples import handle_search_examp
 
 logger = logging.getLogger(__name__)
 
+# Kept in sync with pyproject.toml [project].version by
+# tests/unit/test_server.py::TestVersionConsistency. If this is ever replaced
+# with a runtime lookup, the PyPI distribution name is "pipecat-ai-context-hub"
+# (not "pipecat-context-hub", which is only the command / server name) —
+# importlib.metadata.version() must use the former.
 _SERVER_VERSION = "0.1.1"
 
 # Tool name → (description, input schema, handler)

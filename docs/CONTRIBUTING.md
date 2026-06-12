@@ -193,6 +193,24 @@ release:
 
 A test (`tests/unit/test_server.py::TestVersionConsistency`) enforces they match.
 
+## Maintainer Setup (first release only)
+
+PyPI publishing uses [trusted publishing](https://docs.pypi.org/trusted-publishers/)
+(OIDC — no API tokens stored in the repo). Before the first release can
+publish, a repo owner must register the GitHub trusted publisher once on each
+index, under the **`pipecat-ai-context-hub`** project's "Publishing" settings:
+
+| Field | Value |
+| --- | --- |
+| Owner | `pipecat-ai` |
+| Repository | `pipecat-context-hub` |
+| Workflow | `release.yml` |
+| Environment | `pypi` (on pypi.org) / `testpypi` (on test.pypi.org) |
+
+Until this exists, the publish jobs fail with an OIDC error — the build job
+still validates the artifacts. The same configuration is documented in the
+comment block at the top of `.github/workflows/release.yml`.
+
 ## Release Process
 
 See the [Release Notes Template](../CLAUDE.md#release-notes-template) in
