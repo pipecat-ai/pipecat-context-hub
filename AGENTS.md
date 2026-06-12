@@ -233,6 +233,20 @@ always passes regardless of `gh` availability.
     of the frame whose replacement item 46 checks. Freezes the class-name
     side of the renames the token classifier fixed (the symbols agents
     actually import). Requires a refreshed index.
+48. **Current-API false-positive canaries.** `check_deprecation` must return
+    `deprecated: false` for core, current APIs:
+    `check_deprecation(symbol="Pipeline")`,
+    `check_deprecation(symbol="CartesiaTTSService")`, and
+    `check_deprecation(symbol="SileroVADAnalyzer")` — all `false`. A false
+    positive here (current API flagged deprecated) is the worst failure mode
+    this tool has; these stable classes are a regression canary independent of
+    the rename cases in #45–#47. **Known gap (not yet fixed):** member/param
+    deprecation bullets still mis-key their *owner* class — e.g.
+    `check_deprecation(symbol="TTSService")` and
+    `check_deprecation(symbol="DeepgramSTTService")` wrongly return
+    `deprecated: true` from `` `TTSService`: `text_aggregator` init param ``
+    style bullets. Do NOT add those as passing canaries until the owner-of-
+    member parsing is fixed; tracked separately.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
