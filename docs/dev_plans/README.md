@@ -3,11 +3,11 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-06-12 | feat | Staleness footer on tool responses (both front doors) | In Review (PR #77) | markbackman | `feat/staleness-footer` | _(no plan file)_ |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-06-12 | feat | Staleness footer on tool responses (both front doors) | Complete (Unreleased) | markbackman | `feat/staleness-footer` | _(no plan file)_ |
 | 2026-06-12 | feat | One-shot CLI query subcommands (every MCP tool as a shell command) | Complete (Unreleased) | markbackman | `feat/cli-query-subcommands` | `20260612-feature-cli-query-subcommands.md` |
 | 2026-06-06 | feat | Add RN transports to default ingest; keep pipecat-cli opt-in; pip-audit fix + justfile↔CI ignore parity | Complete (Unreleased) | vr000m | `feat/ingest-rn-transports-and-cli` | _(no plan file)_ |
 | 2026-05-30 | chore | chromadb 1.x migration + Python 3.14 prep (format break) | Complete (v0.1.0) | vr000m | `chore/chromadb-1x-python-314` | `20260529-chore-chromadb-1x-python-314.md` |
