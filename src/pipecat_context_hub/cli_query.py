@@ -435,9 +435,11 @@ def get_code_snippet_command(
 ) -> None:
     """Get a targeted code snippet by symbol, intent, or path + line range.
 
-    Provide exactly one lookup mode: --symbol (framework source), --intent
-    (example code; supports ' + ' multi-concept queries), or --path with
-    --line-start.
+    \b
+    Provide exactly one lookup mode:
+      --symbol  framework source
+      --intent  example code (supports ' + ' multi-concept queries)
+      --path    with --line-start
     """
     _invoke(
         ctx,
