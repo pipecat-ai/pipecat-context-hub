@@ -10,6 +10,11 @@ local index. Unit tests mock the retrieval layer and cannot catch page
 assembly, filter semantics, schema issues, or stale tool metadata that only
 surface against real indexed data.
 
+**When a live failure is found in the field, freeze it twice:** a unit
+regression test (with the real input text frozen into the test) *and* the
+failing query added here as a numbered item — so any future change to the
+harness gets re-checked against the exact query that once broke.
+
 1. `get_hub_status()` — returns a non-empty index and a recent
    `last_refresh_at`, so smoke-test failures are not caused by a stale or empty
    local corpus
@@ -199,6 +204,74 @@ always passes regardless of `gh` availability.
     opt-out escape hatch works (matters on Windows CPU where cold
     loads can take 30-130s and exceed Claude Code's tool-permission
     window).
+45. `check_deprecation(symbol="PipelineTask")` — returns `deprecated: true`
+    with `PipelineWorker` in `replacement`, a "renamed to" note, **and**
+    `deprecated_in: "1.3.0"` / `removed_in: null` — the lifecycle fields
+    matter: historical member bullets ("`PipelineTask` events … are now
+    deprecated", "Removed … events from `PipelineTask`", under a release
+    body whose `## Fixed` h2 heading didn't close the Deprecated section)
+    once supplied bogus `deprecated_in: 0.0.86/0.0.87` and
+    `removed_in: 1.0.0`. `check_deprecation(symbol="PipelineRunner")` —
+    `deprecated: true`. Regression guard for PR #78. Requires a refreshed
+    index (the map rebuilds on `refresh`).
+46. `check_deprecation(symbol="pipecat.pipeline.worker")`,
+    `check_deprecation(symbol="pipecat.workers.runner")`, and
+    `check_deprecation(symbol="InterruptionTaskFrame")` — all return
+    `deprecated: false`. These are the *replacements*; the old parser keyed
+    them as deprecated, telling agents the current API is deprecated — the
+    worst failure mode this tool has (PR #78).
+47. **Replacement names + class-rename direction (PR #78 coverage gap).**
+    `check_deprecation(symbol="PipelineRunner")` — beyond `deprecated: true`
+    (item 45), `replacement` must *name* `WorkerRunner` /
+    `pipecat.workers.runner` (not be null): agents need the positive
+    replacement, not just the deprecated flag.
+    `check_deprecation(symbol="WorkerRunner")` — `deprecated: false`: the
+    replacement *class* (item 46 freezes only its module
+    `pipecat.workers.runner`).
+    `check_deprecation(symbol="BotInterruptionFrame")` — `deprecated: true`
+    with `InterruptionTaskFrame` in `replacement`: the deprecated *original*
+    of the frame whose replacement item 46 checks. Freezes the class-name
+    side of the renames the token classifier fixed (the symbols agents
+    actually import). Requires a refreshed index.
+48. **Current-API false-positive canaries.** `check_deprecation` must return
+    `deprecated: false` for core, current APIs:
+    `check_deprecation(symbol="Pipeline")`,
+    `check_deprecation(symbol="CartesiaTTSService")`, and
+    `check_deprecation(symbol="SileroVADAnalyzer")` — all `false`. A false
+    positive here (current API flagged deprecated) is the worst failure mode
+    this tool has; these stable classes are a regression canary independent of
+    the rename cases in #45–#47.
+
+    **Owner-of-member canaries (fixed — must stay `false`).** Member/param
+    deprecation bullets name the *owning* class but deprecate a member; the
+    class must not be keyed. All of these must return `deprecated: false`:
+    `check_deprecation(symbol="DeepgramSTTService")` (`` `X`: `member` `` colon
+    header), `check_deprecation(symbol="GladiaSTTService")` and
+    `check_deprecation(symbol="SimliVideoService")` (possessive / adjacent
+    bullets *and* the `check()` reverse-prefix fix — a bare class name must not
+    inherit a deprecated nested member like `GladiaSTTService.InputParams`),
+    `check_deprecation(symbol="MiniMaxHttpTTSService")`
+    (`` `member` parameter for `X` ``), `check_deprecation(symbol="SpeechmaticsSTTService")`
+    (`For `X`, the `member` …`), and `check_deprecation(symbol="StartFrame")`,
+    `check_deprecation(symbol="FrameProcessor")`,
+    `check_deprecation(symbol="CartesiaHttpTTSService")` (delimiter-list owners
+    after a preposition: `from `A`, `B`, and `C``).
+
+    **Known gap (still mis-keyed — "replacement-kept" / Gap D).** A class named
+    as a *kept replacement* in a removal bullet is still wrongly keyed; these
+    need semantic phrasing detection, not heuristics, and are deferred to a
+    follow-up. Do NOT add them as passing canaries yet:
+    `OpenAILLMService` ("can still be used with `OpenAILLMService`"),
+    `WebsocketTTSService` ("Subclass `WebsocketTTSService` directly"),
+    `TTSService` (colon bullet is fixed, but a separate 0.0.105 bullet — "part
+    of the base `TTSService`" — keeps it mis-keyed),
+    `LLMContext` ("now built into `LLMContext`"), and
+    `LocalSmartTurnAnalyzerV3` ("`transformers` … now always installed").
+
+    **Runnable smoke:** `uv run python scripts/smoke_check_deprecation.py`
+    exercises all of the above against the **live local index** (requires a
+    prior `refresh`; not part of the pytest gate). Exit 0 = all canaries pass;
+    add `--known-gaps` to also report the deferred Gap-D residuals.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

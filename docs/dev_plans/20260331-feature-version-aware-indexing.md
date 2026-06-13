@@ -597,3 +597,81 @@ via `retriever.deprecation_map.check(symbol)` — no special-case dispatch.
 - [x] `refresh --force` populates version pins on all chunks
 - [x] Version info defaults to `None` gracefully for chunks without it
 - [x] `packaging` declared as explicit dependency in pyproject.toml
+
+## Corrections (2026-06-12, PR #78)
+
+Live agent use of the rebuilt index showed `check_deprecation` giving **wrong
+answers in both directions** for every pipecat 1.3.0 rename — `PipelineTask`
+reported not-deprecated; `pipecat.pipeline.worker` (the *new* module) reported
+deprecated. The false positives are the worst case: an agent that checks the
+correct, current API is told it's deprecated and goes hunting for a
+replacement that doesn't exist. PR #78 fixed the parser; the bugs all trace to
+**one mismodeling in this plan**.
+
+**Root error — modeled deprecations as structured module-path moves, when
+release notes are unstructured prose about symbols.** The plan assumed a
+deprecation is a dotted path moving A→B, and that release-note bullets split
+mechanically into "module paths + replacement paths" (see Sources, Phase 1b,
+and the `DeprecationEntry`/`DeprecationMap` design). It treated a
+natural-language-understanding problem as structured-data extraction, and keyed
+the data model on the wrong unit (paths, not symbols). Consequences:
+
+- **Data model assumes paths.** `old_path` + `check()`'s prefix-match logic
+  (`key.startswith(symbol + ".")`) only works for dotted paths. Class renames
+  (`PipelineTask → PipelineWorker`, `BotInterruptionFrame →
+  InterruptionTaskFrame`) aren't paths — never first-class, relegated to
+  "extract class names when a bullet has no module path" behind a suffix
+  allowlist (`Service|…|Params`) that **structurally cannot** match
+  `Task`/`Runner`/`Worker`.
+- **The old/new split was hand-waved.** "module paths + replacement paths" was
+  stated as if free; the plan never specified how to tell deprecated from
+  replacement. The implementation used the literal word "use" as the boundary,
+  so every `"renamed to"` / `"Import X from Y"` bullet keyed the *replacement*
+  as deprecated.
+- **Wrong ordering prescription.** "oldest-first processing so earliest
+  `deprecated_in`/`removed_in` wins" had two defects: string-sort puts
+  `0.0.108` before `0.0.9`, and making the earliest mention win for the whole
+  entry let a stray passing-mention shadow the real later rename.
+
+**Process error — `DeprecatedModuleProxy` was the designated "primary,
+reliable" source, but it was removed from pipecat upstream** (PR #4240, noted
+in this plan). That silently promoted the *unstructured* release-note path from
+supplement to sole source for class-level deprecations — the one path the plan
+never actually designed. The hard parsing was deferred to Phase 3 as "needs
+AST analysis," while the release-note prose parsing kept in Phase 1b was
+assumed trivial. It wasn't: it needed a classifier (boundary phrases, old/new
+markers, owner-context exclusion, prose blocklist) — `_classify_tokens` in
+`deprecation_map.py`.
+
+**Lesson for future plans:** when a structured source can disappear upstream,
+design the unstructured fallback as a first-class parsing problem, not a
+best-effort supplement — and key the data model on the unit the *source*
+actually uses (symbols), not the unit that's convenient to match (paths).
+
+### Follow-up (2026-06-12, PR #78) — owner-of-member false positives
+
+A live-hub smoke over all 155 map entries surfaced a *second* class of
+current-API false positive, orthogonal to the rename direction: ~17 entries
+keyed the **owning class of a deprecated member** instead of the member. The
+original owner-context skip only recognised a single backticked token right
+after a preposition (`from `X``), so the other phrasings pipecat's changelog
+uses all leaked the class — colon header (`` `TTSService`: `text_aggregator`
+init param ``), possessive (`` `GladiaSTTService`'s `confidence` arg ``),
+adjacent owner+member (`` `SimliVideoService` `simli_config` parameter ``),
+trailing `for `X``, `For `X`, the …` subject clauses, and delimiter-joined
+owner lists (`from `A`, `B`, and `C``, `from `A` / `B``). All are now folded
+into `_owner_context_tokens`; the colon-header convention skips every class
+token in the bullet.
+
+This also confirmed the prediction above (line ~619): `check()`'s
+**reverse-prefix** match (`key.startswith(symbol + ".")`) reported an owner
+class as deprecated whenever a nested member was — `check("GladiaSTTService")`
+inherited `GladiaSTTService.InputParams`'s verdict. Reverse-prefix is now
+suppressed for bare class-name symbols (kept for broad module-path queries).
+
+Verified by a full release-notes rebuild diff (17 FP keys dropped, 0 genuine
+removals lost) and a runnable live-hub smoke (`scripts/smoke_check_deprecation.py`).
+**Still deferred:** the "replacement-kept" residue (a class named only as a
+still-usable alternative — "can still be used with `OpenAILLMService`", "now
+built into `LLMContext`") needs phrase-level semantic detection; documented as
+a known gap in AGENTS.md item #48.

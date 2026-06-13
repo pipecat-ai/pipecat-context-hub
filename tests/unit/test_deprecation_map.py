@@ -81,6 +81,26 @@ class TestDeprecationMapCheck:
         dm = self._make_map()
         assert dm.check("pipecat.transports.daily") is None
 
+    def test_bare_class_does_not_match_nested_member(self) -> None:
+        """A current owner class must not inherit a deprecated nested member's
+        verdict via reverse-prefix. ``GladiaSTTService.InputParams`` is
+        deprecated, but ``GladiaSTTService`` itself is current."""
+        dm = DeprecationMap(
+            entries={
+                "GladiaSTTService.InputParams": DeprecationEntry(
+                    old_path="GladiaSTTService.InputParams",
+                    new_path="GladiaInputParams",
+                ),
+            }
+        )
+        assert dm.check("GladiaSTTService.InputParams") is not None
+        assert dm.check("GladiaSTTService") is None
+
+    def test_module_path_still_reverse_prefix_matches(self) -> None:
+        """Reverse-prefix must still work for broad *module-path* queries."""
+        dm = self._make_map()
+        assert dm.check("pipecat.services") is not None
+
     def test_empty_map(self) -> None:
         dm = DeprecationMap()
         assert dm.check("anything") is None
@@ -145,8 +165,8 @@ class TestBuildFromSource:
         grok = services / "grok"
         grok.mkdir(parents=True)
         (grok / "__init__.py").write_text(
-            'import sys\n'
-            'from pipecat.services import DeprecatedModuleProxy\n'
+            "import sys\n"
+            "from pipecat.services import DeprecatedModuleProxy\n"
             'sys.modules[__name__] = DeprecatedModuleProxy(globals(), "grok", "xai.llm")\n'
         )
 
@@ -154,27 +174,24 @@ class TestBuildFromSource:
         cartesia = services / "cartesia"
         cartesia.mkdir(parents=True)
         (cartesia / "__init__.py").write_text(
-            'import sys\n'
-            'from pipecat.services import DeprecatedModuleProxy\n'
+            "import sys\n"
+            "from pipecat.services import DeprecatedModuleProxy\n"
             'sys.modules[__name__] = DeprecatedModuleProxy(globals(), "cartesia", "cartesia.[stt,tts]")\n'
         )
 
         # ai_services.py — bracket-only expansion (file, not __init__)
         (services / "ai_services.py").write_text(
-            'import sys\n'
-            'from pipecat.services import DeprecatedModuleProxy\n'
-            'sys.modules[__name__] = DeprecatedModuleProxy(\n'
-            '    globals(),\n'
+            "import sys\n"
+            "from pipecat.services import DeprecatedModuleProxy\n"
+            "sys.modules[__name__] = DeprecatedModuleProxy(\n"
+            "    globals(),\n"
             '    "ai_services",\n'
             '    "[ai_service,image_service,llm_service]",\n'
-            ')\n'
+            ")\n"
         )
 
         # __init__.py for services (define DeprecatedModuleProxy class)
-        (services / "__init__.py").write_text(
-            'class DeprecatedModuleProxy:\n'
-            '    pass\n'
-        )
+        (services / "__init__.py").write_text("class DeprecatedModuleProxy:\n    pass\n")
 
         return tmp_path
 
@@ -243,11 +260,7 @@ class TestBuildFromChangelog:
 
     def test_supplements_existing_map(self, tmp_path: Path) -> None:
         changelog = tmp_path / "CHANGELOG.md"
-        changelog.write_text(
-            "## [0.0.100] - 2024-01-01\n"
-            "### Deprecated\n"
-            "- Some deprecation.\n"
-        )
+        changelog.write_text("## [0.0.100] - 2024-01-01\n### Deprecated\n- Some deprecation.\n")
         existing = DeprecationMap(
             entries={
                 "pipecat.services.grok": DeprecationEntry(
@@ -283,9 +296,7 @@ class TestCheckDeprecationHandler:
                 ),
             }
         )
-        result_json = await handle_check_deprecation(
-            {"symbol": "pipecat.services.grok.llm"}, dm
-        )
+        result_json = await handle_check_deprecation({"symbol": "pipecat.services.grok.llm"}, dm)
         result = json.loads(result_json)
         assert result["deprecated"] is True
         assert result["replacement"] == "pipecat.services.xai.llm"
@@ -296,9 +307,7 @@ class TestCheckDeprecationHandler:
         )
 
         dm = DeprecationMap()
-        result_json = await handle_check_deprecation(
-            {"symbol": "DailyTransport"}, dm
-        )
+        result_json = await handle_check_deprecation({"symbol": "DailyTransport"}, dm)
         result = json.loads(result_json)
         assert result["deprecated"] is False
 
@@ -307,9 +316,7 @@ class TestCheckDeprecationHandler:
             handle_check_deprecation,
         )
 
-        result_json = await handle_check_deprecation(
-            {"symbol": "pipecat.services.grok"}, None
-        )
+        result_json = await handle_check_deprecation({"symbol": "pipecat.services.grok"}, None)
         result = json.loads(result_json)
         assert result["deprecated"] is False
         assert "not available" in (result.get("note") or "")
@@ -335,11 +342,7 @@ class TestBuildFromRealSource:
     def test_real_changelog(self) -> None:
         """If the pipecat CHANGELOG exists, verify parsing extracts entries."""
         changelog = (
-            Path.home()
-            / ".pipecat-context-hub"
-            / "repos"
-            / "pipecat-ai_pipecat"
-            / "CHANGELOG.md"
+            Path.home() / ".pipecat-context-hub" / "repos" / "pipecat-ai_pipecat" / "CHANGELOG.md"
         )
         if not changelog.is_file():
             return  # Skip if not available
