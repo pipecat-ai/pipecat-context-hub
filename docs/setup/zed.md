@@ -8,38 +8,29 @@ Connect Pipecat Context Hub to [Zed](https://zed.dev/) as an MCP server over std
 - [Zed](https://zed.dev/) with Agent panel support
 - [`uv`](https://docs.astral.sh/uv/) package manager
 
-## Install
+## Build the Local Index
+
+Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash
-git clone https://github.com/pipecat-ai/pipecat-context-hub.git
-cd pipecat-context-hub
-uv sync
+uvx pipecat-ai-context-hub refresh
 ```
 
-## Populate the Local Index
-
-Before the server can answer queries, populate the local index:
-
-```bash
-uv run pipecat-context-hub refresh
-```
-
-This downloads Pipecat docs and example repos to `~/.pipecat-context-hub/`.
+This populates `~/.pipecat-context-hub/`.
 
 ## Configure
 
 Zed uses a global settings file — there is no project-level MCP config.
 
-Edit `~/.config/zed/settings.json` (open with `zed: open settings` from the command palette).
-Replace `/path/to/pipecat-context-hub` with the absolute path where you cloned the repo:
+Edit `~/.config/zed/settings.json` (open with `zed: open settings` from the command palette):
 
 ```json
 {
   "context_servers": {
     "pipecat-context-hub": {
       "source": "custom",
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"],
+      "command": "uvx",
+      "args": ["pipecat-ai-context-hub", "serve"],
       "env": {}
     }
   }
@@ -57,12 +48,12 @@ Replace `/path/to/pipecat-context-hub` with the absolute path where you cloned t
 You can also verify the server starts correctly from the command line:
 
 ```bash
-uv run pipecat-context-hub serve --help
+uvx pipecat-ai-context-hub serve --help
 ```
 
 ## Troubleshooting
 
 - **Server not appearing**: Ensure the `context_servers` key is at the top level of `settings.json` and that `"source": "custom"` is included.
-- **Command not found**: Ensure the `--directory` path in your MCP config points to your `pipecat-context-hub` clone.
-- **Empty results**: Run `uv run pipecat-context-hub refresh` to populate the index.
+- **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
+- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
 - **JSON parse errors**: Zed's `settings.json` contains other settings — make sure you merge the `context_servers` block rather than replacing the entire file.

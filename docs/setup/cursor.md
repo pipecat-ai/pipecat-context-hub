@@ -8,37 +8,28 @@ Connect Pipecat Context Hub to [Cursor](https://cursor.com/) as an MCP server ov
 - [Cursor](https://cursor.com/) installed
 - [`uv`](https://docs.astral.sh/uv/) package manager
 
-## Install
+## Build the Local Index
+
+Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash
-git clone https://github.com/pipecat-ai/pipecat-context-hub.git
-cd pipecat-context-hub
-uv sync
+uvx pipecat-ai-context-hub refresh
 ```
 
-## Populate the Local Index
-
-Before the server can answer queries, populate the local index:
-
-```bash
-uv run pipecat-context-hub refresh
-```
-
-This downloads Pipecat docs and example repos to `~/.pipecat-context-hub/`.
+This populates `~/.pipecat-context-hub/`.
 
 ## Configure
 
 ### Option A: Project-level config (recommended)
 
-Create `.cursor/mcp.json` in your project root. Replace `/path/to/pipecat-context-hub`
-with the absolute path where you cloned the repo:
+Create `.cursor/mcp.json` in your project root:
 
 ```json
 {
   "mcpServers": {
     "pipecat-context-hub": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"],
+      "command": "uvx",
+      "args": ["pipecat-ai-context-hub", "serve"],
       "env": {}
     }
   }
@@ -58,12 +49,12 @@ Create or edit `~/.cursor/mcp.json` (same format as above).
 You can also verify the server starts correctly from the command line:
 
 ```bash
-uv run pipecat-context-hub serve --help
+uvx pipecat-ai-context-hub serve --help
 ```
 
 ## Troubleshooting
 
 - **Server not appearing**: Ensure `.cursor/mcp.json` exists in your project root directory.
-- **Command not found**: Ensure the `--directory` path in your MCP config points to your `pipecat-context-hub` clone.
-- **Empty results**: Run `uv run pipecat-context-hub refresh` to populate the index.
+- **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
+- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
 - **Red status indicator**: Check the Cursor MCP logs for error details.
