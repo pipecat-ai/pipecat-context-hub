@@ -233,6 +233,40 @@ class TestHybridRetrieverE2E:
         assert result.title == "Not Found"
         assert result.evidence.confidence == 0.0
 
+    async def test_get_doc_sections_derived_from_headings(
+        self,
+        retriever: HybridRetriever,
+        embedding_writer: EmbeddingIndexWriter,
+    ):
+        """`sections` is derived from the page's markdown headings, and every
+        advertised title round-trips through ``section=``.
+
+        Regression: the field was always ``[]`` because the doc ingester never
+        persisted a ``sections`` metadata key, so callers could not discover
+        which ``--section`` values were valid without parsing ``content`` by hand.
+        """
+        content = (
+            "## Events Overview\n\nIntro.\n\n"
+            "## Registering Event Handlers\n\nBody A.\n\n"
+            "## Multiple Handlers\n\nBody B.\n"
+        )
+        await embedding_writer.upsert(
+            [_make_doc_record("d_sec", content, path="/docs/events")]
+        )
+
+        doc = await retriever.get_doc(GetDocInput(doc_id="d_sec"))
+        assert doc.sections == [
+            "Events Overview",
+            "Registering Event Handlers",
+            "Multiple Handlers",
+        ]
+
+        # Every advertised section is retrievable and narrows the page.
+        for title in doc.sections:
+            sec = await retriever.get_doc(GetDocInput(doc_id="d_sec", section=title))
+            assert sec.content.splitlines()[0].lstrip("#").strip() == title
+            assert len(sec.content) < len(doc.content)
+
     async def test_get_example_found(self, retriever: HybridRetriever):
         result = await retriever.get_example(GetExampleInput(example_id="c1"))
         assert result.example_id == "c1"

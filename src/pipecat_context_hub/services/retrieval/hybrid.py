@@ -324,18 +324,28 @@ class HybridRetriever:
         # For path-based lookups, concatenate all chunks into the full page
         if input.path is not None and len(results) > 1:
             content = "\n\n".join(r.chunk.content for r in results)
-            # Collect sections from all chunks
-            all_sections: list[str] = []
-            for r in results:
-                all_sections.extend(r.chunk.metadata.get("sections", []))
-            sections = all_sections
         else:
-            sections = result.chunk.metadata.get("sections", [])
             content = result.chunk.content
 
         chunk = result.chunk
 
-        # If a specific section was requested, try to extract it
+        # Derive the section list from the page's own markdown headings. The doc
+        # ingester does not persist a "sections" metadata key, so this field was
+        # always empty; parsing the assembled content keeps `sections` in lockstep
+        # with what `--section` (`_extract_section`) can actually extract — every
+        # listed title round-trips. Fall back to persisted metadata only if a
+        # future ingester supplies it and the content carries no headings.
+        sections = _section_titles(content)
+        if not sections:
+            seen: set[str] = set()
+            for r in results:
+                for s in r.chunk.metadata.get("sections", []):
+                    if s not in seen:
+                        seen.add(s)
+                        sections.append(s)
+
+        # If a specific section was requested, try to extract it. Computed after
+        # `sections` so the response still advertises the full table of contents.
         if input.section:
             section_content = _extract_section(content, input.section)
             if section_content:
@@ -789,6 +799,30 @@ def _empty_taxonomy(example_id: str) -> TaxonomyEntry:
         repo="",
         path="",
     )
+
+
+def _section_titles(content: str) -> list[str]:
+    """List a doc page's markdown heading titles, in document order.
+
+    Mirrors :func:`_extract_section`'s heading detection (leading-``#`` levels,
+    no whitespace-indent handling) so every title returned here round-trips
+    through ``get_doc(..., section=title)``. Titles are compared case-insensitively
+    by ``_extract_section``, so duplicates that would resolve to the same section
+    are collapsed to their first occurrence — the list is a stable table of
+    contents, not a raw heading dump.
+    """
+    titles: list[str] = []
+    seen: set[str] = set()
+    for line in content.splitlines():
+        stripped = line.lstrip("#")
+        level = len(line) - len(stripped)
+        heading = stripped.strip()
+        if level > 0 and heading:
+            key = heading.lower()
+            if key not in seen:
+                seen.add(key)
+                titles.append(heading)
+    return titles
 
 
 def _extract_section(content: str, section_name: str) -> str | None:
