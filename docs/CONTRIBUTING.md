@@ -193,6 +193,40 @@ release:
 
 A test (`tests/unit/test_server.py::TestVersionConsistency`) enforces they match.
 
+## Maintainer Setup (first release only)
+
+PyPI publishing uses [trusted publishing](https://docs.pypi.org/trusted-publishers/)
+(OIDC — **no API tokens or passwords are stored anywhere**, not in repo secrets
+either; PyPI validates the workflow's identity directly). The package is
+published under the **[`pipecat` PyPI organization](https://pypi.org/org/pipecat/)**,
+so an owner/maintainer of that PyPI org must register the GitHub trusted
+publisher once on each index.
+
+The trusted-publisher fields below describe the **GitHub** side (where the
+workflow runs) — note `Owner` here is the GitHub org `pipecat-ai`, which is
+distinct from the `pipecat` PyPI org that owns the project:
+
+| Field | Value |
+| --- | --- |
+| Owner | `pipecat-ai` (GitHub org) |
+| Repository | `pipecat-context-hub` |
+| Workflow | `release.yml` |
+| Environment | `pypi` (on pypi.org) / `testpypi` (on test.pypi.org) |
+
+**First release (`pipecat-ai-context-hub` does not exist on PyPI yet):** the
+project has no "Publishing" settings page to configure, so register it as a
+[pending publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
+from the **`pipecat` PyPI org's** settings → "Publishing" → "Add a pending
+publisher" (registering from the org, not a personal account, is what makes the
+new project org-owned) — using the fields above plus the project name
+`pipecat-ai-context-hub`. PyPI creates the project under the `pipecat` org
+automatically on the first successful publish. After that, the same config is
+editable from the project's own "Publishing" settings.
+
+Until this exists, the publish jobs fail with an OIDC error — the build job
+still validates the artifacts. The same configuration is documented in the
+comment block at the top of `.github/workflows/release.yml`.
+
 ## Release Process
 
 See the [Release Notes Template](../CLAUDE.md#release-notes-template) in
@@ -202,3 +236,13 @@ CLAUDE.md for the standardised format. Every release needs:
 2. Bump version in both locations above
 3. Commit and merge via PR
 4. Create GitHub release via `gh release create vX.Y.Z`
+5. Publishing the release triggers the **Release workflow**
+   (`.github/workflows/release.yml`), which builds the sdist + wheel, verifies
+   them (metadata check, tag-matches-version guard, a clean-venv smoke test of
+   the built wheel), and uploads to **PyPI** via trusted publishing. Watch the
+   run; a tag/version mismatch fails the build job before anything is
+   published.
+
+To dry-run the publish pipeline without touching PyPI, trigger the Release
+workflow manually (`workflow_dispatch`) — it publishes to **TestPyPI**
+instead. Note TestPyPI rejects re-uploads of an existing version.

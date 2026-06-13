@@ -1,0 +1,169 @@
+name: Release
+
+# Publishes pipecat-context-hub to PyPI via trusted publishing (OIDC — no API
+# tokens stored in the repo).
+#
+# Two entry points:
+#   - Publishing a GitHub release (the normal path, see docs/CONTRIBUTING.md
+#     "Release Process") builds, verifies, and uploads to PyPI.
+#   - workflow_dispatch publishes to TestPyPI — a dry-run path for verifying
+#     the build and the trusted-publishing wiring without touching the real
+#     index.
+#
+# Naming: the PyPI distribution is `pipecat-ai-context-hub` (org convention —
+# official packages are pipecat-ai*); the command and MCP server name stay
+# `pipecat-context-hub`. A console-script alias makes
+# `uvx pipecat-ai-context-hub <cmd>` resolve.
+#
+# One-time setup: the project is published under the `pipecat` PyPI org
+# (https://pypi.org/org/pipecat/). A PyPI org owner adds a GitHub trusted
+# publisher — for the first release, as a "pending publisher" from the
+# `pipecat` org's "Publishing" settings (the project does not exist yet) — with
+#   owner: pipecat-ai (GitHub org), repository: pipecat-context-hub,
+#   workflow: release.yml, environment: pypi (testpypi on test.pypi.org),
+#   project name: pipecat-ai-context-hub.
+# See docs/CONTRIBUTING.md "Maintainer Setup" for the full flow.
+# Until that exists, the publish jobs fail with an OIDC error — the build job
+# still validates the artifacts.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# uv CLI version, single source of truth for all jobs below. Keep in sync with
+# the `astral-sh/setup-uv` version pinned in `.github/workflows/ci.yml`.
+env:
+  UV_VERSION: "0.9.18"
+
+jobs:
+  build:
+    name: Build & verify artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Pinned to 3.12 for a reproducible release build; the published sdist +
+      # wheel are version-agnostic. Update alongside the ci.yml matrix floor.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Check distribution metadata
+        run: uvx twine check --strict dist/*
+
+      - name: Tag matches package version (release only)
+        # Guards the "forgot to bump pyproject before tagging" release: the
+        # tag vX.Y.Z must equal the version baked into the wheel. The
+        # _SERVER_VERSION half of the pair is enforced by the unit suite
+        # (tests/unit/test_server.py::TestVersionConsistency) in regular CI.
+        if: github.event_name == 'release'
+        # TAG is passed via env (not interpolated into the script body) so a
+        # crafted tag name cannot inject shell — see GitHub's workflow-injection
+        # guidance.
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1 || {
+            echo "::error::expected exactly one wheel in dist/, found ${#wheels[@]}: ${wheels[*]}"
+            exit 1
+          }
+          WHEEL_VERSION=$(unzip -p "${wheels[0]}" '*.dist-info/METADATA' | awk '/^Version:/{print $2; exit}')
+          echo "wheel=$WHEEL_VERSION tag=$TAG"
+          test "v$WHEEL_VERSION" = "$TAG" || {
+            echo "::error::Tag $TAG does not match package version $WHEEL_VERSION — bump pyproject.toml and _SERVER_VERSION before tagging."
+            exit 1
+          }
+
+      - name: Wheel smoke test (clean venv, away from the repo)
+        # Installs the built wheel into a fresh venv and exercises it from a
+        # directory outside the checkout, so works-only-in-repo assumptions
+        # (missing package data, path expectations) fail here instead of on
+        # users. `serve` on an empty index must exit 2 with the refresh hint —
+        # proving the console script, imports, and config defaults all work
+        # from the wheel alone.
+        run: |
+          uv venv /tmp/wheel-smoke
+          VIRTUAL_ENV=/tmp/wheel-smoke uv pip install dist/*.whl
+          cd /tmp
+          /tmp/wheel-smoke/bin/pipecat-context-hub --help
+          set +e
+          PIPECAT_HUB_DATA_DIR=$(mktemp -d) /tmp/wheel-smoke/bin/pipecat-context-hub serve 2>/tmp/serve-err.txt
+          code=$?
+          set -e
+          cat /tmp/serve-err.txt
+          test "$code" -eq 2 || { echo "::error::expected exit 2 on empty index, got $code"; exit 1; }
+          grep -q "refresh" /tmp/serve-err.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pipecat-ai-context-hub/
+    permissions:
+      # Trusted publishing: PyPI validates the workflow's OIDC token instead
+      # of an API key. Requires the trusted-publisher config described at the
+      # top of this file.
+      id-token: write
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        run: uv publish
+
+  publish-testpypi:
+    name: Publish to TestPyPI (dry run)
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/pipecat-ai-context-hub/
+    permissions:
+      id-token: write
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        # TestPyPI rejects re-uploads of an existing version; for repeat dry
+        # runs bump the version locally or accept the failure as "already
+        # validated".
+        run: uv publish --publish-url https://test.pypi.org/legacy/
+
