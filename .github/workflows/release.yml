@@ -15,11 +15,14 @@ name: Release
 # `pipecat-context-hub`. A console-script alias makes
 # `uvx pipecat-ai-context-hub <cmd>` resolve.
 #
-# One-time setup (repo owner, on pypi.org / test.pypi.org under the
-# pipecat-ai-context-hub project's "Publishing" settings): add a GitHub
-# trusted publisher with
-#   owner: pipecat-ai, repository: pipecat-context-hub,
-#   workflow: release.yml, environment: pypi (testpypi on test.pypi.org).
+# One-time setup: the project is published under the `pipecat` PyPI org
+# (https://pypi.org/org/pipecat/). A PyPI org owner adds a GitHub trusted
+# publisher — for the first release, as a "pending publisher" from the
+# `pipecat` org's "Publishing" settings (the project does not exist yet) — with
+#   owner: pipecat-ai (GitHub org), repository: pipecat-context-hub,
+#   workflow: release.yml, environment: pypi (testpypi on test.pypi.org),
+#   project name: pipecat-ai-context-hub.
+# See docs/CONTRIBUTING.md "Maintainer Setup" for the full flow.
 # Until that exists, the publish jobs fail with an OIDC error — the build job
 # still validates the artifacts.
 
