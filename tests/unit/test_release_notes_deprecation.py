@@ -7,72 +7,9 @@ from unittest.mock import patch
 from pipecat_context_hub.services.ingest.deprecation_map import (
     DeprecationEntry,
     DeprecationMap,
-    _extract_module_paths,
-    _extract_replacement,
     _parse_release_body,
     build_deprecation_map_from_releases,
 )
-
-
-class TestExtractModulePaths:
-    """Test _extract_module_paths from backtick-wrapped text."""
-
-    def test_single_path(self) -> None:
-        text = "Deprecated `pipecat.services.grok.llm` module."
-        assert _extract_module_paths(text) == ["pipecat.services.grok.llm"]
-
-    def test_multiple_paths(self) -> None:
-        text = (
-            "`pipecat.services.grok.llm` and `pipecat.services.grok.realtime.llm` "
-            "are deprecated. Use `pipecat.services.xai.llm` instead."
-        )
-        paths = _extract_module_paths(text)
-        assert "pipecat.services.grok.llm" in paths
-        assert "pipecat.services.grok.realtime.llm" in paths
-        assert "pipecat.services.xai.llm" in paths
-
-    def test_no_paths(self) -> None:
-        text = "Some text without any module paths."
-        assert _extract_module_paths(text) == []
-
-    def test_non_pipecat_paths_ignored(self) -> None:
-        text = "`os.path.join` and `pipecat.services.google.llm`"
-        assert _extract_module_paths(text) == ["pipecat.services.google.llm"]
-
-    def test_deduplication(self) -> None:
-        text = "`pipecat.services.grok.llm` is old, use `pipecat.services.grok.llm` elsewhere"
-        assert _extract_module_paths(text) == ["pipecat.services.grok.llm"]
-
-
-class TestExtractReplacement:
-    """Test _extract_replacement from deprecation text."""
-
-    def test_finds_replacement(self) -> None:
-        text = (
-            "`pipecat.services.grok.llm` is deprecated. "
-            "Use `pipecat.services.xai.llm` instead."
-        )
-        deprecated = ["pipecat.services.grok.llm"]
-        assert _extract_replacement(text, deprecated) == "pipecat.services.xai.llm"
-
-    def test_multiple_replacements(self) -> None:
-        text = (
-            "`pipecat.services.google.llm_vertex` and `pipecat.services.google.llm_openai` "
-            "are deprecated. Use `pipecat.services.google.vertex.llm` and "
-            "`pipecat.services.google.openai.llm` instead."
-        )
-        deprecated = [
-            "pipecat.services.google.llm_vertex",
-            "pipecat.services.google.llm_openai",
-        ]
-        replacement = _extract_replacement(text, deprecated)
-        assert replacement is not None
-        assert "pipecat.services.google.vertex.llm" in replacement
-        assert "pipecat.services.google.openai.llm" in replacement
-
-    def test_no_replacement(self) -> None:
-        text = "Removed `PlayHTTTSService`. PlayHT has been shut down."
-        assert _extract_replacement(text, ["PlayHTTTSService"]) is None
 
 
 class TestParseReleaseBody:
@@ -136,12 +73,14 @@ class TestParseReleaseBody:
 
     def test_dotted_symbol_queryable(self) -> None:
         """Dotted symbol entries can be found via DeprecationMap.check()."""
-        dm = DeprecationMap(entries={
-            "SimliVideoService.InputParams": DeprecationEntry(
-                old_path="SimliVideoService.InputParams",
-                deprecated_in="0.0.110",
-            ),
-        })
+        dm = DeprecationMap(
+            entries={
+                "SimliVideoService.InputParams": DeprecationEntry(
+                    old_path="SimliVideoService.InputParams",
+                    deprecated_in="0.0.110",
+                ),
+            }
+        )
         result = dm.check("SimliVideoService.InputParams")
         assert result is not None
         assert result.deprecated_in == "0.0.110"
@@ -204,18 +143,24 @@ class TestBuildFromReleases:
 
     def test_populates_from_mock_releases(self) -> None:
         mock_releases = [
-            ("0.0.108", (
-                "### Deprecated\n"
-                "- `pipecat.services.grok.llm` is deprecated. "
-                "Use `pipecat.services.xai.llm` instead.\n"
-                "### Removed\n"
-                "- Removed `SambaNovaSTTService`.\n"
-            )),
-            ("0.0.106", (
-                "### Deprecated\n"
-                "- Deprecated `WakeCheckFilter` in favor of "
-                "`WakePhraseUserTurnStartStrategy`.\n"
-            )),
+            (
+                "0.0.108",
+                (
+                    "### Deprecated\n"
+                    "- `pipecat.services.grok.llm` is deprecated. "
+                    "Use `pipecat.services.xai.llm` instead.\n"
+                    "### Removed\n"
+                    "- Removed `SambaNovaSTTService`.\n"
+                ),
+            ),
+            (
+                "0.0.106",
+                (
+                    "### Deprecated\n"
+                    "- Deprecated `WakeCheckFilter` in favor of "
+                    "`WakePhraseUserTurnStartStrategy`.\n"
+                ),
+            ),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
@@ -246,18 +191,13 @@ class TestBuildFromReleases:
             }
         )
         mock_releases = [
-            ("0.0.108", (
-                "### Deprecated\n"
-                "- `pipecat.services.grok` is deprecated.\n"
-            )),
+            ("0.0.108", ("### Deprecated\n- `pipecat.services.grok` is deprecated.\n")),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
             return_value=mock_releases,
         ):
-            dm = build_deprecation_map_from_releases(
-                "pipecat-ai/pipecat", existing
-            )
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat", existing)
 
         # Should keep the original entry's note, not overwrite
         assert dm.entries["pipecat.services.grok"].note == "From DeprecatedModuleProxy"
@@ -276,22 +216,20 @@ class TestBuildFromReleases:
             }
         )
         mock_releases = [
-            ("0.0.105", (
-                "### Deprecated\n"
-                "- `pipecat.services.old` is deprecated. Use `pipecat.services.new`.\n"
-            )),
-            ("0.0.110", (
-                "### Removed\n"
-                "- `pipecat.services.old` has been removed.\n"
-            )),
+            (
+                "0.0.105",
+                (
+                    "### Deprecated\n"
+                    "- `pipecat.services.old` is deprecated. Use `pipecat.services.new`.\n"
+                ),
+            ),
+            ("0.0.110", ("### Removed\n- `pipecat.services.old` has been removed.\n")),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
             return_value=mock_releases,
         ):
-            dm = build_deprecation_map_from_releases(
-                "pipecat-ai/pipecat", existing
-            )
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat", existing)
 
         entry = dm.entries["pipecat.services.old"]
         assert entry.note == "From source"  # not overwritten
@@ -302,14 +240,8 @@ class TestBuildFromReleases:
         """When a symbol appears in multiple releases, earliest deprecated_in wins."""
         # Feed releases in reverse-chronological order (as gh returns them)
         mock_releases = [
-            ("0.0.110", (
-                "### Deprecated\n"
-                "- `pipecat.services.old.thing` is deprecated.\n"
-            )),
-            ("0.0.105", (
-                "### Deprecated\n"
-                "- `pipecat.services.old.thing` is deprecated.\n"
-            )),
+            ("0.0.110", ("### Deprecated\n- `pipecat.services.old.thing` is deprecated.\n")),
+            ("0.0.105", ("### Deprecated\n- `pipecat.services.old.thing` is deprecated.\n")),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
@@ -324,10 +256,10 @@ class TestBuildFromReleases:
     def test_synthetic_keys_go_to_notes(self) -> None:
         """Unmatched prose entries go to changelog_notes, not entries."""
         mock_releases = [
-            ("0.0.108", (
-                "### Deprecated\n"
-                "- Some general deprecation notice without backtick paths.\n"
-            )),
+            (
+                "0.0.108",
+                ("### Deprecated\n- Some general deprecation notice without backtick paths.\n"),
+            ),
         ]
         with patch(
             "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
@@ -363,9 +295,7 @@ class TestRealReleaseNotes:
         if not releases:
             return  # gh not available or not authenticated
 
-        dm = build_deprecation_map_from_releases(
-            "pipecat-ai/pipecat", limit=5
-        )
+        dm = build_deprecation_map_from_releases("pipecat-ai/pipecat", limit=5)
         # v0.0.104-108 all have deprecations, so we should get entries
         assert len(dm.entries) >= 3, (
             f"Expected >= 3 entries from real releases, got {len(dm.entries)}"
@@ -377,3 +307,447 @@ class TestRealReleaseNotes:
             assert grok.deprecated_in == "0.0.108"
             assert grok.new_path is not None
             assert "xai" in grok.new_path
+
+
+class TestRenamedToBullets:
+    """Regression: pipecat 1.3.0 rename bullets, which the old parser misread.
+
+    The old/new split keyed on the literal word "use"; bullets phrased as
+    "renamed to" / "Import X from Y" got every token keyed as deprecated
+    (false positives on the *replacements* — pipecat.pipeline.worker,
+    pipecat.workers.runner) while the deprecated class names (PipelineTask,
+    PipelineRunner) were never keyed at all (false negatives). Texts below
+    are the real v1.3.0 release bullets.
+    """
+
+    _TASK_BULLET = (
+        "`PipelineTask`, `PipelineTaskParams`, and the `pipecat.pipeline.task` "
+        "module have been renamed to `PipelineWorker`, `WorkerParams`, and "
+        "`pipecat.pipeline.worker`. The old names still resolve (the module "
+        "re-exports the new symbols) but constructing `PipelineTask` / "
+        "`PipelineTaskParams` emits a `DeprecationWarning`; they will be "
+        "removed in a future release."
+    )
+
+    _RUNNER_BULLET = (
+        "`PipelineRunner` has been renamed to `WorkerRunner` and moved to "
+        "`pipecat.workers.runner`, since the runner now runs workers (of which "
+        "`PipelineWorker` is one kind), not just pipelines. Import "
+        "`WorkerRunner` from `pipecat.workers.runner`. The old "
+        "`pipecat.pipeline.runner` module still re-exports both names, and "
+        "`PipelineRunner` still works as a subclass alias, but it emits a "
+        "`DeprecationWarning` and will be removed in a future release."
+    )
+
+    _FRAME_BULLET = "`BotInterruptionFrame` is now deprecated, use `InterruptionTaskFrame` instead."
+
+    def _entries(self, bullet: str) -> dict[str, DeprecationEntry]:
+        body = f"### Deprecated\n- {bullet}\n"
+        return {e.old_path: e for e in _parse_release_body("1.3.0", body)}
+
+    def test_renamed_to_keys_old_names_not_new(self) -> None:
+        entries = self._entries(self._TASK_BULLET)
+        # Deprecated names (class names AND module path) are keyed.
+        assert "PipelineTask" in entries
+        assert "PipelineTaskParams" in entries
+        assert "pipecat.pipeline.task" in entries
+        # Replacements must NOT be keyed — a deprecated verdict on the
+        # current API misdirects agents away from the right answer.
+        assert "PipelineWorker" not in entries
+        assert "WorkerParams" not in entries
+        assert "pipecat.pipeline.worker" not in entries
+        # Prose identifiers never become keys.
+        assert "DeprecationWarning" not in entries
+        # The replacement is recorded.
+        assert "pipecat.pipeline.worker" in (entries["PipelineTask"].new_path or "")
+
+    def test_old_marked_module_after_boundary_is_deprecated(self) -> None:
+        entries = self._entries(self._RUNNER_BULLET)
+        assert "PipelineRunner" in entries
+        # "The old `pipecat.pipeline.runner` module" appears *after* the
+        # boundary but is rescued by the old/legacy marker.
+        assert "pipecat.pipeline.runner" in entries
+        assert "WorkerRunner" not in entries
+        assert "pipecat.workers.runner" not in entries
+        # The replacement is recorded under the deprecated class, not dropped.
+        assert "WorkerRunner" in (entries["PipelineRunner"].new_path or "")
+
+    def test_use_instead_keys_only_the_deprecated_frame(self) -> None:
+        entries = self._entries(self._FRAME_BULLET)
+        assert "BotInterruptionFrame" in entries
+        # The replacement frame must not be keyed (the old parser keyed both).
+        assert "InterruptionTaskFrame" not in entries
+        assert entries["BotInterruptionFrame"].new_path == "InterruptionTaskFrame"
+
+    def test_renamed_from_rescues_deprecated_source(self) -> None:
+        # Target-first phrasing: the source after "from" is the deprecation,
+        # the leading token is the replacement. The owner-context skip (which
+        # fires on any token following a preposition) must NOT drop the source,
+        # and position must NOT key the leading replacement. PR #78 follow-up.
+        entries = self._entries("`WorkerRunner` was renamed from `PipelineRunner`.")
+        assert "PipelineRunner" in entries
+        assert "WorkerRunner" not in entries
+
+    def test_migrate_from_to_keys_only_the_source(self) -> None:
+        # "migrate from X to Y" has no boundary phrase, so both tokens follow a
+        # preposition and would be dropped by the owner skip. The rename-source
+        # rescue keeps X (the deprecation); Y is simply not keyed (not a false
+        # positive on the current API).
+        entries = self._entries("Migrate from `pipecat.old.thing` to `pipecat.new.thing`.")
+        assert "pipecat.old.thing" in entries
+        assert "pipecat.new.thing" not in entries
+
+    def test_check_resolves_renamed_class(self) -> None:
+        body = f"### Deprecated\n- {self._TASK_BULLET}\n"
+        dm = DeprecationMap()
+        for e in _parse_release_body("1.3.0", body):
+            dm.entries[e.old_path] = e
+        hit = dm.check("PipelineTask")
+        assert hit is not None and hit.deprecated_in == "1.3.0"
+        assert dm.check("PipelineWorker") is None
+
+
+class TestNewestReleaseWins:
+    """Re-mentioned symbols take the newest release's entry as primary.
+
+    Regression: releases were sorted oldest-first (and lexicographically, so
+    "0.0.9" sorted after "0.0.108"), letting a misparsed 0.0.58 bullet that
+    mentioned `PipelineTask` in passing shadow the real 1.3.0 rename entry.
+    """
+
+    def test_newest_entry_is_primary(self) -> None:
+        old_body = (
+            "### Deprecated\n"
+            "- `PipelineParams.observers` is now deprecated, you the new "
+            "`PipelineTask` parameter `observers`.\n"
+        )
+        new_body = (
+            "### Deprecated\n"
+            "- `PipelineTask`, `PipelineTaskParams`, and the "
+            "`pipecat.pipeline.task` module have been renamed to "
+            "`PipelineWorker`, `WorkerParams`, and `pipecat.pipeline.worker`.\n"
+        )
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
+            return_value=[("0.0.58", old_body), ("1.3.0", new_body)],
+        ):
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat")
+        entry = dm.entries["PipelineTask"]
+        assert entry.deprecated_in == "1.3.0"
+        assert "renamed to" in entry.note
+        assert "PipelineWorker" in (entry.new_path or "")
+
+    def test_version_sort_is_numeric(self) -> None:
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
+            return_value=[
+                ("0.0.9", "### Deprecated\n- `OldThingService` is deprecated.\n"),
+                (
+                    "0.0.108",
+                    "### Deprecated\n- `OldThingService` is deprecated, use "
+                    "`NewThingService` instead.\n",
+                ),
+            ],
+        ):
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat")
+        # 0.0.108 is numerically newer than 0.0.9 (a lexicographic sort gets
+        # this backwards), so its guidance (new_path) is primary — while
+        # deprecated_in is the earliest announcement.
+        assert dm.entries["OldThingService"].deprecated_in == "0.0.9"
+        assert dm.entries["OldThingService"].new_path == "NewThingService"
+
+
+class TestOwnerContextNotKeyed:
+    """Member-deprecation bullets must not key the owning class.
+
+    Regression: `PipelineTask` reported `deprecated_in: 0.0.86` and
+    `removed_in: 1.0.0` because historical bullets deprecating its *events*
+    keyed the class itself, and the earliest-mention lifecycle merge then
+    inherited those versions. Texts are the real v0.0.86 / v1.0.0 bullets.
+    """
+
+    _EVENTS_DEPRECATED_BULLET = (
+        "`PipelineTask` events `on_pipeline_stopped`, `on_pipeline_ended` and "
+        "`on_pipeline_cancelled` are now deprecated. Use "
+        "`on_pipeline_finished` instead."
+    )
+
+    _EVENTS_REMOVED_BULLET = (
+        "⚠️ Removed deprecated `on_pipeline_ended`, `on_pipeline_cancelled`, "
+        "and `on_pipeline_stopped` events from `PipelineTask`. Use "
+        "`on_pipeline_finished` instead."
+    )
+
+    _OBSERVERS_REMOVED_BULLET = (
+        "⚠️ Removed deprecated `observers` field from `PipelineParams`. Pass "
+        "observers directly to `PipelineTask` constructor instead."
+    )
+
+    def test_owner_before_member_nouns_is_skipped(self) -> None:
+        body = f"### Deprecated\n- {self._EVENTS_DEPRECATED_BULLET}\n"
+        keys = {e.old_path for e in _parse_release_body("0.0.86", body)}
+        assert "PipelineTask" not in keys
+
+    def test_owner_after_from_is_skipped(self) -> None:
+        body = f"### Removed\n- {self._EVENTS_REMOVED_BULLET}\n"
+        keys = {e.old_path for e in _parse_release_body("1.0.0", body)}
+        assert "PipelineTask" not in keys
+
+    def test_owner_of_field_and_constructor_target_are_skipped(self) -> None:
+        body = f"### Removed\n- {self._OBSERVERS_REMOVED_BULLET}\n"
+        keys = {e.old_path for e in _parse_release_body("1.0.0", body)}
+        assert "PipelineParams" not in keys
+        assert "PipelineTask" not in keys
+
+    def test_lifecycle_not_corrupted_by_member_bullets(self) -> None:
+        """The full history: member bullets must not pollute the class's
+        deprecated_in/removed_in once the real 1.3.0 rename keys it."""
+        rename_bullet = (
+            "`PipelineTask`, `PipelineTaskParams`, and the "
+            "`pipecat.pipeline.task` module have been renamed to "
+            "`PipelineWorker`, `WorkerParams`, and `pipecat.pipeline.worker`."
+        )
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map._fetch_release_notes",
+            return_value=[
+                ("0.0.86", f"### Deprecated\n- {self._EVENTS_DEPRECATED_BULLET}\n"),
+                (
+                    "1.0.0",
+                    f"### Removed\n- {self._EVENTS_REMOVED_BULLET}\n"
+                    f"- {self._OBSERVERS_REMOVED_BULLET}\n",
+                ),
+                ("1.3.0", f"### Deprecated\n- {rename_bullet}\n"),
+            ],
+        ):
+            dm = build_deprecation_map_from_releases("pipecat-ai/pipecat")
+        entry = dm.entries["PipelineTask"]
+        assert entry.deprecated_in == "1.3.0"
+        assert entry.removed_in is None
+        assert "PipelineWorker" in (entry.new_path or "")
+
+
+class TestOwnerOfMemberPhrasings:
+    """Owner-of-member bullets in phrasings beyond the original `from `X`` /
+    `X` events forms must not key the owning class as deprecated.
+
+    Each text is a real pipecat release/changelog bullet that previously
+    produced a current-API false positive (AGENTS.md item #48). The genuine
+    deprecation in every case is a *member* (usually a lowercase init param),
+    not the class. Regression guards for the four owner phrasings and the
+    delimiter-list propagation added on top of the original owner-context skip.
+    """
+
+    @staticmethod
+    def _keys(text: str, section: str = "Deprecated") -> set[str]:
+        body = f"### {section}\n- {text}\n"
+        return {e.old_path for e in _parse_release_body("9.9.9", body)}
+
+    def test_colon_header_skips_owner_class(self) -> None:
+        keys = self._keys("`TTSService`: `text_aggregator`, `text_filter` init params")
+        assert "TTSService" not in keys
+
+    def test_colon_header_skips_nested_class_member(self) -> None:
+        # The colon-header convention only ever deprecates the header class's
+        # members, so a CamelCase member (`InputParams`) is owner context too.
+        keys = self._keys("`GoogleVertexLLMService`: `InputParams` class with `location` fields")
+        assert "GoogleVertexLLMService" not in keys
+        assert "InputParams" not in keys
+
+    def test_possessive_owner_skipped(self) -> None:
+        keys = self._keys("`GladiaSTTService`'s `confidence` arg is deprecated.")
+        assert "GladiaSTTService" not in keys
+
+    def test_adjacent_owner_member_skipped(self) -> None:
+        keys = self._keys(
+            "`SimliVideoService` `simli_config` parameter is deprecated. "
+            "Use `api_key` and `face_id` parameters instead."
+        )
+        assert "SimliVideoService" not in keys
+
+    def test_member_for_owner_skipped(self) -> None:
+        keys = self._keys(
+            "`english_normalization` input parameter for `MiniMaxHttpTTSService` "
+            "is deprecated, use `text_normalization` instead."
+        )
+        assert "MiniMaxHttpTTSService" not in keys
+
+    def test_for_subject_clause_skipped(self) -> None:
+        keys = self._keys(
+            "For `SpeechmaticsSTTService`, the `end_of_utterance_mode` parameter "
+            "is deprecated. Use the new `turn_detection_mode` parameter instead."
+        )
+        assert "SpeechmaticsSTTService" not in keys
+
+    def test_delimiter_list_after_preposition_skips_all_owners(self) -> None:
+        # Only the first token (`PipelineParams`) was owner-skipped before;
+        # `StartFrame` and `FrameProcessor` leaked through the comma/"and" list.
+        keys = self._keys(
+            "Removed deprecated `allow_interruptions` parameter from "
+            "`PipelineParams`, `StartFrame`, and `FrameProcessor`. Use "
+            "`LLMUserAggregator` parameters.",
+            section="Removed",
+        )
+        assert "PipelineParams" not in keys
+        assert "StartFrame" not in keys
+        assert "FrameProcessor" not in keys
+
+    def test_slash_separated_owner_list_skipped(self) -> None:
+        # The genuine removals (`Emulate…` frames) are kept; the slash-listed
+        # owners of the `emulated` field are skipped.
+        keys = self._keys(
+            "Removed deprecated `EmulateUserStartedSpeakingFrame` and "
+            "`EmulateUserStoppedSpeakingFrame` frames, and the `emulated` field "
+            "from `UserStartedSpeakingFrame` / `UserStoppedSpeakingFrame`.",
+            section="Removed",
+        )
+        assert "UserStartedSpeakingFrame" not in keys
+        assert "UserStoppedSpeakingFrame" not in keys
+        assert "EmulateUserStartedSpeakingFrame" in keys
+        assert "EmulateUserStoppedSpeakingFrame" in keys
+
+    def test_newer_marks_replacement_not_deprecated(self) -> None:
+        keys = self._keys(
+            "The `expect_stripped_words` parameter of `LLMAssistantAggregatorParams` "
+            "is ignored when used with the newer `LLMAssistantAggregator`."
+        )
+        assert "LLMAssistantAggregator" not in keys
+
+    def test_genuine_list_removal_before_preposition_is_kept(self) -> None:
+        # Regression guard: a genuine multi-class removal where the deprecated
+        # list *precedes* the preposition must still be keyed.
+        keys = self._keys(
+            "Removed deprecated `STTMuteFilter`, `STTMuteConfig`, and "
+            "`STTMuteStrategy` from `pipecat.processors.filters.stt_mute_filter`.",
+            section="Removed",
+        )
+        assert {"STTMuteFilter", "STTMuteConfig", "STTMuteStrategy"} <= keys
+
+    def test_genuine_class_removal_with_class_noun_is_kept(self) -> None:
+        # "class" is deliberately excluded from member nouns so a genuine class
+        # removal is not mistaken for an owner.
+        keys = self._keys(
+            "Removed deprecated `UserResponseAggregator` class from "
+            "`pipecat.processors.aggregators.user_response`. Use `LLMUserAggregator`.",
+            section="Removed",
+        )
+        assert "UserResponseAggregator" in keys
+
+
+class TestInconsistentHeadingLevels:
+    """Hand-written release bodies mix heading levels (real v0.0.87 layout).
+
+    Regression: the section tracker only exited on `### `, so an `## Fixed`
+    (h2) heading left the Deprecated section open and every Fixed bullet was
+    parsed as a deprecation ("Fixed a `PipelineTask` issue …" keyed
+    PipelineTask as deprecated in 0.0.87).
+    """
+
+    def test_h2_heading_ends_deprecated_section(self) -> None:
+        body = (
+            "### Deprecated\n"
+            "- `GladiaSTTService` arg is deprecated.\n"
+            "## Fixed\n"
+            "- Fixed a `PipelineTask` issue that could prevent the "
+            "application to exit if `task.cancel()` was called when the "
+            "task was already finished.\n"
+        )
+        keys = {e.old_path for e in _parse_release_body("0.0.87", body)}
+        assert "PipelineTask" not in keys
+
+    def test_h2_deprecated_section_is_accepted(self) -> None:
+        body = "## Deprecated\n- `OldNameService` is deprecated, use `NewNameService` instead.\n"
+        entries = {e.old_path: e for e in _parse_release_body("0.0.99", body)}
+        assert "OldNameService" in entries
+        assert entries["OldNameService"].new_path == "NewNameService"
+
+
+class TestHeadingDecorations:
+    """Hand-finished markdown decorates headings; parsing must tolerate it.
+
+    pipecat's real CHANGELOG has '## [0.0.96] - 2025-11-26 🦃 "Happy
+    Thanksgiving!" 🦃' and v0.0.96's release body opens with an h2 banner.
+    """
+
+    def test_decorated_section_heading_is_parsed(self) -> None:
+        body = "### ⚠️ Deprecated\n- `OldThingService` is deprecated.\n"
+        entries = {e.old_path for e in _parse_release_body("1.0.0", body)}
+        assert "OldThingService" in entries
+
+    def test_changelog_decorated_version_and_h2_section(self, tmp_path) -> None:
+        from pipecat_context_hub.services.ingest.deprecation_map import (
+            build_deprecation_map_from_changelog,
+        )
+
+        changelog = tmp_path / "CHANGELOG.md"
+        changelog.write_text(
+            '## [0.0.96] - 2025-11-26 🦃 "Happy Thanksgiving!" 🦃\n'
+            "\n"
+            "## Deprecated\n"
+            "- `OldThingService` is deprecated.\n"
+            "## Fixed\n"
+            "- Fixed `CurrentThingService`.\n",
+            encoding="utf-8",
+        )
+        dm = build_deprecation_map_from_changelog(changelog)
+        notes = {(n.deprecated_in, n.note) for n in dm.changelog_notes}
+        # The decorated version heading still yields 0.0.96; the h2 section
+        # is accepted; the h2 Fixed heading ends it (no Fixed bleed).
+        assert ("0.0.96", "`OldThingService` is deprecated.") in notes
+        assert not any("CurrentThingService" in n.note for n in dm.changelog_notes)
+
+
+class TestMalformedHeadingResilience:
+    """A human step in pipecat's changelog can slip the heading level or typo
+    the word. Recognized levels are parsed; unrecognizable headings warn
+    loudly instead of silently dropping a whole Deprecated section.
+    """
+
+    def test_h1_deprecated_section_captured(self) -> None:
+        entries = {
+            e.old_path
+            for e in _parse_release_body("1.0.0", "# Deprecated\n- `OldH1Service` is deprecated.\n")
+        }
+        assert "OldH1Service" in entries
+
+    def test_h5_deprecated_section_captured(self) -> None:
+        entries = {
+            e.old_path
+            for e in _parse_release_body(
+                "1.0.0", "##### Deprecated\n- `OldH5Service` is deprecated.\n"
+            )
+        }
+        assert "OldH5Service" in entries
+
+    def test_missing_space_heading_captured(self) -> None:
+        entries = {
+            e.old_path
+            for e in _parse_release_body(
+                "1.0.0", "###Deprecated\n- `OldNoSpaceService` is deprecated.\n"
+            )
+        }
+        assert "OldNoSpaceService" in entries
+
+    def test_unparsable_deprecation_heading_warns(self, caplog) -> None:
+        import logging
+
+        body = "### Deprecations\n- `OldPluralService` is deprecated.\n"
+        with caplog.at_level(logging.WARNING):
+            entries = {e.old_path for e in _parse_release_body("9.9.9", body)}
+        # The plural heading is not a recognized section, so the entry is not
+        # captured — but the parser warns loudly rather than dropping silently.
+        assert "OldPluralService" not in entries
+        assert any(
+            "malformed header" in r.getMessage().lower() and "9.9.9" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_normal_fixed_heading_does_not_warn(self, caplog) -> None:
+        import logging
+
+        # A plain non-deprecation heading must not trip the malformed warning.
+        body = (
+            "### Deprecated\n- `OldService` is deprecated.\n## Fixed\n- Fixed `CurrentService`.\n"
+        )
+        with caplog.at_level(logging.WARNING):
+            _parse_release_body("1.0.0", body)
+        assert not any("malformed header" in r.getMessage().lower() for r in caplog.records)

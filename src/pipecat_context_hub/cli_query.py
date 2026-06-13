@@ -285,14 +285,15 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
 
 @click.command("search-docs")
 @click.argument("query")
-@click.option("--area", default=None, help="Filter by docs area (path prefix).")
+@click.option("--area", default=None, help="Docs path prefix, e.g. 'guides' or 'server/services'.")
 @click.option("--limit", default=10, show_default=True, type=click.IntRange(1, 50))
 @click.pass_context
 def search_docs_command(ctx: click.Context, query: str, area: str | None, limit: int) -> None:
     """Semantic search over the indexed Pipecat docs.
 
     For multiple concepts, join them with ' + ' (e.g. "TTS + STT") rather
-    than stuffing one natural-language query.
+    than stuffing one natural-language query. Each hit carries a doc_id and
+    path — fetch the full page with get-doc.
     """
     _invoke(
         ctx,
@@ -321,12 +322,27 @@ def get_doc_command(
 
 @click.command("search-examples")
 @click.argument("query")
-@click.option("--repo", default=None, help="Filter by repo slug.")
-@click.option("--language", default=None, help="e.g. 'python' or 'typescript'.")
-@click.option("--domain", default=None, help="e.g. 'backend' or 'frontend'.")
+@click.option(
+    "--repo", default=None, help="Filter by repo slug, e.g. 'pipecat-ai/pipecat-examples'."
+)
+@click.option(
+    "--language", default=None, help="One of: python, typescript (the only parsed languages)."
+)
+@click.option(
+    "--domain",
+    default=None,
+    help="One of: backend (Python bot/pipeline code), frontend (JS/TS client), config, infra.",
+)
 @click.option("--tag", "tags", multiple=True, help="Capability tag (repeatable).")
-@click.option("--foundational-class", default=None, help="Filter by foundational class.")
-@click.option("--execution-mode", default=None)
+@click.option(
+    "--foundational-class",
+    default=None,
+    help="DEPRECATED legacy filter: only pre-reorg examples carry it; "
+    "new-layout examples have none, so filtering may silently exclude them.",
+)
+@click.option(
+    "--execution-mode", default=None, help="One of: local, cloud (inferred from capability tags)."
+)
 @click.option("--pipecat-version", default=None, help="Score results for this pipecat-ai version.")
 @click.option(
     "--compatible-only",
@@ -351,7 +367,8 @@ def search_examples_command(
     """Find working Pipecat examples for a capability.
 
     For multiple concepts, join them with ' + '
-    (e.g. "idle timeout + function calling").
+    (e.g. "idle timeout + function calling"). Each hit carries an
+    example_id — fetch the full source files with get-example.
     """
     _invoke(
         ctx,
@@ -416,7 +433,14 @@ def get_code_snippet_command(
     pipecat_version: str | None,
     max_lines: int,
 ) -> None:
-    """Get a targeted code snippet by symbol, intent, or path + line range."""
+    """Get a targeted code snippet by symbol, intent, or path + line range.
+
+    \b
+    Provide exactly one lookup mode:
+      --symbol  framework source
+      --intent  example code (supports ' + ' multi-concept queries)
+      --path    with --line-start
+    """
     _invoke(
         ctx,
         "get_code_snippet",

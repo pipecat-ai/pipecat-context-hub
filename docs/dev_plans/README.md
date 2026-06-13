@@ -3,11 +3,13 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-06-12 | feat | Consume upstream `deprecations.json` as primary deprecation source (parser becomes fallback) | Planned (blocked on pipecat#4722) | vr000m | _(future)_ `feature/deprecations-json-consumer` | `20260612-feature-deprecations-json-consumer.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
 | 2026-06-12 | feat | PyPI trusted-publishing release workflow + dist rename to `pipecat-ai-context-hub` | Complete (Unreleased) | vr000m | `feat/pypi-release-workflow` | _(no plan file)_ |
+| 2026-06-12 | docs | Agent-oriented CLI `--help` (exit codes, filter enum values, chaining hints) | Complete (Unreleased) | markbackman | `docs/agent-oriented-cli-help` | _(no plan file)_ |
 | 2026-06-12 | feat | Staleness footer on tool responses (both front doors) | Complete (Unreleased) | markbackman | `feat/staleness-footer` | _(no plan file)_ |
 | 2026-06-12 | feat | One-shot CLI query subcommands (every MCP tool as a shell command) | Complete (Unreleased) | markbackman | `feat/cli-query-subcommands` | `20260612-feature-cli-query-subcommands.md` |
 | 2026-06-06 | feat | Add RN transports to default ingest; keep pipecat-cli opt-in; pip-audit fix + justfile↔CI ignore parity | Complete (Unreleased) | vr000m | `feat/ingest-rn-transports-and-cli` | _(no plan file)_ |

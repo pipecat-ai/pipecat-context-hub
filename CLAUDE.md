@@ -72,8 +72,13 @@ Each concept is searched independently and results are interleaved for balanced 
 
 - `domain="backend"` — Python pipeline/bot code only
 - `domain="frontend"` — JS/TS client code only
+- `domain="config"` — YAML/TOML/JSON config
+- `domain="infra"` — Docker/CI infrastructure
 - `language="python"` — filter by programming language
 - `language="typescript"` — filter by programming language
+- `execution_mode="local"` / `"cloud"` — inferred from capability tags
+- `foundational_class=…` — legacy filter; only pre-reorg examples carry it, so
+  it silently excludes new-layout examples. Prefer `domain`/`tags`.
 - Combine: `search_examples("TTS pipeline", domain="backend", language="python")`
 
 ## Versioning
