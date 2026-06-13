@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-06-12 | chore | Release 0.2.0 — first PyPI publish (blocked on PR #76 merge + `pipecat` PyPI org pending-publisher) | Not Started | vr000m | _(future)_ `release/0.2.0` | `20260612-chore-release-0-2-0.md` |
+| 2026-06-12 | chore | Release 0.2.0 — first PyPI publish (prep merged via PR #82; awaiting PyPI trusted-publisher confirmation + `gh release create v0.2.0`) | In Progress | vr000m | `release/0.2.0` | `20260612-chore-release-0-2-0.md` |
 | 2026-06-12 | feat | Consume upstream `deprecations.json` as primary deprecation source (parser becomes fallback) | Planned (blocked on pipecat#4722) | vr000m | _(future)_ `feature/deprecations-json-consumer` | `20260612-feature-deprecations-json-consumer.md` |
 
 ## Completed Tasks
