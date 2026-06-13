@@ -63,11 +63,26 @@ This project uses [Semantic Versioning](https://semver.org/).
   (`GladiaSTTService`) is not reported deprecated just because a nested member
   (`GladiaSTTService.InputParams`) is. Genuine removals are preserved (verified
   by a full release-notes rebuild: 17 false-positive keys dropped, zero genuine
-  removals lost). A residual "replacement-kept" class (e.g. a class named only
-  as a still-usable alternative: "can still be used with `OpenAILLMService`") is
-  documented as a known gap (needs semantic phrasing detection) in AGENTS.md
-  item #48, with a runnable live-hub smoke at
-  `scripts/smoke_check_deprecation.py`.
+  removals lost). This entry fixes the **owner-of-member** class of current-API
+  false positive; a separate "replacement-kept" class remains (see Known
+  limitations below).
+
+### Known limitations
+- **`check_deprecation` still mis-keys 5 "replacement-kept" current APIs** — a
+  class named *only as a still-usable alternative* inside a removal bullet is
+  reported `deprecated: true` because the parser defaults every API token
+  before the boundary to deprecated and has no concept of a kept replacement on
+  the deprecated side: `OpenAILLMService` ("can still be used with
+  `OpenAILLMService`"), `WebsocketTTSService` ("Subclass `WebsocketTTSService`
+  directly"), `TTSService` ("part of the base `TTSService`", 0.0.105 bullet),
+  `LLMContext` ("now built into `LLMContext`"), and `LocalSmartTurnAnalyzerV3`
+  ("`transformers` now always installed"). The fix is deferred deliberately: a
+  phrase-matching rescue is two-sided risk (words like "still"/"directly"/"into"
+  also appear in genuine removal bullets, so a too-broad rule would suppress
+  *real* deprecations — a silent false negative), and warrants semantic phrasing
+  detection scoped to its own change with a measured rebuild diff. Tracked in
+  AGENTS.md item #48 and enumerated in `scripts/smoke_check_deprecation.py`
+  (`--known-gaps`).
 
 ### Added
 - **Staleness footer on tool responses** — when the local index is older than
