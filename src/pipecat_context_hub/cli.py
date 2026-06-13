@@ -142,7 +142,14 @@ def _delete_local_index_storage(data_dir: Path) -> None:
 @click.option("--log-level", default="INFO", help="Logging level.")
 @click.pass_context
 def main(ctx: click.Context, log_level: str) -> None:
-    """Pipecat Context Hub — local-first MCP server."""
+    """Pipecat Context Hub — local-first MCP server + one-shot query CLI.
+
+    \b
+    Query commands (search-*, get-*, check-deprecation, status) print the
+    tool's JSON to stdout; logs and errors go to stderr. Exit codes:
+    0 = success, 1 = invalid input, 2 = index missing or empty — build it
+    once with `pipecat-context-hub refresh` (first run takes minutes).
+    """
     _load_dotenv()
     _configure_logging(log_level)
     ctx.ensure_object(dict)
@@ -456,7 +463,13 @@ def serve(ctx: click.Context) -> None:
 def refresh(
     ctx: click.Context, force: bool, reset_index: bool, framework_version: str | None
 ) -> None:
-    """Rebuild the index, skipping unchanged sources when possible."""
+    """Rebuild the index, skipping unchanged sources when possible.
+
+    The first run downloads local embedding models and indexes all sources —
+    allow several minutes. With an authenticated `gh` CLI, GitHub release
+    notes are also ingested for deprecation data; without it,
+    check-deprecation coverage is limited.
+    """
     from pipecat_context_hub.services.embedding import (
         EmbeddingIndexWriter,
         EmbeddingService,

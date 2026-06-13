@@ -133,6 +133,18 @@ This project uses [Semantic Versioning](https://semver.org/).
   being added. Fills the React Native client-transport gap.
 
 ### Changed
+- **Agent-oriented CLI `--help` text** — the one-shot query subcommands now
+  document what an agent needs to drive them cold: the root command lists the
+  stdout/stderr split and exit codes (0 success / 1 invalid input / 2 index
+  missing — run `refresh`); `refresh` notes the first-run model download and
+  that GitHub release-note ingestion (deprecation data) needs an authenticated
+  `gh`; `search-examples` filter help enumerates the real enum values
+  (`--domain` backend/frontend/config/infra, `--language` python/typescript,
+  `--execution-mode` local/cloud) and marks `--foundational-class` as a legacy
+  filter that silently excludes new-layout examples; `search-docs` /
+  `search-examples` point at the `doc_id` / `example_id` to chain into `get-doc`
+  / `get-example`; and `get-code-snippet` states its three mutually-exclusive
+  lookup modes. Help text only — no behavior change.
 - **Shared reranker startup resolution** — the config + HF-cache decision that
   enables/disables the cross-encoder reranker at boot now lives in one place
   (`shared/reranker.py::probe_reranker`), used by both `serve` and the one-shot
