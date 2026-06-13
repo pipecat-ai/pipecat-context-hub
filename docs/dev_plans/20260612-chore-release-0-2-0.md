@@ -1,10 +1,10 @@
 # Release 0.2.0 — first PyPI publish
 
 **Component**: release/ci
-**Status**: Not Started
+**Status**: In Progress — release prep merged (PR #82); only the PyPI trusted-publisher confirmation + `gh release create v0.2.0` remain
 **Type**: chore
 **Created**: 2026-06-12
-**Branch**: `release/0.2.0` (to be cut from `main` after PR #76 merges)
+**Branch**: `release/0.2.0` (cut from `main` after PR #76 merged; prep landed via PR #82)
 **Target version**: `v0.2.0`
 
 ## Why
@@ -40,10 +40,16 @@ Order of operations:
 
 ## Pre-flight checks (before tagging)
 
-- [ ] PR #76 is merged to `main`.
-- [ ] PyPI pending publisher registered under the `pipecat` org (owner:
+- [x] PR #76 is merged to `main` (commit b198be6).
+- [ ] **PyPI trusted publisher confirmed** under the `pipecat` org (owner:
       `pipecat-ai` GitHub org, repo: `pipecat-context-hub`, workflow:
       `release.yml`, env: `pypi`; project name `pipecat-ai-context-hub`).
+      **Status: project name reserved under the `pipecat` org, but the
+      trusted-publisher config is UNCONFIRMED** — settings page is Owner-only
+      and vr000m is a project Maintainer (403). Needs an org/project Owner to
+      confirm or add the publisher before publish, or the `publish-pypi` job
+      fails on OIDC (recoverable: re-run after the publisher is added; no
+      re-tag needed).
 - [ ] *(optional, recommended)* Dry-run the publish pipeline: trigger the
       Release workflow via `workflow_dispatch` once — it publishes to **TestPyPI**
       and validates the OIDC wiring end-to-end without touching prod PyPI.
@@ -51,19 +57,18 @@ Order of operations:
 
 ## Release steps (on `release/0.2.0`, branched from updated `main`)
 
-- [ ] Branch: `git checkout main && git pull && git checkout -b release/0.2.0`
-- [ ] Bump version in **both** locations (enforced by
+- [x] Branch: `release/0.2.0` cut from updated `main`.
+- [x] Bump version in **both** locations (enforced by
       `tests/unit/test_server.py::TestVersionConsistency`):
-  - [ ] `pyproject.toml` → `[project].version = "0.2.0"`
-  - [ ] `src/pipecat_context_hub/server/main.py` → `_SERVER_VERSION = "0.2.0"`
-- [ ] `uv lock` (refresh `uv.lock` to `0.2.0`)
-- [ ] `CHANGELOG.md`: convert `## [Unreleased]` → `## [0.2.0] - 2026-06-XX`,
-      keeping the Added/Changed/Fixed structure; add a fresh empty
-      `## [Unreleased]` above it.
-- [ ] Run `uv run pytest tests/ -q`, `uv run ruff format`, `uv run ruff check`,
-      `uv run mypy src/ tests/`.
-- [ ] PR `release/0.2.0` → `main`; wait for green CI; merge (regular merge, no
-      squash).
+  - [x] `pyproject.toml` → `[project].version = "0.2.0"`
+  - [x] `src/pipecat_context_hub/server/main.py` → `_SERVER_VERSION = "0.2.0"`
+- [x] `uv lock` (refreshed `uv.lock` to `0.2.0`).
+- [x] `CHANGELOG.md`: `## [Unreleased]` cut to `## [0.2.0] - 2026-06-12`; fresh
+      empty `## [Unreleased]` added above it.
+- [x] Verified: `ruff check` clean, `mypy` clean (99 files), `pytest` 1139
+      passed / 6 skipped. (`ruff format` deliberately skipped — locked ruff
+      0.15.1 reformats 34 unrelated files; CI gates on `ruff check` only.)
+- [x] PR #82 `release/0.2.0` → `main`; CI green; merged (regular merge).
 
 ## Publish
 
