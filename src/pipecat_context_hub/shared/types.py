@@ -709,3 +709,14 @@ class CheckDeprecationOutput(BaseModel):
     deprecated_in: str | None = None
     removed_in: str | None = None
     note: str | None = None
+    kind: str | None = Field(
+        default=None,
+        description="What was deprecated: 'class', 'method', 'property', 'parameter', or 'module'.",
+    )
+    relation: str | None = Field(
+        default=None,
+        description=(
+            "How the replacement relates to the deprecated symbol: 'rename', 'merged', "
+            "'move', 'use_existing', or 'none' (no replacement)."
+        ),
+    )

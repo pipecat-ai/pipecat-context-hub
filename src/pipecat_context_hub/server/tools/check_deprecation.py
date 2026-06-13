@@ -37,6 +37,8 @@ async def handle_check_deprecation(
             deprecated_in=entry.deprecated_in,
             removed_in=entry.removed_in,
             note=entry.note or None,
+            kind=entry.kind,
+            relation=entry.relation,
         )
 
     return output.model_dump_json()
