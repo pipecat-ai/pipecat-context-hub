@@ -7,6 +7,11 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-12
+
+First release published to PyPI (`pipecat-ai-context-hub`, under the `pipecat`
+org), and the first `uvx`-able version — `uvx pipecat-ai-context-hub <cmd>`.
+
 ### Fixed
 - **`check_deprecation` misread "renamed to" release bullets** — the
   release-notes parser split deprecated names from replacements on the
