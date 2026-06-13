@@ -7,6 +7,83 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`check_deprecation` misread "renamed to" release bullets** — the
+  release-notes parser split deprecated names from replacements on the
+  literal word "use" only, and extracted class names only when a bullet had
+  no module paths. Every pipecat 1.3.0 rename bullet ("`PipelineTask` …
+  ha[s] been renamed to `PipelineWorker`", "Import `WorkerRunner` from
+  `pipecat.workers.runner`") was misread: the *replacements*
+  (`pipecat.pipeline.worker`, `pipecat.workers.runner`,
+  `InterruptionTaskFrame`) were keyed as deprecated — telling agents the
+  current API is deprecated — while the actually-deprecated names
+  (`PipelineTask`, `PipelineTaskParams`, `PipelineRunner`) returned
+  `deprecated: false`. The parser now classifies every backticked module
+  path *and* CamelCase symbol against a richer boundary ("use", "renamed
+  to", "replaced by/with", "moved to", "import", …), with "the old `X`" /
+  "the new `X`" phrasing rescues, a prose-identifier blocklist
+  (`DeprecationWarning`, …), and populated `new_path` replacements.
+  Releases are also now processed newest-first with numeric version
+  ordering (lexicographic sorting put `0.0.9` after `0.0.108`): the newest
+  mention's note/new_path are primary, the earliest mention supplies
+  `deprecated_in`/`removed_in`. Verified against the live index: all 1.3.0
+  renames now resolve correctly in both directions.
+  Two further lifecycle corruptions found in live follow-up: historical
+  *member* bullets keyed the owning class ("`PipelineTask` events … are now
+  deprecated" / "Removed … events from `PipelineTask`" supplied bogus
+  `deprecated_in: 0.0.86` and `removed_in: 1.0.0` for the class itself) —
+  fixed with owner-context detection ("of/from/on/to `X`", "`X`
+  events/method/parameter/constructor…" are skipped on the deprecated
+  side); and hand-written release bodies mix heading levels (v0.0.87 has
+  `## Fixed` as h2), which left the Deprecated section open and parsed
+  Fixed bullets as deprecations — section headings now accept any level
+  (h1–h6, tolerant of a missing space after the hashes) and *any* heading
+  closes the current section. A heading that mentions "deprecated"/"removed"
+  but does not parse as a section now **warns** at refresh instead of
+  silently dropping the section (pipecat's changelog has a human step that
+  can introduce malformed headers). A rename written *source*-first
+  ("renamed from `X`") is also keyed correctly now, not dropped by the
+  owner-context skip. `PipelineTask` now reports `deprecated_in: 1.3.0`,
+  `removed_in: null`, matching the pipecat changelog.
+- **`check_deprecation` reported ~17 current APIs as deprecated** (owner-of-
+  member false positives) — the worst failure mode the tool has. Owner-context
+  detection only recognised a single token right after a preposition, so other
+  member-deprecation phrasings leaked the owning class: `` `TTSService`:
+  `text_aggregator` init param `` (colon header), `` `GladiaSTTService`'s
+  `confidence` arg `` (possessive), `` `SimliVideoService` `simli_config`
+  parameter `` (adjacent owner+member), `` `english_normalization` parameter
+  for `MiniMaxHttpTTSService` `` (trailing `for X`), `For `SpeechmaticsSTTService`,
+  the `…` parameter` (subject clause), and delimiter-joined owner lists
+  (`from `PipelineParams`, `StartFrame`, and `FrameProcessor``, `from `A` /
+  `B``) where only the first token was skipped. All are now treated as owner
+  context. The colon-header convention skips *every* class token in the bullet
+  (so nested `` `InputParams` class `` members no longer leak), and "newer"/
+  "latest" join the replacement markers. Separately, `check()`'s reverse-prefix
+  fuzzy match no longer fires for a bare class name, so an owner class
+  (`GladiaSTTService`) is not reported deprecated just because a nested member
+  (`GladiaSTTService.InputParams`) is. Genuine removals are preserved (verified
+  by a full release-notes rebuild: 17 false-positive keys dropped, zero genuine
+  removals lost). This entry fixes the **owner-of-member** class of current-API
+  false positive; a separate "replacement-kept" class remains (see Known
+  limitations below).
+
+### Known limitations
+- **`check_deprecation` still mis-keys 5 "replacement-kept" current APIs** — a
+  class named *only as a still-usable alternative* inside a removal bullet is
+  reported `deprecated: true` because the parser defaults every API token
+  before the boundary to deprecated and has no concept of a kept replacement on
+  the deprecated side: `OpenAILLMService` ("can still be used with
+  `OpenAILLMService`"), `WebsocketTTSService` ("Subclass `WebsocketTTSService`
+  directly"), `TTSService` ("part of the base `TTSService`", 0.0.105 bullet),
+  `LLMContext` ("now built into `LLMContext`"), and `LocalSmartTurnAnalyzerV3`
+  ("`transformers` now always installed"). The fix is deferred deliberately: a
+  phrase-matching rescue is two-sided risk (words like "still"/"directly"/"into"
+  also appear in genuine removal bullets, so a too-broad rule would suppress
+  *real* deprecations — a silent false negative), and warrants semantic phrasing
+  detection scoped to its own change with a measured rebuild diff. Tracked in
+  AGENTS.md item #48 and enumerated in `scripts/smoke_check_deprecation.py`
+  (`--known-gaps`).
+
 ### Added
 - **Staleness footer on tool responses** — when the local index is older than
   a threshold (default 7 days; `PIPECAT_HUB_STALE_AFTER_DAYS`, `0` disables),
