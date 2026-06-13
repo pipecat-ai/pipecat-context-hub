@@ -21,10 +21,12 @@ class TestDeprecationMapCheck:
                 "pipecat.services.grok": DeprecationEntry(
                     old_path="pipecat.services.grok",
                     new_path="pipecat.services.xai.llm",
+                    kind="module",
                 ),
                 "pipecat.services.cartesia": DeprecationEntry(
                     old_path="pipecat.services.cartesia",
                     new_path="pipecat.services.cartesia.stt, pipecat.services.cartesia.tts",
+                    kind="module",
                 ),
             }
         )
@@ -42,11 +44,13 @@ class TestDeprecationMapCheck:
         assert entry is not None
         assert entry.old_path == "pipecat.services.grok"
 
-    def test_prefix_match_parent(self) -> None:
-        """'pipecat.services' should match 'pipecat.services.grok' (reverse prefix)."""
+    def test_ancestor_package_not_flagged(self) -> None:
+        """A current ancestor package must NOT be flagged because a descendant
+        module moved. ``pipecat.services.grok`` is deprecated, but the broad
+        ``pipecat.services`` / ``pipecat`` packages are current."""
         dm = self._make_map()
-        entry = dm.check("pipecat.services")
-        assert entry is not None
+        assert dm.check("pipecat.services") is None
+        assert dm.check("pipecat") is None
 
     def test_no_match(self) -> None:
         dm = self._make_map()
@@ -54,8 +58,8 @@ class TestDeprecationMapCheck:
 
     def test_bare_class_does_not_match_nested_member(self) -> None:
         """A current owner class must not inherit a deprecated nested member's
-        verdict via reverse-prefix. ``GladiaSTTService.InputParams`` is
-        deprecated, but ``GladiaSTTService`` itself is current."""
+        verdict. ``GladiaSTTService.InputParams`` is deprecated, but
+        ``GladiaSTTService`` itself is current."""
         dm = DeprecationMap(
             entries={
                 "GladiaSTTService.InputParams": DeprecationEntry(
@@ -67,10 +71,32 @@ class TestDeprecationMapCheck:
         assert dm.check("GladiaSTTService.InputParams") is not None
         assert dm.check("GladiaSTTService") is None
 
-    def test_module_path_still_reverse_prefix_matches(self) -> None:
-        """Reverse-prefix must still work for broad *module-path* queries."""
-        dm = self._make_map()
-        assert dm.check("pipecat.services") is not None
+    def test_current_module_with_deprecated_member_not_flagged(self) -> None:
+        """A current module must not be flagged just because it contains a
+        deprecated member. A deprecated parameter's fully-qualified key must not
+        make its container module (or class) look deprecated."""
+        dm = DeprecationMap(
+            entries={
+                # As produced by build_deprecation_map_from_registry: the bare
+                # subject plus its fully-qualified alias, both kind="parameter".
+                "OpenAILLMService.model": DeprecationEntry(
+                    old_path="OpenAILLMService.model",
+                    new_path="settings",
+                    kind="parameter",
+                ),
+                "pipecat.services.openai.llm.OpenAILLMService.model": DeprecationEntry(
+                    old_path="OpenAILLMService.model",
+                    new_path="settings",
+                    kind="parameter",
+                ),
+            }
+        )
+        # The current module and current class are NOT deprecated...
+        assert dm.check("pipecat.services.openai.llm") is None
+        assert dm.check("pipecat.services.openai.llm.OpenAILLMService") is None
+        # ...but the deprecated parameter still resolves by both names.
+        assert dm.check("OpenAILLMService.model") is not None
+        assert dm.check("pipecat.services.openai.llm.OpenAILLMService.model") is not None
 
     def test_empty_map(self) -> None:
         dm = DeprecationMap()

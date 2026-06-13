@@ -60,26 +60,28 @@ class DeprecationMap:
     pipecat_commit_sha: str = ""
 
     def check(self, symbol: str) -> DeprecationEntry | None:
-        """Fuzzy match a symbol against the deprecation map.
+        """Look up whether a symbol is deprecated.
 
         Matches:
-        - Exact: ``pipecat.services.grok`` → entry for that key
-        - Prefix: ``pipecat.services.grok.llm`` → entry for ``pipecat.services.grok``
-        - Reverse prefix: ``pipecat.services`` when key is ``pipecat.services.grok``
-          (returns first match — useful for broad queries)
+        - Exact: the queried symbol is itself a deprecated key — a bare
+          ``ResampyResampler``, a fully-qualified
+          ``pipecat.audio.resamplers.resampy_resampler.ResampyResampler``, or a
+          deprecated module path ``pipecat.services.grok.llm``.
+        - Prefix: the queried symbol is *nested under* a deprecated key — e.g.
+          ``pipecat.services.grok.llm.GrokLLMService`` resolves to the deprecated
+          ``pipecat.services.grok.llm`` module, and a method on a deprecated class
+          resolves to that class.
+
+        It deliberately does NOT match *ancestors*. Querying ``pipecat.services``
+        or ``pipecat.services.openai.llm`` must report not-deprecated even though a
+        submodule moved or a member within it is deprecated — reporting a current
+        package/module as deprecated (with some descendant's replacement) is the
+        worst failure mode for this tool.
         """
         if symbol in self.entries:
             return self.entries[symbol]
-        # A bare class name ("GladiaSTTService") must only match exactly. The
-        # reverse-prefix branch below ("pipecat.services" → "pipecat.services.grok")
-        # is meant for broad *module-path* queries; for a class it would match a
-        # deprecated *nested member* ("GladiaSTTService.InputParams") and report
-        # the still-current owner class as deprecated — the worst failure mode.
-        symbol_is_bare_class = "." not in symbol and symbol[:1].isupper()
         for key, entry in self.entries.items():
             if symbol.startswith(key + "."):
-                return entry
-            if not symbol_is_bare_class and key.startswith(symbol + "."):
                 return entry
         return None
 
