@@ -146,10 +146,15 @@ read pipecat's machine-readable registry
 auth is required** and the old release-note prerequisite is gone. One consequence
 of the registry model: it only carries symbols that **still exist** in the indexed
 pipecat source with an active `.. deprecated::` / `@deprecated` marker. A symbol
-that has already been *removed* is absent from the registry, so `check_deprecation`
-reports it `deprecated: false` (i.e. *unknown*), not "removed in X". Exact symbols
-below track the indexed pipecat version; re-verify against the current registry if
-they drift.
+that has already been *removed* is absent from `deprecations.json` — but as of PR
+#88 the hub also merges pipecat's sibling `removals.json` ledger (when present),
+so a removed symbol reports `status: "removed"` with its `removed_in` and a
+migration note rather than `deprecated: false`. `check_deprecation` also accepts an
+optional `version` (defaulting to the indexed framework version) and returns a
+`status` of `current` / `deprecated` / `removed` evaluated at that version. Until
+upstream ships a populated `removals.json`, the merge is a no-op and removed
+symbols still read `deprecated: false` (i.e. *unknown*). Exact symbols below track
+the indexed pipecat version; re-verify against the current registry if they drift.
 
 34. `check_deprecation("pipecat.services.grok.llm")` — `deprecated: true`,
     `kind: "module"`, `relation: "move"`,

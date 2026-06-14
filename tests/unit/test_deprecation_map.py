@@ -411,6 +411,40 @@ class TestRemovalsMerge:
         add_removals_from_registry(dm, tmp_path / "absent.json")
         assert set(dm.entries) == {"X"}  # unchanged
 
+    def test_removal_does_not_shadow_active_deprecation_on_bare_key(self, tmp_path: Path) -> None:
+        # A *different* symbol sharing the same bare name: an active deprecation
+        # (Foo in module a) plus a removed Foo in module b. The removal must NOT
+        # clobber the active entry on the bare key — otherwise a bare lookup would
+        # wrongly report the still-deprecated symbol as removed.
+        dm = DeprecationMap(
+            entries={
+                "Foo": DeprecationEntry(old_path="Foo", deprecated_in="1.2.0", removed_in="2.0.0"),
+                "pipecat.a.Foo": DeprecationEntry(
+                    old_path="Foo", deprecated_in="1.2.0", removed_in="2.0.0"
+                ),
+            }
+        )
+        path = self._write_removals(
+            tmp_path,
+            [
+                {
+                    "subject": "Foo",
+                    "module": "pipecat.b",
+                    "kind": "class",
+                    "deprecated_in": "1.0.0",
+                    "removed_in": "2.0.0",
+                    "announced_removed_in": "2.0.0",
+                }
+            ],
+        )
+        add_removals_from_registry(dm, path)
+        # Bare key still resolves to the active deprecation, not the removal.
+        bare = dm.check("Foo")
+        assert bare is not None and bare.status == "deprecated"
+        # The removed symbol is still reachable by its fully-qualified path.
+        removed = dm.check("pipecat.b.Foo")
+        assert removed is not None and removed.status == "removed"
+
     def test_round_trip_preserves_status(self, tmp_path: Path) -> None:
         dm = DeprecationMap(
             entries={

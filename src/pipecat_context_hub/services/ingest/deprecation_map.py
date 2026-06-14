@@ -278,7 +278,23 @@ def add_removals_from_registry(dep_map: DeprecationMap, removals_path: Path) -> 
             status="removed",
             announced_removed_in=rec.get("announced_removed_in"),
         )
-        dep_map.entries[subject] = entry
+        existing = dep_map.entries.get(subject)
+        if existing is not None and existing.status != "removed":
+            # Never let a removal silently shadow an *active* deprecation on the
+            # bare key. The producer only emits removals for subjects no longer in
+            # deprecations.json, so a bare-key collision here means a *different*
+            # symbol shares this name. Reporting "removed" for a still-deprecated
+            # symbol would break the safety invariant `status_for` upholds, so keep
+            # the active entry on the bare key; the removal stays resolvable via its
+            # fully-qualified alias registered below.
+            logger.warning(
+                "Removals registry: bare subject %r already maps to an active "
+                "deprecation; keeping the active entry on the bare key — the "
+                "removal resolves by full path only",
+                subject,
+            )
+        else:
+            dep_map.entries[subject] = entry
         added += 1
         module = rec.get("module")
         if module and rec.get("kind") != "module" and not subject.startswith(module + "."):
