@@ -1,7 +1,7 @@
 # Release 0.2.0 — first PyPI publish
 
 **Component**: release/ci
-**Status**: In Progress — release prep merged (PR #82); only the PyPI trusted-publisher confirmation + `gh release create v0.2.0` remain
+**Status**: Complete (v0.2.0) — published to PyPI 2026-06-12 (https://pypi.org/project/pipecat-ai-context-hub/)
 **Type**: chore
 **Created**: 2026-06-12
 **Branch**: `release/0.2.0` (cut from `main` after PR #76 merged; prep landed via PR #82)
@@ -41,15 +41,12 @@ Order of operations:
 ## Pre-flight checks (before tagging)
 
 - [x] PR #76 is merged to `main` (commit b198be6).
-- [ ] **PyPI trusted publisher confirmed** under the `pipecat` org (owner:
+- [x] **PyPI trusted publisher confirmed** under the `pipecat` org (owner:
       `pipecat-ai` GitHub org, repo: `pipecat-context-hub`, workflow:
       `release.yml`, env: `pypi`; project name `pipecat-ai-context-hub`).
-      **Status: project name reserved under the `pipecat` org, but the
-      trusted-publisher config is UNCONFIRMED** — settings page is Owner-only
-      and vr000m is a project Maintainer (403). Needs an org/project Owner to
-      confirm or add the publisher before publish, or the `publish-pypi` job
-      fails on OIDC (recoverable: re-run after the publisher is added; no
-      re-tag needed).
+      Confirmed by markbackman. The GH `pypi` environment also carries a
+      required-reviewers gate (vr000m/markbackman/aconchillo), so the
+      `publish-pypi` job pauses for manual approval before uploading.
 - [ ] *(optional, recommended)* Dry-run the publish pipeline: trigger the
       Release workflow via `workflow_dispatch` once — it publishes to **TestPyPI**
       and validates the OIDC wiring end-to-end without touching prod PyPI.
@@ -72,28 +69,30 @@ Order of operations:
 
 ## Publish
 
-- [ ] `gh release create v0.2.0` with notes per CLAUDE.md "Release Notes
-      Template" (theme: first PyPI release; CLI subcommands + trusted-publishing
-      pipeline). The **tag must be exactly `v0.2.0`** — `release.yml`'s
-      tag-matches-version guard fails the build if the tag ≠ the wheel version.
-- [ ] Watch the Release workflow: `build` (sdist+wheel, twine check, tag guard,
-      clean-venv smoke) → `publish-pypi` (OIDC, env `pypi`).
-- [ ] Verify the project is live and org-owned:
-      https://pypi.org/project/pipecat-ai-context-hub/ (under the `pipecat` org).
-- [ ] Smoke the published artifact:
-      `uvx pipecat-ai-context-hub check-deprecation PipelineTask` from a clean
-      machine/container.
+- [x] `gh release create v0.2.0` (notes per CLAUDE.md "Release Notes Template").
+      Tag-matches-version guard passed (tag `v0.2.0` == wheel `0.2.0`).
+- [x] Release workflow green: `build` (sdist+wheel, twine check, tag guard,
+      clean-venv smoke) → `publish-pypi` (OIDC, env `pypi`, after reviewer
+      approval).
+- [x] Project live: https://pypi.org/project/pipecat-ai-context-hub/ — 0.2.0,
+      wheel + sdist, under the `pipecat` org.
+- [x] Smoked the published artifact from a clean env: `uvx --refresh
+      pipecat-ai-context-hub --help` resolved 110 deps from PyPI and ran (exit
+      0). (Used `--help` rather than `check-deprecation`, which needs a built
+      index.)
 
 ## Post-release
 
-- [ ] Confirm `pipecat-context-hub` short-name handling (a metadata-only alias
-      package depending on the real one, per `docs/CONTRIBUTING.md`) — register
-      it on PyPI so the obvious wrong guess installs the right thing. *(Can be a
-      fast-follow; not blocking for 0.2.0.)*
-- [ ] Delete the `release/0.2.0` branch.
-- [ ] Update `docs/dev_plans/README.md`: mark this row `Complete (v0.2.0)`.
-- [ ] Drop the `project_pypi_first_release_setup` memory follow-up once 0.2.0 is
-      live.
+- [ ] **(fast-follow, open)** Register `pipecat-context-hub` short-name alias on
+      PyPI (a metadata-only package depending on the real one, per
+      `docs/CONTRIBUTING.md`) so the obvious wrong guess installs the right
+      thing. Org-owner action; not blocking 0.2.0.
+- [x] `release/0.2.0` branch deleted (on merge, `--delete-branch`).
+- [x] Update `docs/dev_plans/README.md`: row marked `Complete (v0.2.0)`.
+- [x] Dropped the `project_pypi_first_release_setup` memory follow-up (0.2.0 is
+      live).
+- [ ] **(optional, open)** Harden the GH `pypi` environment with a deployment
+      tag policy (`v*`) on top of the reviewer gate.
 
 ## Versioning policy note
 

@@ -2,8 +2,8 @@
   "context_servers": {
     "pipecat-context-hub": {
       "source": "custom",
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"],
+      "command": "uvx",
+      "args": ["pipecat-ai-context-hub", "serve"],
       "env": {}
     }
   }

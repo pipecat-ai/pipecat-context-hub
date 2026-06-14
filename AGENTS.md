@@ -251,6 +251,12 @@ they drift.
     replacement-kept" residuals are resolved by the registry — there is no longer
     a `--known-gaps` mode.)
 
+49. `get_doc(path="/api-reference/server/frames/system-frames")` — response
+    `sections` field is a **non-empty list** (regression canary for the always-empty
+    sections bug fixed in PR #83). Each entry in `sections` must round-trip:
+    passing `section=<title>` should narrow the page to that section's content
+    without returning `null` or the full page.
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
