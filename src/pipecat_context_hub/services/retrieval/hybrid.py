@@ -28,6 +28,7 @@ from pipecat_context_hub.services.retrieval.evidence import (
 from pipecat_context_hub.services.retrieval.decompose import decompose_query
 from pipecat_context_hub.services.retrieval.rerank import rerank
 from pipecat_context_hub.shared.interfaces import IndexReader
+from pipecat_context_hub.shared.markdown import heading_titles, iter_headings
 from pipecat_context_hub.shared.types import (
     ApiHit,
     Citation,
@@ -192,7 +193,9 @@ class HybridRetriever:
         # search using the full (joined) query.
         if limit < n:
             return await self._single_concept_search(
-                " ".join(concepts), filters, limit,
+                " ".join(concepts),
+                filters,
+                limit,
                 pipecat_version=pipecat_version,
             )
 
@@ -386,14 +389,17 @@ class HybridRetriever:
         # silently return fewer results than limit.
         fetch_limit = min(input.limit * 3, 50) if input.version_filter else input.limit
         results, compat_map = await self._hybrid_search(
-            input.query, filters, fetch_limit,
+            input.query,
+            filters,
+            fetch_limit,
             pipecat_version=input.pipecat_version,
         )
 
         # Apply version_filter if requested
         if input.version_filter == "compatible_only" and compat_map:
             results = [
-                r for r in results
+                r
+                for r in results
                 if compat_map.get(r.chunk.chunk_id) in ("compatible", "older_targeted", "unknown")
             ]
         results = results[: input.limit]
@@ -542,7 +548,9 @@ class HybridRetriever:
             for extra_filter in cascade_steps:
                 cascade_filters = {**base_filters, **extra_filter}
                 results, compat_map = await self._hybrid_search(
-                    query_text, cascade_filters, _DEFAULT_SNIPPET_CANDIDATES,
+                    query_text,
+                    cascade_filters,
+                    _DEFAULT_SNIPPET_CANDIDATES,
                     pipecat_version=input.pipecat_version,
                 )
                 if results:
@@ -566,7 +574,9 @@ class HybridRetriever:
 
         if not input.symbol:
             results, compat_map = await self._hybrid_search(
-                query_text, filters, _DEFAULT_SNIPPET_CANDIDATES,
+                query_text,
+                filters,
+                _DEFAULT_SNIPPET_CANDIDATES,
                 pipecat_version=input.pipecat_version,
             )
         evidence = assemble_evidence(query_text, results, filters)
@@ -701,14 +711,17 @@ class HybridRetriever:
         # silently return fewer results than limit.
         fetch_limit = min(input.limit * 3, 50) if input.version_filter else input.limit
         results, compat_map = await self._hybrid_search(
-            input.query, filters, fetch_limit,
+            input.query,
+            filters,
+            fetch_limit,
             pipecat_version=input.pipecat_version,
         )
 
         # Apply version_filter if requested
         if input.version_filter == "compatible_only" and compat_map:
             results = [
-                r for r in results
+                r
+                for r in results
                 if compat_map.get(r.chunk.chunk_id) in ("compatible", "older_targeted", "unknown")
             ]
         results = results[: input.limit]
@@ -804,47 +817,36 @@ def _empty_taxonomy(example_id: str) -> TaxonomyEntry:
 def _section_titles(content: str) -> list[str]:
     """List a doc page's markdown heading titles, in document order.
 
-    Mirrors :func:`_extract_section`'s heading detection (leading-``#`` levels,
-    no whitespace-indent handling) so every title returned here round-trips
-    through ``get_doc(..., section=title)``. Titles are compared case-insensitively
-    by ``_extract_section``, so duplicates that would resolve to the same section
-    are collapsed to their first occurrence — the list is a stable table of
-    contents, not a raw heading dump.
+    Delegates to :func:`heading_titles`, which mirrors :func:`_extract_section`'s
+    fence-aware heading detection so every title returned here round-trips
+    through ``get_doc(..., section=title)``. Headings inside fenced code blocks
+    are skipped, and duplicates that would resolve to the same section
+    (case-insensitive) are collapsed to their first occurrence — the list is a
+    stable table of contents, not a raw heading dump.
     """
-    titles: list[str] = []
-    seen: set[str] = set()
-    for line in content.splitlines():
-        stripped = line.lstrip("#")
-        level = len(line) - len(stripped)
-        heading = stripped.strip()
-        if level > 0 and heading:
-            key = heading.lower()
-            if key not in seen:
-                seen.add(key)
-                titles.append(heading)
-    return titles
+    return heading_titles(content)
 
 
 def _extract_section(content: str, section_name: str) -> str | None:
     """Try to extract a named section from markdown content.
 
     Looks for a heading matching section_name and returns content until
-    the next heading of equal or higher level.
+    the next heading of equal or higher level. Headings inside fenced code
+    blocks are ignored, matching :func:`_section_titles`.
     """
     lines = content.splitlines()
+    target = section_name.lower()
     start_idx: int | None = None
     start_level = 0
 
-    for i, line in enumerate(lines):
-        stripped = line.lstrip("#")
-        level = len(line) - len(stripped)
-        heading = stripped.strip()
-        if level > 0 and heading.lower() == section_name.lower():
-            start_idx = i
-            start_level = level
+    for level, title, line_index in iter_headings(content):
+        if start_idx is None:
+            if title.lower() == target:
+                start_idx = line_index
+                start_level = level
             continue
-        if start_idx is not None and level > 0 and level <= start_level:
-            return "\n".join(lines[start_idx:i])
+        if level <= start_level:
+            return "\n".join(lines[start_idx:line_index])
 
     if start_idx is not None:
         return "\n".join(lines[start_idx:])
