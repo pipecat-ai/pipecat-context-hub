@@ -285,10 +285,16 @@ def create_server(
                 result_json = await handle_get_hub_status(args, index_store, status)
                 return [types.TextContent(type="text", text=result_json)]
 
-            # check_deprecation dispatches via retriever.deprecation_map
+            # check_deprecation dispatches via retriever.deprecation_map, with the
+            # indexed framework version as the default for version-relative status.
             if name == "check_deprecation":
                 dep_map = getattr(retriever, "deprecation_map", None)
-                result_json = await handle_check_deprecation(args, dep_map)
+                fw_version = (
+                    index_store.get_all_metadata().get("framework_version")
+                    if index_store is not None
+                    else None
+                )
+                result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return [types.TextContent(type="text", text=_annotate(result_json))]
 
             handler_map: dict[str, Any] = {

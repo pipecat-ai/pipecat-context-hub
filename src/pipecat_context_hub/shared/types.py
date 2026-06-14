@@ -699,15 +699,38 @@ class CheckDeprecationInput(BaseModel):
             "E.g., 'pipecat.services.grok.llm' or 'DailyTransport'."
         ),
     )
+    version: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Optional pipecat version to evaluate against (e.g. '2.0.0'). The status is "
+            "computed relative to it: a symbol may be current, deprecated, or removed at "
+            "different versions. Defaults to the indexed framework version when omitted."
+        ),
+    )
 
 
 class CheckDeprecationOutput(BaseModel):
     """Output for the check_deprecation MCP tool."""
 
     deprecated: bool
+    status: str | None = Field(
+        default=None,
+        description=(
+            "Lifecycle status at the evaluated version: 'current' (not deprecated), "
+            "'deprecated' (deprecated but still present), or 'removed' (deleted in removed_in)."
+        ),
+    )
     replacement: str | None = None
     deprecated_in: str | None = None
     removed_in: str | None = None
+    announced_removed_in: str | None = Field(
+        default=None,
+        description=(
+            "For removed symbols, the version removal was originally announced for "
+            "(differs from removed_in only if the removal slipped)."
+        ),
+    )
     note: str | None = None
     kind: str | None = Field(
         default=None,

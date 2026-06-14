@@ -10,7 +10,9 @@ import pytest
 from pipecat_context_hub.services.ingest.deprecation_map import (
     DeprecationEntry,
     DeprecationMap,
+    add_removals_from_registry,
     build_deprecation_map_from_registry,
+    status_for,
 )
 
 
@@ -366,3 +368,160 @@ class TestCheckDeprecationHandler:
         result = json.loads(result_json)
         assert result["deprecated"] is False
         assert "not available" in (result.get("note") or "")
+
+
+class TestRemovalsMerge:
+    """Test merging pipecat's removals.json into the map."""
+
+    def _write_removals(self, tmp_path: Path, records: list[dict[str, object]]) -> Path:
+        path = tmp_path / "removals.json"
+        path.write_text(json.dumps({"schema_version": 1, "removals": records}), encoding="utf-8")
+        return path
+
+    def test_merges_removed_symbols(self, tmp_path: Path) -> None:
+        dm = DeprecationMap()
+        path = self._write_removals(
+            tmp_path,
+            [
+                {
+                    "subject": "PipelineTask",
+                    "module": "pipecat.pipeline.worker",
+                    "kind": "class",
+                    "deprecated_in": "1.3.0",
+                    "removed_in": "2.1.0",
+                    "announced_removed_in": "2.0.0",
+                    "relation": "use_existing",
+                    "replacement": "PipelineWorker",
+                    "message": "`PipelineTask` is deprecated since 1.3.0 ...",
+                }
+            ],
+        )
+        add_removals_from_registry(dm, path)
+        entry = dm.check("PipelineTask")
+        assert entry is not None
+        assert entry.status == "removed"
+        assert entry.removed_in == "2.1.0"
+        assert entry.announced_removed_in == "2.0.0"
+        assert entry.new_path == "PipelineWorker"
+        # fully-qualified alias resolves too
+        assert dm.check("pipecat.pipeline.worker.PipelineTask") is not None
+
+    def test_missing_file_is_noop(self, tmp_path: Path) -> None:
+        dm = DeprecationMap(entries={"X": DeprecationEntry(old_path="X")})
+        add_removals_from_registry(dm, tmp_path / "absent.json")
+        assert set(dm.entries) == {"X"}  # unchanged
+
+    def test_round_trip_preserves_status(self, tmp_path: Path) -> None:
+        dm = DeprecationMap(
+            entries={
+                "Gone": DeprecationEntry(
+                    old_path="Gone",
+                    new_path="New",
+                    deprecated_in="1.3.0",
+                    removed_in="2.0.0",
+                    status="removed",
+                    announced_removed_in="2.0.0",
+                ),
+            }
+        )
+        restored = DeprecationMap.from_dict(dm.to_dict())
+        e = restored.entries["Gone"]
+        assert e.status == "removed"
+        assert e.announced_removed_in == "2.0.0"
+
+
+class TestStatusFor:
+    """Version-relative lifecycle status."""
+
+    def _removed(self) -> DeprecationEntry:
+        return DeprecationEntry(
+            old_path="Gone", deprecated_in="1.3.0", removed_in="2.0.0", status="removed"
+        )
+
+    def _active(self) -> DeprecationEntry:
+        # An active deprecation: removed_in here is only the *announced* version.
+        return DeprecationEntry(
+            old_path="Soon", deprecated_in="1.3.0", removed_in="2.0.0", status="deprecated"
+        )
+
+    def test_removed_after_removal_is_removed(self) -> None:
+        assert status_for(self._removed(), "2.0.0") == "removed"
+        assert status_for(self._removed(), "2.5.0") == "removed"
+
+    def test_removed_during_deprecation_window_is_deprecated(self) -> None:
+        assert status_for(self._removed(), "1.5.0") == "deprecated"
+
+    def test_removed_before_deprecation_is_current(self) -> None:
+        assert status_for(self._removed(), "1.2.0") == "current"
+
+    def test_active_never_reports_removed_even_past_announced(self) -> None:
+        # 2.5.0 is past the announced 2.0.0, but there's no removal evidence.
+        assert status_for(self._active(), "2.5.0") == "deprecated"
+
+    def test_active_before_deprecation_is_current(self) -> None:
+        assert status_for(self._active(), "1.0.0") == "current"
+
+    def test_no_version_falls_back_to_intrinsic_status(self) -> None:
+        assert status_for(self._removed(), None) == "removed"
+        assert status_for(self._active(), None) == "deprecated"
+
+    def test_unparseable_version_falls_back(self) -> None:
+        assert status_for(self._removed(), "garbage") == "removed"
+
+
+class TestCheckDeprecationVersionAware:
+    """The handler computes status from the queried/indexed version."""
+
+    def _map(self) -> DeprecationMap:
+        return DeprecationMap(
+            entries={
+                "Gone": DeprecationEntry(
+                    old_path="Gone",
+                    new_path="New",
+                    deprecated_in="1.3.0",
+                    removed_in="2.0.0",
+                    status="removed",
+                    announced_removed_in="2.0.0",
+                ),
+            }
+        )
+
+    async def test_version_input_drives_removed(self) -> None:
+        from pipecat_context_hub.server.tools.check_deprecation import handle_check_deprecation
+
+        result = json.loads(
+            await handle_check_deprecation({"symbol": "Gone", "version": "2.0.0"}, self._map())
+        )
+        assert result["status"] == "removed"
+        assert result["deprecated"] is True
+        assert "was removed in 2.0.0" in result["note"]
+        assert "New" in result["note"]
+
+    async def test_version_input_drives_deprecated(self) -> None:
+        from pipecat_context_hub.server.tools.check_deprecation import handle_check_deprecation
+
+        result = json.loads(
+            await handle_check_deprecation({"symbol": "Gone", "version": "1.5.0"}, self._map())
+        )
+        assert result["status"] == "deprecated"
+        assert result["deprecated"] is True
+
+    async def test_version_input_drives_current(self) -> None:
+        from pipecat_context_hub.server.tools.check_deprecation import handle_check_deprecation
+
+        result = json.loads(
+            await handle_check_deprecation({"symbol": "Gone", "version": "1.0.0"}, self._map())
+        )
+        assert result["status"] == "current"
+        assert result["deprecated"] is False
+
+    async def test_framework_version_used_as_default(self) -> None:
+        from pipecat_context_hub.server.tools.check_deprecation import handle_check_deprecation
+
+        # No version in the call → falls back to the indexed framework version.
+        result = json.loads(
+            await handle_check_deprecation(
+                {"symbol": "Gone"}, self._map(), framework_version="2.0.0"
+            )
+        )
+        assert result["status"] == "removed"

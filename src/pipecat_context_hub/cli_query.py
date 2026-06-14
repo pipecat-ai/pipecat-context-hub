@@ -231,7 +231,12 @@ def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
         )
     if tool == "check_deprecation":
         dep_map = getattr(runtime.retriever, "deprecation_map", None)
-        return asyncio.run(handle_check_deprecation(args, dep_map))
+        fw_version = (
+            runtime.index_store.get_all_metadata().get("framework_version")
+            if runtime.index_store is not None
+            else None
+        )
+        return asyncio.run(handle_check_deprecation(args, dep_map, fw_version))
 
     handler_map: dict[str, Any] = {
         "search_docs": handle_search_docs,
