@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pipecat_context_hub.shared.markdown import (
+    extract_section,
     fenced_ranges,
     heading_titles,
     inside_fence,
@@ -68,9 +69,18 @@ class TestIterHeadings:
 
     def test_line_index_is_zero_based(self):
         md = "intro\n\n## Heading\n\nbody"
-        _level, title, line_index = iter_headings(md)[0]
+        _level, title, line_index = next(iter(iter_headings(md)))
         assert title == "Heading"
-        assert md.splitlines()[line_index] == "## Heading"
+        assert md.split("\n")[line_index] == "## Heading"
+
+    def test_iter_headings_is_lazy_generator(self):
+        from collections.abc import Iterator
+
+        result = iter_headings("## A\n\n## B")
+        assert isinstance(result, Iterator)
+        assert [t for _, t, _ in result] == ["A", "B"]
+        # Generator is exhausted after one pass.
+        assert list(result) == []
 
 
 class TestHeadingTitles:
@@ -85,3 +95,48 @@ class TestHeadingTitles:
     def test_skips_fenced_comments(self):
         md = "## Install\n\n```\n# install deps\n```\n\n## Usage"
         assert heading_titles(md) == ["Install", "Usage"]
+
+
+class TestExtractSection:
+    """Tests for extract_section — must stay in lockstep with heading_titles."""
+
+    def test_extract_skips_fenced_comment(self):
+        content = "## Install\n\nRun:\n\n```bash\n# install deps\nuv sync\n```\n\n## Usage\n\nGo.\n"
+        # A comment inside a fence is not a selectable section.
+        assert extract_section(content, "install deps") is None
+        # The real section still extracts, fenced block preserved verbatim.
+        install = extract_section(content, "Install")
+        assert install is not None
+        assert "# install deps" in install
+        assert "## Usage" not in install
+
+    def test_titles_round_trip_through_extract(self):
+        content = (
+            "## Events Overview\n\nIntro.\n\n"
+            "```python\n# example handler\npass\n```\n\n"
+            "## Multiple Handlers\n\nBody.\n"
+        )
+        for title in heading_titles(content):
+            extracted = extract_section(content, title)
+            assert extracted is not None
+            assert extracted.split("\n")[0].lstrip("#").strip() == title
+
+    def test_extract_returns_none_for_missing_section(self):
+        assert extract_section("## A\n\nbody\n", "Nonexistent") is None
+
+    def test_extract_round_trip_with_non_newline_line_separators(self):
+        # iter_headings indexes lines by counting "\n"; extract_section must
+        # split on "\n" too (not str.splitlines, which also breaks on \f, \x85,
+        # \x1c-\x1e, \x85, \u2028, \u2029, ...). A body carrying those chars
+        # would otherwise drift the slice boundary and return the wrong line.
+        for sep in ("\x0c", "\x85", "\u2028", "\u2029"):
+            content = f"## Alpha\n\nbefore{sep}after\n\n## Beta\n\nbody\n"
+            for title in heading_titles(content):
+                extracted = extract_section(content, title)
+                assert extracted is not None
+                # The extracted block must START at the requested heading.
+                assert extracted.split("\n")[0].lstrip("#").strip() == title, (
+                    sep,
+                    title,
+                    extracted,
+                )

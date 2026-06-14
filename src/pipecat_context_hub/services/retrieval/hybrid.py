@@ -28,7 +28,7 @@ from pipecat_context_hub.services.retrieval.evidence import (
 from pipecat_context_hub.services.retrieval.decompose import decompose_query
 from pipecat_context_hub.services.retrieval.rerank import rerank
 from pipecat_context_hub.shared.interfaces import IndexReader
-from pipecat_context_hub.shared.markdown import heading_titles, iter_headings
+from pipecat_context_hub.shared.markdown import extract_section, heading_titles
 from pipecat_context_hub.shared.types import (
     ApiHit,
     Citation,
@@ -335,10 +335,10 @@ class HybridRetriever:
         # Derive the section list from the page's own markdown headings. The doc
         # ingester does not persist a "sections" metadata key, so this field was
         # always empty; parsing the assembled content keeps `sections` in lockstep
-        # with what `--section` (`_extract_section`) can actually extract — every
+        # with what `--section` (`extract_section`) can actually extract — every
         # listed title round-trips. Fall back to persisted metadata only if a
         # future ingester supplies it and the content carries no headings.
-        sections = _section_titles(content)
+        sections = heading_titles(content)
         if not sections:
             seen: set[str] = set()
             for r in results:
@@ -350,7 +350,7 @@ class HybridRetriever:
         # If a specific section was requested, try to extract it. Computed after
         # `sections` so the response still advertises the full table of contents.
         if input.section:
-            section_content = _extract_section(content, input.section)
+            section_content = extract_section(content, input.section)
             if section_content:
                 content = section_content
 
@@ -812,47 +812,3 @@ def _empty_taxonomy(example_id: str) -> TaxonomyEntry:
         repo="",
         path="",
     )
-
-
-def _section_titles(content: str) -> list[str]:
-    """List a doc page's markdown heading titles, in document order.
-
-    Delegates to :func:`heading_titles`, which mirrors :func:`_extract_section`'s
-    fence-aware heading detection so every title returned here round-trips
-    through ``get_doc(..., section=title)``. Headings inside fenced code blocks
-    are skipped, and duplicates that would resolve to the same section
-    (case-insensitive) are collapsed to their first occurrence — the list is a
-    stable table of contents, not a raw heading dump.
-    """
-    return heading_titles(content)
-
-
-def _extract_section(content: str, section_name: str) -> str | None:
-    """Try to extract a named section from markdown content.
-
-    Looks for a heading matching section_name and returns content until
-    the next heading of equal or higher level. Headings inside fenced code
-    blocks are ignored, matching :func:`_section_titles`.
-    """
-    # Split on "\n" only (not str.splitlines, which also breaks on \v, \f,
-    # \x1c-\x1e, \x85, \u2028, \u2029): iter_headings reports line_index as a
-    # count of "\n" characters, so the slice array must use the same scheme or
-    # the boundaries drift when the body contains those separators.
-    lines = content.split("\n")
-    target = section_name.lower()
-    start_idx: int | None = None
-    start_level = 0
-
-    for level, title, line_index in iter_headings(content):
-        if start_idx is None:
-            if title.lower() == target:
-                start_idx = line_index
-                start_level = level
-            continue
-        if level <= start_level:
-            return "\n".join(lines[start_idx:line_index])
-
-    if start_idx is not None:
-        return "\n".join(lines[start_idx:])
-
-    return None

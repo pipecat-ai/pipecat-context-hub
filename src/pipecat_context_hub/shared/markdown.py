@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import bisect
 import re
+from collections.abc import Iterator
 
 _FENCE_RE = re.compile(r"^(`{3,}|~{3,})", re.MULTILINE)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
@@ -61,8 +62,8 @@ def inside_fence(pos: int, ranges: list[tuple[int, int]]) -> bool:
     return idx >= 0 and ranges[idx][1] > pos
 
 
-def iter_headings(content: str) -> list[tuple[int, str, int]]:
-    """Return ``(level, title, line_index)`` for each real markdown heading.
+def iter_headings(content: str) -> Iterator[tuple[int, str, int]]:
+    """Yield ``(level, title, line_index)`` for each real markdown heading.
 
     Headings inside fenced code blocks are skipped, and only valid ATX syntax
     (``#{1,6}`` + whitespace + title) is matched. ``line_index`` is the 0-based
@@ -71,7 +72,6 @@ def iter_headings(content: str) -> list[tuple[int, str, int]]:
     ``str.splitlines`` (which breaks on additional Unicode separators).
     """
     fences = fenced_ranges(content)
-    headings: list[tuple[int, str, int]] = []
     # Count newlines incrementally as the regex walks forward (matches are in
     # increasing position order) instead of rescanning from offset 0 per heading
     # — keeps the whole pass O(n log m) rather than O(n*m) on heading-dense docs.
@@ -85,8 +85,40 @@ def iter_headings(content: str) -> list[tuple[int, str, int]]:
             continue
         level = len(match.group(1))
         title = match.group(2).strip()
-        headings.append((level, title, nl_count))
-    return headings
+        yield level, title, nl_count
+
+
+def extract_section(content: str, section_name: str) -> str | None:
+    """Extract a named section's markdown from ``content``.
+
+    Finds the first heading whose title matches ``section_name``
+    (case-insensitive) and returns its block — from that heading up to the next
+    heading of equal-or-higher level (or end of document). Headings inside
+    fenced code blocks are ignored, so every title from :func:`heading_titles`
+    round-trips through this function. Returns ``None`` if no heading matches.
+    """
+    # Split on "\n" only (not str.splitlines, which also breaks on \v, \f,
+    # \x1c-\x1e, \x85, \u2028, \u2029): iter_headings reports line_index as a
+    # count of "\n" characters, so the slice array must use the same scheme or
+    # the boundaries drift when the body contains those separators.
+    lines = content.split("\n")
+    target = section_name.lower()
+    start_idx: int | None = None
+    start_level = 0
+
+    for level, title, line_index in iter_headings(content):
+        if start_idx is None:
+            if title.lower() == target:
+                start_idx = line_index
+                start_level = level
+            continue
+        if level <= start_level:
+            return "\n".join(lines[start_idx:line_index])
+
+    if start_idx is not None:
+        return "\n".join(lines[start_idx:])
+
+    return None
 
 
 def heading_titles(content: str) -> list[str]:
