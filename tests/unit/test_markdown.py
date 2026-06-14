@@ -30,6 +30,19 @@ class TestFencedRanges:
         assert len(ranges) == 1
         assert ranges[0][1] == len(md)
 
+    def test_inside_fence_binary_search_multiple_ranges(self):
+        # inside_fence binary-searches sorted, non-overlapping ranges; verify it
+        # is correct across several blocks and at range boundaries (half-open).
+        md = "a\n```\nx\n```\nb\n~~~\ny\n~~~\nc"
+        ranges = fenced_ranges(md)
+        assert len(ranges) == 2
+        for start, end in ranges:
+            assert not inside_fence(start - 1, ranges)  # char before open fence
+            assert inside_fence(start, ranges)  # start is inside (half-open)
+            assert inside_fence(end - 1, ranges)  # last char inside
+            assert not inside_fence(end, ranges)  # end is exclusive
+        assert not inside_fence(len(md) - 1, ranges)  # trailing 'c' between/after
+
 
 class TestIterHeadings:
     def test_levels_and_titles(self):

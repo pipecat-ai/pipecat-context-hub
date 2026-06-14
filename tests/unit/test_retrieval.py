@@ -620,6 +620,28 @@ class TestSectionHelpers:
         content = "## Setup\n\nA.\n\n## setup\n\nB.\n\n## Done\n\nC.\n"
         assert _section_titles(content) == ["Setup", "Done"]
 
+    def test_extract_round_trip_with_non_newline_line_separators(self):
+        # iter_headings indexes lines by counting "\n"; _extract_section must
+        # split on "\n" too (not str.splitlines, which also breaks on \f, \x85,
+        #   \u2028, \u2029, ...). A body carrying those chars before a heading
+        # otherwise drift the slice boundary and return the wrong first line.
+        from pipecat_context_hub.services.retrieval.hybrid import (
+            _extract_section,
+            _section_titles,
+        )
+
+        for sep in ("\x0c", "\x85", "\u2028", "\u2029"):
+            content = f"## Alpha\n\nbefore{sep}after\n\n## Beta\n\nbody\n"
+            for title in _section_titles(content):
+                extracted = _extract_section(content, title)
+                assert extracted is not None
+                # The extracted block must START at the requested heading.
+                assert extracted.split("\n")[0].lstrip("#").strip() == title, (
+                    sep,
+                    title,
+                    extracted,
+                )
+
 
 class TestHybridRetrieverSearchExamples:
     """Tests for HybridRetriever.search_examples()."""

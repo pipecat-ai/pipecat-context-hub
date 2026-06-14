@@ -12,6 +12,7 @@ Layering note: this lives in ``shared/`` so both ``services.ingest`` and
 
 from __future__ import annotations
 
+import bisect
 import re
 
 _FENCE_RE = re.compile(r"^(`{3,}|~{3,})", re.MULTILINE)
@@ -24,6 +25,10 @@ def fenced_ranges(markdown: str) -> list[tuple[int, int]]:
     A fence opens on a line starting with three or more backticks or tildes and
     closes on the next line starting with at least as many of the same fence
     character. An unclosed fence extends to the end of the document.
+
+    The returned ranges are sorted by start offset and non-overlapping (an
+    unclosed fence, if any, is always the last range) — :func:`inside_fence`
+    relies on this for its binary search.
     """
     ranges: list[tuple[int, int]] = []
     it = _FENCE_RE.finditer(markdown)
@@ -43,11 +48,17 @@ def fenced_ranges(markdown: str) -> list[tuple[int, int]]:
 
 
 def inside_fence(pos: int, ranges: list[tuple[int, int]]) -> bool:
-    """Check if a position falls inside any fenced code block."""
-    for start, end in ranges:
-        if start <= pos < end:
-            return True
-    return False
+    """Check if a position falls inside any fenced code block.
+
+    ``ranges`` must be the output of :func:`fenced_ranges` (sorted by start,
+    non-overlapping). Binary-searches for the last range starting at or before
+    ``pos`` — O(log n) per call, so callers scanning every heading position stay
+    O(n log n) rather than O(n*m).
+    """
+    # Largest range whose start <= pos. ``(pos, inf)`` sorts after every
+    # ``(start, end)`` with start == pos, so bisect_right-1 lands on it.
+    idx = bisect.bisect_right(ranges, (pos, float("inf"))) - 1
+    return idx >= 0 and ranges[idx][1] > pos
 
 
 def iter_headings(content: str) -> list[tuple[int, str, int]]:
@@ -55,17 +66,26 @@ def iter_headings(content: str) -> list[tuple[int, str, int]]:
 
     Headings inside fenced code blocks are skipped, and only valid ATX syntax
     (``#{1,6}`` + whitespace + title) is matched. ``line_index`` is the 0-based
-    index of the heading line in ``content.splitlines()``.
+    index of the heading line in ``content.split("\n")`` (newline count before
+    the heading) — callers slicing by it must split on ``"\n"`` too, not
+    ``str.splitlines`` (which breaks on additional Unicode separators).
     """
     fences = fenced_ranges(content)
     headings: list[tuple[int, str, int]] = []
+    # Count newlines incrementally as the regex walks forward (matches are in
+    # increasing position order) instead of rescanning from offset 0 per heading
+    # — keeps the whole pass O(n log m) rather than O(n*m) on heading-dense docs.
+    nl_count = 0
+    last_pos = 0
     for match in _HEADING_RE.finditer(content):
-        if inside_fence(match.start(), fences):
+        start = match.start()
+        nl_count += content.count("\n", last_pos, start)
+        last_pos = start
+        if inside_fence(start, fences):
             continue
         level = len(match.group(1))
         title = match.group(2).strip()
-        line_index = content.count("\n", 0, match.start())
-        headings.append((level, title, line_index))
+        headings.append((level, title, nl_count))
     return headings
 
 

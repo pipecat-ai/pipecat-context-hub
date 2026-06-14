@@ -834,7 +834,11 @@ def _extract_section(content: str, section_name: str) -> str | None:
     the next heading of equal or higher level. Headings inside fenced code
     blocks are ignored, matching :func:`_section_titles`.
     """
-    lines = content.splitlines()
+    # Split on "\n" only (not str.splitlines, which also breaks on \v, \f,
+    # \x1c-\x1e, \x85, \u2028, \u2029): iter_headings reports line_index as a
+    # count of "\n" characters, so the slice array must use the same scheme or
+    # the boundaries drift when the body contains those separators.
+    lines = content.split("\n")
     target = section_name.lower()
     start_idx: int | None = None
     start_level = 0
