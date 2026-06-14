@@ -3,12 +3,14 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-06-12 | feat | Consume upstream `deprecations.json` as the deprecation source (prose parser removed) | Implemented (PR #85; upstream pipecat#4726 merged) | vr000m | `feat/deprecation-registry` | `20260612-feature-deprecations-json-consumer.md` |
+| _(none)_ | | | | | | |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-06-13 | fix | `get_doc()` sections always empty — derive from page headings (fence-aware, no re-index) | Complete (PR #83) | vr000m | `fix/get-doc-sections-from-headings` | _(no plan file)_ |
+| 2026-06-14 | chore | Release 0.2.1 — registry-backed `check_deprecation` + `get_doc` section/title fixes | Complete (v0.2.1) | vr000m | `chore/release-0-2-1` | _(no plan file)_ |
+| 2026-06-13 | feat | Consume upstream `deprecations.json` as the deprecation source (prose parser removed) | Complete (v0.2.1; PR #85) | vr000m | `feat/deprecation-registry` | `20260612-feature-deprecations-json-consumer.md` |
+| 2026-06-13 | fix | `get_doc()` sections always empty — derive from page headings (fence-aware, no re-index) | Complete (v0.2.1; PR #83) | vr000m | `fix/get-doc-sections-from-headings` | _(no plan file)_ |
 | 2026-06-12 | chore | Release 0.2.0 — first PyPI publish (`pipecat-ai-context-hub` under the `pipecat` org) | Complete (v0.2.0) | vr000m | `release/0.2.0` | `20260612-chore-release-0-2-0.md` |
 | 2026-06-12 | feat | PyPI trusted-publishing release workflow + dist rename to `pipecat-ai-context-hub` | Complete (v0.2.0) | vr000m | `feat/pypi-release-workflow` | _(no plan file)_ |
 | 2026-06-12 | docs | Agent-oriented CLI `--help` (exit codes, filter enum values, chaining hints) | Complete (v0.2.0) | markbackman | `docs/agent-oriented-cli-help` | _(no plan file)_ |

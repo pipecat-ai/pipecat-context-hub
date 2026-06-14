@@ -7,7 +7,35 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-14
+
+### Added
+- **`check_deprecation` returns `kind`, `relation`, and `location`** — responses
+  now carry what was deprecated (`class` / `method` / `property` / `parameter` /
+  `module`), how the replacement relates to it (`rename` / `merged` / `move` /
+  `use_existing` / `none`), and the source `file:line` of the deprecation marker.
+  An agent gets "removed; use the existing `X`" semantics plus a
+  jump-to-definition pointer instead of a bare replacement string.
+
+### Changed
+- **Deprecation data is now registry-only.** `check_deprecation` reads pipecat's
+  machine-readable registry (`scripts/deprecations/deprecations.json`, shipped by
+  [pipecat-ai/pipecat#4726](https://github.com/pipecat-ai/pipecat/pull/4726)) as
+  the single source of truth; the release-notes / CHANGELOG prose parser has been
+  removed. Consequence: a pipecat checkout that **predates** the registry now
+  produces an empty deprecation map (logged, no error), so `check_deprecation`
+  reports `deprecated: false` for symbols it has no registry data on. Indexing a
+  pipecat version that ships the registry restores full coverage. Run
+  `uv run pipecat-context-hub refresh --force` after upgrading.
+
 ### Fixed
+- **`check_deprecation` no longer reports current APIs as deprecated** — the old
+  prose parser's heuristics produced false positives (current classes such as
+  `DailyTransport` flagged as deprecated). Registry lookups are exact: bare
+  names, nested members, and fully-qualified module paths all resolve, and a
+  symbol is reported deprecated only if it — or a symbol nested under it — is in
+  the registry. Ancestor packages (`pipecat.services`) and owner-of-member
+  classes (a class whose method/parameter is deprecated) are never flagged.
 - **`get_doc()` now populates the `sections` field** — it was always empty
   because the doc ingester never persisted a `sections` metadata key. Section
   titles are now derived from the page's own markdown headings (fence-aware, so
