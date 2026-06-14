@@ -192,34 +192,45 @@ Resolved in the PR #85 follow-up commit:
   and `test_malformed_registry_returns_empty` already assert graceful degradation
   to an empty map — no new test needed.
 
-Deferred (decided 2026-06-14: do nothing now):
+Resolved in **PR [#88](https://github.com/pipecat-ai/pipecat-context-hub/pull/88)** (`feat/removal-history`, 2026-06-14):
 
-- **Removed-symbol history.** The registry is blind to *removed* symbols by
-  construction — it scans live `.. deprecated::` / `@deprecated` markers, and a
-  removed symbol has none (there is no tombstone/`status` field in
-  `schema_version: 1`). So once a symbol is deleted from source, `check_deprecation`
-  reports it `deprecated: false` (*unknown*), not "removed in X; use Y" — even
-  though removed-symbol lookups are arguably the highest-value case (an agent using
-  an old API it learned from a prior pipecat). The pre-#85 prose *fallback* used to
-  cover this; #85 traded it away for current-API correctness.
+- **Removed-symbol history — now handled.** Originally deferred here (decided
+  2026-06-14: "do nothing now") with a revisit trigger of "when pipecat 2.0 reaches
+  pre-release/RC." That trigger was **overtaken by events**: the work was picked up
+  early via a producer/consumer split rather than waiting for the 2.0 cliff.
 
-  **Why deferred:** today **319 of 322** records are `removed_in: 2.0.0` and pipecat
-  is on 1.x — i.e. essentially *nothing is removed yet*, so the gap is latent. But
-  it is a **scheduled cliff**: when 2.0.0 ships, all 319 vanish from the registry at
-  once, exactly when 1.x-trained agents most need "that's gone."
+  **The gap.** The active registry is blind to *removed* symbols by construction —
+  it scans live `.. deprecated::` / `@deprecated` markers, and a removed symbol has
+  none. So once a symbol is deleted from source it falls out of `deprecations.json`,
+  and `check_deprecation` reported it `deprecated: false` (*unknown*), not "removed
+  in X; use Y" — arguably the highest-value case (an agent using an old API it
+  learned from a prior pipecat). With **319 of 322** records carrying
+  `removed_in: 2.0.0`, the whole class lands at once when 2.0 ships.
 
-  **Revisit trigger — when pipecat 2.0 reaches pre-release/RC, not after it ships.**
-  The intended fix (version-diff tombstones: on refresh, carry forward entries that
-  disappear from the new registry when `removed_in ≤ current framework version`,
-  flagged `removed: true`) compares the new registry against the *last persisted
-  1.x map*. That comparison is only possible while the 1.x map is still the one on
-  disk — once a user refreshes past 2.0 without the logic in place, the old map is
-  overwritten and the data is gone for them. Nothing needs to happen now to
-  *preserve* data (the hub persists `deprecation_map.json` each refresh); the
-  constraint is purely that the logic must land before users refresh onto 2.0. This
-  stays registry-only (no prose-parser resurrection) and needs no upstream change —
-  though an upstream `status: removed` ledger in `deprecations.json` would make it
-  trivial and is worth raising with pipecat if/when this is picked up.
+  **What shipped — and how it differs from the deferred design.** This plan's
+  intended fix was a **version-diff tombstone** (on refresh, carry forward entries
+  that vanish from the new registry, comparing against the last-persisted 1.x map).
+  PR #88 instead took the *other* route this section flagged as "trivial if
+  available": an **upstream `removals.json` ledger** (producer side:
+  [pipecat#4734](https://github.com/pipecat-ai/pipecat/pull/4734)). The hub now reads
+  `scripts/deprecations/removals.json` (sibling of `deprecations.json`) into the map
+  with `status="removed"`, and answers `check_deprecation` relative to a pipecat
+  **version**:
+  - `add_removals_from_registry(dep_map, path)` merges removed symbols
+    (`status="removed"`, actual `removed_in`, `announced_removed_in`), keyed bare +
+    fully-qualified like active deprecations.
+  - `status_for(entry, version)` computes `current` / `deprecated` / `removed` via
+    `packaging.version`. **Safety invariant (carried over from the #78
+    false-positive lessons):** it never reports `removed` for an *active*
+    deprecation — whose `removed_in` is only an *announced* version — so a removal
+    must be evidenced in `removals.json`.
+  - `check_deprecation` gains an optional `version` input (defaulting to the indexed
+    `framework_version`); output adds `status` and `announced_removed_in`.
+
+  **Dormant until upstream ships the file.** With no `removals.json` present the
+  merge is a no-op and behavior is identical to #85 — so this no longer hinges on
+  the 2.0 cliff; it is in place ahead of it. The version-diff-tombstone fallback was
+  **not needed** and is not implemented.
 
 ## Original plan (superseded sections, kept for provenance)
 
