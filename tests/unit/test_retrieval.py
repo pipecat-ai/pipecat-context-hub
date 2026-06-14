@@ -204,7 +204,9 @@ class TestCodeIntentHeuristics:
         r1 = _make_result("a", score=0.8, indexed_at=old_date)
         rrf_scores = {"a": 0.5}
 
-        expected_penalty = min(STALENESS_MAX_PENALTY, 120 / STALENESS_DECAY_DAYS * STALENESS_MAX_PENALTY)
+        expected_penalty = min(
+            STALENESS_MAX_PENALTY, 120 / STALENESS_DECAY_DAYS * STALENESS_MAX_PENALTY
+        )
         results, _ = apply_code_intent_heuristics([r1], rrf_scores, "some query", now=NOW)
         assert results[0].score == pytest.approx(0.5 - expected_penalty)
 
@@ -223,7 +225,9 @@ class TestCodeIntentHeuristics:
         r1 = _make_result("a", score=0.8, indexed_at=recent_date)
         rrf_scores = {"a": 0.5}
 
-        expected_penalty = min(STALENESS_MAX_PENALTY, 10 / STALENESS_DECAY_DAYS * STALENESS_MAX_PENALTY)
+        expected_penalty = min(
+            STALENESS_MAX_PENALTY, 10 / STALENESS_DECAY_DAYS * STALENESS_MAX_PENALTY
+        )
         results, _ = apply_code_intent_heuristics([r1], rrf_scores, "some query", now=NOW)
         assert results[0].score == pytest.approx(0.5 - expected_penalty)
 
@@ -233,7 +237,9 @@ class TestCodeIntentHeuristics:
         r2 = _make_result("b", score=0.9, content="class PipelineRunner: pass")
         rrf_scores = {"a": 0.3, "b": 0.2}
 
-        results, _ = apply_code_intent_heuristics([r1, r2], rrf_scores, "use PipelineRunner", now=NOW)
+        results, _ = apply_code_intent_heuristics(
+            [r1, r2], rrf_scores, "use PipelineRunner", now=NOW
+        )
         # b gets symbol boost: 0.2 + 0.15 = 0.35 > a's 0.3
         assert results[0].chunk.chunk_id == "b"
         assert results[1].chunk.chunk_id == "a"
@@ -276,6 +282,7 @@ class TestCrossEncoderReranker:
         r2 = _make_result("b", score=0.8)
 
         import asyncio
+
         result = asyncio.run(ce.rerank([r1, r2], "query"))
         assert len(result) == 2
         assert result[0].chunk.chunk_id == "a"
@@ -297,6 +304,7 @@ class TestCrossEncoderReranker:
 
         ce = CrossEncoderReranker(enabled=True)
         import asyncio
+
         result = asyncio.run(ce.rerank([], "query"))
         assert result == []
 
@@ -615,9 +623,7 @@ class TestHybridRetrieverSearchExamples:
         mock_reader = _mock_index_reader()
         retriever = HybridRetriever(mock_reader)
 
-        await retriever.search_examples(
-            SearchExamplesInput(query="TTS pipeline", domain="backend")
-        )
+        await retriever.search_examples(SearchExamplesInput(query="TTS pipeline", domain="backend"))
 
         query = mock_reader.vector_search.call_args[0][0]
         assert query.filters["domain"] == "backend"
@@ -1307,9 +1313,7 @@ class TestCodeSnippetEnrichment:
         mock_reader = _mock_index_reader(vector_results=[r1], keyword_results=[r1])
         retriever = HybridRetriever(mock_reader)
 
-        output = await retriever.get_code_snippet(
-            GetCodeSnippetInput(symbol="Svc", max_lines=2)
-        )
+        output = await retriever.get_code_snippet(GetCodeSnippetInput(symbol="Svc", max_lines=2))
 
         assert len(output.snippets) == 1
         s = output.snippets[0]

@@ -122,9 +122,7 @@ class TestIndexRoundTrip:
 
         from pipecat_context_hub.shared.types import IndexQuery
 
-        results = await index_store.keyword_search(
-            IndexQuery(query_text="voice AI bots", limit=5)
-        )
+        results = await index_store.keyword_search(IndexQuery(query_text="voice AI bots", limit=5))
         assert len(results) > 0
         assert results[0].chunk.chunk_id == "d1"
 
@@ -187,9 +185,9 @@ class TestHybridRetrieverE2E:
         code = [
             _make_code_record(
                 "c1",
-                'async def main():\n    transport = DailyTransport()\n    stt = DeepgramSTT()\n'
-                '    llm = OpenAILLM()\n    tts = CartesiaTTS()\n    pipeline = Pipeline('
-                '[transport.input(), stt, llm, tts, transport.output()])\n',
+                "async def main():\n    transport = DailyTransport()\n    stt = DeepgramSTT()\n"
+                "    llm = OpenAILLM()\n    tts = CartesiaTTS()\n    pipeline = Pipeline("
+                "[transport.input(), stt, llm, tts, transport.output()])\n",
             ),
             _make_code_record(
                 "c2",
@@ -202,9 +200,7 @@ class TestHybridRetrieverE2E:
         await embedding_writer.upsert(docs + code)
 
     async def test_search_docs(self, retriever: HybridRetriever):
-        result = await retriever.search_docs(
-            SearchDocsInput(query="how to create a Pipecat bot")
-        )
+        result = await retriever.search_docs(SearchDocsInput(query="how to create a Pipecat bot"))
         assert len(result.hits) > 0
         assert result.evidence.confidence > 0.0
         # Top hit should be about creating a bot
@@ -214,9 +210,7 @@ class TestHybridRetrieverE2E:
         assert source_url.hostname == "docs.pipecat.ai"
 
     async def test_search_examples(self, retriever: HybridRetriever):
-        result = await retriever.search_examples(
-            SearchExamplesInput(query="voice bot pipeline")
-        )
+        result = await retriever.search_examples(SearchExamplesInput(query="voice bot pipeline"))
         assert len(result.hits) > 0
         assert result.evidence.confidence > 0.0
         # Should return code results
@@ -233,21 +227,95 @@ class TestHybridRetrieverE2E:
         assert result.title == "Not Found"
         assert result.evidence.confidence == 0.0
 
+    async def test_get_doc_sections_derived_from_headings(
+        self,
+        retriever: HybridRetriever,
+        embedding_writer: EmbeddingIndexWriter,
+    ):
+        """`sections` is derived from the page's markdown headings, and every
+        advertised title round-trips through ``section=``.
+
+        Regression: the field was always ``[]`` because the doc ingester never
+        persisted a ``sections`` metadata key, so callers could not discover
+        which ``--section`` values were valid without parsing ``content`` by hand.
+        """
+        content = (
+            "## Events Overview\n\nIntro.\n\n"
+            "## Registering Event Handlers\n\nBody A.\n\n"
+            "## Multiple Handlers\n\nBody B.\n"
+        )
+        await embedding_writer.upsert([_make_doc_record("d_sec", content, path="/docs/events")])
+
+        doc = await retriever.get_doc(GetDocInput(doc_id="d_sec"))
+        assert doc.sections == [
+            "Events Overview",
+            "Registering Event Handlers",
+            "Multiple Handlers",
+        ]
+
+        # Every advertised section is retrievable and narrows the page.
+        for title in doc.sections:
+            sec = await retriever.get_doc(GetDocInput(doc_id="d_sec", section=title))
+            assert sec.content.splitlines()[0].lstrip("#").strip() == title
+            assert len(sec.content) < len(doc.content)
+
+    async def test_get_doc_sections_skip_fenced_code_headings(
+        self,
+        retriever: HybridRetriever,
+        embedding_writer: EmbeddingIndexWriter,
+    ):
+        """`#`-comment lines inside fenced code blocks are not advertised as
+        sections and are not selectable via ``section=``.
+
+        Regression: naive ``lstrip("#")`` heading detection advertised shell
+        comments like ``# install deps`` as sections and sliced into the code
+        block when one was selected.
+        """
+        content = (
+            "## Install\n\nRun the installer:\n\n"
+            "```bash\n# install deps\nuv sync\n```\n\n"
+            "## Usage\n\nThen run it.\n"
+        )
+        await embedding_writer.upsert([_make_doc_record("d_fence", content, path="/docs/install")])
+
+        doc = await retriever.get_doc(GetDocInput(doc_id="d_fence"))
+        assert doc.sections == ["Install", "Usage"]
+        assert "install deps" not in doc.sections
+
+        # The fenced comment is not extractable as a section: get_doc returns
+        # the whole page unchanged rather than slicing into the code block.
+        sec = await retriever.get_doc(GetDocInput(doc_id="d_fence", section="install deps"))
+        assert sec.content == doc.content
+
+        # The fenced code block survives verbatim inside the "Install" section.
+        install = await retriever.get_doc(GetDocInput(doc_id="d_fence", section="Install"))
+        assert "# install deps" in install.content
+        assert len(install.content) < len(doc.content)
+
+    async def test_get_doc_sections_dedup_case_insensitive(
+        self,
+        retriever: HybridRetriever,
+        embedding_writer: EmbeddingIndexWriter,
+    ):
+        """Duplicate heading names collapse to the first occurrence (case-
+        insensitive), keeping ``sections`` a stable table of contents."""
+        content = "## Setup\n\nFirst.\n\n## setup\n\nSecond.\n\n## Done\n\nThird.\n"
+        await embedding_writer.upsert([_make_doc_record("d_dup", content, path="/docs/dup")])
+
+        doc = await retriever.get_doc(GetDocInput(doc_id="d_dup"))
+        assert doc.sections == ["Setup", "Done"]
+
     async def test_get_example_found(self, retriever: HybridRetriever):
         result = await retriever.get_example(GetExampleInput(example_id="c1"))
         assert result.example_id == "c1"
         assert len(result.files) > 0
 
     async def test_get_code_snippet_by_intent(self, retriever: HybridRetriever):
-        result = await retriever.get_code_snippet(
-            GetCodeSnippetInput(intent="wake word detection")
-        )
+        result = await retriever.get_code_snippet(GetCodeSnippetInput(intent="wake word detection"))
         assert result.evidence is not None
 
     async def test_evidence_report_structure(self, retriever: HybridRetriever):
-        result = await retriever.search_docs(
-            SearchDocsInput(query="Pipecat framework")
-        )
+        result = await retriever.search_docs(SearchDocsInput(query="Pipecat framework"))
         ev = result.evidence
         assert ev.confidence >= 0.0
         assert ev.confidence <= 1.0
@@ -257,9 +325,7 @@ class TestHybridRetrieverE2E:
         assert isinstance(ev.next_retrieval_queries, list)
 
     async def test_empty_query_returns_evidence(self, retriever: HybridRetriever):
-        result = await retriever.search_docs(
-            SearchDocsInput(query="xyzzy nonexistent topic 12345")
-        )
+        result = await retriever.search_docs(SearchDocsInput(query="xyzzy nonexistent topic 12345"))
         # Should still return a valid evidence report even with no hits
         assert result.evidence is not None
         assert result.evidence.confidence_rationale != ""
@@ -576,9 +642,7 @@ class TestVersionPinInSearchExamples:
 
     async def test_version_pin_present_in_hits(self, retriever: HybridRetriever):
         """search_examples should include pipecat_version_pin when available."""
-        result = await retriever.search_examples(
-            SearchExamplesInput(query="voice bot pipeline")
-        )
+        result = await retriever.search_examples(SearchExamplesInput(query="voice bot pipeline"))
         assert len(result.hits) > 0
         versioned = [h for h in result.hits if h.pipecat_version_pin is not None]
         assert len(versioned) >= 1, "At least one hit should have pipecat_version_pin"
@@ -603,7 +667,9 @@ class TestVersionPinInSearchExamples:
             if hit.example_id == "v3":
                 assert hit.pipecat_version_pin is None
 
-    async def test_various_pin_formats(self, embedding_writer: EmbeddingIndexWriter, retriever: HybridRetriever):
+    async def test_various_pin_formats(
+        self, embedding_writer: EmbeddingIndexWriter, retriever: HybridRetriever
+    ):
         """Test that different version constraint formats survive round-trip."""
         formats = [
             ("fmt-exact", "==0.0.98", "Bot with exact pin"),
@@ -615,16 +681,16 @@ class TestVersionPinInSearchExamples:
         ]
         records = [
             _make_versioned_code_record(
-                cid, content, pipecat_version_pin=pin,
+                cid,
+                content,
+                pipecat_version_pin=pin,
                 path=f"examples/{cid}/bot.py",
             )
             for cid, pin, content in formats
         ]
         await embedding_writer.upsert(records)
 
-        result = await retriever.search_examples(
-            SearchExamplesInput(query="bot", limit=50)
-        )
+        result = await retriever.search_examples(SearchExamplesInput(query="bot", limit=50))
         found_pins = {h.example_id: h.pipecat_version_pin for h in result.hits}
         for cid, expected_pin, _ in formats:
             if cid in found_pins:
@@ -676,9 +742,7 @@ class TestVersionPinInSearchApi:
         await embedding_writer.upsert(records)
 
     async def test_api_hit_includes_version_pin(self, retriever: HybridRetriever):
-        result = await retriever.search_api(
-            SearchApiInput(query="DailyTransport")
-        )
+        result = await retriever.search_api(SearchApiInput(query="DailyTransport"))
         if result.hits:
             for hit in result.hits:
                 if hit.chunk_id == "api1":
@@ -864,9 +928,7 @@ class TestCheckDeprecationE2E:
         from pipecat_context_hub.server.tools.check_deprecation import handle_check_deprecation
         import json
 
-        result_json = await handle_check_deprecation(
-            {"symbol": "pipecat.services.grok"}, None
-        )
+        result_json = await handle_check_deprecation({"symbol": "pipecat.services.grok"}, None)
         result = json.loads(result_json)
         assert result["deprecated"] is False
         assert "not available" in (result.get("note") or "")

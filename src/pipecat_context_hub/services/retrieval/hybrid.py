@@ -28,6 +28,7 @@ from pipecat_context_hub.services.retrieval.evidence import (
 from pipecat_context_hub.services.retrieval.decompose import decompose_query
 from pipecat_context_hub.services.retrieval.rerank import rerank
 from pipecat_context_hub.shared.interfaces import IndexReader
+from pipecat_context_hub.shared.markdown import extract_section, heading_titles
 from pipecat_context_hub.shared.types import (
     ApiHit,
     Citation,
@@ -192,7 +193,9 @@ class HybridRetriever:
         # search using the full (joined) query.
         if limit < n:
             return await self._single_concept_search(
-                " ".join(concepts), filters, limit,
+                " ".join(concepts),
+                filters,
+                limit,
                 pipecat_version=pipecat_version,
             )
 
@@ -324,20 +327,30 @@ class HybridRetriever:
         # For path-based lookups, concatenate all chunks into the full page
         if input.path is not None and len(results) > 1:
             content = "\n\n".join(r.chunk.content for r in results)
-            # Collect sections from all chunks
-            all_sections: list[str] = []
-            for r in results:
-                all_sections.extend(r.chunk.metadata.get("sections", []))
-            sections = all_sections
         else:
-            sections = result.chunk.metadata.get("sections", [])
             content = result.chunk.content
 
         chunk = result.chunk
 
-        # If a specific section was requested, try to extract it
+        # Derive the section list from the page's own markdown headings. The doc
+        # ingester does not persist a "sections" metadata key, so this field was
+        # always empty; parsing the assembled content keeps `sections` in lockstep
+        # with what `--section` (`extract_section`) can actually extract — every
+        # listed title round-trips. Fall back to persisted metadata only if a
+        # future ingester supplies it and the content carries no headings.
+        sections = heading_titles(content)
+        if not sections:
+            seen: set[str] = set()
+            for r in results:
+                for s in r.chunk.metadata.get("sections", []):
+                    if s not in seen:
+                        seen.add(s)
+                        sections.append(s)
+
+        # If a specific section was requested, try to extract it. Computed after
+        # `sections` so the response still advertises the full table of contents.
         if input.section:
-            section_content = _extract_section(content, input.section)
+            section_content = extract_section(content, input.section)
             if section_content:
                 content = section_content
 
@@ -376,14 +389,17 @@ class HybridRetriever:
         # silently return fewer results than limit.
         fetch_limit = min(input.limit * 3, 50) if input.version_filter else input.limit
         results, compat_map = await self._hybrid_search(
-            input.query, filters, fetch_limit,
+            input.query,
+            filters,
+            fetch_limit,
             pipecat_version=input.pipecat_version,
         )
 
         # Apply version_filter if requested
         if input.version_filter == "compatible_only" and compat_map:
             results = [
-                r for r in results
+                r
+                for r in results
                 if compat_map.get(r.chunk.chunk_id) in ("compatible", "older_targeted", "unknown")
             ]
         results = results[: input.limit]
@@ -532,7 +548,9 @@ class HybridRetriever:
             for extra_filter in cascade_steps:
                 cascade_filters = {**base_filters, **extra_filter}
                 results, compat_map = await self._hybrid_search(
-                    query_text, cascade_filters, _DEFAULT_SNIPPET_CANDIDATES,
+                    query_text,
+                    cascade_filters,
+                    _DEFAULT_SNIPPET_CANDIDATES,
                     pipecat_version=input.pipecat_version,
                 )
                 if results:
@@ -556,7 +574,9 @@ class HybridRetriever:
 
         if not input.symbol:
             results, compat_map = await self._hybrid_search(
-                query_text, filters, _DEFAULT_SNIPPET_CANDIDATES,
+                query_text,
+                filters,
+                _DEFAULT_SNIPPET_CANDIDATES,
                 pipecat_version=input.pipecat_version,
             )
         evidence = assemble_evidence(query_text, results, filters)
@@ -691,14 +711,17 @@ class HybridRetriever:
         # silently return fewer results than limit.
         fetch_limit = min(input.limit * 3, 50) if input.version_filter else input.limit
         results, compat_map = await self._hybrid_search(
-            input.query, filters, fetch_limit,
+            input.query,
+            filters,
+            fetch_limit,
             pipecat_version=input.pipecat_version,
         )
 
         # Apply version_filter if requested
         if input.version_filter == "compatible_only" and compat_map:
             results = [
-                r for r in results
+                r
+                for r in results
                 if compat_map.get(r.chunk.chunk_id) in ("compatible", "older_targeted", "unknown")
             ]
         results = results[: input.limit]
@@ -789,30 +812,3 @@ def _empty_taxonomy(example_id: str) -> TaxonomyEntry:
         repo="",
         path="",
     )
-
-
-def _extract_section(content: str, section_name: str) -> str | None:
-    """Try to extract a named section from markdown content.
-
-    Looks for a heading matching section_name and returns content until
-    the next heading of equal or higher level.
-    """
-    lines = content.splitlines()
-    start_idx: int | None = None
-    start_level = 0
-
-    for i, line in enumerate(lines):
-        stripped = line.lstrip("#")
-        level = len(line) - len(stripped)
-        heading = stripped.strip()
-        if level > 0 and heading.lower() == section_name.lower():
-            start_idx = i
-            start_level = level
-            continue
-        if start_idx is not None and level > 0 and level <= start_level:
-            return "\n".join(lines[start_idx:i])
-
-    if start_idx is not None:
-        return "\n".join(lines[start_idx:])
-
-    return None

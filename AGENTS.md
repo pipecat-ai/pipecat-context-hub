@@ -273,6 +273,12 @@ always passes regardless of `gh` availability.
     prior `refresh`; not part of the pytest gate). Exit 0 = all canaries pass;
     add `--known-gaps` to also report the deferred Gap-D residuals.
 
+49. `get_doc(path="/api-reference/server/frames/system-frames")` — response
+    `sections` field is a **non-empty list** (regression canary for the always-empty
+    sections bug fixed in PR #83). Each entry in `sections` must round-trip:
+    passing `section=<title>` should narrow the page to that section's content
+    without returning `null` or the full page.
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 

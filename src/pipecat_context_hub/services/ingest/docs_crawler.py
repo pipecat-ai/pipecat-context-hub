@@ -19,6 +19,7 @@ import httpx
 
 from pipecat_context_hub.shared.config import ChunkingConfig, SourceConfig
 from pipecat_context_hub.shared.interfaces import IndexWriter
+from pipecat_context_hub.shared.markdown import fenced_ranges, inside_fence
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult
 
 logger = logging.getLogger(__name__)
@@ -33,17 +34,29 @@ _MAX_LLMS_TXT_BYTES = 20 * 1024 * 1024
 
 _ADMONITION_TAGS: frozenset[str] = frozenset({"Note", "Warning", "Tip", "Info"})
 
-_STRIP_TAGS: frozenset[str] = frozenset({
-    "ParamField", "Card", "CardGroup", "Steps", "Step", "Tabs", "Tab",
-    "Accordion", "AccordionGroup", "CodeGroup", "Frame", "Expandable",
-    "ResponseField", "Icon",
-})
+_STRIP_TAGS: frozenset[str] = frozenset(
+    {
+        "ParamField",
+        "Card",
+        "CardGroup",
+        "Steps",
+        "Step",
+        "Tabs",
+        "Tab",
+        "Accordion",
+        "AccordionGroup",
+        "CodeGroup",
+        "Frame",
+        "Expandable",
+        "ResponseField",
+        "Icon",
+    }
+)
 
 # Pre-compiled patterns for tag cleaning
 # Admonition opening tags may have attributes: <Note type="warning">
 _ADMONITION_RE: dict[str, re.Pattern[str]] = {
-    tag: re.compile(rf"<{tag}(?:\s[^>]*)?>(.+?)</{tag}>", re.DOTALL)
-    for tag in _ADMONITION_TAGS
+    tag: re.compile(rf"<{tag}(?:\s[^>]*)?>(.+?)</{tag}>", re.DOTALL) for tag in _ADMONITION_TAGS
 }
 
 _STRIP_TAG_ALT = "|".join(_STRIP_TAGS)
@@ -87,13 +100,9 @@ def _split_into_pages(full_text: str) -> list[tuple[str, str, str]]:
     pages: list[tuple[str, str, str]] = []
     for idx, start in enumerate(boundary_indices):
         title = lines[start][2:].strip()
-        source_url = lines[start + 1][len("Source: "):].strip()
+        source_url = lines[start + 1][len("Source: ") :].strip()
         body_start = start + 2
-        body_end = (
-            boundary_indices[idx + 1]
-            if idx + 1 < len(boundary_indices)
-            else len(lines)
-        )
+        body_end = boundary_indices[idx + 1] if idx + 1 < len(boundary_indices) else len(lines)
         body = "\n".join(lines[body_start:body_end]).strip()
         pages.append((title, source_url, body))
 
@@ -103,9 +112,7 @@ def _split_into_pages(full_text: str) -> list[tuple[str, str, str]]:
 def _make_admonition(match: re.Match[str], tag_name: str) -> str:
     """Convert an admonition tag match to a blockquote."""
     inner = match.group(1).strip()
-    bq_lines = [
-        f"> {line}" if line.strip() else ">" for line in inner.split("\n")
-    ]
+    bq_lines = [f"> {line}" if line.strip() else ">" for line in inner.split("\n")]
     # Replace the first line prefix with the bold label
     if bq_lines:
         bq_lines[0] = f"> **{tag_name}:** {bq_lines[0][2:]}"
@@ -133,35 +140,6 @@ def _clean_mintlify_tags(text: str) -> str:
     return text.strip()
 
 
-_FENCE_RE = re.compile(r"^(`{3,}|~{3,})", re.MULTILINE)
-
-
-def _fenced_ranges(markdown: str) -> list[tuple[int, int]]:
-    """Return (start, end) byte ranges of fenced code blocks."""
-    ranges: list[tuple[int, int]] = []
-    it = _FENCE_RE.finditer(markdown)
-    for open_match in it:
-        fence_char = open_match.group(1)[0]
-        fence_len = len(open_match.group(1))
-        # Find the matching closing fence
-        for close_match in it:
-            if (
-                close_match.group(1)[0] == fence_char
-                and len(close_match.group(1)) >= fence_len
-            ):
-                ranges.append((open_match.start(), close_match.end()))
-                break
-    return ranges
-
-
-def _inside_fence(pos: int, ranges: list[tuple[int, int]]) -> bool:
-    """Check if a position falls inside any fenced code block."""
-    for start, end in ranges:
-        if start <= pos < end:
-            return True
-    return False
-
-
 def _split_into_sections(markdown: str) -> list[tuple[str, str]]:
     """Split markdown into (heading, body) sections.
 
@@ -170,13 +148,13 @@ def _split_into_sections(markdown: str) -> list[tuple[str, str]]:
     Headings inside fenced code blocks are ignored.
     """
     heading_pattern = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
-    fences = _fenced_ranges(markdown)
+    fences = fenced_ranges(markdown)
     parts: list[tuple[str, str]] = []
     last_end = 0
     last_heading = ""
 
     for match in heading_pattern.finditer(markdown):
-        if _inside_fence(match.start(), fences):
+        if inside_fence(match.start(), fences):
             continue
         # Content before this heading belongs to the previous section
         content_before = markdown[last_end : match.start()].strip()
@@ -252,11 +230,14 @@ def chunk_markdown(
     source_url: str,
     max_tokens: int = 512,
     overlap_tokens: int = 50,
+    title: str | None = None,
 ) -> list[ChunkedRecord]:
     """Chunk markdown into ChunkedRecord objects.
 
     Section-aware: splits on headings first, then chunks each section
-    if it exceeds the token limit.
+    if it exceeds the token limit. When ``title`` (the page's human-readable
+    heading) is supplied, it is persisted on every chunk's ``metadata["title"]``
+    so retrieval can surface it instead of falling back to the URL path.
     """
     sections = _split_into_sections(markdown)
     records: list[ChunkedRecord] = []
@@ -268,7 +249,11 @@ def chunk_markdown(
     for section_heading, section_body in sections:
         # Build full section text: include heading in content for context
         if section_heading:
-            full_text = f"## {section_heading}\n\n{section_body}" if section_body else f"## {section_heading}"
+            full_text = (
+                f"## {section_heading}\n\n{section_body}"
+                if section_body
+                else f"## {section_heading}"
+            )
         else:
             full_text = section_body
 
@@ -276,6 +261,10 @@ def chunk_markdown(
             continue
 
         chunks = _chunk_section(full_text, max_tokens, overlap_tokens)
+
+        metadata: dict[str, str] = {"section": section_heading}
+        if title:
+            metadata["title"] = title
 
         for chunk_text in chunks:
             chunk_id = _make_chunk_id(source_url, "chunk", global_chunk_idx)
@@ -287,7 +276,7 @@ def chunk_markdown(
                 source_url=source_url,
                 path=url_path,
                 indexed_at=now,
-                metadata={"section": section_heading},
+                metadata=dict(metadata),
             )
             records.append(record)
 
@@ -337,8 +326,7 @@ class DocsCrawler:
                 body.extend(chunk)
                 if len(body) > _MAX_LLMS_TXT_BYTES:
                     raise ValueError(
-                        "llms-full.txt exceeded the safety limit "
-                        f"({_MAX_LLMS_TXT_BYTES} bytes)"
+                        f"llms-full.txt exceeded the safety limit ({_MAX_LLMS_TXT_BYTES} bytes)"
                     )
 
             encoding = response.encoding or "utf-8"
@@ -379,6 +367,7 @@ class DocsCrawler:
                     source_url=source_url,
                     max_tokens=self._chunking.doc_max_tokens,
                     overlap_tokens=self._chunking.doc_overlap_tokens,
+                    title=title,
                 )
                 all_records.extend(records)
             except Exception as e:

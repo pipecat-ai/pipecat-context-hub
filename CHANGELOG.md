@@ -7,6 +7,19 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`get_doc()` now populates the `sections` field** — it was always empty
+  because the doc ingester never persisted a `sections` metadata key. Section
+  titles are now derived from the page's own markdown headings (fence-aware, so
+  `#` comment lines inside code blocks are not advertised; case-insensitive
+  dedup). Every advertised title round-trips through the `section=` argument.
+  Query-time only — no re-index required.
+- **`get_doc()` / `search_docs` now return the page's real title** — the doc
+  ingester captured each page's heading but never persisted it, so the `title`
+  field fell back to the URL path. The page title is now stored on every chunk's
+  metadata. Requires a re-index to take effect:
+  `uv run pipecat-context-hub refresh --force`.
+
 ## [0.2.0] - 2026-06-12
 
 First release published to PyPI (`pipecat-ai-context-hub`, under the `pipecat`

@@ -371,6 +371,25 @@ class TestChunkMarkdown:
         assert r.chunk_id  # non-empty
         assert "section" in r.metadata
 
+    def test_title_persisted_to_metadata(self):
+        """When a page title is supplied, every chunk carries it in metadata.
+
+        Regression: the doc ingester captured the page title but never persisted
+        it, so get_doc / search_docs fell back to the URL path as the title.
+        """
+        md_text = "# Events Overview\n\nIntro.\n\n## Handlers\n\nBody.\n"
+        records = chunk_markdown(
+            md_text,
+            source_url="https://docs.pipecat.ai/events",
+            title="Events Overview",
+        )
+        assert len(records) >= 2
+        assert all(r.metadata.get("title") == "Events Overview" for r in records)
+
+    def test_title_omitted_when_not_supplied(self):
+        records = chunk_markdown("# T\n\nbody.", source_url="https://docs.pipecat.ai/x")
+        assert all("title" not in r.metadata for r in records)
+
     def test_idempotent_chunk_ids(self):
         """Re-chunking same content produces same IDs."""
         md_text = "# Title\n\nSome content.\n\n## Section\n\nMore content."
@@ -430,7 +449,9 @@ class TestDocsCrawlerIngest:
             assert record.chunk_id
 
     async def test_ingest_produces_records_for_all_pages(
-        self, crawler: DocsCrawler, mock_writer: AsyncMock,
+        self,
+        crawler: DocsCrawler,
+        mock_writer: AsyncMock,
     ):
         """Records span all pages in the llms-full.txt file."""
         with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
@@ -442,8 +463,33 @@ class TestDocsCrawlerIngest:
         assert "https://docs.pipecat.ai/api/reference" in source_urls
         assert "https://docs.pipecat.ai/guides/telephony" in source_urls
 
+    async def test_ingest_persists_page_title_metadata(
+        self,
+        crawler: DocsCrawler,
+        mock_writer: AsyncMock,
+    ):
+        """Ingested chunks carry the page's human-readable title in metadata.
+
+        Ingest-faithful regression: get_doc / search_docs read
+        metadata["title"] and fell back to the URL path because the ingester
+        never persisted it. Every chunk of a page must carry that page's title.
+        """
+        with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
+            await crawler.ingest()
+
+        records: list[ChunkedRecord] = mock_writer.upsert.call_args[0][0]
+        getting_started = [
+            r for r in records if r.source_url == "https://docs.pipecat.ai/guides/getting-started"
+        ]
+        assert getting_started, "expected chunks for the Getting Started page"
+        assert all(r.metadata.get("title") == "Getting Started" for r in getting_started)
+        # Title is the page heading, never the URL path.
+        assert all(r.metadata["title"] != r.path for r in getting_started)
+
     async def test_ingest_cleans_mintlify_tags(
-        self, crawler: DocsCrawler, mock_writer: AsyncMock,
+        self,
+        crawler: DocsCrawler,
+        mock_writer: AsyncMock,
     ):
         """Mintlify tags are cleaned from record content."""
         with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
@@ -458,7 +504,9 @@ class TestDocsCrawlerIngest:
     async def test_ingest_handles_fetch_failure(self, crawler: DocsCrawler):
         """Ingest handles fetch exceptions gracefully."""
         with patch.object(
-            crawler, "fetch_llms_txt", side_effect=httpx.HTTPError("timeout"),
+            crawler,
+            "fetch_llms_txt",
+            side_effect=httpx.HTTPError("timeout"),
         ):
             result = await crawler.ingest()
 
@@ -467,7 +515,9 @@ class TestDocsCrawlerIngest:
         assert "Failed to fetch llms-full.txt" in result.errors[0]
 
     async def test_ingest_handles_upsert_failure(
-        self, crawler: DocsCrawler, mock_writer: AsyncMock,
+        self,
+        crawler: DocsCrawler,
+        mock_writer: AsyncMock,
     ):
         """Ingest handles upsert exceptions."""
         mock_writer.upsert.side_effect = RuntimeError("DB error")
@@ -476,6 +526,7 @@ class TestDocsCrawlerIngest:
             result = await crawler.ingest()
 
         assert "Upsert failed" in result.errors[0]
+
 
 class TestDocsCrawlerProtocol:
     def test_implements_ingester_protocol(self, mock_writer: AsyncMock):
@@ -491,7 +542,9 @@ class TestDocsCrawlerProtocol:
 
 class TestDocsCrawlerFetchLlmsTxt:
     class _FakeResponse:
-        def __init__(self, request: httpx.Request, chunks: list[bytes], status_code: int = 200) -> None:
+        def __init__(
+            self, request: httpx.Request, chunks: list[bytes], status_code: int = 200
+        ) -> None:
             self._response = httpx.Response(status_code, request=request)
             self._chunks = chunks
             self.encoding = "utf-8"
