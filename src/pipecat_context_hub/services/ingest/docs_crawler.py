@@ -230,11 +230,14 @@ def chunk_markdown(
     source_url: str,
     max_tokens: int = 512,
     overlap_tokens: int = 50,
+    title: str | None = None,
 ) -> list[ChunkedRecord]:
     """Chunk markdown into ChunkedRecord objects.
 
     Section-aware: splits on headings first, then chunks each section
-    if it exceeds the token limit.
+    if it exceeds the token limit. When ``title`` (the page's human-readable
+    heading) is supplied, it is persisted on every chunk's ``metadata["title"]``
+    so retrieval can surface it instead of falling back to the URL path.
     """
     sections = _split_into_sections(markdown)
     records: list[ChunkedRecord] = []
@@ -259,6 +262,10 @@ def chunk_markdown(
 
         chunks = _chunk_section(full_text, max_tokens, overlap_tokens)
 
+        metadata: dict[str, str] = {"section": section_heading}
+        if title:
+            metadata["title"] = title
+
         for chunk_text in chunks:
             chunk_id = _make_chunk_id(source_url, "chunk", global_chunk_idx)
             global_chunk_idx += 1
@@ -269,7 +276,7 @@ def chunk_markdown(
                 source_url=source_url,
                 path=url_path,
                 indexed_at=now,
-                metadata={"section": section_heading},
+                metadata=dict(metadata),
             )
             records.append(record)
 
@@ -360,6 +367,7 @@ class DocsCrawler:
                     source_url=source_url,
                     max_tokens=self._chunking.doc_max_tokens,
                     overlap_tokens=self._chunking.doc_overlap_tokens,
+                    title=title,
                 )
                 all_records.extend(records)
             except Exception as e:

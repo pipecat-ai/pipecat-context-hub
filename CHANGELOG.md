@@ -14,6 +14,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   `#` comment lines inside code blocks are not advertised; case-insensitive
   dedup). Every advertised title round-trips through the `section=` argument.
   Query-time only — no re-index required.
+- **`get_doc()` / `search_docs` now return the page's real title** — the doc
+  ingester captured each page's heading but never persisted it, so the `title`
+  field fell back to the URL path. The page title is now stored on every chunk's
+  metadata. Requires a re-index to take effect:
+  `uv run pipecat-context-hub refresh --force`.
 
 ## [0.2.0] - 2026-06-12
 
