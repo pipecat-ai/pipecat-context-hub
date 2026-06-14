@@ -176,24 +176,50 @@ Ran `build_deprecation_map_from_registry` over the upstream
 
 ## Improvements / follow-ups identified
 
-- **(P2) `location` field is unused.** Each record carries `file:line`
-  (`pipecat/audio/filters/aic_filter.py:308`). The hub surfaces source evidence
-  elsewhere; threading `location` into `DeprecationEntry` + the tool output would
-  give agents a "see source" pointer for free.
-- **(P2) AGENTS.md §34–48 is now stale.** Those numbered examples document the
-  *release-note-derived* parser, the `gh`-fallback behavior, and the "Gap D /
-  replacement-kept" residuals — all removed by PR #85. They should be rewritten to
-  describe registry-backed behavior (or the empty-map-on-old-versions contract).
-  PR #85 does not touch AGENTS.md. **Update before/at merge.**
-- **(P3) Bare-subject collision is silent.** Keying by bare `subject` is
-  last-write-wins; 0 collisions today, but if pipecat ever deprecates two
-  same-named classes in different modules, one bare lookup is silently shadowed
-  (FQ aliases stay correct). A debug-log on bare-key overwrite would make this
-  observable.
-- **(P3) No regression test pins the empty-map-for-old-versions contract.** A test
-  asserting that a pre-registry checkout (missing `deprecations.json`) yields an
-  empty map *without error* would lock in the graceful-degradation behavior the
-  plan now depends on.
+Resolved in the PR #85 follow-up commit:
+
+- **(P2) ✅ `location` surfaced.** `file:line` is now threaded through
+  `DeprecationEntry` → persisted map → `check_deprecation` output (see AGENTS.md
+  #45), giving agents a jump-to-definition pointer.
+- **(P2) ✅ AGENTS.md refreshed.** §34–37 / §45–48 rewritten for the registry
+  model: dropped the `gh`/release-note prerequisite and the resolved Gap-D
+  residuals; added the removed-symbols-are-absent caveat. `smoke_check_deprecation.py`
+  canaries updated to registry-accurate symbols.
+- **(P3) ✅ Bare-subject collision now logged.** A `WARNING` fires when two records
+  collide on the same bare `subject` (last-write-wins on the bare key; both stay
+  resolvable by full path). 0 collisions today, but no longer silent.
+- **(P3) ✅ Empty-map contract already pinned.** `test_missing_registry_returns_empty`
+  and `test_malformed_registry_returns_empty` already assert graceful degradation
+  to an empty map — no new test needed.
+
+Deferred (decided 2026-06-14: do nothing now):
+
+- **Removed-symbol history.** The registry is blind to *removed* symbols by
+  construction — it scans live `.. deprecated::` / `@deprecated` markers, and a
+  removed symbol has none (there is no tombstone/`status` field in
+  `schema_version: 1`). So once a symbol is deleted from source, `check_deprecation`
+  reports it `deprecated: false` (*unknown*), not "removed in X; use Y" — even
+  though removed-symbol lookups are arguably the highest-value case (an agent using
+  an old API it learned from a prior pipecat). The pre-#85 prose *fallback* used to
+  cover this; #85 traded it away for current-API correctness.
+
+  **Why deferred:** today **319 of 322** records are `removed_in: 2.0.0` and pipecat
+  is on 1.x — i.e. essentially *nothing is removed yet*, so the gap is latent. But
+  it is a **scheduled cliff**: when 2.0.0 ships, all 319 vanish from the registry at
+  once, exactly when 1.x-trained agents most need "that's gone."
+
+  **Revisit trigger — when pipecat 2.0 reaches pre-release/RC, not after it ships.**
+  The intended fix (version-diff tombstones: on refresh, carry forward entries that
+  disappear from the new registry when `removed_in ≤ current framework version`,
+  flagged `removed: true`) compares the new registry against the *last persisted
+  1.x map*. That comparison is only possible while the 1.x map is still the one on
+  disk — once a user refreshes past 2.0 without the logic in place, the old map is
+  overwritten and the data is gone for them. Nothing needs to happen now to
+  *preserve* data (the hub persists `deprecation_map.json` each refresh); the
+  constraint is purely that the logic must land before users refresh onto 2.0. This
+  stays registry-only (no prose-parser resurrection) and needs no upstream change —
+  though an upstream `status: removed` ledger in `deprecations.json` would make it
+  trivial and is worth raising with pipecat if/when this is picked up.
 
 ## Original plan (superseded sections, kept for provenance)
 
