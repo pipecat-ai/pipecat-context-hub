@@ -23,15 +23,13 @@ IDE/Agent  ←stdio→  pipecat-context-hub serve  ←→  Local index (~/.pipec
 
 ## Install
 
-```bash
-git clone https://github.com/pipecat-ai/pipecat-context-hub.git
-cd pipecat-context-hub
-uv sync
-```
+Run the hub with [`uv`](https://docs.astral.sh/uv/). `uvx` fetches and runs it
+on demand; the first invocation downloads the package and local models (allow a
+few minutes).
 
 > **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat
 > packages are `pipecat-ai*`); the command and MCP server name are
-> `pipecat-context-hub`.
+> `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
 ## Populate the Local Index
 
@@ -39,13 +37,13 @@ Before the server can answer queries, build the local index:
 
 ```bash
 # First-time setup (downloads docs, clones repos, computes embeddings)
-uv run pipecat-context-hub refresh
+uvx pipecat-ai-context-hub refresh
 
 # Force full re-ingest (ignores cached state)
-uv run pipecat-context-hub refresh --force
+uvx pipecat-ai-context-hub refresh --force
 
 # Recover from an unhealthy local index
-uv run pipecat-context-hub refresh --force --reset-index
+uvx pipecat-ai-context-hub refresh --force --reset-index
 ```
 
 > **Tip:** When `gh` CLI is authenticated, `refresh` also fetches GitHub release
@@ -59,12 +57,12 @@ if the index is empty or cannot be opened — it will not start against an
 unusable index, since MCP clients would otherwise hang on zero-hit queries.
 
 ```bash
-uv run pipecat-context-hub serve
+uvx pipecat-ai-context-hub serve
 ```
 
 ## Client Setup
 
-Point your IDE's MCP config at the cloned repo using `uv run --directory`.
+Point your IDE's MCP config at `uvx pipecat-ai-context-hub serve`.
 Per-client setup guides:
 
 | Client | Setup Guide |
@@ -80,8 +78,8 @@ Per-client setup guides:
 {
   "mcpServers": {
     "pipecat-context-hub": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"],
+      "command": "uvx",
+      "args": ["pipecat-ai-context-hub", "serve"],
       "env": {}
     }
   }
@@ -184,9 +182,9 @@ Results are annotated with `version_compatibility`: `"compatible"`,
 You can also pin the framework index to a specific version:
 
 ```bash
-uv run pipecat-context-hub refresh --framework-version v0.0.96
+uvx pipecat-ai-context-hub refresh --framework-version v0.0.96
 # or via env var:
-PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 uv run pipecat-context-hub refresh
+PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 uvx pipecat-ai-context-hub refresh
 ```
 
 ## Environment Variables
@@ -219,44 +217,50 @@ only in convenience.
 > contribution is to (a) stay alive for the whole session and (b) exit
 > cleanly so the client can respawn without errors.
 
-**Recommended — direct invocation (instant orphan cleanup):**
+**Recommended — persistent install (instant orphan cleanup):**
+
+```bash
+uv tool install pipecat-ai-context-hub
+```
 
 ```json
 {
   "mcpServers": {
     "pipecat-context-hub": {
-      "command": "/absolute/path/to/pipecat-context-hub/.venv/bin/pipecat-context-hub",
+      "command": "pipecat-context-hub",
       "args": ["serve"]
     }
   }
 }
 ```
 
-Python is the immediate child of the MCP client. When the client dies
-or restarts, the parent-death watchdog fires within ~2s and the hub
-exits cleanly, releasing the Chroma + SQLite handles.
+The installed `pipecat-context-hub` binary is the immediate child of the
+MCP client. When the client dies or restarts, the parent-death watchdog
+fires within ~2s and the hub exits cleanly, releasing the Chroma + SQLite
+handles. Re-run `uv tool install --upgrade pipecat-ai-context-hub` to
+update.
 
-**Alternative — `uv run` (simpler, slower cleanup):**
+**Alternative — `uvx` (zero install):**
 
 ```json
 {
   "mcpServers": {
     "pipecat-context-hub": {
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"]
+      "command": "uvx",
+      "args": ["pipecat-ai-context-hub", "serve"]
     }
   }
 }
 ```
 
-Convenient (no need to know the venv path). `uv` stays alive as an
-intermediate parent, so `getppid()` never flips when the client dies —
-but `serve` detects the `uv` launcher and watches the **grandparent**
-(the real client) directly, so it still exits within ~2s of the client
-going away. The idle timeout is auto-disabled in this case (it is no
-longer needed for cleanup), so the hub stays warm through quiet stretches
-of an active session. Set `PIPECAT_HUB_IDLE_TIMEOUT_SECS` if you still
-want an idle backstop.
+Convenient (nothing to install — `uvx` fetches and runs the package on
+demand). `uvx` stays alive as an intermediate parent, so `getppid()` never
+flips when the client dies — but `serve` detects the `uvx` launcher and
+watches the **grandparent** (the real client) directly, so it still exits
+within ~2s of the client going away. The idle timeout is auto-disabled in
+this case (it is no longer needed for cleanup), so the hub stays warm
+through quiet stretches of an active session. Set
+`PIPECAT_HUB_IDLE_TIMEOUT_SECS` if you still want an idle backstop.
 
 ## Data Sources
 
@@ -279,11 +283,11 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 
 ## Troubleshooting
 
-- **Empty results** — run `uv run pipecat-context-hub refresh` to populate the index
-- **Stale results** — run `uv run pipecat-context-hub refresh --force` to re-ingest from latest upstream
-- **Index corruption** — run `uv run pipecat-context-hub refresh --force --reset-index` to wipe and rebuild
+- **Empty results** — run `uvx pipecat-ai-context-hub refresh` to populate the index
+- **Stale results** — run `uvx pipecat-ai-context-hub refresh --force` to re-ingest from latest upstream
+- **Index corruption** — run `uvx pipecat-ai-context-hub refresh --force --reset-index` to wipe and rebuild
 - **`serve` exits immediately with code 2** — the index is empty or
-  unopenable. Run `uv run pipecat-context-hub refresh` (or
+  unopenable. Run `uvx pipecat-ai-context-hub refresh` (or
   `refresh --force --reset-index` if the error message mentions a failed
   open) and try again. This is deliberate: prior versions started anyway
   and MCP clients hung on every query.

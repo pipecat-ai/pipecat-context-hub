@@ -8,37 +8,30 @@ Connect Pipecat Context Hub to [Claude Code](https://code.claude.com/) as an MCP
 - [Claude Code](https://code.claude.com/) installed
 - [`uv`](https://docs.astral.sh/uv/) package manager
 
-## Install
+## Build the Local Index
+
+Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash
-git clone https://github.com/pipecat-ai/pipecat-context-hub.git
-cd pipecat-context-hub
-uv sync
+uvx pipecat-ai-context-hub refresh
 ```
 
-## Populate the Local Index
+This populates `~/.pipecat-context-hub/`.
 
-Before the server can answer queries, populate the local index:
-
-```bash
-uv run pipecat-context-hub refresh
-```
-
-This downloads Pipecat docs and example repos to `~/.pipecat-context-hub/`.
+> **Tip:** with the `gh` CLI authenticated, `refresh` also fetches GitHub release notes for deprecation data; without it, `check_deprecation` coverage is limited.
 
 ## Configure
 
 ### Option A: Project-level config (recommended for teams)
 
-Create `.mcp.json` at the root of your project. Replace `/path/to/pipecat-context-hub`
-with the absolute path where you cloned the repo:
+Create `.mcp.json` at the root of your project:
 
 ```json
 {
   "mcpServers": {
     "pipecat-context-hub": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"],
+      "command": "uvx",
+      "args": ["pipecat-ai-context-hub", "serve"],
       "env": {}
     }
   }
@@ -47,12 +40,12 @@ with the absolute path where you cloned the repo:
 
 ### Option B: User-level config (all projects)
 
-Add to `~/.claude.json` (same format as above).
+Add the same block to `~/.claude.json`.
 
 ### Option C: CLI
 
 ```bash
-claude mcp add --scope project pipecat-context-hub -- uv run --directory /path/to/pipecat-context-hub pipecat-context-hub serve
+claude mcp add --scope project pipecat-context-hub -- uvx pipecat-ai-context-hub serve
 ```
 
 ## Recommended CLAUDE.md Instructions
@@ -89,14 +82,14 @@ You can also verify the server starts correctly from the command line:
 
 ```bash
 # Check that the serve command is available
-uv run pipecat-context-hub serve --help
+uvx pipecat-ai-context-hub serve --help
 
 # Test stdin/stdout communication (sends an MCP initialize request)
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}' | uv run pipecat-context-hub serve
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}' | uvx pipecat-ai-context-hub serve
 ```
 
 ## Troubleshooting
 
 - **Server not detected**: Ensure `.mcp.json` is at the project root (not inside `.claude/`).
-- **Command not found**: Ensure the `--directory` path in your MCP config points to your `pipecat-context-hub` clone.
-- **Empty results**: Run `uv run pipecat-context-hub refresh` to populate the index.
+- **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
+- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.

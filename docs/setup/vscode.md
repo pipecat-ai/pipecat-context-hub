@@ -9,38 +9,29 @@ Connect Pipecat Context Hub to [VS Code](https://code.visualstudio.com/) as an M
 - [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) extension
 - [`uv`](https://docs.astral.sh/uv/) package manager
 
-## Install
+## Build the Local Index
+
+Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash
-git clone https://github.com/pipecat-ai/pipecat-context-hub.git
-cd pipecat-context-hub
-uv sync
+uvx pipecat-ai-context-hub refresh
 ```
 
-## Populate the Local Index
-
-Before the server can answer queries, populate the local index:
-
-```bash
-uv run pipecat-context-hub refresh
-```
-
-This downloads Pipecat docs and example repos to `~/.pipecat-context-hub/`.
+This populates `~/.pipecat-context-hub/`.
 
 ## Configure
 
 ### Option A: Workspace config (recommended for teams)
 
-Create `.vscode/mcp.json` in your project root. Replace `/path/to/pipecat-context-hub`
-with the absolute path where you cloned the repo:
+Create `.vscode/mcp.json` in your project root:
 
 ```json
 {
   "servers": {
     "pipecat-context-hub": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"],
+      "command": "uvx",
+      "args": ["pipecat-ai-context-hub", "serve"],
       "env": {}
     }
   }
@@ -59,8 +50,8 @@ Open your VS Code `settings.json` and add:
     "servers": {
       "pipecat-context-hub": {
         "type": "stdio",
-        "command": "uv",
-        "args": ["run", "--directory", "/path/to/pipecat-context-hub", "pipecat-context-hub", "serve"],
+        "command": "uvx",
+        "args": ["pipecat-ai-context-hub", "serve"],
         "env": {}
       }
     }
@@ -77,12 +68,12 @@ Open your VS Code `settings.json` and add:
 You can also verify the server starts correctly from the command line:
 
 ```bash
-uv run pipecat-context-hub serve --help
+uvx pipecat-ai-context-hub serve --help
 ```
 
 ## Troubleshooting
 
 - **Server not listed**: Ensure `.vscode/mcp.json` is in your workspace root and that `"type": "stdio"` is present.
-- **Command not found**: Ensure the `--directory` path in your MCP config points to your `pipecat-context-hub` clone.
-- **Empty results**: Run `uv run pipecat-context-hub refresh` to populate the index.
+- **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
+- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
 - **MCP not available**: Ensure you have VS Code 1.99+ and the GitHub Copilot extension installed. MCP support may need to be enabled in settings: `"chat.mcp.enabled": true`.
