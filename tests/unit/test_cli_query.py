@@ -48,6 +48,21 @@ class TestToolCommandParity:
         assert _EXIT_INDEX_UNREADY == _SERVE_EXIT_INDEX_UNREADY
 
 
+class TestVersionFlag:
+    """`--version` reports the package version with zero state."""
+
+    def test_version_flag_prints_server_version(self):
+        """No index, no model load: the flag short-circuits before any of that."""
+        from pipecat_context_hub.server.main import _SERVER_VERSION
+
+        result = runner.invoke(main, ["--version"])
+        assert result.exit_code == 0, result.stderr
+        # Sourced from importlib.metadata; TestVersionConsistency guarantees it
+        # matches _SERVER_VERSION, so a drift here flags a packaging problem.
+        assert _SERVER_VERSION in result.stdout
+        assert "pipecat-context-hub" in result.stdout
+
+
 class TestIndexUnready:
     """Empty/unopenable index exits 2 with an actionable refresh hint."""
 

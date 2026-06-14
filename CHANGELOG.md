@@ -7,6 +7,14 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`pipecat-context-hub --version`** — prints the running package version and
+  exits, with no index open or model load. Previously the only way to read the
+  version was `status` (`server_version`), which exits 2 when the index is
+  missing/empty — so on a fresh `uvx pipecat-ai-context-hub@latest` machine,
+  before `refresh` has built an index, the version was unreadable. Sourced from
+  `importlib.metadata`, so it always matches `_SERVER_VERSION`.
+
 ## [0.2.1] - 2026-06-14
 
 ### Added
