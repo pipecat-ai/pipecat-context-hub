@@ -256,6 +256,13 @@ the indexed pipecat version; re-verify against the current registry if they drif
     replacement-kept" residuals are resolved by the registry — there is no longer
     a `--known-gaps` mode.)
 
+    **Removal-history smoke:** `uv run python scripts/smoke_check_removals.py`
+    covers the version-aware lifecycle (PR #88): it builds a map from the real
+    `deprecations.json` and merges a *synthetic* `removals.json` (upstream's is
+    still empty/dormant) to assert the REMOVED lifecycle, the safety invariant (an
+    active deprecation never reports `removed` past its announced version), and the
+    bare-key clobber guard. It does not mutate the persisted map.
+
 49. `get_doc(path="/api-reference/server/frames/system-frames")` — response
     `sections` field is a **non-empty list** (regression canary for the always-empty
     sections bug fixed in PR #83). Each entry in `sections` must round-trip:
