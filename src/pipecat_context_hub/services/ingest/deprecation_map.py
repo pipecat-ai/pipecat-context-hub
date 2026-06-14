@@ -21,8 +21,11 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from packaging.version import InvalidVersion, Version
+
+from pipecat_context_hub.shared.types import DeprecationStatus
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +52,7 @@ class DeprecationEntry:
     relation: str | None = None
     location: str | None = None
     """Source ``file:line`` of the deprecation marker (registry ``location``)."""
-    status: str = "deprecated"
+    status: DeprecationStatus = "deprecated"
     """Lifecycle: ``"deprecated"`` (still present) or ``"removed"`` (from removals.json)."""
     announced_removed_in: str | None = None
     """For removed symbols: the version the directive originally promised removal in
@@ -134,7 +137,7 @@ class DeprecationMap:
                         kind=val.get("kind"),
                         relation=val.get("relation"),
                         location=val.get("location"),
-                        status=val.get("status", "deprecated"),
+                        status=cast(DeprecationStatus, val.get("status", "deprecated")),
                         announced_removed_in=val.get("announced_removed_in"),
                     )
         commit_sha = data.get("pipecat_commit_sha", "")
@@ -315,7 +318,7 @@ def _as_version(value: str | None) -> Version | None:
         return None
 
 
-def status_for(entry: DeprecationEntry, version: str | None) -> str:
+def status_for(entry: DeprecationEntry, version: str | None) -> DeprecationStatus:
     """Lifecycle status of ``entry`` relative to ``version``.
 
     Returns ``"current"`` (not yet deprecated at that version), ``"deprecated"``, or

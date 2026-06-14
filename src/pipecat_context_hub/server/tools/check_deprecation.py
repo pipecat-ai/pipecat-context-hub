@@ -8,6 +8,18 @@ from pipecat_context_hub.services.ingest.deprecation_map import status_for
 from pipecat_context_hub.shared.types import CheckDeprecationInput, CheckDeprecationOutput
 
 
+def resolve_framework_version(index_store: Any) -> str | None:
+    """The indexed pipecat version, the default ``version`` for ``check_deprecation``.
+
+    Shared by the MCP server and the one-shot CLI so both resolve the default the
+    same way. Returns ``None`` when no index is open or the version is unset.
+    """
+    if index_store is None:
+        return None
+    version = index_store.get_all_metadata().get("framework_version")
+    return version if version is None else str(version)
+
+
 async def handle_check_deprecation(
     arguments: dict[str, Any],
     deprecation_map: Any,

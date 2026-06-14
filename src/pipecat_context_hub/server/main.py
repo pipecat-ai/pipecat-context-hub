@@ -23,7 +23,10 @@ from pipecat_context_hub.shared.types import (
     SearchDocsInput,
     SearchExamplesInput,
 )
-from pipecat_context_hub.server.tools.check_deprecation import handle_check_deprecation
+from pipecat_context_hub.server.tools.check_deprecation import (
+    handle_check_deprecation,
+    resolve_framework_version,
+)
 from pipecat_context_hub.server.tools.get_code_snippet import handle_get_code_snippet
 from pipecat_context_hub.server.tools.get_doc import handle_get_doc
 from pipecat_context_hub.server.tools.get_example import handle_get_example
@@ -289,11 +292,7 @@ def create_server(
             # indexed framework version as the default for version-relative status.
             if name == "check_deprecation":
                 dep_map = getattr(retriever, "deprecation_map", None)
-                fw_version = (
-                    index_store.get_all_metadata().get("framework_version")
-                    if index_store is not None
-                    else None
-                )
+                fw_version = resolve_framework_version(index_store)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return [types.TextContent(type="text", text=_annotate(result_json))]
 

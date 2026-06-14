@@ -225,7 +225,8 @@ Resolved in **PR [#88](https://github.com/pipecat-ai/pipecat-context-hub/pull/88
     deprecation — whose `removed_in` is only an *announced* version — so a removal
     must be evidenced in `removals.json`.
   - `check_deprecation` gains an optional `version` input (defaulting to the indexed
-    `framework_version`); output adds `status` and `announced_removed_in`.
+    `framework_version`); output adds `status` and `announced_removed_in`. The one-shot
+    CLI exposes it as `check-deprecation <symbol> --at-version <V>`.
 
   **Dormant until upstream ships the file.** With no `removals.json` present the
   merge is a no-op and behavior is identical to #85 — so this no longer hinges on

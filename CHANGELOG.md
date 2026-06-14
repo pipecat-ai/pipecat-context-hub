@@ -13,7 +13,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   now include a `status` (`current` / `deprecated` / `removed`) plus `announced_removed_in`.
   Once pipecat ships its `removals.json`, a symbol deleted in a release reports "removed in
   `V`, use `Y`" instead of "not deprecated"; `version` defaults to the indexed framework
-  version when omitted. Dormant (no behavior change) until that file exists.
+  version when omitted. Dormant (no behavior change) until that file exists. The one-shot
+  CLI exposes this via `check-deprecation <symbol> --at-version <V>`.
 
 ## [0.2.1] - 2026-06-14
 

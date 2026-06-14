@@ -216,7 +216,10 @@ def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
     special signatures, then the uniform ``handler(args, retriever)`` map) so
     CLI and MCP results cannot diverge.
     """
-    from pipecat_context_hub.server.tools.check_deprecation import handle_check_deprecation
+    from pipecat_context_hub.server.tools.check_deprecation import (
+        handle_check_deprecation,
+        resolve_framework_version,
+    )
     from pipecat_context_hub.server.tools.get_code_snippet import handle_get_code_snippet
     from pipecat_context_hub.server.tools.get_doc import handle_get_doc
     from pipecat_context_hub.server.tools.get_example import handle_get_example
@@ -231,11 +234,7 @@ def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
         )
     if tool == "check_deprecation":
         dep_map = getattr(runtime.retriever, "deprecation_map", None)
-        fw_version = (
-            runtime.index_store.get_all_metadata().get("framework_version")
-            if runtime.index_store is not None
-            else None
-        )
+        fw_version = resolve_framework_version(runtime.index_store)
         return asyncio.run(handle_check_deprecation(args, dep_map, fw_version))
 
     handler_map: dict[str, Any] = {
@@ -526,14 +525,27 @@ def search_api_command(
 
 @click.command("check-deprecation")
 @click.argument("symbol")
+@click.option(
+    "--at-version",
+    default=None,
+    metavar="VERSION",
+    help=(
+        "Evaluate the symbol's lifecycle at this pipecat version (e.g. '2.0.0'); "
+        "the status may be current/deprecated/removed at different versions. "
+        "Defaults to the indexed framework version."
+    ),
+)
 @click.pass_context
-def check_deprecation_command(ctx: click.Context, symbol: str) -> None:
+def check_deprecation_command(ctx: click.Context, symbol: str, at_version: str | None) -> None:
     """Check whether a module path, class, or method is deprecated.
 
     The cheapest and most important call: run it on any Pipecat API you are
     about to write from memory (e.g. 'PipelineTask').
     """
-    _invoke(ctx, "check_deprecation", {"symbol": symbol}, needs_embeddings=False)
+    args: dict[str, object] = {"symbol": symbol}
+    if at_version is not None:
+        args["version"] = at_version
+    _invoke(ctx, "check_deprecation", args, needs_embeddings=False)
 
 
 @click.command("status")
