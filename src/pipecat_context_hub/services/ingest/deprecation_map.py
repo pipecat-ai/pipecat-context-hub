@@ -44,6 +44,8 @@ class DeprecationEntry:
     note: str = ""
     kind: str | None = None
     relation: str | None = None
+    location: str | None = None
+    """Source ``file:line`` of the deprecation marker (registry ``location``)."""
 
 
 @dataclass
@@ -98,6 +100,7 @@ class DeprecationMap:
                     "note": e.note,
                     "kind": e.kind,
                     "relation": e.relation,
+                    "location": e.location,
                 }
                 for k, e in self.entries.items()
             },
@@ -119,6 +122,7 @@ class DeprecationMap:
                         note=val.get("note", ""),
                         kind=val.get("kind"),
                         relation=val.get("relation"),
+                        location=val.get("location"),
                     )
         commit_sha = data.get("pipecat_commit_sha", "")
         return cls(
@@ -193,7 +197,21 @@ def build_deprecation_map_from_registry(
             note=rec.get("message", ""),
             kind=rec.get("kind"),
             relation=rec.get("relation"),
+            location=rec.get("location"),
         )
+        # Bare subjects are assumed globally unique in the registry. If two
+        # records collide on the same bare key (e.g. same-named classes in
+        # different modules), the last one silently wins the bare lookup — the
+        # fully-qualified aliases below keep both resolvable. Log so the shadowing
+        # is observable instead of silent.
+        if subject in entries and entries[subject].location != entry.location:
+            logger.warning(
+                "Deprecation registry: duplicate bare subject %r (%s shadows %s); "
+                "bare lookup resolves to the latter, both remain resolvable by full path",
+                subject,
+                entries[subject].location,
+                entry.location,
+            )
         entries[subject] = entry
         # Register a fully-qualified alias so "pipecat.x.y.ClassName" resolves the
         # same as the bare "ClassName". Module records are already fully qualified.

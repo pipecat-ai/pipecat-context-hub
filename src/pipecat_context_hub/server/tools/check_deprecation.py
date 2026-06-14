@@ -39,6 +39,7 @@ async def handle_check_deprecation(
             note=entry.note or None,
             kind=entry.kind,
             relation=entry.relation,
+            location=entry.location,
         )
 
     return output.model_dump_json()

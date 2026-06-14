@@ -116,6 +116,7 @@ class TestDeprecationMapSerialization:
                     note="Use xai.llm instead",
                     kind="module",
                     relation="move",
+                    location="pipecat/services/grok/__init__.py:10",
                 ),
             },
             pipecat_commit_sha="abc123",
@@ -132,6 +133,7 @@ class TestDeprecationMapSerialization:
         assert entry.note == "Use xai.llm instead"
         assert entry.kind == "module"
         assert entry.relation == "move"
+        assert entry.location == "pipecat/services/grok/__init__.py:10"
 
     def test_load_missing_file(self, tmp_path: Path) -> None:
         loaded = DeprecationMap.load(tmp_path / "nonexistent.json")
@@ -182,6 +184,7 @@ class TestBuildFromRegistry:
                     "relation": "use_existing",
                     "replacement": "SOXRAudioResampler",
                     "message": "`ResampyResampler` is deprecated since 1.2.0 ...",
+                    "location": "pipecat/audio/resamplers/resampy_resampler.py:42",
                 }
             ],
         )
@@ -195,6 +198,7 @@ class TestBuildFromRegistry:
         assert entry.kind == "class"
         assert entry.relation == "use_existing"
         assert entry.note.startswith("`ResampyResampler` is deprecated")
+        assert entry.location == "pipecat/audio/resamplers/resampy_resampler.py:42"
 
     def test_fully_qualified_alias_resolves(self, tmp_path: Path) -> None:
         """A non-module symbol resolves by both bare and fully-qualified path."""
@@ -271,6 +275,41 @@ class TestBuildFromRegistry:
         dm = build_deprecation_map_from_registry(path)
         assert dm.entries == {}
 
+    def test_duplicate_bare_subject_warns_and_keeps_both_qualified(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """Two records colliding on the same bare subject log a warning; the
+        last write wins the bare key, but both remain resolvable by full path."""
+        import logging
+
+        path = self._write_registry(
+            tmp_path,
+            [
+                {
+                    "subject": "Config",
+                    "module": "pipecat.services.foo",
+                    "kind": "class",
+                    "replacement": "FooConfig",
+                    "location": "pipecat/services/foo.py:1",
+                },
+                {
+                    "subject": "Config",
+                    "module": "pipecat.services.bar",
+                    "kind": "class",
+                    "replacement": "BarConfig",
+                    "location": "pipecat/services/bar.py:2",
+                },
+            ],
+        )
+        with caplog.at_level(logging.WARNING):
+            dm = build_deprecation_map_from_registry(path)
+        assert "duplicate bare subject" in caplog.text
+        # Last record wins the bare key...
+        assert dm.check("Config").new_path == "BarConfig"
+        # ...but both remain resolvable by their fully-qualified path.
+        assert dm.check("pipecat.services.foo.Config").new_path == "FooConfig"
+        assert dm.check("pipecat.services.bar.Config").new_path == "BarConfig"
+
 
 class TestCheckDeprecationHandler:
     """Test the MCP tool handler for check_deprecation."""
@@ -288,6 +327,7 @@ class TestCheckDeprecationHandler:
                     deprecated_in="0.0.100",
                     kind="module",
                     relation="move",
+                    location="pipecat/services/grok/__init__.py:10",
                 ),
             }
         )
@@ -297,6 +337,7 @@ class TestCheckDeprecationHandler:
         assert result["replacement"] == "pipecat.services.xai.llm"
         assert result["kind"] == "module"
         assert result["relation"] == "move"
+        assert result["location"] == "pipecat/services/grok/__init__.py:10"
 
     async def test_not_deprecated(self) -> None:
         from pipecat_context_hub.server.tools.check_deprecation import (
