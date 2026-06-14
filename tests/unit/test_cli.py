@@ -148,20 +148,10 @@ class TestRefreshCommand:
 
     @pytest.fixture(autouse=True)
     def _mock_deprecation_map(self):
-        """Prevent real gh CLI calls and filesystem access during refresh tests."""
-        with (
-            patch(
-                "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_source",
-                return_value=MagicMock(entries=[], save=MagicMock()),
-            ),
-            patch(
-                "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_releases",
-                return_value=MagicMock(entries=[], save=MagicMock()),
-            ),
-            patch(
-                "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_changelog",
-                return_value=MagicMock(entries=[], save=MagicMock()),
-            ),
+        """Avoid touching the registry/filesystem during refresh tests."""
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_registry",
+            return_value=MagicMock(entries={}, save=MagicMock()),
         ):
             yield
 

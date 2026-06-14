@@ -770,48 +770,27 @@ def refresh(
                 index_store.delete_metadata(f"repo:{repo_slug}:commit_sha")
 
         # ----- 3. Deprecation map -----
-        # Release-notes parsing (primary source) is always HEAD-independent.
-        # Source and CHANGELOG scanning use whatever checkout is current —
-        # when --framework-version is set, these reflect the pinned tag.
-        # This is acceptable: release notes carry the bulk of deprecation data.
+        # Built solely from pipecat's machine-readable registry
+        # (scripts/deprecations/deprecations.json) — the single source of truth.
+        # It reflects the current checkout, so --framework-version pins it to the
+        # registry as it stood at that tag.
         from pipecat_context_hub.services.ingest.deprecation_map import (
-            build_deprecation_map_from_changelog,
-            build_deprecation_map_from_releases,
-            build_deprecation_map_from_source,
+            REGISTRY_RELATIVE_PATH,
+            build_deprecation_map_from_registry,
         )
 
         dep_map_path = config.storage.data_dir / "deprecation_map.json"
 
         if framework_slug in prefetched:
             fw_path, fw_sha = prefetched[framework_slug]
-            dep_map = build_deprecation_map_from_source(fw_path, commit_sha=fw_sha)
-            dep_map = build_deprecation_map_from_releases(framework_slug, dep_map)
-            changelog = fw_path / "CHANGELOG.md"
-            dep_map = build_deprecation_map_from_changelog(changelog, dep_map, repo_root=fw_path)
+            registry_path = fw_path / REGISTRY_RELATIVE_PATH
+            dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)
             dep_map.save(dep_map_path)
         else:
-            # Framework repo not cloned — still try release notes via gh
-            from pipecat_context_hub.services.ingest.deprecation_map import (
-                DeprecationMap,
+            logger.debug(
+                "Framework repo %s not cloned — preserving existing deprecation map",
+                framework_slug,
             )
-
-            existing = (
-                DeprecationMap.load(dep_map_path) if dep_map_path.is_file() else DeprecationMap()
-            )
-            dep_map = build_deprecation_map_from_releases(framework_slug, existing)
-            if dep_map.entries:
-                dep_map.save(dep_map_path)
-                logger.info(
-                    "Built deprecation map from release notes only "
-                    "(%d entries — framework repo not cloned)",
-                    len(dep_map.entries),
-                )
-            else:
-                logger.debug(
-                    "Framework repo %s not in effective_repos and no "
-                    "release notes available — preserving existing map",
-                    framework_slug,
-                )
 
     try:
         asyncio.run(_run_refresh())

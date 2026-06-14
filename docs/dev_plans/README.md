@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-06-12 | feat | Consume upstream `deprecations.json` as primary deprecation source (parser becomes fallback) | Planned (blocked on pipecat#4722) | vr000m | _(future)_ `feature/deprecations-json-consumer` | `20260612-feature-deprecations-json-consumer.md` |
+| 2026-06-12 | feat | Consume upstream `deprecations.json` as the deprecation source (prose parser removed) | Implemented (PR #85; upstream pipecat#4726 merged) | vr000m | `feat/deprecation-registry` | `20260612-feature-deprecations-json-consumer.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

@@ -140,20 +140,32 @@ silently dropping it):
     `RNSmallWebRTCTransport` class. (`pipecat-cli` is intentionally NOT a
     default — its CLI usage is covered by `docs.pipecat.ai`; do not add a
     smoke assertion expecting `pipecat-ai/pipecat-cli` source chunks.)
-**Prerequisite:** Tests 34-37 require that `gh` CLI was authenticated during
-the last `refresh`. Without `gh`, release-note-derived deprecation entries
-will be absent and these assertions will fail. Test 36 (`DailyTransport`)
-always passes regardless of `gh` availability.
+**Deprecation canaries are registry-backed (PR #85).** Items 34–37 and 45–48
+read pipecat's machine-readable registry
+(`scripts/deprecations/deprecations.json`), not release-note prose — so **no `gh`
+auth is required** and the old release-note prerequisite is gone. One consequence
+of the registry model: it only carries symbols that **still exist** in the indexed
+pipecat source with an active `.. deprecated::` / `@deprecated` marker. A symbol
+that has already been *removed* is absent from the registry, so `check_deprecation`
+reports it `deprecated: false` (i.e. *unknown*), not "removed in X". Exact symbols
+below track the indexed pipecat version; re-verify against the current registry if
+they drift.
 
-34. `check_deprecation("pipecat.services.grok.llm")` — returns
-    `deprecated: true`, `deprecated_in: "0.0.108"`, replacement includes
-    `pipecat.services.xai.llm`, note includes PR link
-35. `check_deprecation("SambaNovaSTTService")` — returns `deprecated: true`,
-    `removed_in: "0.0.108"`
-36. `check_deprecation("DailyTransport")` — returns `deprecated: false`
-37. `check_deprecation("pipecat.services.google.llm_vertex")` — returns
-    `deprecated: true`, `deprecated_in: "0.0.105"`, replacement includes
-    `pipecat.services.google.vertex.llm`
+34. `check_deprecation("pipecat.services.grok.llm")` — `deprecated: true`,
+    `kind: "module"`, `relation: "move"`,
+    `replacement: "pipecat.services.xai.llm"`, `deprecated_in: "0.0.108"`.
+    `check_deprecation("pipecat.services.grok.llm.GrokLLMService")` — also `true`
+    (forward-prefix: a symbol nested under the deprecated module).
+35. `check_deprecation("ResampyResampler")` — `deprecated: true`, `kind: "class"`,
+    `relation: "use_existing"`, `replacement: "SOXRAudioResampler"`. The
+    fully-qualified
+    `pipecat.audio.resamplers.resampy_resampler.ResampyResampler` resolves
+    identically (dual keying: bare subject + `<module>.<subject>` alias).
+36. `check_deprecation("DailyTransport")` — `deprecated: false` (current API).
+37. `check_deprecation("PipelineTask")` — `deprecated: true`,
+    `replacement: "PipelineWorker"`, `deprecated_in: "1.3.0"`,
+    `removed_in: "2.0.0"`. `check_deprecation("PipelineRunner")` — `true`,
+    `replacement: "WorkerRunner"`.
 38. `get_hub_status()` after `refresh --framework-version v0.0.96` — response
     includes `framework_version: "v0.0.96"` (confirms pinned version persisted
     and surfaced)
@@ -204,74 +216,40 @@ always passes regardless of `gh` availability.
     opt-out escape hatch works (matters on Windows CPU where cold
     loads can take 30-130s and exceed Claude Code's tool-permission
     window).
-45. `check_deprecation(symbol="PipelineTask")` — returns `deprecated: true`
-    with `PipelineWorker` in `replacement`, a "renamed to" note, **and**
-    `deprecated_in: "1.3.0"` / `removed_in: null` — the lifecycle fields
-    matter: historical member bullets ("`PipelineTask` events … are now
-    deprecated", "Removed … events from `PipelineTask`", under a release
-    body whose `## Fixed` h2 heading didn't close the Deprecated section)
-    once supplied bogus `deprecated_in: 0.0.86/0.0.87` and
-    `removed_in: 1.0.0`. `check_deprecation(symbol="PipelineRunner")` —
-    `deprecated: true`. Regression guard for PR #78. Requires a refreshed
-    index (the map rebuilds on `refresh`).
-46. `check_deprecation(symbol="pipecat.pipeline.worker")`,
-    `check_deprecation(symbol="pipecat.workers.runner")`, and
-    `check_deprecation(symbol="InterruptionTaskFrame")` — all return
-    `deprecated: false`. These are the *replacements*; the old parser keyed
-    them as deprecated, telling agents the current API is deprecated — the
-    worst failure mode this tool has (PR #78).
-47. **Replacement names + class-rename direction (PR #78 coverage gap).**
-    `check_deprecation(symbol="PipelineRunner")` — beyond `deprecated: true`
-    (item 45), `replacement` must *name* `WorkerRunner` /
-    `pipecat.workers.runner` (not be null): agents need the positive
-    replacement, not just the deprecated flag.
-    `check_deprecation(symbol="WorkerRunner")` — `deprecated: false`: the
-    replacement *class* (item 46 freezes only its module
-    `pipecat.workers.runner`).
-    `check_deprecation(symbol="BotInterruptionFrame")` — `deprecated: true`
-    with `InterruptionTaskFrame` in `replacement`: the deprecated *original*
-    of the frame whose replacement item 46 checks. Freezes the class-name
-    side of the renames the token classifier fixed (the symbols agents
-    actually import). Requires a refreshed index.
+45. **`location` surfaced (PR #85).** A `deprecated: true` response carries a
+    `location` field as `path/to/file.py:line` (relative to the pipecat repo
+    root) pointing at the deprecation marker — e.g. `ResampyResampler` →
+    `pipecat/audio/resamplers/resampy_resampler.py:NN`. Lets an agent jump to the
+    definition. `null` for older pipecat versions whose registry predates the
+    field, or when not deprecated.
+46. **Forward-prefix only — ancestors are never flagged.**
+    `check_deprecation(symbol="pipecat.services")` and
+    `check_deprecation(symbol="pipecat")` — both `false`, even though the
+    descendant module `pipecat.services.grok.llm` is deprecated. Reporting a
+    current ancestor package as deprecated (with some descendant's replacement)
+    is the worst failure mode this tool has; the `check()` reverse-prefix branch
+    was removed in PR #85 precisely to prevent it.
+47. **Owner-of-member must stay `false`.** A class whose *member* (method,
+    parameter, or nested class) is deprecated must not itself be flagged. Because
+    the registry keys members as `Class.member`, a bare `Class` query does not
+    forward-prefix-match. All `false`: `check_deprecation(symbol="GladiaSTTService")`,
+    `check_deprecation(symbol="OpenAILLMService")` (each owns only deprecated
+    params), and the current module
+    `check_deprecation(symbol="pipecat.services.openai.llm")`.
 48. **Current-API false-positive canaries.** `check_deprecation` must return
-    `deprecated: false` for core, current APIs:
+    `deprecated: false` for stable, current classes:
     `check_deprecation(symbol="Pipeline")`,
     `check_deprecation(symbol="CartesiaTTSService")`, and
     `check_deprecation(symbol="SileroVADAnalyzer")` — all `false`. A false
-    positive here (current API flagged deprecated) is the worst failure mode
-    this tool has; these stable classes are a regression canary independent of
-    the rename cases in #45–#47.
-
-    **Owner-of-member canaries (fixed — must stay `false`).** Member/param
-    deprecation bullets name the *owning* class but deprecate a member; the
-    class must not be keyed. All of these must return `deprecated: false`:
-    `check_deprecation(symbol="DeepgramSTTService")` (`` `X`: `member` `` colon
-    header), `check_deprecation(symbol="GladiaSTTService")` and
-    `check_deprecation(symbol="SimliVideoService")` (possessive / adjacent
-    bullets *and* the `check()` reverse-prefix fix — a bare class name must not
-    inherit a deprecated nested member like `GladiaSTTService.InputParams`),
-    `check_deprecation(symbol="MiniMaxHttpTTSService")`
-    (`` `member` parameter for `X` ``), `check_deprecation(symbol="SpeechmaticsSTTService")`
-    (`For `X`, the `member` …`), and `check_deprecation(symbol="StartFrame")`,
-    `check_deprecation(symbol="FrameProcessor")`,
-    `check_deprecation(symbol="CartesiaHttpTTSService")` (delimiter-list owners
-    after a preposition: `from `A`, `B`, and `C``).
-
-    **Known gap (still mis-keyed — "replacement-kept" / Gap D).** A class named
-    as a *kept replacement* in a removal bullet is still wrongly keyed; these
-    need semantic phrasing detection, not heuristics, and are deferred to a
-    follow-up. Do NOT add them as passing canaries yet:
-    `OpenAILLMService` ("can still be used with `OpenAILLMService`"),
-    `WebsocketTTSService` ("Subclass `WebsocketTTSService` directly"),
-    `TTSService` (colon bullet is fixed, but a separate 0.0.105 bullet — "part
-    of the base `TTSService`" — keeps it mis-keyed),
-    `LLMContext` ("now built into `LLMContext`"), and
-    `LocalSmartTurnAnalyzerV3` ("`transformers` … now always installed").
+    positive here (current API flagged deprecated) is the worst failure mode this
+    tool has; these version-independent classes are a regression canary.
 
     **Runnable smoke:** `uv run python scripts/smoke_check_deprecation.py`
-    exercises all of the above against the **live local index** (requires a
-    prior `refresh`; not part of the pytest gate). Exit 0 = all canaries pass;
-    add `--known-gaps` to also report the deferred Gap-D residuals.
+    exercises the CURRENT (expect `false`) and DEPRECATED (expect `true`) canary
+    sets against the **live local index** (requires a prior `refresh`; not part of
+    the pytest gate). Exit 0 = all canaries pass. (The pre-registry "Gap D /
+    replacement-kept" residuals are resolved by the registry — there is no longer
+    a `--known-gaps` mode.)
 
 49. `get_doc(path="/api-reference/server/frames/system-frames")` — response
     `sections` field is a **non-empty list** (regression canary for the always-empty
