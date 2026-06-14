@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from pipecat_context_hub.services.ingest.deprecation_map import (
     DeprecationEntry,
     DeprecationMap,
@@ -276,7 +278,7 @@ class TestBuildFromRegistry:
         assert dm.entries == {}
 
     def test_duplicate_bare_subject_warns_and_keeps_both_qualified(
-        self, tmp_path: Path, caplog
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Two records colliding on the same bare subject log a warning; the
         last write wins the bare key, but both remain resolvable by full path."""
@@ -304,11 +306,17 @@ class TestBuildFromRegistry:
         with caplog.at_level(logging.WARNING):
             dm = build_deprecation_map_from_registry(path)
         assert "duplicate bare subject" in caplog.text
+
         # Last record wins the bare key...
-        assert dm.check("Config").new_path == "BarConfig"
+        bare = dm.check("Config")
+        assert bare is not None
+        assert bare.new_path == "BarConfig"
         # ...but both remain resolvable by their fully-qualified path.
-        assert dm.check("pipecat.services.foo.Config").new_path == "FooConfig"
-        assert dm.check("pipecat.services.bar.Config").new_path == "BarConfig"
+        foo = dm.check("pipecat.services.foo.Config")
+        bar = dm.check("pipecat.services.bar.Config")
+        assert foo is not None and bar is not None
+        assert foo.new_path == "FooConfig"
+        assert bar.new_path == "BarConfig"
 
 
 class TestCheckDeprecationHandler:
