@@ -106,7 +106,7 @@ Do not read `.venv` or source files directly.
 - Class constructors, method signatures, frame types → `search_api`
 - Specific code span or symbol → `get_code_snippet`
 - Retrieve a specific doc page → `get_doc`
-- Check if an import is deprecated → `check_deprecation`
+- Check if an import is deprecated or removed → `check_deprecation`
 
 **Multi-concept queries:** Use ` + ` or ` & ` as delimiters
 (e.g., `search_docs("TTS + STT")`). Each concept is searched independently
@@ -129,7 +129,7 @@ package manager:
 | `get_example` | Retrieve full source files for a specific example |
 | `search_api` | Class definitions, method signatures, frame types, inheritance |
 | `get_code_snippet` | Get targeted code by symbol name, intent, or file path + line range |
-| `check_deprecation` | Verify whether a pipecat import path is deprecated |
+| `check_deprecation` | Verify whether a pipecat import path is deprecated or removed (supports `--at-version` for lifecycle at a specific version) |
 | `get_hub_status` | Index health, reranker runtime state, record counts, framework version, commit SHAs |
 
 All search results include an **EvidenceReport** with confidence scores,

@@ -62,7 +62,7 @@ When pipecat-context-hub MCP is available, always prefer its tools (`search_docs
 - Class constructors, method signatures, frame types → `search_api`
 - Specific code span or symbol → `get_code_snippet`
 - Retrieve a specific doc page → `get_doc`
-- Check if an import is deprecated → `check_deprecation`
+- Check if an import is deprecated or removed → `check_deprecation`
 
 **Multi-concept queries:** Use ` + ` or ` & ` as delimiters (e.g., `search_docs("TTS + STT")`). Each concept is searched independently and results are interleaved.
 
