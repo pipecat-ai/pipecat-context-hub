@@ -103,7 +103,7 @@ no separate `owner`/`subject_kind`:
   "relation": "use_existing",                    // rename | merged | move | use_existing | none (flat string, not nested)
   "replacement": "AICQuailVADAnalyzer",          // flat string, not a typed target list
   "message": "`AICFilter.create_vad_analyzer` is deprecated since 1.4.0 …",
-  "location": "pipecat/audio/filters/aic_filter.py:308"  // file:line — NOT consumed by the hub (see Improvements)
+  "location": "pipecat/audio/filters/aic_filter.py"  // file path; surfaced verbatim, format-agnostic (older registries may carry a :line suffix)
 }
 ```
 
@@ -178,9 +178,11 @@ Ran `build_deprecation_map_from_registry` over the upstream
 
 Resolved in the PR #85 follow-up commit:
 
-- **(P2) ✅ `location` surfaced.** `file:line` is now threaded through
+- **(P2) ✅ `location` surfaced.** The registry `location` (a file path; older
+  registries may carry a `:line` suffix) is now threaded through
   `DeprecationEntry` → persisted map → `check_deprecation` output (see AGENTS.md
-  #45), giving agents a jump-to-definition pointer.
+  #45), giving agents a locate-the-definition pointer. Passed through verbatim —
+  the consumer never parses the format.
 - **(P2) ✅ AGENTS.md refreshed.** §34–37 / §45–48 rewritten for the registry
   model: dropped the `gh`/release-note prerequisite and the resolved Gap-D
   residuals; added the removed-symbols-are-absent caveat. `smoke_check_deprecation.py`

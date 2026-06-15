@@ -22,6 +22,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   before `refresh` has built an index, the version was unreadable. Sourced from
   `importlib.metadata`, so it always matches `_SERVER_VERSION`.
 
+### Changed
+- **`location` documented as a bare file path, not `file:line`** — aligns the
+  `check_deprecation` `location` field docs with pipecat-ai/pipecat#4749, which
+  stores the deprecation marker's `location` as a file path (no `:line`) so the
+  registry stops churning on unrelated line shifts. No behavior change: the
+  consumer surfaces `location` verbatim and never parses it, so registries that
+  still carry a `:line` suffix (older pipecat) keep working unchanged.
+
 ## [0.2.1] - 2026-06-14
 
 ### Added
