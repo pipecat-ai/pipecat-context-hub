@@ -57,6 +57,8 @@ Add these lines to your project's `CLAUDE.md` (or global `~/.claude/CLAUDE.md`) 
 
 When pipecat-context-hub MCP is available, always prefer its tools (`search_docs`, `search_api`, `search_examples`, `get_example`, `get_doc`, `get_code_snippet`, `check_deprecation`) for Pipecat framework questions. Do not read `.venv` or source files directly.
 
+If the MCP server isn't wired up but the package is installed, the same tools are CLI subcommands — shell out instead of reading source, e.g. `uv run pipecat-context-hub check-deprecation PipelineTask` or `uv run pipecat-context-hub search-docs "TTS + STT"`.
+
 - "How do I ...?" → `search_docs`
 - "Show me an example of ..." → `search_examples`, then `get_example`
 - Class constructors, method signatures, frame types → `search_api`
