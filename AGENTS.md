@@ -146,10 +146,15 @@ read pipecat's machine-readable registry
 auth is required** and the old release-note prerequisite is gone. One consequence
 of the registry model: it only carries symbols that **still exist** in the indexed
 pipecat source with an active `.. deprecated::` / `@deprecated` marker. A symbol
-that has already been *removed* is absent from the registry, so `check_deprecation`
-reports it `deprecated: false` (i.e. *unknown*), not "removed in X". Exact symbols
-below track the indexed pipecat version; re-verify against the current registry if
-they drift.
+that has already been *removed* is absent from `deprecations.json` — but as of PR
+#88 the hub also merges pipecat's sibling `removals.json` ledger (when present),
+so a removed symbol reports `status: "removed"` with its `removed_in` and a
+migration note rather than `deprecated: false`. `check_deprecation` also accepts an
+optional `version` (defaulting to the indexed framework version) and returns a
+`status` of `current` / `deprecated` / `removed` evaluated at that version. Until
+upstream ships a populated `removals.json`, the merge is a no-op and removed
+symbols still read `deprecated: false` (i.e. *unknown*). Exact symbols below track
+the indexed pipecat version; re-verify against the current registry if they drift.
 
 34. `check_deprecation("pipecat.services.grok.llm")` — `deprecated: true`,
     `kind: "module"`, `relation: "move"`,
@@ -250,6 +255,13 @@ they drift.
     the pytest gate). Exit 0 = all canaries pass. (The pre-registry "Gap D /
     replacement-kept" residuals are resolved by the registry — there is no longer
     a `--known-gaps` mode.)
+
+    **Removal-history smoke:** `uv run python scripts/smoke_check_removals.py`
+    covers the version-aware lifecycle (PR #88): it builds a map from the real
+    `deprecations.json` and merges a *synthetic* `removals.json` (upstream's is
+    still empty/dormant) to assert the REMOVED lifecycle, the safety invariant (an
+    active deprecation never reports `removed` past its announced version), and the
+    bare-key clobber guard. It does not mutate the persisted map.
 
 49. `get_doc(path="/api-reference/server/frames/system-frames")` — response
     `sections` field is a **non-empty list** (regression canary for the always-empty

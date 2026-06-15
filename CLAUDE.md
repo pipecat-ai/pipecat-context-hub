@@ -32,6 +32,7 @@ stdout, logs on stderr — see `cli_query.py`):
 ```bash
 uv run pipecat-context-hub --version                        # package version; no index/model load
 uv run pipecat-context-hub check-deprecation PipelineTask   # <1s (no model load)
+uv run pipecat-context-hub check-deprecation PipelineTask --at-version 2.0.0  # lifecycle at a version
 uv run pipecat-context-hub status                           # index health; <1s
 uv run pipecat-context-hub search-api "WebsocketServerParams" --limit 3   # ~3s (loads models)
 uv run pipecat-context-hub search-docs "TTS + STT"

@@ -364,7 +364,9 @@ class ExampleHit(BaseModel):
     path: str
     commit_sha: str | None = None
     pipecat_version_pin: str | None = None
-    version_compatibility: Literal["compatible", "newer_required", "older_targeted", "unknown"] | None = None
+    version_compatibility: (
+        Literal["compatible", "newer_required", "older_targeted", "unknown"] | None
+    ) = None
     citation: Citation
     score: float
 
@@ -484,7 +486,9 @@ class CodeSnippet(BaseModel):
     line_end: int
     language: str | None = None
     pipecat_version_pin: str | None = None
-    version_compatibility: Literal["compatible", "newer_required", "older_targeted", "unknown"] | None = None
+    version_compatibility: (
+        Literal["compatible", "newer_required", "older_targeted", "unknown"] | None
+    ) = None
     citation: Citation
     dependency_notes: list[str] = Field(
         default_factory=list,
@@ -582,9 +586,7 @@ class RerankerStatus(BaseModel):
     """
 
     enabled: bool = Field(description="Whether reranking is actually active.")
-    model: str | None = Field(
-        default=None, description="Active model name (None when disabled)."
-    )
+    model: str | None = Field(default=None, description="Active model name (None when disabled).")
     configured_model: str | None = Field(
         default=None,
         description="Operator's raw requested model (pre-validation). "
@@ -610,7 +612,9 @@ class SearchApiInput(BaseModel):
         max_length=256,
         description="Filter by class name prefix, e.g. 'DailyTransport' matches DailyTransport, DailyTransportClient, etc.",
     )
-    chunk_type: Literal["module_overview", "class_overview", "method", "function", "type_definition"] | None = Field(
+    chunk_type: (
+        Literal["module_overview", "class_overview", "method", "function", "type_definition"] | None
+    ) = Field(
         default=None,
         description="Filter by chunk type.",
     )
@@ -672,7 +676,9 @@ class ApiHit(BaseModel):
         description="RST type definition names for this method's parameters. Look up with search_api(query=name, chunk_type='type_definition').",
     )
     pipecat_version_pin: str | None = None
-    version_compatibility: Literal["compatible", "newer_required", "older_targeted", "unknown"] | None = None
+    version_compatibility: (
+        Literal["compatible", "newer_required", "older_targeted", "unknown"] | None
+    ) = None
     citation: Citation
     score: float
 
@@ -688,6 +694,9 @@ class SearchApiOutput(BaseModel):
 # MCP Tool I/O models — check_deprecation
 # ---------------------------------------------------------------------------
 
+DeprecationStatus = Literal["current", "deprecated", "removed"]
+"""Lifecycle status of a symbol at a given pipecat version."""
+
 
 class CheckDeprecationInput(BaseModel):
     """Input for the check_deprecation MCP tool."""
@@ -699,15 +708,38 @@ class CheckDeprecationInput(BaseModel):
             "E.g., 'pipecat.services.grok.llm' or 'DailyTransport'."
         ),
     )
+    version: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Optional pipecat version to evaluate against (e.g. '2.0.0'). The status is "
+            "computed relative to it: a symbol may be current, deprecated, or removed at "
+            "different versions. Defaults to the indexed framework version when omitted."
+        ),
+    )
 
 
 class CheckDeprecationOutput(BaseModel):
     """Output for the check_deprecation MCP tool."""
 
     deprecated: bool
+    status: DeprecationStatus | None = Field(
+        default=None,
+        description=(
+            "Lifecycle status at the evaluated version: 'current' (not deprecated), "
+            "'deprecated' (deprecated but still present), or 'removed' (deleted in removed_in)."
+        ),
+    )
     replacement: str | None = None
     deprecated_in: str | None = None
     removed_in: str | None = None
+    announced_removed_in: str | None = Field(
+        default=None,
+        description=(
+            "For removed symbols, the version removal was originally announced for "
+            "(differs from removed_in only if the removal slipped)."
+        ),
+    )
     note: str | None = None
     kind: str | None = Field(
         default=None,

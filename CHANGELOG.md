@@ -8,6 +8,13 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`check_deprecation` is version-aware and reports removed symbols** — an optional
+  `version` argument evaluates a symbol's lifecycle at that pipecat version, and responses
+  now include a `status` (`current` / `deprecated` / `removed`) plus `announced_removed_in`.
+  Once pipecat ships its `removals.json`, a symbol deleted in a release reports "removed in
+  `V`, use `Y`" instead of "not deprecated"; `version` defaults to the indexed framework
+  version when omitted. Dormant (no behavior change) until that file exists. The one-shot
+  CLI exposes this via `check-deprecation <symbol> --at-version <V>`.
 - **`pipecat-context-hub --version`** — prints the running package version and
   exits, with no index open or model load. Previously the only way to read the
   version was `status` (`server_version`), which exits 2 when the index is

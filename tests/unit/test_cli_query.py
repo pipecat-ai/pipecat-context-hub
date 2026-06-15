@@ -106,6 +106,37 @@ class TestDispatch:
         assert payload["deprecated"] is False
         store.close.assert_called_once()
 
+    def test_check_deprecation_at_version_forwards_version(self, tmp_path):
+        """`--at-version` reaches the handler as the `version` arg; absent otherwise."""
+        captured: dict[str, object] = {}
+
+        async def _fake_handler(args, dep_map, fw_version=None):
+            captured.clear()
+            captured.update(args)
+            return json.dumps({"deprecated": False, "status": "current"})
+
+        def _run(extra_args):
+            with (
+                patch(
+                    "pipecat_context_hub.services.index.store.IndexStore",
+                    return_value=_index_store_mock(total=10),
+                ),
+                patch(
+                    "pipecat_context_hub.server.tools.check_deprecation.handle_check_deprecation",
+                    side_effect=_fake_handler,
+                ),
+                patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+            ):
+                return runner.invoke(main, ["check-deprecation", "PipelineTask", *extra_args])
+
+        result = _run(["--at-version", "2.0.0"])
+        assert result.exit_code == 0, result.stderr
+        assert captured == {"symbol": "PipelineTask", "version": "2.0.0"}
+
+        result = _run([])
+        assert result.exit_code == 0, result.stderr
+        assert captured == {"symbol": "PipelineTask"}  # no version key when omitted
+
     def test_status_reports_index_health(self, tmp_path):
         with (
             patch(
