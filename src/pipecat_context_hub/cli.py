@@ -139,6 +139,9 @@ def _delete_local_index_storage(data_dir: Path) -> None:
 
 
 @click.group(invoke_without_command=True)
+@click.version_option(
+    package_name="pipecat-ai-context-hub", prog_name="pipecat-context-hub"
+)
 @click.option("--log-level", default="INFO", help="Logging level.")
 @click.pass_context
 def main(ctx: click.Context, log_level: str) -> None:

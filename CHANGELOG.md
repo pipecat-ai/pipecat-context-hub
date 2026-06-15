@@ -15,6 +15,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   `V`, use `Y`" instead of "not deprecated"; `version` defaults to the indexed framework
   version when omitted. Dormant (no behavior change) until that file exists. The one-shot
   CLI exposes this via `check-deprecation <symbol> --at-version <V>`.
+- **`pipecat-context-hub --version`** — prints the running package version and
+  exits, with no index open or model load. Previously the only way to read the
+  version was `status` (`server_version`), which exits 2 when the index is
+  missing/empty — so on a fresh `uvx pipecat-ai-context-hub@latest` machine,
+  before `refresh` has built an index, the version was unreadable. Sourced from
+  `importlib.metadata`, so it always matches `_SERVER_VERSION`.
 
 ## [0.2.1] - 2026-06-14
 
