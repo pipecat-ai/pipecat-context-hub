@@ -222,11 +222,12 @@ the indexed pipecat version; re-verify against the current registry if they drif
     loads can take 30-130s and exceed Claude Code's tool-permission
     window).
 45. **`location` surfaced (PR #85).** A `deprecated: true` response carries a
-    `location` field as `path/to/file.py:line` (relative to the pipecat repo
-    root) pointing at the deprecation marker — e.g. `ResampyResampler` →
-    `pipecat/audio/resamplers/resampy_resampler.py:NN`. Lets an agent jump to the
-    definition. `null` for older pipecat versions whose registry predates the
-    field, or when not deprecated.
+    `location` field as `path/to/file.py` (relative to the pipecat repo
+    root) pointing at the file holding the deprecation marker — e.g. `ResampyResampler` →
+    `pipecat/audio/resamplers/resampy_resampler.py`. Lets an agent locate the
+    definition. The consumer is format-agnostic: registries that still carry a
+    `:line` suffix (older pipecat) are passed through unchanged. `null` for older
+    pipecat versions whose registry predates the field, or when not deprecated.
 46. **Forward-prefix only — ancestors are never flagged.**
     `check_deprecation(symbol="pipecat.services")` and
     `check_deprecation(symbol="pipecat")` — both `false`, even though the
