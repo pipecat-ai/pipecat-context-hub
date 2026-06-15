@@ -51,7 +51,7 @@ class DeprecationEntry:
     kind: str | None = None
     relation: str | None = None
     location: str | None = None
-    """Source ``file:line`` of the deprecation marker (registry ``location``)."""
+    """Source file of the deprecation marker, relative to the pipecat repo root (registry ``location``)."""
     status: DeprecationStatus = "deprecated"
     """Lifecycle: ``"deprecated"`` (still present) or ``"removed"`` (from removals.json)."""
     announced_removed_in: str | None = None

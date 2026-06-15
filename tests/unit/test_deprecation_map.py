@@ -188,7 +188,7 @@ class TestBuildFromRegistry:
                     "relation": "use_existing",
                     "replacement": "SOXRAudioResampler",
                     "message": "`ResampyResampler` is deprecated since 1.2.0 ...",
-                    "location": "pipecat/audio/resamplers/resampy_resampler.py:42",
+                    "location": "pipecat/audio/resamplers/resampy_resampler.py",
                 }
             ],
         )
@@ -202,7 +202,7 @@ class TestBuildFromRegistry:
         assert entry.kind == "class"
         assert entry.relation == "use_existing"
         assert entry.note.startswith("`ResampyResampler` is deprecated")
-        assert entry.location == "pipecat/audio/resamplers/resampy_resampler.py:42"
+        assert entry.location == "pipecat/audio/resamplers/resampy_resampler.py"
 
     def test_fully_qualified_alias_resolves(self, tmp_path: Path) -> None:
         """A non-module symbol resolves by both bare and fully-qualified path."""

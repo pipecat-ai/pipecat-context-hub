@@ -755,7 +755,7 @@ class CheckDeprecationOutput(BaseModel):
     location: str | None = Field(
         default=None,
         description=(
-            "Source location of the deprecation marker as 'path/to/file.py:line', "
-            "relative to the pipecat repo root, for jumping to the definition."
+            "Source file of the deprecation marker as 'path/to/file.py', relative to "
+            "the pipecat repo root, for locating the definition."
         ),
     )
