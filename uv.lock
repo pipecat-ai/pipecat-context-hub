@@ -2077,7 +2077,7 @@ dev = [
 requires-dist = [
     { name = "chromadb", specifier = ">=1.5,<2.0" },
     { name = "click", specifier = ">=8.0,<9.0" },
-    { name = "cryptography", specifier = ">=46.0.7" },
+    { name = "cryptography", specifier = ">=48.0.1" },
     { name = "gitpython", specifier = ">=3.1.49,<4.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "mcp", specifier = ">=1.0,<2.0" },
