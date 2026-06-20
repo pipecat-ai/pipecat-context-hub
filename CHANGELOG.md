@@ -30,6 +30,21 @@ This project uses [Semantic Versioning](https://semver.org/).
   consumer surfaces `location` verbatim and never parses it, so registries that
   still carry a `:line` suffix (older pipecat) keep working unchanged.
 
+### Security
+- **Batch transitive dependency bumps (PR #93)** — patches five advisories in the
+  resolved lockfile, combining Dependabot PRs #90/#91/#92 plus two advisories
+  disclosed afterward: `cryptography` 46.0.7→49.0.0 (GHSA-537c-gmf6-5ccf),
+  `python-multipart` 0.0.27→0.0.32 (CVE-2026-53538 / CVE-2026-53539 /
+  CVE-2026-53540), `msgpack` 1.1.2→1.2.1 (GHSA-6v7p-g79w-8964), and
+  `pydantic-settings` 2.13.0→2.14.2 (GHSA-4xgf-cpjx-pc3j); `starlette` 1.1.0→1.3.1
+  rides along (no CVE). `cryptography` is a **direct** dependency, so its
+  `pyproject.toml` floor is also raised (`>=46.0.7` → `>=48.0.1`) — a lock-only bump
+  would leave the published metadata admitting the vulnerable 46.0.7. The other four
+  are transitive with open upper bounds (nothing caps them below the fix), so they
+  are patched by re-lock with no pin, per the project's established pattern (see the
+  AGENTS.md Review Checklist). `pip-audit` reports no known vulnerabilities after the
+  bump.
+
 ## [0.2.1] - 2026-06-14
 
 ### Added
