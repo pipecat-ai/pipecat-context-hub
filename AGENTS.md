@@ -296,7 +296,20 @@ live local index:
    validation message on stderr, empty stdout
 5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —
    exit 2, stderr says to run `refresh`
-6. `PIPECAT_HUB_STALE_AFTER_DAYS=1 uv run pipecat-context-hub search-docs "TTS"`
+6a. **Pipecat CLI bridge** (when `plugin.py`, the command set, or `pyproject.toml`
+   entry points change). Unit tests mount the bridge in-process; this confirms the
+   real entry-point discovery path, which they cannot:
+   ```bash
+   uv tool install --reinstall "pipecat-ai[cli]" --with /path/to/pipecat-context-hub
+   ```
+   Note `--reinstall`: plain `--force` reuses a cached build of a local path and
+   will silently test stale code. Then check parity with the direct CLI —
+   `pipecat mcp --help` lists every command, `pipecat mcp refresh --help` shows
+   `--force` (not an empty stub), `pipecat mcp refresh --bogus` exits 2,
+   `pipecat mcp get-doc` exits 1, `pipecat mcp status` exits 0 with **pure JSON on
+   stdout** (agents pipe it), and `pipecat mcp install --print-config` prints the
+   config without changing anything.
+7. `PIPECAT_HUB_STALE_AFTER_DAYS=1 uv run pipecat-context-hub search-docs "TTS"`
    — response JSON carries `index_staleness` with `age_days >= 1` and a `hint`
    (assuming the index is ≥1 day old); rerun without the env override on a fresh
    index and confirm `index_staleness` is **absent**. The footer must never

@@ -8,6 +8,26 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Mounts into the Pipecat CLI as `pipecat mcp`** — installing this package alongside
+  `pipecat-ai[cli]` exposes every command as `pipecat mcp <command>`, with identical
+  parsing, JSON, and exit codes. Entry-point discovery is dynamic, so this works against
+  a Pipecat CLI that is already installed; no upgrade is needed on that side.
+  `uv tool install "pipecat-ai[cli]" --with pipecat-ai-context-hub`. The bridge
+  (`plugin.py`) registers one passthrough per click command and hands raw argv to the
+  click group rather than restating commands in Typer, which would drift every release —
+  and, because typer vendors a private copy of click whose exception types differ from
+  the real ones, keeping all parsing inside click is what makes usage errors, subcommand
+  `--help`, and exit codes behave the same through either front door. `typer` is a peer
+  dependency provided by `pipecat-ai[cli]`, not a runtime dependency of this package.
+- **`install` command** — registers the MCP server with a coding agent and builds the
+  index in one step, replacing four manual ones. Claude Code and Codex are configured
+  through their own CLI so they own the edit to their config file; Cursor, VS Code, and
+  Zed get the exact JSON and its location printed, since this command will not write to
+  a config file it does not own. `--print-config` shows what would be registered and
+  changes nothing; `--no-refresh` skips the index build. It registers the direct
+  `pipecat-context-hub serve` console script, so starting the MCP server never loads the
+  Pipecat CLI.
+- **`start` as an alias for `serve`** — reads naturally as `pipecat mcp start`.
 - **`index_metadata` is a published read contract** — external tooling can answer "how
   old is this index, and which pipecat version is it for" by reading
   `<data dir>/metadata.db` read-only with the standard library, without importing the

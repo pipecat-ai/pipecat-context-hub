@@ -20,8 +20,13 @@ uv run pipecat-context-hub refresh                  # incremental rebuild
 uv run pipecat-context-hub refresh --force          # full re-ingest
 uv run pipecat-context-hub refresh --force --reset-index  # recover unhealthy local Chroma state
 uv run pipecat-context-hub refresh --framework-version v0.0.96  # index framework at a specific tag
-uv run pipecat-context-hub serve                    # start MCP server
+uv run pipecat-context-hub serve                    # start MCP server (`start` is an alias)
+uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
 ```
+
+Installed alongside `pipecat-ai[cli]`, every command is also reachable as
+`pipecat mcp <command>` — the same click group, bridged into the Pipecat CLI by
+`plugin.py`. See "Typer bridge" below.
 
 Use `refresh --force --reset-index` when the persisted local Chroma index is
 unhealthy and needs a clean rebuild.
@@ -100,6 +105,8 @@ The release tag must be `v<that version>` — the Release workflow
 src/pipecat_context_hub/
 ├── cli.py                    # CLI entry point (serve + refresh)
 ├── cli_query.py              # One-shot query subcommands (the MCP tools as shell commands)
+├── cli_install.py            # `install` — register the MCP server with a coding agent
+├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat mcp`
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
@@ -129,6 +136,32 @@ dashboard/
     ├── compute_clusters.py   # K-means clustering → clusters.json
     └── extract_dashboard.py  # Index stats → dashboard_data.json
 ```
+
+## Typer Bridge (`pipecat mcp`)
+
+The Pipecat CLI mounts plugins with `Typer.add_typer`, so a plugin must expose a
+`typer.Typer`; this CLI is click. `plugin.py` registers one passthrough Typer
+command per click command and hands raw argv to the click group, which does all
+the parsing.
+
+The reason parsing must stay wholly inside click: typer vendors a private copy
+of click (`typer._click`) whose exception types are *not* the ones a real
+`click.Command` raises. Passing argv across the boundary — rather than letting
+typer dispatch real click commands — is what keeps usage errors, subcommand
+`--help`, and exit codes identical through either front door.
+
+Two things break quietly if changed:
+
+- **`help_option_names: []`** in the passthrough context settings. Without it,
+  `pipecat mcp <cmd> --help` renders the empty stub's help instead of the real
+  command's. Pinned by `test_subcommand_help_is_the_real_one`.
+- **Command parity.** Registration is generated from `hub_cli.commands`, so a new
+  command appears automatically; `test_every_click_command_is_bridged` fails if
+  that ever stops being true.
+
+`typer` is a peer dependency, supplied at runtime by `pipecat-ai[cli]`. It is in
+the `dev` extra only so the bridge is tested rather than skipped — do **not**
+add it to `[project.dependencies]`.
 
 ## Release Notes Template
 

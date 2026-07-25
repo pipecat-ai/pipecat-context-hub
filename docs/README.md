@@ -23,13 +23,39 @@ IDE/Agent  ←stdio→  pipecat-context-hub serve  ←→  Local index (~/.pipec
 
 ## Install
 
-Run the hub with [`uv`](https://docs.astral.sh/uv/). `uvx` fetches and runs it
-on demand; the first invocation downloads the package and local models (allow a
-few minutes).
+The quickest path is to co-install with the Pipecat CLI, which then hosts every
+command below under `pipecat mcp` and can wire up your coding agent for you:
+
+```bash
+uv tool install "pipecat-ai[cli]" --with pipecat-ai-context-hub
+pipecat mcp install      # register the MCP server, then build the index
+```
+
+Or run the hub on its own with [`uv`](https://docs.astral.sh/uv/). `uvx` fetches
+and runs it on demand; the first invocation downloads the package and local
+models (allow a few minutes).
 
 > **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat
 > packages are `pipecat-ai*`); the command and MCP server name are
 > `pipecat-context-hub`. Both spellings of the command resolve once installed.
+
+### Inside the Pipecat CLI
+
+Installing this package alongside `pipecat-ai[cli]` mounts it as `pipecat mcp`.
+Discovery is dynamic, so this works with a Pipecat CLI that is already
+installed — no upgrade needed on that side.
+
+```bash
+pipecat mcp --help                          # same commands as below
+pipecat mcp refresh
+pipecat mcp check-deprecation PipelineTask
+```
+
+`pipecat mcp <command>` and `pipecat-context-hub <command>` are equivalent —
+same parsing, same JSON, same exit codes. Point MCP clients at
+`pipecat-context-hub serve` rather than `pipecat mcp serve`, though: the direct
+console script starts the server without loading the Pipecat CLI first.
+`pipecat mcp install` does this for you.
 
 ## Populate the Local Index
 
@@ -62,8 +88,22 @@ uvx pipecat-ai-context-hub serve
 
 ## Client Setup
 
-Point your IDE's MCP config at `uvx pipecat-ai-context-hub serve`.
-Per-client setup guides:
+`install` does this for you where the client ships a CLI:
+
+```bash
+pipecat-context-hub install                     # every detected client, then refresh
+pipecat-context-hub install --client codex      # just one
+pipecat-context-hub install --print-config      # show the config, change nothing
+```
+
+Claude Code and Codex are registered through their own CLI, so they own the edit
+to their config file. Cursor, VS Code, and Zed are configured by hand, so
+`install` prints the exact JSON and where it goes rather than writing to a file
+it does not own. MCP servers are read at session start — restart your agent
+afterwards.
+
+To set a client up manually, point its MCP config at
+`uvx pipecat-ai-context-hub serve`. Per-client setup guides:
 
 | Client | Setup Guide |
 |--------|-------------|

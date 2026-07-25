@@ -1,10 +1,10 @@
 # Task: Expose the hub as an external API and mount it in the Pipecat CLI
 
-**Status**: Phases 1-2 complete; Phase 3 not started
+**Status**: Phases 1-3 complete (hub side done); pipecat-side work pending
 **Component**: cli, index metadata, packaging
 **Assigned to**: markbackman
 **Priority**: High
-**Branch**: `feature/indexed-framework-version` (Phases 1-2)
+**Branch**: `feature/indexed-framework-version`
 **Created**: 2026-07-25
 **Completed**: —
 
@@ -66,7 +66,7 @@ through the Pipecat CLI without duplicating command or option definitions.
 | R2 | 1 | `indexed_framework_commits_ahead` from `git describe --tags --long` | `test_exact_tag_reports_zero_commits_ahead`, `test_commits_past_tag` |
 | R3 | 1 | Write guarded on `framework_checkout is not None`; cleanup on de-configuration | `test_indexed_framework_version_absent_by_default` |
 | R4 | 2 | `METADATA_CONTRACT_VERSION` (`fts.py`) stamped on refresh; "Index Metadata Contract" in `docs/README.md` | `TestRefreshProvenanceMetadata`; `TestVersionConsistency` |
-| R5 | 3 | Typer bridge + `[project.entry-points."pipecat_cli.extensions"]` | — |
+| R5 | 3 | `plugin.py` passthrough bridge + `[project.entry-points."pipecat_cli.extensions"]` | `tests/unit/test_plugin.py`; AGENTS.md CLI smoke 6a |
 
 ## Phase 1 — Framework provenance in the index (complete)
 
@@ -106,21 +106,51 @@ already exist, because `last_refresh_at` predates the contract.
 - `__init__.py` — `__version__` was hard-coded at `0.1.0`, three releases stale;
   now from `importlib.metadata`, pinned by a test
 
-## Phase 3 — Typer bridge and entry point
+## Phase 3 — Typer bridge, entry point, and install (complete)
 
-The Pipecat CLI's loader requires a `typer.Typer`; this CLI is click. Rather than
-mirror ten commands and their options by hand, bridge the existing click group so
-there is one definition of every command. Extract the `@click.group` body
-(`_load_dotenv`, logging, `ctx.obj["config"]`) into a reusable initializer shared
-by both front doors, add `plugin.py`, and register
-`mcp = "pipecat_context_hub.plugin:..."` under `pipecat_cli.extensions`.
+Two bridge designs were built and measured against the real CLI before choosing
+(`pipecat mcp <cmd> --help`, unknown option, unknown subcommand, invalid input,
+empty index, group options, bare invocation). Both passed every case, so the
+choice rested on what each depends on rather than on a defect:
 
-Verify the leaf paths, not just dispatch: `pipecat mcp <cmd> --help` must render
-the hub's help (not the bridge's), a bad option must produce click's usage error
-with exit 2, and `serve`'s exit-2-on-unbuilt-index must propagate.
+- **Passthrough (chosen).** One generated Typer command per click command, raw
+  argv handed to the click group. Click only ever sees its own classes.
+- **Delegating `TyperGroup`.** Overrides `get_command`/`list_commands` to return
+  real `click.Command` objects into typer's dispatch. Works on typer 0.26.2, but
+  correctness depends on typer tolerating objects from the other class hierarchy
+  — typer vendors click as `typer._click`, where `typer._click.exceptions.Exit is
+  click.exceptions.Exit` is `False`. Pipecat allows `typer<1` in a long-lived
+  global tool, so that is an implicit dependency on unspecified behavior.
 
-Because plugin discovery is dynamic and already shipped in `pipecat-ai` 1.6.0,
-publishing this phase makes `pipecat mcp` work against Pipecat CLI installs that
-already exist — no coordinated release required. The corresponding pipecat-side
-work (discoverability stub, freshness warning) must not ship before this phase is
-on PyPI, or its install hint points at a package that registers nothing.
+The planned `init_context` extraction turned out to be unnecessary: the
+passthrough re-enters the click group, so its callback runs normally and there is
+nothing to mirror.
+
+- `plugin.py` — the bridge. `help_option_names: []` is load-bearing; without it
+  subcommand `--help` renders the empty stub
+- `cli.py` — `start` alias for `serve`
+- `cli_install.py` — `install`; registers via each client's own CLI, prints
+  (never writes) config for hand-edited clients, registers the direct console
+  script so serving does not load the Pipecat CLI
+- `pyproject.toml` — entry point; `typer` in the `dev` extra only, as a peer
+  dependency, so the bridge is tested rather than skipped
+
+Client config templates were left in `config/clients/` rather than packaged:
+`install` generates the block from the resolved server command, which the static
+files cannot express since it varies by install method.
+
+## Remaining: pipecat side
+
+Not required for the feature to work — discovery is dynamic and shipped in
+`pipecat-ai` 1.6.0, so `pipecat mcp` works once this package is published. What
+remains there is discoverability and the freshness warning:
+
+- `_KNOWN_EXTENSIONS["mcp"]` so the command appears in `pipecat --help` before
+  the plugin is installed. **Must not ship before this package is on PyPI**, or
+  the hint points at a package that registers nothing
+- Guard `ep.load()` in `_build_app`: it is unwrapped inside a list comprehension,
+  so any plugin import error takes down the whole CLI, `pipecat init` included
+- `_enable_hint` emits `uv tool install "pipecat-ai[cli]" --with <pkg>`, which
+  *replaces* the tool environment. With two official plugins, following one hint
+  uninstalls the other; it needs to name every installed plugin
+- The freshness warning, reading the Phase 2 contract

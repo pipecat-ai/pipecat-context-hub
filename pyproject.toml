@@ -40,6 +40,10 @@ dev = [
     "pytest-asyncio>=1.0,<2.0",
     "mypy>=1.10,<2.0",
     "ruff>=0.5,<1.0",
+    # Peer dependency of `pipecat_context_hub.plugin`, supplied at runtime by
+    # `pipecat-ai[cli]`. Needed here so the Typer bridge is covered by tests
+    # rather than skipped, since it is not a runtime dependency of this package.
+    "typer>=0.20.0,<1",
 ]
 
 [project.scripts]
@@ -48,6 +52,15 @@ pipecat-context-hub = "pipecat_context_hub.cli:main"
 # Distribution-name alias so `uvx pipecat-ai-context-hub <cmd>` resolves
 # (uvx runs the executable matching the package name).
 pipecat-ai-context-hub = "pipecat_context_hub.cli:main"
+
+# Mounts this CLI into the Pipecat CLI as `pipecat mcp`. The group name is
+# pipecat's (legacy) spelling and must match exactly. Discovery is dynamic, so
+# installing this package alongside `pipecat-ai[cli]` is sufficient — no
+# coordinated pipecat release is required. typer is a peer dependency supplied
+# by that extra; `pipecat_context_hub.plugin` is imported only by the Pipecat
+# CLI, never by this package's own entry points.
+[project.entry-points."pipecat_cli.extensions"]
+mcp = "pipecat_context_hub.plugin:app"
 
 [tool.uv]
 # Security floors for transitive dependencies the project does not import directly.

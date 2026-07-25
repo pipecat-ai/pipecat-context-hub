@@ -19,6 +19,7 @@ from pathlib import Path
 
 import click
 
+from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
@@ -446,6 +447,13 @@ def serve(ctx: click.Context) -> None:
         )
     finally:
         index_store.close()
+
+
+@main.command()
+@click.pass_context
+def start(ctx: click.Context) -> None:
+    """Start the MCP server (alias for `serve`)."""
+    ctx.invoke(serve)
 
 
 @main.command()
@@ -993,6 +1001,7 @@ def _print_refresh_summary(
 # One-shot query subcommands (search-docs, check-deprecation, status, ...) —
 # the same tool handlers the MCP server dispatches, exposed for shell callers.
 register_query_commands(main)
+register_install_command(main)
 
 
 if __name__ == "__main__":
