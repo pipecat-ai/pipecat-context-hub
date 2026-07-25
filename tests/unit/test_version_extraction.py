@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,16 +22,12 @@ class TestParsePyproject:
 
     def test_exact_pin(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "my-bot"\ndependencies = ["pipecat-ai==0.0.98"]\n'
-        )
+        pyproject.write_text('[project]\nname = "my-bot"\ndependencies = ["pipecat-ai==0.0.98"]\n')
         assert _parse_pipecat_version_from_pyproject(pyproject) == "==0.0.98"
 
     def test_minimum_version(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "my-bot"\ndependencies = ["pipecat-ai>=0.0.105"]\n'
-        )
+        pyproject.write_text('[project]\nname = "my-bot"\ndependencies = ["pipecat-ai>=0.0.105"]\n')
         assert _parse_pipecat_version_from_pyproject(pyproject) == ">=0.0.105"
 
     def test_range(self, tmp_path: Path) -> None:
@@ -43,31 +40,25 @@ class TestParsePyproject:
     def test_extras_syntax(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            '[project]\nname = "my-bot"\n'
-            'dependencies = ["pipecat-ai[daily,runner]>=0.0.105"]\n'
+            '[project]\nname = "my-bot"\ndependencies = ["pipecat-ai[daily,runner]>=0.0.105"]\n'
         )
         assert _parse_pipecat_version_from_pyproject(pyproject) == ">=0.0.105"
 
     def test_no_version_constraint(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            '[project]\nname = "my-bot"\n'
-            'dependencies = ["pipecat-ai[webrtc,daily]"]\n'
+            '[project]\nname = "my-bot"\ndependencies = ["pipecat-ai[webrtc,daily]"]\n'
         )
         assert _parse_pipecat_version_from_pyproject(pyproject) is None
 
     def test_no_pipecat_dep(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "unrelated"\ndependencies = ["requests>=2.0"]\n'
-        )
+        pyproject.write_text('[project]\nname = "unrelated"\ndependencies = ["requests>=2.0"]\n')
         assert _parse_pipecat_version_from_pyproject(pyproject) is None
 
     def test_empty_dependencies(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "monorepo-root"\ndependencies = []\n'
-        )
+        pyproject.write_text('[project]\nname = "monorepo-root"\ndependencies = []\n')
         assert _parse_pipecat_version_from_pyproject(pyproject) is None
 
     def test_missing_file(self, tmp_path: Path) -> None:
@@ -112,16 +103,12 @@ class TestParsePackageJson:
 
     def test_caret_range(self, tmp_path: Path) -> None:
         pkg = tmp_path / "package.json"
-        pkg.write_text(json.dumps({
-            "dependencies": {"@pipecat-ai/client-js": "^1.7.0"}
-        }))
+        pkg.write_text(json.dumps({"dependencies": {"@pipecat-ai/client-js": "^1.7.0"}}))
         assert _parse_pipecat_version_from_package_json(pkg) == "^1.7.0"
 
     def test_dev_dependency(self, tmp_path: Path) -> None:
         pkg = tmp_path / "package.json"
-        pkg.write_text(json.dumps({
-            "devDependencies": {"@pipecat-ai/client-js": "~2.0.0"}
-        }))
+        pkg.write_text(json.dumps({"devDependencies": {"@pipecat-ai/client-js": "~2.0.0"}}))
         assert _parse_pipecat_version_from_package_json(pkg) == "~2.0.0"
 
     def test_no_pipecat(self, tmp_path: Path) -> None:
@@ -185,9 +172,9 @@ class TestExtractPipecatVersion:
         repo_root = tmp_path / "repo"
         example = repo_root / "frontend"
         example.mkdir(parents=True)
-        (example / "package.json").write_text(json.dumps({
-            "dependencies": {"@pipecat-ai/client-js": "^1.7.0"}
-        }))
+        (example / "package.json").write_text(
+            json.dumps({"dependencies": {"@pipecat-ai/client-js": "^1.7.0"}})
+        )
         assert _extract_pipecat_version(example, repo_root) == "^1.7.0"
 
     def test_no_version_anywhere(self, tmp_path: Path) -> None:
@@ -241,8 +228,10 @@ class TestGetFrameworkVersion:
             assert _get_framework_version(tmp_path) == "1.5.0"
 
     def test_no_tags_returns_none(self, tmp_path: Path) -> None:
+        from git.exc import GitCommandError
+
         mock_repo = MagicMock()
-        mock_repo.git.describe.side_effect = Exception("no tags")
+        mock_repo.git.describe.side_effect = GitCommandError("describe", 128)
         with patch(
             "pipecat_context_hub.services.ingest.github_ingest.GitRepo",
             return_value=mock_repo,
@@ -277,9 +266,20 @@ class TestDescribeFrameworkCheckout:
         with self._patched("v1.0.0-rc1-12-gdeadbee"):
             assert describe_framework_checkout(tmp_path) == ("1.0.0-rc1", 12)
 
-    def test_no_tags_returns_none(self, tmp_path: Path) -> None:
-        with self._patched(Exception("no tags")):
+    def test_no_tags_returns_none_silently(self, tmp_path: Path, caplog) -> None:
+        from git.exc import GitCommandError
+
+        with self._patched(GitCommandError("describe", 128)), caplog.at_level("WARNING"):
             assert describe_framework_checkout(tmp_path) == (None, None)
+        assert caplog.records == []
+
+    def test_unexpected_error_returns_none_and_logs_warning(self, tmp_path: Path, caplog) -> None:
+        # A broken git install or an unreadable checkout is not the routine
+        # no-tags case (GitCommandError) — it must be visible at warning level,
+        # not silently swallowed like the expected no-tags path above.
+        with self._patched(OSError("git executable not found")), caplog.at_level("WARNING"):
+            assert describe_framework_checkout(tmp_path) == (None, None)
+        assert any("Unexpected error describing checkout" in r.message for r in caplog.records)
 
     def test_unparseable_describe_returns_none(self, tmp_path: Path) -> None:
         # Guards against a git that renders --long differently than expected.
@@ -325,7 +325,7 @@ class TestVectorRoundTrip:
     """Test that pipecat_version_pin survives ChromaDB round-trip."""
 
     def test_version_pin_round_trip(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from pipecat_context_hub.services.index.vector import (
             _metadata_to_record_fields,
@@ -339,7 +339,7 @@ class TestVectorRoundTrip:
             content_type="code",
             source_url="https://example.com",
             path="test.py",
-            indexed_at=datetime.now(tz=timezone.utc),
+            indexed_at=datetime.now(tz=UTC),
             metadata={"pipecat_version_pin": ">=0.0.105"},
         )
 
@@ -350,7 +350,7 @@ class TestVectorRoundTrip:
         assert reconstructed.metadata["pipecat_version_pin"] == ">=0.0.105"
 
     def test_version_pin_absent(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from pipecat_context_hub.services.index.vector import (
             _metadata_to_record_fields,
@@ -364,7 +364,7 @@ class TestVectorRoundTrip:
             content_type="code",
             source_url="https://example.com",
             path="test.py",
-            indexed_at=datetime.now(tz=timezone.utc),
+            indexed_at=datetime.now(tz=UTC),
             metadata={},
         )
 

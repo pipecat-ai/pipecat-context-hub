@@ -12,7 +12,7 @@ import logging
 import re
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -92,9 +92,7 @@ _BOUNDARY_RE = re.compile(
 )
 
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-_REPO_SLUG_RE = re.compile(
-    r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
-)
+_REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 # Validation for git tag names (e.g. "v0.0.96", "0.0.96").
 _TAG_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
@@ -135,7 +133,11 @@ def repo_ref_is_tainted(repo_path: Path, commit_sha: str, tainted_refs: set[str]
         if normalized and _HEX_SHA_RE.fullmatch(normalized) and sha.startswith(normalized.lower()):
             return True
 
-    named_refs = [ref.strip() for ref in tainted_refs if ref.strip() and not _HEX_SHA_RE.fullmatch(ref.strip())]
+    named_refs = [
+        ref.strip()
+        for ref in tainted_refs
+        if ref.strip() and not _HEX_SHA_RE.fullmatch(ref.strip())
+    ]
     if not named_refs:
         return False
 
@@ -579,10 +581,16 @@ def _infer_domain(rel_path: str, language: str | None) -> str:
 
     # Config files by name or extension
     if language in ("yaml", "toml", "json") or name in (
-        "docker-compose.yml", "docker-compose.yaml",
-        "pcc-deploy.toml", ".env.example", "config.yaml",
-        "config.example.yaml", "requirements.txt", "pyproject.toml",
-        "package.json", "tsconfig.json",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "pcc-deploy.toml",
+        ".env.example",
+        "config.yaml",
+        "config.example.yaml",
+        "requirements.txt",
+        "pyproject.toml",
+        "package.json",
+        "tsconfig.json",
     ):
         return "config"
 
@@ -628,9 +636,7 @@ def _build_readme_chunk(
     if len(content) > max_chars:
         content = content[:max_chars] + "\n\n[Truncated — see full README on GitHub]"
 
-    chunk_id = hashlib.sha256(
-        f"readme:{repo_slug}:{commit_sha}".encode()
-    ).hexdigest()[:24]
+    chunk_id = hashlib.sha256(f"readme:{repo_slug}:{commit_sha}".encode()).hexdigest()[:24]
 
     source_url = f"https://github.com/{repo_slug}/blob/{commit_sha}/{readme_path.name}"
 
@@ -768,11 +774,15 @@ def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None
     try:
         repo = GitRepo(str(repo_path))
         described = str(repo.git.describe("--tags", "--long")).strip()
-    except Exception:
-        # Usually "no names found" on a tag-less clone, but a broken git install
-        # or an unreadable checkout land here too — log so those stay diagnosable
-        # instead of looking identical to the ordinary no-tags case.
-        logger.debug("Could not describe checkout at %s", repo_path, exc_info=True)
+    except GitCommandError:
+        # The ordinary case: a tag-less clone. `git describe` exits non-zero
+        # with "no names found", which is expected often enough not to log.
+        return None, None
+    except Exception as exc:
+        # A broken git install or an unreadable checkout is not the routine
+        # no-tags case — surface it at warning so it doesn't look identical
+        # to "no tags" and go unnoticed at default log verbosity.
+        logger.warning("Unexpected error describing checkout at %s: %s", repo_path, exc)
         return None, None
     # --long always renders as <tag>-<commits>-g<sha>. Splitting from the right
     # keeps tags that themselves contain hyphens (e.g. v1.0.0-rc1) intact.
@@ -985,7 +995,7 @@ class GitHubRepoIngester:
                 commit_sha=commit_sha,
             )
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         chunking = self._config.chunking
 
         # Extract pipecat version: framework repo uses git tag,
