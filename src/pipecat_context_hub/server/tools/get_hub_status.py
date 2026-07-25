@@ -26,6 +26,7 @@ async def handle_get_hub_status(
     metadata: dict[str, str] = index_store.get_all_metadata()
 
     duration_str = metadata.get("last_refresh_duration_seconds")
+    commits_ahead_str = metadata.get("indexed_framework_commits_ahead")
 
     if reranker_status is None:
         # Caller didn't wire a provider — we don't actually know why
@@ -41,6 +42,8 @@ async def handle_get_hub_status(
         commit_shas=stats.get("commit_shas", []),
         index_path=str(index_store.data_dir),
         framework_version=metadata.get("framework_version"),
+        indexed_framework_version=metadata.get("indexed_framework_version"),
+        indexed_framework_commits_ahead=int(commits_ahead_str) if commits_ahead_str else None,
         reranker_enabled=reranker_status.enabled,
         reranker_model=reranker_status.model,
         reranker_configured_model=reranker_status.configured_model,

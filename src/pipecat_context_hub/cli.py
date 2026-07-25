@@ -483,6 +483,7 @@ def refresh(
     from pipecat_context_hub.services.ingest.github_ingest import (
         _FRAMEWORK_REPO,
         GitHubRepoIngester,
+        describe_framework_checkout,
         repo_ref_is_tainted,
     )
     from pipecat_context_hub.services.ingest.source_ingest import SourceIngester
@@ -543,8 +544,13 @@ def refresh(
     # once per refresh invocation, so no cross-run state leakage.
     github = GitHubRepoIngester(config, writer)
 
+    # Framework checkout used this run, captured by _run_refresh so the metadata
+    # pass below can record which pipecat revision the index reflects. None when
+    # the framework repo was not cloned (unconfigured, tainted, or clone failed).
+    framework_checkout: Path | None = None
+
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors
+        nonlocal total_upserted, all_errors, framework_checkout
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -616,6 +622,10 @@ def refresh(
                         logger.info("Repo %s no longer configured, cleaning up", slug)
                     await index_store.delete_by_repo(slug)
                     index_store.delete_metadata(meta_key)
+                    if slug == _FRAMEWORK_REPO:
+                        # No framework records left to describe.
+                        index_store.delete_metadata("indexed_framework_version")
+                        index_store.delete_metadata("indexed_framework_commits_ahead")
 
         framework_slug = _FRAMEWORK_REPO
         for repo_slug in config.sources.effective_repos:
@@ -691,6 +701,9 @@ def refresh(
                         repo_slug,
                     )
                 changed_repos.append(repo_slug)
+
+        if framework_slug in prefetched:
+            framework_checkout = prefetched[framework_slug][0]
 
         # Delete and re-ingest each changed repo atomically to minimise
         # the window where a repo's index is empty (crash-safety).
@@ -827,6 +840,19 @@ def refresh(
             index_store.set_metadata("framework_version", fw_version)
         else:
             index_store.delete_metadata("framework_version")
+
+        # Record the pipecat revision the index was actually built from.
+        # `framework_version` above is the operator's pin — frequently unset;
+        # this is observed from the checkout, so consumers can tell which
+        # release the index reflects and whether it matches the version a
+        # project builds against. Left untouched when the framework repo was
+        # not cloned this run, so a transient clone failure keeps the last
+        # known-good stamp rather than erasing it.
+        if framework_checkout is not None:
+            indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
+            if indexed_version is not None and commits_ahead is not None:
+                index_store.set_metadata("indexed_framework_version", indexed_version)
+                index_store.set_metadata("indexed_framework_commits_ahead", str(commits_ahead))
 
         index_store.set_metadata("last_refresh_at", now)
         if all_errors:

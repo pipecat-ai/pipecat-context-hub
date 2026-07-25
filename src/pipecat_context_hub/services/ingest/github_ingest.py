@@ -761,6 +761,31 @@ def _get_framework_version(repo_path: Path) -> str | None:
         return None
 
 
+def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None]:
+    """Describe a checkout as (nearest release tag, commits ahead of that tag).
+
+    An unpinned refresh tracks the default branch, where the nearest tag is a
+    floor rather than an identity — a checkout eighty commits past ``v1.5.0``
+    still describes as ``v1.5.0``. Anything comparing the index against a
+    project's installed pipecat needs the distance to tell "this index *is*
+    1.5.0" from "this index is somewhere after 1.5.0".
+
+    Returns ``(None, None)`` when the checkout has no reachable tags.
+    """
+    try:
+        repo = GitRepo(str(repo_path))
+        described = str(repo.git.describe("--tags", "--long")).strip()
+    except Exception:
+        return None, None
+    # --long always renders as <tag>-<commits>-g<sha>. Splitting from the right
+    # keeps tags that themselves contain hyphens (e.g. v1.0.0-rc1) intact.
+    try:
+        tag, commits_ahead, _sha = described.rsplit("-", 2)
+        return tag.lstrip("v"), int(commits_ahead)
+    except ValueError:
+        return None, None
+
+
 # Framework repo slug — examples in this repo derive version from git tag.
 _FRAMEWORK_REPO = "pipecat-ai/pipecat"
 

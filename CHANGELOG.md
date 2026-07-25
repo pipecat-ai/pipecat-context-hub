@@ -8,6 +8,18 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The index records which pipecat revision it was built from** — every refresh now
+  stamps `indexed_framework_version` (the nearest release tag, e.g. `1.6.0`) and
+  `indexed_framework_commits_ahead` (the distance from that tag to the indexed commit),
+  both surfaced by `get_hub_status`. Previously the only version signal was
+  `framework_version`, which records an operator's explicit `--framework-version` pin and
+  is *deleted* on any unpinned refresh — so a default index said nothing about which
+  release it reflected, and a consumer could not tell whether the index matched the
+  pipecat version a project builds against. The commit distance matters because an
+  unpinned refresh tracks the default branch, where the nearest tag is a floor rather than
+  an identity: an index built 55 commits past `v1.6.0` still describes as `1.6.0`. The two
+  keys are left untouched when the framework repo is not cloned in a run, so a transient
+  clone failure keeps the last known-good stamp instead of erasing it.
 - **`check_deprecation` is version-aware and reports removed symbols** — an optional
   `version` argument evaluates a symbol's lifecycle at that pipecat version, and responses
   now include a `status` (`current` / `deprecated` / `removed`) plus `announced_removed_in`.

@@ -552,6 +552,20 @@ class HubStatusOutput(BaseModel):
         default=None,
         description="Pinned framework version tag (e.g. 'v0.0.96') if set, else None (HEAD).",
     )
+    indexed_framework_version: str | None = Field(
+        default=None,
+        description="Nearest pipecat release tag the index was actually built "
+        "from (e.g. '1.5.0'). Observed from the checkout rather than "
+        "configured, so it is populated whether or not framework_version pins "
+        "a tag. None when the framework repo is not indexed.",
+    )
+    indexed_framework_commits_ahead: int | None = Field(
+        default=None,
+        description="Commits between indexed_framework_version's tag and the "
+        "revision that was indexed. 0 means the index is exactly that release; "
+        "a larger value means the tag is only a floor, since an unpinned "
+        "refresh tracks the default branch.",
+    )
     reranker_enabled: bool = Field(
         default=False,
         description="Whether cross-encoder reranking is ACTIVE right now "

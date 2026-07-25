@@ -12,6 +12,7 @@ from pipecat_context_hub.services.ingest.github_ingest import (
     _parse_pipecat_version_from_package_json,
     _parse_pipecat_version_from_pyproject,
     _parse_pipecat_version_from_requirements,
+    describe_framework_checkout,
 )
 
 
@@ -237,6 +238,43 @@ class TestGetFrameworkVersion:
             return_value=mock_repo,
         ):
             assert _get_framework_version(tmp_path) is None
+
+
+class TestDescribeFrameworkCheckout:
+    """Test describe_framework_checkout."""
+
+    def _patched(self, describe_result: str | Exception):
+        mock_repo = MagicMock()
+        if isinstance(describe_result, Exception):
+            mock_repo.git.describe.side_effect = describe_result
+        else:
+            mock_repo.git.describe.return_value = describe_result
+        return patch(
+            "pipecat_context_hub.services.ingest.github_ingest.GitRepo",
+            return_value=mock_repo,
+        )
+
+    def test_exact_tag_reports_zero_commits_ahead(self, tmp_path: Path) -> None:
+        with self._patched("v1.5.0-0-gf97595f9c"):
+            assert describe_framework_checkout(tmp_path) == ("1.5.0", 0)
+
+    def test_commits_past_tag(self, tmp_path: Path) -> None:
+        # An unpinned refresh tracks the default branch, so the tag is a floor.
+        with self._patched("v1.5.0-80-ge629f83c5"):
+            assert describe_framework_checkout(tmp_path) == ("1.5.0", 80)
+
+    def test_hyphenated_tag_survives_split(self, tmp_path: Path) -> None:
+        with self._patched("v1.0.0-rc1-12-gdeadbee"):
+            assert describe_framework_checkout(tmp_path) == ("1.0.0-rc1", 12)
+
+    def test_no_tags_returns_none(self, tmp_path: Path) -> None:
+        with self._patched(Exception("no tags")):
+            assert describe_framework_checkout(tmp_path) == (None, None)
+
+    def test_unparseable_describe_returns_none(self, tmp_path: Path) -> None:
+        # Guards against a git that renders --long differently than expected.
+        with self._patched("v1.5.0"):
+            assert describe_framework_checkout(tmp_path) == (None, None)
 
 
 class TestBuildChunkMetadataVersion:

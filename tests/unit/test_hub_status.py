@@ -211,6 +211,50 @@ class TestHandleGetHubStatus:
         assert output.counts_by_type == {"doc": 3520, "code": 1422, "source": 5075}
         assert sorted(output.commit_shas) == ["abc123", "def456"]
 
+    async def test_indexed_framework_version_absent_by_default(self):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        store = self._mock_index_store()
+        result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+        assert output.indexed_framework_version is None
+        assert output.indexed_framework_commits_ahead is None
+
+    async def test_indexed_framework_version_surfaced(self):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        # Unpinned refresh: framework_version (the pin) is absent, but the
+        # observed provenance is still reported.
+        store = self._mock_index_store(
+            metadata={
+                "indexed_framework_version": "1.5.0",
+                "indexed_framework_commits_ahead": "80",
+            },
+        )
+        result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+
+        assert output.framework_version is None
+        assert output.indexed_framework_version == "1.5.0"
+        assert output.indexed_framework_commits_ahead == 80
+
+    async def test_indexed_framework_exact_release(self):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        # Zero commits ahead must round-trip as 0, not collapse to None.
+        store = self._mock_index_store(
+            metadata={
+                "framework_version": "v1.5.0",
+                "indexed_framework_version": "1.5.0",
+                "indexed_framework_commits_ahead": "0",
+            },
+        )
+        result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+
+        assert output.framework_version == "v1.5.0"
+        assert output.indexed_framework_commits_ahead == 0
+
     async def test_index_path_returned(self):
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 
