@@ -260,6 +260,13 @@ fail its caller's command.
 Consumers **must** honour `PIPECAT_HUB_DATA_DIR`; assuming
 `~/.pipecat-context-hub` will report "no index" at anyone who relocated theirs.
 
+All contract keys written at the end of a single refresh (contract version,
+timestamps, upsert/error counts, `framework_version`, and the
+`indexed_framework_version`/`indexed_framework_commits_ahead` pair) are written
+in one transaction, so a reader never observes a partially-updated related-key
+set — e.g. a new `indexed_framework_version` can never be paired with a stale
+`indexed_framework_commits_ahead` from a previous refresh.
+
 ### Contracted keys
 
 | Key | Meaning |

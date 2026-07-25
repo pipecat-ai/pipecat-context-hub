@@ -91,6 +91,59 @@ class TestFTSMetadata:
         assert index2.get_metadata("persist_key") == "persist_value"
         index2.close()
 
+    def test_set_metadata_batch_writes_all_pairs(self, fts_index):
+        fts_index.set_metadata_batch({"a": "1", "b": "2", "c": "3"})
+        assert fts_index.get_all_metadata() == {"a": "1", "b": "2", "c": "3"}
+
+    def test_set_metadata_batch_upserts_existing_keys(self, fts_index):
+        fts_index.set_metadata("a", "old")
+        fts_index.set_metadata_batch({"a": "new", "b": "2"})
+        assert fts_index.get_all_metadata() == {"a": "new", "b": "2"}
+
+    def test_set_metadata_batch_deletes_requested_keys(self, fts_index):
+        fts_index.set_metadata("stale", "gone")
+        fts_index.set_metadata("keep", "1")
+        fts_index.set_metadata_batch({"new": "value"}, delete_keys=["stale"])
+        assert fts_index.get_all_metadata() == {"keep": "1", "new": "value"}
+
+    def test_set_metadata_batch_commits_once(self, fts_index):
+        """A single commit for the whole batch — not one per key.
+
+        Guards the atomicity claim: readers should never observe a partially
+        written related-key set. We can't observe SQLite's internal commit
+        boundary directly, so we assert on the connection's commit() call
+        count instead, which is the mechanism `set_metadata_batch` uses to
+        make the write atomic.
+        """
+        # sqlite3.Connection is a C-level immutable type — its `commit` method
+        # cannot be patched in place, so we swap in a thin proxy on the
+        # FTSIndex instance's own `_conn` attribute (a plain, patchable
+        # instance attribute) that counts commits while delegating
+        # everything else to the real connection.
+        real_conn = fts_index._conn
+        commit_calls = []
+
+        class _CommitCountingProxy:
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+            def commit(self):
+                commit_calls.append(1)
+                return real_conn.commit()
+
+        fts_index._conn = _CommitCountingProxy()
+        try:
+            fts_index.set_metadata_batch({"a": "1", "b": "2", "c": "3"}, delete_keys=["stale"])
+        finally:
+            fts_index._conn = real_conn
+        assert len(commit_calls) == 1
+
+    def test_set_metadata_batch_empty_pairs_with_deletes(self, fts_index):
+        """Pure-delete batches (no new pairs) still work and still commit."""
+        fts_index.set_metadata("stale", "gone")
+        fts_index.set_metadata_batch({}, delete_keys=["stale"])
+        assert fts_index.get_all_metadata() == {}
+
 
 # ---------------------------------------------------------------------------
 # FTSIndex stats tests

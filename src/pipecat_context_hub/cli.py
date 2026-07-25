@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -140,9 +140,7 @@ def _delete_local_index_storage(data_dir: Path) -> None:
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(
-    package_name="pipecat-ai-context-hub", prog_name="pipecat-context-hub"
-)
+@click.version_option(package_name="pipecat-ai-context-hub", prog_name="pipecat-context-hub")
 @click.option("--log-level", default="INFO", help="Logging level.")
 @click.pass_context
 def main(ctx: click.Context, log_level: str) -> None:
@@ -237,12 +235,12 @@ def serve(ctx: click.Context) -> None:
 
     from pipecat_context_hub.server.main import create_server
     from pipecat_context_hub.server.transport import serve_stdio
-    from pipecat_context_hub.shared.tracking import IdleTracker
     from pipecat_context_hub.services.embedding import EmbeddingService
     from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
+    from pipecat_context_hub.shared.tracking import IdleTracker
 
     config: HubConfig = ctx.obj["config"]
     logger = logging.getLogger(__name__)
@@ -716,13 +714,6 @@ def refresh(
                     )
                 changed_repos.append(repo_slug)
 
-        # Excludes a tainted framework repo: `prefetched` is populated as soon as
-        # the clone succeeds, before the taint check, but a tainted ref is never
-        # ingested — stamping its version would describe content the index does
-        # not hold.
-        if framework_slug in prefetched and framework_slug not in frozen_sha_repos:
-            framework_checkout = prefetched[framework_slug][0]
-
         # Delete and re-ingest each changed repo atomically to minimise
         # the window where a repo's index is empty (crash-safety).
         ingested_repos: set[str] = set()
@@ -791,6 +782,20 @@ def refresh(
             if not repo_has_errors:
                 ingested_repos.add(repo_slug)
 
+        # Excludes a tainted framework repo: `prefetched` is populated as soon as
+        # the clone succeeds, before the taint check, but a tainted ref is never
+        # ingested — stamping its version would describe content the index does
+        # not hold. Also excludes a framework repo that was in `changed_repos`
+        # but failed to ingest this run: stamping it would describe content
+        # that was never successfully indexed, so the prior stamp (if any) is
+        # left untouched instead.
+        if (
+            framework_slug in prefetched
+            and framework_slug not in frozen_sha_repos
+            and (framework_slug not in changed_repos or framework_slug in ingested_repos)
+        ):
+            framework_checkout = prefetched[framework_slug][0]
+
         # Store SHAs: unchanged repos (handles first-run) + successfully ingested repos.
         # For failed repos: delete the cached SHA so the next non-force refresh
         # retries them (P1: --force deletes records before ingest, so a failure
@@ -817,7 +822,7 @@ def refresh(
 
         dep_map_path = config.storage.data_dir / "deprecation_map.json"
 
-        if framework_slug in prefetched:
+        if framework_slug in prefetched and framework_slug not in frozen_sha_repos:
             fw_path, fw_sha = prefetched[framework_slug]
             registry_path = fw_path / REGISTRY_RELATIVE_PATH
             dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)
@@ -826,7 +831,7 @@ def refresh(
             dep_map.save(dep_map_path)
         else:
             logger.debug(
-                "Framework repo %s not cloned — preserving existing deprecation map",
+                "Framework repo %s not cloned or tainted — preserving existing deprecation map",
                 framework_slug,
             )
 
@@ -844,21 +849,28 @@ def refresh(
             for err in all_errors:
                 logger.warning("  %s", err)
 
-        # Persist refresh metadata for get_hub_status tool.
-        now = datetime.now(timezone.utc).isoformat()
-        index_store.set_metadata("metadata_contract_version", str(METADATA_CONTRACT_VERSION))
-        index_store.set_metadata("last_refresh_duration_seconds", str(duration))
-        index_store.set_metadata("last_refresh_records_upserted", str(total_upserted))
-        index_store.set_metadata("last_refresh_error_count", str(len(all_errors)))
+        # Persist refresh metadata for get_hub_status tool. Collected into a
+        # single dict (plus a delete-keys list) and written with one batched
+        # commit so a reader never observes a partially-updated related-key
+        # set (e.g. a new indexed_framework_version paired with a stale
+        # indexed_framework_commits_ahead).
+        now = datetime.now(UTC).isoformat()
+        metadata_to_set: dict[str, str] = {
+            "metadata_contract_version": str(METADATA_CONTRACT_VERSION),
+            "last_refresh_duration_seconds": str(duration),
+            "last_refresh_records_upserted": str(total_upserted),
+            "last_refresh_error_count": str(len(all_errors)),
+        }
+        metadata_to_delete: list[str] = []
 
         stats = index_store.get_index_stats()
-        index_store.set_metadata("content_type_counts", json.dumps(stats["counts_by_type"]))
+        metadata_to_set["content_type_counts"] = json.dumps(stats["counts_by_type"])
 
         # Persist pinned framework version (or clear it) for get_hub_status.
         if fw_version:
-            index_store.set_metadata("framework_version", fw_version)
+            metadata_to_set["framework_version"] = fw_version
         else:
-            index_store.delete_metadata("framework_version")
+            metadata_to_delete.append("framework_version")
 
         # Record the pipecat revision the index was actually built from.
         # `framework_version` above is the operator's pin — frequently unset;
@@ -870,12 +882,14 @@ def refresh(
         if framework_checkout is not None:
             indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
             if indexed_version is not None and commits_ahead is not None:
-                index_store.set_metadata("indexed_framework_version", indexed_version)
-                index_store.set_metadata("indexed_framework_commits_ahead", str(commits_ahead))
+                metadata_to_set["indexed_framework_version"] = indexed_version
+                metadata_to_set["indexed_framework_commits_ahead"] = str(commits_ahead)
 
-        index_store.set_metadata("last_refresh_at", now)
+        metadata_to_set["last_refresh_at"] = now
         if all_errors:
-            index_store.set_metadata("last_refresh_errored_at", now)
+            metadata_to_set["last_refresh_errored_at"] = now
+
+        index_store.set_metadata_batch(metadata_to_set, delete_keys=metadata_to_delete)
 
         # ----- Summary table -----
         _print_refresh_summary(

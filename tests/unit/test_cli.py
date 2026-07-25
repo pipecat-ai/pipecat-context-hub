@@ -111,7 +111,7 @@ class TestRedactHome:
     def test_replaces_home_prefix_with_tilde(self, monkeypatch, tmp_path: Path):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         nested = tmp_path / "Library" / "Application Support" / "hub" / "data"
-        assert _redact_home(nested) == "~" + str(nested)[len(str(tmp_path)):]
+        assert _redact_home(nested) == "~" + str(nested)[len(str(tmp_path)) :]
 
     def test_exact_home_path_becomes_tilde(self, monkeypatch, tmp_path: Path):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -165,16 +165,20 @@ class TestRefreshCommand:
         mock_index_store.get_all_metadata = MagicMock(return_value={})
         mock_index_store.delete_by_content_type = AsyncMock(return_value=0)
         mock_index_store.delete_by_repo = AsyncMock(return_value=0)
-        mock_index_store.get_index_stats = MagicMock(return_value={
-            "counts_by_type": {"doc": 100, "code": 200},
-            "total": 300,
-            "commit_shas": [],
-        })
+        mock_index_store.get_index_stats = MagicMock(
+            return_value={
+                "counts_by_type": {"doc": 100, "code": 200},
+                "total": 300,
+                "commit_shas": [],
+            }
+        )
         mock_index_store.reset = MagicMock()
         mock_index_store.close = MagicMock()
 
         mock_crawler = MagicMock()
-        mock_crawler.fetch_llms_txt = AsyncMock(return_value="# Page\nSource: https://example.com\nContent here")
+        mock_crawler.fetch_llms_txt = AsyncMock(
+            return_value="# Page\nSource: https://example.com\nContent here"
+        )
         mock_crawler.ingest = AsyncMock(return_value=MagicMock(records_upserted=10, errors=[]))
         mock_crawler.close = AsyncMock()
 
@@ -183,7 +187,9 @@ class TestRefreshCommand:
         mock_github.ingest = AsyncMock(return_value=MagicMock(records_upserted=20, errors=[]))
 
         mock_source_ingester = MagicMock()
-        mock_source_ingester.ingest = AsyncMock(return_value=MagicMock(records_upserted=5, errors=[]))
+        mock_source_ingester.ingest = AsyncMock(
+            return_value=MagicMock(records_upserted=5, errors=[])
+        )
 
         return mock_index_store, mock_crawler, mock_github, mock_source_ingester
 
@@ -195,9 +201,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_force_flag_bypasses_skip(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """--force bypasses all skip logic even when hashes match."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -209,6 +222,7 @@ class TestRefreshCommand:
 
         # Simulate matching hash/SHA (would skip without --force)
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
@@ -232,9 +246,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_skip_when_sha_matches(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """Refresh skips unchanged sources when hashes/SHAs match."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -245,6 +266,7 @@ class TestRefreshCommand:
         mock_ref_tainted.return_value = False
 
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
@@ -269,9 +291,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_recovered_repo_forces_reingest_even_when_sha_matches(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """A repo whose corrupt clone was recovered must be re-ingested even
         when its remote SHA matches the stored one — otherwise the index
@@ -289,6 +318,7 @@ class TestRefreshCommand:
         mock_github.recovered_repos = recovered
 
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
@@ -313,9 +343,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_full_ingest_when_sha_differs(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """Refresh re-ingests when stored SHA differs from current."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -347,9 +384,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_docs_hash_not_stored_on_ingest_error(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """Docs content hash is not cached when ingest returns errors."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -364,7 +408,9 @@ class TestRefreshCommand:
             return_value=MagicMock(records_upserted=0, errors=["Upsert failed"]),
         )
         # Repos unchanged so they don't interfere
-        mock_store.get_metadata = MagicMock(side_effect=lambda key: _sha_metadata("abc123").get(key))
+        mock_store.get_metadata = MagicMock(
+            side_effect=lambda key: _sha_metadata("abc123").get(key)
+        )
 
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
@@ -372,9 +418,7 @@ class TestRefreshCommand:
 
         assert result.exit_code == 0
         # docs:content_hash should NOT have been stored
-        set_calls = {
-            call.args[0] for call in mock_store.set_metadata.call_args_list
-        }
+        set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
         assert "docs:content_hash" not in set_calls
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
@@ -385,9 +429,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_repo_sha_not_stored_on_ingest_error(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """Repo commit SHA is not cached when code/source ingest has errors."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -403,11 +454,14 @@ class TestRefreshCommand:
         )
         # Docs unchanged
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        mock_store.get_metadata = MagicMock(side_effect=lambda key: {
-            "docs:content_hash": content_hash,
-        }.get(key))
+        mock_store.get_metadata = MagicMock(
+            side_effect=lambda key: {
+                "docs:content_hash": content_hash,
+            }.get(key)
+        )
 
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
@@ -415,15 +469,11 @@ class TestRefreshCommand:
 
         assert result.exit_code == 0
         # repo:*:commit_sha should NOT have been stored for changed repos with errors
-        set_calls = {
-            call.args[0] for call in mock_store.set_metadata.call_args_list
-        }
+        set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
         for repo in _DEFAULT_REPOS:
             assert f"repo:{repo}:commit_sha" not in set_calls
         # Failed repos should have their cached SHA deleted (P1)
-        delete_calls = {
-            call.args[0] for call in mock_store.delete_metadata.call_args_list
-        }
+        delete_calls = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
         for repo in _DEFAULT_REPOS:
             assert f"repo:{repo}:commit_sha" in delete_calls
 
@@ -435,9 +485,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_force_failed_repo_invalidates_cached_sha(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """--force with ingest failure deletes cached SHA so next refresh retries."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -453,6 +510,7 @@ class TestRefreshCommand:
         )
         # SHA matches (would skip without --force), but --force overrides
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
@@ -464,9 +522,7 @@ class TestRefreshCommand:
 
         assert result.exit_code == 0
         # Failed repos should have cached SHA deleted, not preserved
-        delete_calls = {
-            call.args[0] for call in mock_store.delete_metadata.call_args_list
-        }
+        delete_calls = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
         for repo in _DEFAULT_REPOS:
             assert f"repo:{repo}:commit_sha" in delete_calls
 
@@ -478,9 +534,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_removed_repo_cleaned_up(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """Repos no longer in effective_repos have their data and SHA cleaned up."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -492,6 +555,7 @@ class TestRefreshCommand:
 
         # Simulate a previously-indexed repo that is no longer configured
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         all_meta = {**_sha_metadata("abc123"), "repo:old-org/removed-repo:commit_sha": "def456"}
@@ -517,9 +581,17 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     @patch("pipecat_context_hub.cli._delete_local_index_storage")
     def test_reset_index_forces_full_rebuild(
-        self, mock_delete_storage, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_delete_storage,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """--reset-index should wipe state and force a full re-ingest."""
         events: list[str] = []
@@ -537,6 +609,7 @@ class TestRefreshCommand:
         mock_ref_tainted.return_value = False
 
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
@@ -562,9 +635,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_tainted_ref_skips_refresh_and_keeps_last_known_good(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """A tainted upstream HEAD should be skipped without deleting a safe cached SHA."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -579,6 +659,7 @@ class TestRefreshCommand:
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
@@ -601,9 +682,7 @@ class TestRefreshCommand:
             assert call.args[0] == "framework_version", (
                 f"Unexpected delete_metadata call: {call.args[0]}"
             )
-        set_calls = {
-            call.args[0] for call in mock_store.set_metadata.call_args_list
-        }
+        set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
         assert "repo:pipecat-ai/pipecat:commit_sha" not in set_calls
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
@@ -614,9 +693,16 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_tainted_ref_removes_indexed_tainted_sha(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """If the cached SHA is also tainted, local records are removed."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
@@ -631,6 +717,7 @@ class TestRefreshCommand:
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
         import hashlib
+
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
@@ -648,10 +735,105 @@ class TestRefreshCommand:
         mock_store.delete_metadata.assert_any_call("repo:pipecat-ai/pipecat:commit_sha")
         mock_github.ingest.assert_not_called()
         mock_source.ingest.assert_not_called()
-        set_calls = {
-            call.args[0] for call in mock_store.set_metadata.call_args_list
-        }
+        set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
         assert "repo:pipecat-ai/pipecat:commit_sha" not in set_calls
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_tainted_framework_does_not_rebuild_deprecation_map(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A tainted framework checkout must not feed the deprecation-map build.
+
+        `prefetched` holds the tainted checkout (populated before the taint
+        check), but rebuilding the map from it would publish deprecation data
+        derived from content the index never ingested. The last known-good
+        map on disk must be left alone instead.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
+            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+        )
+        mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
+        meta["repo:pipecat-ai/pipecat:commit_sha"] = "good123"
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REFS", "pipecat-ai/pipecat@badcafe")
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_registry"
+        ) as mock_build_dep_map:
+            mock_build_dep_map.return_value = MagicMock(entries={}, save=MagicMock())
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_build_dep_map.assert_not_called()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_untainted_framework_still_rebuilds_deprecation_map(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Control case: an untainted, successfully-cloned framework repo
+        still rebuilds the map — guards against the fix over-suppressing."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        meta = _sha_metadata("old-sha")
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_registry"
+        ) as mock_build_dep_map:
+            mock_build_dep_map.return_value = MagicMock(entries={}, save=MagicMock())
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_build_dep_map.assert_called_once()
 
 
 class TestRefreshProvenanceMetadata:
@@ -668,8 +850,8 @@ class TestRefreshProvenanceMetadata:
     def _run_refresh(self, mocks, describe_result, tmp_path, monkeypatch):
         """Invoke refresh with the shared mock harness; return set_metadata as a dict."""
         mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted = mocks
-        mock_store, mock_crawler, mock_github, mock_source = (
-            TestRefreshCommand._make_mocks(TestRefreshCommand())
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
         )
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -685,9 +867,12 @@ class TestRefreshProvenanceMetadata:
             result = CliRunner().invoke(main, ["refresh"])
 
         assert result.exit_code == 0, result.output
-        return mock_store, {
-            call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list
-        }
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        # The end-of-refresh metadata pass writes via a single batched call
+        # (set_metadata_batch) rather than individual set_metadata calls.
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        return mock_store, written
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -697,9 +882,16 @@ class TestRefreshProvenanceMetadata:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_stamps_contract_version_and_indexed_revision(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         _store, written = self._run_refresh(
             (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
@@ -719,10 +911,64 @@ class TestRefreshProvenanceMetadata:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_end_of_refresh_metadata_written_via_single_batch_call(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The end-of-refresh metadata pass calls `set_metadata_batch` exactly
+        once and never falls back to bare `set_metadata` for those related
+        keys — guards against a regression to per-key writes that could leave
+        a reader observing a partially-updated related-key set."""
+        mock_store, written = self._run_refresh(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            ("1.6.0", 55),
+            tmp_path,
+            monkeypatch,
+        )
+
+        mock_store.set_metadata_batch.assert_called_once()
+        batch_pairs, batch_kwargs = mock_store.set_metadata_batch.call_args
+        end_of_refresh_keys = {
+            "metadata_contract_version",
+            "last_refresh_duration_seconds",
+            "last_refresh_records_upserted",
+            "last_refresh_error_count",
+            "content_type_counts",
+            "indexed_framework_version",
+            "indexed_framework_commits_ahead",
+            "last_refresh_at",
+        }
+        assert end_of_refresh_keys <= set(batch_pairs[0])
+        # None of the batched keys should also have been written individually.
+        individually_written = {call.args[0] for call in mock_store.set_metadata.call_args_list}
+        assert not (end_of_refresh_keys & individually_written)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_tainted_framework_is_not_stamped(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """A tainted framework ref is never ingested, so it must not be described.
 
@@ -730,8 +976,8 @@ class TestRefreshProvenanceMetadata:
         taint check — so the checkout is available even though nothing from it
         reaches the index.
         """
-        mock_store, mock_crawler, mock_github, mock_source = (
-            TestRefreshCommand._make_mocks(TestRefreshCommand())
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
         )
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -753,6 +999,8 @@ class TestRefreshProvenanceMetadata:
 
         assert result.exit_code == 0, result.output
         written = {call.args[0] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
         assert "indexed_framework_version" not in written
         assert "indexed_framework_commits_ahead" not in written
 
@@ -764,13 +1012,20 @@ class TestRefreshProvenanceMetadata:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_removed_framework_records_clear_the_stamp(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """When the indexed ref is also tainted its records go, so must the stamp."""
-        mock_store, mock_crawler, mock_github, mock_source = (
-            TestRefreshCommand._make_mocks(TestRefreshCommand())
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
         )
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -801,9 +1056,16 @@ class TestRefreshProvenanceMetadata:
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_undescribable_checkout_leaves_stamp_alone(
-        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
-        mock_eiw_cls, mock_es_cls, mock_is_cls,
-        tmp_path, monkeypatch,
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
     ):
         """A checkout with no reachable tags must not clear a previous stamp."""
         store, written = self._run_refresh(
@@ -818,6 +1080,84 @@ class TestRefreshProvenanceMetadata:
         assert "indexed_framework_version" not in deleted
         assert "indexed_framework_commits_ahead" not in deleted
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_failed_framework_ingest_is_not_stamped(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The framework repo's SHA changed (so it's in `changed_repos`, not
+        tainted) but ingest fails for it — it must not land in
+        `ingested_repos`, and its version must not be stamped, leaving any
+        prior known-good stamp untouched rather than describing content that
+        was never successfully indexed.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        # Framework repo's remote SHA differs from stored -> changed_repos.
+        # Other repos are unchanged so they don't interfere.
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
+        meta["repo:pipecat-ai/pipecat:commit_sha"] = "old-sha"
+        # Leave a prior known-good stamp to verify it survives untouched.
+        meta["indexed_framework_version"] = "1.5.0"
+        meta["indexed_framework_commits_ahead"] = "3"
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            if repos == ["pipecat-ai/pipecat"]:
+                return MagicMock(records_upserted=0, errors=["ingest failed"])
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 55),
+        ) as mock_describe:
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        # The tainted-framework fix's checkout-availability check must not
+        # let a failed-but-untainted ingest through either.
+        mock_describe.assert_not_called()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+        deleted = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            deleted.update(batch_call.kwargs.get("delete_keys") or ())
+        assert "indexed_framework_version" not in deleted
+        assert "indexed_framework_commits_ahead" not in deleted
+
 
 class TestServeEmptyIndex:
     """Serve must fail fast on empty or unopenable indexes rather than hang."""
@@ -825,9 +1165,13 @@ class TestServeEmptyIndex:
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     def test_empty_index_exits_nonzero(self, mock_is_cls, tmp_path, monkeypatch):
         mock_store = MagicMock()
-        mock_store.get_index_stats = MagicMock(return_value={
-            "counts_by_type": {}, "total": 0, "commit_shas": [],
-        })
+        mock_store.get_index_stats = MagicMock(
+            return_value={
+                "counts_by_type": {},
+                "total": 0,
+                "commit_shas": [],
+            }
+        )
         mock_store.close = MagicMock()
         mock_is_cls.return_value = mock_store
 
@@ -867,9 +1211,13 @@ class TestServeEmptyIndex:
     ):
         """An exception after successful open must still close the store."""
         mock_store = MagicMock()
-        mock_store.get_index_stats = MagicMock(return_value={
-            "counts_by_type": {"doc": 1}, "total": 1, "commit_shas": [],
-        })
+        mock_store.get_index_stats = MagicMock(
+            return_value={
+                "counts_by_type": {"doc": 1},
+                "total": 1,
+                "commit_shas": [],
+            }
+        )
         mock_store.close = MagicMock()
         mock_is_cls.return_value = mock_store
         mock_es_cls.side_effect = RuntimeError("embedding model missing")
@@ -1090,9 +1438,7 @@ class TestPrewarmModels:
         with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
             _prewarm_models(embed, ce)  # must not raise
         ce.ensure_model.assert_called_once_with()
-        assert any(
-            "Embedding model pre-warm failed" in r.message for r in caplog.records
-        )
+        assert any("Embedding model pre-warm failed" in r.message for r in caplog.records)
 
     def test_cross_encoder_failure_is_non_fatal(self, monkeypatch, caplog) -> None:
         monkeypatch.delenv("PIPECAT_HUB_WARMUP", raising=False)
@@ -1101,6 +1447,4 @@ class TestPrewarmModels:
         ce.ensure_model.side_effect = RuntimeError("weights missing")
         with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
             _prewarm_models(embed, ce)  # must not raise
-        assert any(
-            "Cross-encoder pre-warm failed" in r.message for r in caplog.records
-        )
+        assert any("Cross-encoder pre-warm failed" in r.message for r in caplog.records)
