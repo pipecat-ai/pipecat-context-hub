@@ -751,16 +751,6 @@ def _extract_pipecat_version(example_dir: Path, repo_root: Path) -> str | None:
     return None
 
 
-def _get_framework_version(repo_path: Path) -> str | None:
-    """Get pipecat version from git tag (setuptools_scm repos)."""
-    try:
-        repo = GitRepo(str(repo_path))
-        tag = repo.git.describe("--tags", "--abbrev=0")
-        return str(tag).lstrip("v")  # "v0.0.108" → "0.0.108"
-    except Exception:
-        return None
-
-
 def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None]:
     """Describe a checkout as (nearest release tag, commits ahead of that tag).
 
@@ -770,12 +760,19 @@ def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None
     project's installed pipecat needs the distance to tell "this index *is*
     1.5.0" from "this index is somewhere after 1.5.0".
 
-    Returns ``(None, None)`` when the checkout has no reachable tags.
+    Returns ``(None, None)`` when the version cannot be determined — no reachable
+    tags, an unreadable repository, or output this cannot parse. Callers stamp
+    provenance from this, so a wrong answer is worse than no answer; the reason
+    is logged rather than raised.
     """
     try:
         repo = GitRepo(str(repo_path))
         described = str(repo.git.describe("--tags", "--long")).strip()
     except Exception:
+        # Usually "no names found" on a tag-less clone, but a broken git install
+        # or an unreadable checkout land here too — log so those stay diagnosable
+        # instead of looking identical to the ordinary no-tags case.
+        logger.debug("Could not describe checkout at %s", repo_path, exc_info=True)
         return None, None
     # --long always renders as <tag>-<commits>-g<sha>. Splitting from the right
     # keeps tags that themselves contain hyphens (e.g. v1.0.0-rc1) intact.
@@ -783,7 +780,18 @@ def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None
         tag, commits_ahead, _sha = described.rsplit("-", 2)
         return tag.lstrip("v"), int(commits_ahead)
     except ValueError:
+        logger.debug("Unexpected `git describe --long` output: %r", described)
         return None, None
+
+
+def _get_framework_version(repo_path: Path) -> str | None:
+    """Get pipecat version from git tag (setuptools_scm repos).
+
+    The nearest tag only — see :func:`describe_framework_checkout` when the
+    distance from that tag matters too.
+    """
+    tag, _commits_ahead = describe_framework_checkout(repo_path)
+    return tag  # "v0.0.108" → "0.0.108"
 
 
 # Framework repo slug — examples in this repo derive version from git tag.

@@ -2,10 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.shared.types import HubStatusOutput, RerankerStatus
+
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _parse(value: str | None, cast: Callable[[str], _T]) -> _T | None:
+    """Convert a metadata string, or None when it is absent or malformed.
+
+    Status is what an operator reaches for when something looks wrong, so a
+    single unparseable value must not be what stops them seeing the rest.
+    """
+    if not value:
+        return None
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring unparseable index metadata value: %r", value)
+        return None
 
 
 async def handle_get_hub_status(
@@ -25,8 +46,8 @@ async def handle_get_hub_status(
     stats: dict[str, Any] = index_store.get_index_stats()
     metadata: dict[str, str] = index_store.get_all_metadata()
 
-    duration_str = metadata.get("last_refresh_duration_seconds")
-    commits_ahead_str = metadata.get("indexed_framework_commits_ahead")
+    duration = _parse(metadata.get("last_refresh_duration_seconds"), float)
+    commits_ahead = _parse(metadata.get("indexed_framework_commits_ahead"), int)
 
     if reranker_status is None:
         # Caller didn't wire a provider — we don't actually know why
@@ -36,14 +57,14 @@ async def handle_get_hub_status(
     output = HubStatusOutput(
         server_version=_SERVER_VERSION,
         last_refresh_at=metadata.get("last_refresh_at"),
-        last_refresh_duration_seconds=float(duration_str) if duration_str else None,
+        last_refresh_duration_seconds=duration,
         total_records=stats["total"],
         counts_by_type=stats["counts_by_type"],
         commit_shas=stats.get("commit_shas", []),
         index_path=str(index_store.data_dir),
         framework_version=metadata.get("framework_version"),
         indexed_framework_version=metadata.get("indexed_framework_version"),
-        indexed_framework_commits_ahead=int(commits_ahead_str) if commits_ahead_str else None,
+        indexed_framework_commits_ahead=commits_ahead,
         reranker_enabled=reranker_status.enabled,
         reranker_model=reranker_status.model,
         reranker_configured_model=reranker_status.configured_model,

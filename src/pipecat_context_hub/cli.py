@@ -672,6 +672,11 @@ def refresh(
                     )
                     await index_store.delete_by_repo(repo_slug)
                     index_store.delete_metadata(stored_sha_key)
+                    if repo_slug == framework_slug:
+                        # Framework records are gone, so any recorded provenance
+                        # would describe content the index no longer holds.
+                        index_store.delete_metadata("indexed_framework_version")
+                        index_store.delete_metadata("indexed_framework_commits_ahead")
                     source_status[repo_slug] = {
                         "status": "tainted",
                         "sha": commit_sha[:8],
@@ -711,7 +716,11 @@ def refresh(
                     )
                 changed_repos.append(repo_slug)
 
-        if framework_slug in prefetched:
+        # Excludes a tainted framework repo: `prefetched` is populated as soon as
+        # the clone succeeds, before the taint check, but a tainted ref is never
+        # ingested — stamping its version would describe content the index does
+        # not hold.
+        if framework_slug in prefetched and framework_slug not in frozen_sha_repos:
             framework_checkout = prefetched[framework_slug][0]
 
         # Delete and re-ingest each changed repo atomically to minimise

@@ -441,7 +441,13 @@ class TestVersionConsistency:
         )
 
     def test_package_version_matches_pyproject(self):
-        """``pipecat_context_hub.__version__`` is the version external consumers read."""
+        """``pipecat_context_hub.__version__`` is the version external consumers read.
+
+        Unlike its ``_SERVER_VERSION`` sibling this reads installed distribution
+        metadata rather than a source constant, so it also fails when the
+        environment is stale — which the message below names, because during a
+        release bump that is the likelier cause than a real mismatch.
+        """
         import tomllib
         from pathlib import Path
 
@@ -451,7 +457,12 @@ class TestVersionConsistency:
 
         import pipecat_context_hub
 
-        assert pipecat_context_hub.__version__ == pyproject_version
+        assert pipecat_context_hub.__version__ == pyproject_version, (
+            f"__version__={pipecat_context_hub.__version__!r} but pyproject.toml "
+            f"version={pyproject_version!r}. __version__ comes from installed "
+            f"distribution metadata, so after bumping the version re-sync the "
+            f"environment (`uv sync --extra dev --group dev`) before re-running."
+        )
 
 
 class TestEntryPoint:

@@ -214,7 +214,7 @@ class TestGetFrameworkVersion:
 
     def test_returns_version_from_tag(self, tmp_path: Path) -> None:
         mock_repo = MagicMock()
-        mock_repo.git.describe.return_value = "v0.0.108"
+        mock_repo.git.describe.return_value = "v0.0.108-0-gabc1234"
         with patch(
             "pipecat_context_hub.services.ingest.github_ingest.GitRepo",
             return_value=mock_repo,
@@ -223,12 +223,22 @@ class TestGetFrameworkVersion:
 
     def test_strips_v_prefix(self, tmp_path: Path) -> None:
         mock_repo = MagicMock()
-        mock_repo.git.describe.return_value = "v1.2.3"
+        mock_repo.git.describe.return_value = "v1.2.3-7-gdeadbee"
         with patch(
             "pipecat_context_hub.services.ingest.github_ingest.GitRepo",
             return_value=mock_repo,
         ):
             assert _get_framework_version(tmp_path) == "1.2.3"
+
+    def test_returns_the_tag_regardless_of_distance(self, tmp_path: Path) -> None:
+        """It answers "which release", so commits past the tag do not change it."""
+        mock_repo = MagicMock()
+        mock_repo.git.describe.return_value = "v1.5.0-80-ge629f83c5"
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.GitRepo",
+            return_value=mock_repo,
+        ):
+            assert _get_framework_version(tmp_path) == "1.5.0"
 
     def test_no_tags_returns_none(self, tmp_path: Path) -> None:
         mock_repo = MagicMock()

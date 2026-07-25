@@ -719,6 +719,87 @@ class TestRefreshProvenanceMetadata:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_tainted_framework_is_not_stamped(
+        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
+        mock_eiw_cls, mock_es_cls, mock_is_cls,
+        tmp_path, monkeypatch,
+    ):
+        """A tainted framework ref is never ingested, so it must not be described.
+
+        `prefetched` is populated as soon as the clone succeeds — before the
+        taint check — so the checkout is available even though nothing from it
+        reaches the index.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = (
+            TestRefreshCommand._make_mocks(TestRefreshCommand())
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
+            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+        )
+        mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REFS", "pipecat-ai/pipecat@badcafe")
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 0),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        written = {call.args[0] for call in mock_store.set_metadata.call_args_list}
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_removed_framework_records_clear_the_stamp(
+        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
+        mock_eiw_cls, mock_es_cls, mock_is_cls,
+        tmp_path, monkeypatch,
+    ):
+        """When the indexed ref is also tainted its records go, so must the stamp."""
+        mock_store, mock_crawler, mock_github, mock_source = (
+            TestRefreshCommand._make_mocks(TestRefreshCommand())
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
+            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+        )
+        mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
+        meta = {"repo:pipecat-ai/pipecat:commit_sha": "badcafe"}
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REFS", "pipecat-ai/pipecat@badcafe")
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        deleted = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        assert "indexed_framework_version" in deleted
+        assert "indexed_framework_commits_ahead" in deleted
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_undescribable_checkout_leaves_stamp_alone(
         self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
         mock_eiw_cls, mock_es_cls, mock_is_cls,
