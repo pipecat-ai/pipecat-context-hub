@@ -24,3 +24,4 @@ tests/.tmp-chroma-introspect/
 artifacts/
 .conduct/
 .python-version
+/.gauntlet
