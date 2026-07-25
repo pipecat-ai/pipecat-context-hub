@@ -59,6 +59,37 @@ class TestMcpJson:
         assert server["command"] == sys.executable
         assert server["args"] == ["-m", "pipecat_context_hub", "serve"]
 
+    def test_vscode_uses_servers_key_and_stdio_type(self):
+        """VS Code's mcp.json schema is `servers` with an explicit `type`,
+        not the `mcpServers` shape every other client uses."""
+        block = json.loads(_mcp_json(["pipecat-context-hub", "serve"], "vscode"))
+        assert "mcpServers" not in block
+        server = block["servers"]["pipecat-context-hub"]
+        assert server["type"] == "stdio"
+        assert server["command"] == "pipecat-context-hub"
+        assert server["args"] == ["serve"]
+        assert server["env"] == {}
+
+    def test_zed_uses_context_servers_key_and_custom_source(self):
+        """Zed's settings.json schema is `context_servers` with `source`."""
+        block = json.loads(_mcp_json(["pipecat-context-hub", "serve"], "zed"))
+        assert "mcpServers" not in block
+        server = block["context_servers"]["pipecat-context-hub"]
+        assert server["source"] == "custom"
+        assert server["command"] == "pipecat-context-hub"
+        assert server["args"] == ["serve"]
+        assert server["env"] == {}
+
+    def test_cursor_and_unspecified_client_use_mcp_servers_key(self):
+        """Cursor (and no client specified) fall back to the common
+        `mcpServers` shape — no `type`/`source` wrapper."""
+        for client in ("cursor", None):
+            block = json.loads(_mcp_json(["pipecat-context-hub", "serve"], client))
+            server = block["mcpServers"]["pipecat-context-hub"]
+            assert server["command"] == "pipecat-context-hub"
+            assert server["args"] == ["serve"]
+            assert server["env"] == {}
+
 
 class TestDetectClients:
     def test_detects_only_what_is_on_path(self):
@@ -107,7 +138,8 @@ class TestInstallCommand:
         assert argv[4] == "--"
         assert argv[5:] == ["pipecat-context-hub", "serve"]
 
-    def test_client_cli_failure_is_reported_not_raised(self):
+    def test_client_cli_failure_is_reported_as_error_exit(self):
+        """A failed client registration is surfaced via a nonzero exit, not silently ignored."""
         with (
             patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/claude"),
             patch(
@@ -117,8 +149,58 @@ class TestInstallCommand:
         ):
             result = runner.invoke(main, ["install", "--client", "claude-code", "--no-refresh"])
 
-        assert result.exit_code == 0
+        assert result.exit_code != 0
         assert "already exists" in result.output
+        assert "Failed to register with: claude-code" in result.output
+
+    def test_vscode_client_prints_servers_schema(self):
+        with patch("pipecat_context_hub.cli_install.subprocess.run") as run:
+            result = runner.invoke(main, ["install", "--client", "vscode", "--no-refresh"])
+        assert result.exit_code == 0
+        assert '"servers"' in result.output
+        assert '"type": "stdio"' in result.output
+        assert "mcpServers" not in result.output
+        run.assert_not_called()
+
+    def test_zed_client_prints_context_servers_schema(self):
+        with patch("pipecat_context_hub.cli_install.subprocess.run") as run:
+            result = runner.invoke(main, ["install", "--client", "zed", "--no-refresh"])
+        assert result.exit_code == 0
+        assert '"context_servers"' in result.output
+        assert '"source": "custom"' in result.output
+        assert "mcpServers" not in result.output
+        run.assert_not_called()
+
+    def test_multi_client_partial_failure_reports_only_failed_client(self):
+        """One client succeeds and one fails: the exit is nonzero, the
+        failure message names only the failed client, and the successful
+        client's registration still went through."""
+
+        def _run_side_effect(argv, **_kwargs):
+            if "codex" in argv:
+                return MagicMock(returncode=1, stdout="", stderr="boom")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch(
+                "pipecat_context_hub.cli_install.shutil.which",
+                side_effect=lambda exe: f"/usr/bin/{exe}",
+            ),
+            patch(
+                "pipecat_context_hub.cli_install.subprocess.run",
+                side_effect=_run_side_effect,
+            ) as run,
+        ):
+            result = runner.invoke(
+                main,
+                ["install", "--client", "claude-code", "--client", "codex", "--no-refresh"],
+            )
+
+        assert result.exit_code != 0
+        assert run.call_count == 2
+        assert "registered. Restart claude-code" in result.output
+        assert "Failed to register with: codex" in result.output
+        assert "claude-code" not in result.output.split("Failed to register with:")[1]
 
     def test_no_client_detected_falls_back_to_manual_instructions(self):
         with (

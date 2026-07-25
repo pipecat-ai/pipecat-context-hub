@@ -53,11 +53,26 @@ def _server_command() -> list[str]:
     return [sys.executable, "-m", "pipecat_context_hub", "serve"]
 
 
-def _mcp_json(command: list[str]) -> str:
-    """Render the standard MCP client config block for *command*."""
-    block: dict[str, Any] = {
-        "mcpServers": {_SERVER_NAME: {"command": command[0], "args": command[1:], "env": {}}}
-    }
+def _mcp_json(command: list[str], client: str | None = None) -> str:
+    """Render the MCP client config block for *command*, shaped for *client*.
+
+    Each file-configured client expects a different top-level schema (see
+    ``docs/setup/*.md``). *client* selects which one to render:
+
+    - ``"vscode"`` -> ``{"servers": {name: {"type": "stdio", ...}}}``
+    - ``"zed"`` -> ``{"context_servers": {name: {"source": "custom", ...}}}``
+    - anything else (including ``"cursor"`` and no client detected) ->
+      ``{"mcpServers": {name: {...}}}``
+    """
+    entry: dict[str, Any] = {"command": command[0], "args": command[1:], "env": {}}
+
+    if client == "vscode":
+        block: dict[str, Any] = {"servers": {_SERVER_NAME: {"type": "stdio", **entry}}}
+    elif client == "zed":
+        block = {"context_servers": {_SERVER_NAME: {"source": "custom", **entry}}}
+    else:
+        block = {"mcpServers": {_SERVER_NAME: entry}}
+
     return json.dumps(block, indent=2)
 
 
@@ -120,31 +135,40 @@ def install_command(
         return
 
     selected = list(clients) or _detect_cli_clients()
+    failures: list[str] = []
     if not selected:
         click.echo(
             "No client CLI detected (looked for: "
             f"{', '.join(sorted(_CLI_CLIENTS.values()))}).\n"
-            "Add this to your client's MCP config:\n"
+            "Add the block below to your client's MCP config (schema differs per client):\n"
         )
-        click.echo(_mcp_json(command))
         for name, location in sorted(_FILE_CLIENTS.items()):
-            click.echo(f"  {name}: {location}")
+            click.echo(f"{name}: add this to {location}")
+            click.echo(_mcp_json(command, name))
     else:
         for client in selected:
             if client in _FILE_CLIENTS:
                 click.echo(f"{client}: add this to {_FILE_CLIENTS[client]}")
-                click.echo(_mcp_json(command))
+                click.echo(_mcp_json(command, client))
                 continue
             click.echo(f"Registering '{_SERVER_NAME}' with {client}:")
             if _register_with_cli(client, command):
                 click.echo(f"  registered. Restart {client} to load it.")
+            else:
+                click.echo(f"  registration failed for {client}.", err=True)
+                failures.append(client)
 
     if no_refresh:
         click.echo("\nSkipped index build. Run `refresh` before the first query.")
+        if failures:
+            raise click.ClickException(f"Failed to register with: {', '.join(failures)}")
         return
 
     click.echo("\nBuilding the index (first run downloads models; allow several minutes)...")
     ctx.invoke(refresh)
+
+    if failures:
+        raise click.ClickException(f"Failed to register with: {', '.join(failures)}")
 
 
 def register_install_command(group: click.Group) -> None:
