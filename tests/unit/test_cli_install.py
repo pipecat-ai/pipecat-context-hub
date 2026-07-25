@@ -9,6 +9,7 @@ read-only.
 from __future__ import annotations
 
 import json
+import sys
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -28,10 +29,14 @@ class TestServerCommand:
         with patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/x"):
             assert _server_command() == ["pipecat-context-hub", "serve"]
 
-    def test_falls_back_to_uvx(self):
-        """No install needed: uvx fetches and runs the published package."""
+    def test_falls_back_to_this_interpreter(self):
+        """A `--with` co-install exposes no script for this package, only pipecat's.
+
+        Naming the interpreter keeps the client on the installed version, where
+        uvx would resolve the latest published one at every server start.
+        """
         with patch("pipecat_context_hub.cli_install.shutil.which", return_value=None):
-            assert _server_command() == ["uvx", "pipecat-ai-context-hub", "serve"]
+            assert _server_command() == [sys.executable, "-m", "pipecat_context_hub", "serve"]
 
     def test_never_registers_the_pipecat_front_door(self):
         """Registering `pipecat mcp serve` would load typer on every server start."""
@@ -48,11 +53,11 @@ class TestMcpJson:
         assert server["args"] == ["serve"]
         assert server["env"] == {}
 
-    def test_uvx_args_are_split_out(self):
-        block = json.loads(_mcp_json(["uvx", "pipecat-ai-context-hub", "serve"]))
+    def test_multi_arg_command_is_split_out(self):
+        block = json.loads(_mcp_json([sys.executable, "-m", "pipecat_context_hub", "serve"]))
         server = block["mcpServers"]["pipecat-context-hub"]
-        assert server["command"] == "uvx"
-        assert server["args"] == ["pipecat-ai-context-hub", "serve"]
+        assert server["command"] == sys.executable
+        assert server["args"] == ["-m", "pipecat_context_hub", "serve"]
 
 
 class TestDetectClients:

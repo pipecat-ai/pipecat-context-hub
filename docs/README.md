@@ -52,10 +52,11 @@ pipecat mcp check-deprecation PipelineTask
 ```
 
 `pipecat mcp <command>` and `pipecat-context-hub <command>` are equivalent —
-same parsing, same JSON, same exit codes. Point MCP clients at
-`pipecat-context-hub serve` rather than `pipecat mcp serve`, though: the direct
-console script starts the server without loading the Pipecat CLI first.
-`pipecat mcp install` does this for you.
+same parsing, same JSON, same exit codes. Point MCP clients at this package
+directly rather than at `pipecat mcp serve`, though, so starting the server does
+not load the Pipecat CLI first. `pipecat mcp install` works out the right command
+for your setup — note that a `--with` co-install exposes only the Pipecat CLI's
+own scripts, so `pipecat-context-hub` is importable but not on `PATH`.
 
 ## Populate the Local Index
 

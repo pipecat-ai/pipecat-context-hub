@@ -130,8 +130,11 @@ nothing to mirror.
   subcommand `--help` renders the empty stub
 - `cli.py` — `start` alias for `serve`
 - `cli_install.py` — `install`; registers via each client's own CLI, prints
-  (never writes) config for hand-edited clients, registers the direct console
-  script so serving does not load the Pipecat CLI
+  (never writes) config for hand-edited clients, and points clients at this
+  package directly so serving does not load the Pipecat CLI. `--with` exposes
+  only the host package's scripts, so the co-install case falls back to
+  `sys.executable -m pipecat_context_hub`, which also pins the client to the
+  installed version instead of whatever `uvx` would resolve at each start
 - `pyproject.toml` — entry point; `typer` in the `dev` extra only, as a peer
   dependency, so the bridge is tested rather than skipped
 

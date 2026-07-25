@@ -24,9 +24,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   through their own CLI so they own the edit to their config file; Cursor, VS Code, and
   Zed get the exact JSON and its location printed, since this command will not write to
   a config file it does not own. `--print-config` shows what would be registered and
-  changes nothing; `--no-refresh` skips the index build. It registers the direct
-  `pipecat-context-hub serve` console script, so starting the MCP server never loads the
-  Pipecat CLI.
+  changes nothing; `--no-refresh` skips the index build. The registered command starts
+  this package directly — the `pipecat-context-hub` console script when it is on PATH,
+  otherwise the running interpreter's `-m pipecat_context_hub` — so serving never loads
+  the Pipecat CLI, and a co-install (where `--with` exposes no script for this package)
+  stays pinned to the installed version rather than resolving the latest one via `uvx`
+  at every start.
 - **`start` as an alias for `serve`** — reads naturally as `pipecat mcp start`.
 - **`index_metadata` is a published read contract** — external tooling can answer "how
   old is this index, and which pipecat version is it for" by reading

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from typing import Any
 
 import click
@@ -37,14 +38,19 @@ _FILE_CLIENTS = {
 def _server_command() -> list[str]:
     """The command a client should run to start the MCP server.
 
-    Prefers the installed console script, which starts the server directly.
-    Registering ``pipecat mcp serve`` instead would make every server start
-    import typer and the Pipecat CLI's plugin machinery for no benefit.
-    Falls back to ``uvx``, which needs no prior install.
+    Prefers the console script when it is on PATH. Otherwise runs this very
+    interpreter's module, which is what a co-install needs: ``uv tool install
+    "pipecat-ai[cli]" --with pipecat-ai-context-hub`` exposes only the Pipecat
+    CLI's own scripts, so ``pipecat-context-hub`` is importable but not on PATH.
+    Naming the interpreter also pins the client to the version that is installed,
+    where ``uvx`` would resolve the latest published one at every server start.
+
+    Never ``pipecat mcp serve``: that would load typer and the Pipecat CLI's
+    plugin machinery on every start for no benefit.
     """
     if shutil.which(_SERVER_NAME):
         return [_SERVER_NAME, "serve"]
-    return ["uvx", "pipecat-ai-context-hub", "serve"]
+    return [sys.executable, "-m", "pipecat_context_hub", "serve"]
 
 
 def _mcp_json(command: list[str]) -> str:
