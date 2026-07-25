@@ -10,7 +10,7 @@ Tests cover:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from unittest.mock import MagicMock
@@ -21,12 +21,11 @@ from pipecat_context_hub.server.main import _SERVER_VERSION
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.shared.types import ChunkedRecord, HubStatusOutput
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2026, 2, 26, tzinfo=timezone.utc)
+NOW = datetime(2026, 2, 26, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -254,6 +253,34 @@ class TestHandleGetHubStatus:
 
         assert output.framework_version == "v1.5.0"
         assert output.indexed_framework_commits_ahead == 0
+
+    async def test_malformed_commits_ahead_degrades_to_none(self, caplog):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        # A corrupted or hand-edited metadata value must not crash the whole
+        # status call — it degrades to None, same as if the key were absent.
+        store = self._mock_index_store(
+            metadata={"indexed_framework_commits_ahead": "not-a-number"},
+        )
+        with caplog.at_level("WARNING"):
+            result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+
+        assert output.indexed_framework_commits_ahead is None
+        assert any("not-a-number" in r.message for r in caplog.records)
+
+    async def test_malformed_duration_degrades_to_none(self, caplog):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        store = self._mock_index_store(
+            metadata={"last_refresh_duration_seconds": "not-a-float"},
+        )
+        with caplog.at_level("WARNING"):
+            result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+
+        assert output.last_refresh_duration_seconds is None
+        assert any("not-a-float" in r.message for r in caplog.records)
 
     async def test_index_path_returned(self):
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
