@@ -72,9 +72,14 @@ through the Pipecat CLI without duplicating command or option definitions.
 
 `git describe --tags --long` always renders as `<tag>-<commits>-g<sha>`, so one
 call yields both the nearest tag and the distance to it; splitting from the right
-keeps hyphenated tags (`v1.0.0-rc1`) intact. `_get_framework_version` was left
-alone — it feeds per-chunk `pipecat_version_pin` and uses `--abbrev=0`, a
-different question from index provenance.
+keeps hyphenated tags (`v1.0.0-rc1`) intact. `_get_framework_version` (feeds
+per-chunk `pipecat_version_pin`) originally ran its own `--abbrev=0` describe;
+post-review it was refactored to delegate to `describe_framework_checkout` and
+return just the tag, so there is one place that knows how `git describe` output
+is shaped. `describe_framework_checkout` distinguishes `GitCommandError` (no
+reachable tags — the routine, silent case) from any other exception, which is
+logged at `warning` so a broken git install or an unreadable checkout doesn't
+look identical to the ordinary no-tags case.
 
 - `services/ingest/github_ingest.py` — add `describe_framework_checkout`
 - `cli.py` — capture the framework checkout during refresh; write
@@ -141,6 +146,28 @@ nothing to mirror.
 Client config templates were left in `config/clients/` rather than packaged:
 `install` generates the block from the resolved server command, which the static
 files cannot express since it varies by install method.
+
+## Review fixes (post-plan, complete)
+
+Code review on PR #101 surfaced correctness gaps in the Phase 1/2 work, fixed in
+four follow-up commits:
+
+- **Tainted framework repo no longer stamped.** `prefetched` was populated
+  right after clone, before the taint check, so a tainted or removed framework
+  ref could still have its version recorded even though its records were never
+  ingested (or were deleted). The capture now excludes tainted repos, and the
+  branch that removes framework records clears the stamp with them.
+- **`get_hub_status` no longer raises on malformed metadata.** A single bad
+  stored value (e.g. a non-numeric `indexed_framework_commits_ahead`) crashed
+  the whole status call; parsing now degrades to `None` and logs a warning,
+  covering `last_refresh_duration_seconds` too.
+- **`describe_framework_checkout` logs before returning nothing**, splitting
+  the expected no-tags case (`GitCommandError`, silent) from unexpected
+  failures (logged at `warning`, not `debug`, so they're visible at default log
+  verbosity) — see the updated Phase 1 description above.
+- **`__version__` falls back to `"unknown"` rather than `"0.0.0"`** — a
+  version-shaped placeholder reads as a real release to anything comparing
+  versions.
 
 ## Remaining: pipecat side
 

@@ -80,7 +80,21 @@ This project uses [Semantic Versioning](https://semver.org/).
   `0.1.0` and had drifted three releases behind the package. It now derives from
   `importlib.metadata`, and a test pins it to `pyproject.toml` alongside the existing
   `_SERVER_VERSION` check, so it cannot silently drift again. External consumers reach
-  for `__version__` first.
+  for `__version__` first. Falls back to `"unknown"` (not a version-shaped `"0.0.0"`)
+  when running from a source tree with no installed distribution.
+- **A tainted framework repo is no longer stamped as indexed** — `indexed_framework_version`
+  was recorded from the framework checkout even when its ref was tainted and never
+  ingested (or its records were removed), claiming the index reflected a release it did
+  not actually hold. The capture now excludes tainted repos, and removing framework
+  records clears the stamp with them.
+- **`get_hub_status` no longer raises on malformed index metadata** — a single
+  unparseable stored value (e.g. a corrupted `indexed_framework_commits_ahead`)
+  crashed the whole status call; it now degrades that field to `None` and logs a
+  warning, covering `last_refresh_duration_seconds` too.
+- **`describe_framework_checkout` surfaces unexpected git failures** — a broken git
+  install or an unreadable checkout previously looked identical to the routine
+  no-reachable-tags case. It now logs those at `warning` so they're visible at
+  default log verbosity, while the routine case stays silent.
 
 ### Security
 - **Batch transitive dependency bumps (PR #93)** — patches five advisories in the
