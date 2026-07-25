@@ -1,10 +1,10 @@
 # Task: Expose the hub as an external API and mount it in the Pipecat CLI
 
-**Status**: Phase 1 complete; Phases 2-3 not started
+**Status**: Phases 1-2 complete; Phase 3 not started
 **Component**: cli, index metadata, packaging
 **Assigned to**: markbackman
 **Priority**: High
-**Branch**: `feature/indexed-framework-version` (Phase 1)
+**Branch**: `feature/indexed-framework-version` (Phases 1-2)
 **Created**: 2026-07-25
 **Completed**: —
 
@@ -65,7 +65,7 @@ through the Pipecat CLI without duplicating command or option definitions.
 | R1 | 1 | `describe_framework_checkout` (`github_ingest.py`); `indexed_framework_version` written in `cli.py` refresh metadata pass | `TestDescribeFrameworkCheckout`; `TestHandleGetHubStatus`; AGENTS.md smoke 38a |
 | R2 | 1 | `indexed_framework_commits_ahead` from `git describe --tags --long` | `test_exact_tag_reports_zero_commits_ahead`, `test_commits_past_tag` |
 | R3 | 1 | Write guarded on `framework_checkout is not None`; cleanup on de-configuration | `test_indexed_framework_version_absent_by_default` |
-| R4 | 2 | Documented read contract over `index_metadata` | — |
+| R4 | 2 | `METADATA_CONTRACT_VERSION` (`fts.py`) stamped on refresh; "Index Metadata Contract" in `docs/README.md` | `TestRefreshProvenanceMetadata`; `TestVersionConsistency` |
 | R5 | 3 | Typer bridge + `[project.entry-points."pipecat_cli.extensions"]` | — |
 
 ## Phase 1 — Framework provenance in the index (complete)
@@ -82,15 +82,29 @@ different question from index provenance.
   when the framework repo is de-configured
 - `shared/types.py`, `server/tools/get_hub_status.py` — surface both fields
 
-## Phase 2 — External read contract
+## Phase 2 — External read contract (complete)
 
-Document `index_metadata` (key, value, updated_at) as a stable, versioned
-contract external tooling may read directly, read-only, with stdlib `sqlite3`.
-The DB is WAL, so readers neither block nor are blocked by a concurrent refresh
-or a running `serve`. Add a contract-version key so a consumer can bail out on a
-future incompatible change, and document that consumers must honour
-`PIPECAT_HUB_DATA_DIR`. Also fix `__init__.py`'s `__version__`, stale at `0.1.0`
-against a `0.2.1` package — any external consumer will reach for it.
+`index_metadata` (key, value, updated_at) is documented as a stable, versioned
+contract that external tooling may read directly, read-only, with stdlib
+`sqlite3`. Verified against the live index: the database is WAL, `mode=ro`
+rejects writes, a read during an open write transaction completes in ~0.1 ms with
+`timeout=0`, and readers see only committed state — so no locking or sidecar file
+is warranted.
+
+This was chosen over publishing a separate `status.json`. A sidecar has the same
+"absent until the next refresh" upgrade profile as a new metadata key, but adds a
+desync mode (index committed, sidecar write fails) and buys no decoupling, since
+the key names would have to be documented either way. Reading the table directly
+also means the staleness half of a freshness check works against indexes that
+already exist, because `last_refresh_at` predates the contract.
+
+- `services/index/fts.py` — `METADATA_CONTRACT_VERSION`, beside the DDL it versions
+- `cli.py` — stamp it on every refresh
+- `docs/README.md` — "Index Metadata Contract": the reader snippet, contracted
+  keys, `PIPECAT_HUB_DATA_DIR` requirement, and compatibility rules. Adding a key
+  is backwards compatible; only a shape or meaning change bumps the version
+- `__init__.py` — `__version__` was hard-coded at `0.1.0`, three releases stale;
+  now from `importlib.metadata`, pinned by a test
 
 ## Phase 3 — Typer bridge and entry point
 

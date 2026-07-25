@@ -19,6 +19,15 @@ from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexRes
 
 logger = logging.getLogger(__name__)
 
+# Version of the published read contract over `index_metadata` — the shape
+# external tooling may depend on when reading this database directly (see
+# "Index metadata contract" in docs/README.md). Bump only on a breaking change
+# to that table's shape or to the meaning of a documented key; adding a new key
+# is backwards compatible and does not warrant a bump. Written on refresh, so
+# an index built before the contract was published simply lacks it — consumers
+# treat an absent value as "pre-contract", not as an error.
+METADATA_CONTRACT_VERSION = 1
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id     TEXT PRIMARY KEY,

@@ -440,6 +440,19 @@ class TestVersionConsistency:
             f"Both must be updated together on each release."
         )
 
+    def test_package_version_matches_pyproject(self):
+        """``pipecat_context_hub.__version__`` is the version external consumers read."""
+        import tomllib
+        from pathlib import Path
+
+        pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        with pyproject_path.open("rb") as f:
+            pyproject_version = tomllib.load(f)["project"]["version"]
+
+        import pipecat_context_hub
+
+        assert pipecat_context_hub.__version__ == pyproject_version
+
 
 class TestEntryPoint:
     def test_main_module_has_main(self):

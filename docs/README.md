@@ -192,10 +192,69 @@ uvx pipecat-ai-context-hub refresh --framework-version v0.0.96
 PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 uvx pipecat-ai-context-hub refresh
 ```
 
+## Index Metadata Contract
+
+External tooling — editor plugins, CI checks, the Pipecat CLI — often needs one
+cheap answer: *how old is this index, and which pipecat version is it for?* Every
+in-process query path opens ChromaDB, so importing the hub or shelling out to
+`status` is too slow to run on every invocation of another tool.
+
+The `index_metadata` table in `<data dir>/metadata.db` is therefore a **published
+read contract**. Read it directly, read-only, with the standard library:
+
+```python
+import os, sqlite3
+from pathlib import Path
+
+data_dir = Path(os.environ.get("PIPECAT_HUB_DATA_DIR") or Path.home() / ".pipecat-context-hub")
+conn = sqlite3.connect(f"file:{data_dir / 'metadata.db'}?mode=ro", uri=True, timeout=0)
+meta = dict(conn.execute("SELECT key, value FROM index_metadata"))
+```
+
+The database is WAL, so a reader neither blocks nor is blocked by a concurrent
+`refresh` or a running `serve`, and sees only committed state. Use `mode=ro` and
+`timeout=0`, and treat any exception as "unknown" — a freshness check must never
+fail its caller's command.
+
+Consumers **must** honour `PIPECAT_HUB_DATA_DIR`; assuming
+`~/.pipecat-context-hub` will report "no index" at anyone who relocated theirs.
+
+### Contracted keys
+
+| Key | Meaning |
+|-----|---------|
+| `metadata_contract_version` | Version of this contract (currently `1`). Absent on indexes built before it was published |
+| `last_refresh_at` | UTC ISO-8601 timestamp of the last completed refresh |
+| `last_refresh_error_count` | Errors in that refresh; `last_refresh_errored_at` is present only when non-zero |
+| `indexed_framework_version` | Nearest pipecat release tag the index was built from, e.g. `1.6.0` |
+| `indexed_framework_commits_ahead` | Commits from that tag to the indexed revision. `0` means the index *is* that release |
+| `framework_version` | The operator's explicit `--framework-version` pin. Absent unless pinned — this is *not* the version the index was built from |
+| `repo:<org>/<repo>:commit_sha` | Indexed commit for each source repo |
+| `content_type_counts` | JSON object of record counts by content type |
+
+`indexed_framework_version` is a **floor, not an identity**: an unpinned refresh
+tracks the default branch, so an index built 55 commits past `v1.6.0` still
+reports `1.6.0` with `indexed_framework_commits_ahead: 55`. Compare versions with
+that slack in mind, or every developer working from a source checkout gets a
+spurious mismatch.
+
+### Compatibility
+
+`metadata_contract_version` is bumped only when the table's shape or a documented
+key's meaning changes; adding a key is backwards compatible and does not bump it.
+Treat a value **higher** than you understand as "unknown" and stay silent rather
+than guessing.
+
+The keys are written on refresh, so an index built by an older hub simply lacks
+the newer ones. `last_refresh_at` and `repo:*:commit_sha` predate the contract
+and are present on essentially every index in the wild, so a staleness check
+works immediately; version comparison starts working after the next refresh.
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PIPECAT_HUB_DATA_DIR` | `~/.pipecat-context-hub` | Index, clones, and metadata location. Consumers of the metadata contract must honour it |
 | `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
 | `PIPECAT_HUB_FRAMEWORK_VERSION` | *(empty)* | Pin framework repo to a specific git tag (e.g. `v0.0.96`) |
 | `PIPECAT_HUB_TAINTED_REPOS` | *(empty)* | Comma-separated repo slugs to skip entirely |

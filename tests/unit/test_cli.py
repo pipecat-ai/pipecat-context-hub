@@ -18,6 +18,7 @@ from pipecat_context_hub.cli import (
     _warmup_enabled,
     main,
 )
+from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
 from pipecat_context_hub.shared.config import HubConfig
 
 
@@ -651,6 +652,90 @@ class TestRefreshCommand:
             call.args[0] for call in mock_store.set_metadata.call_args_list
         }
         assert "repo:pipecat-ai/pipecat:commit_sha" not in set_calls
+
+
+class TestRefreshProvenanceMetadata:
+    """Refresh stamps the contract version and the indexed pipecat revision."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_deprecation_map(self):
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_registry",
+            return_value=MagicMock(entries={}, save=MagicMock()),
+        ):
+            yield
+
+    def _run_refresh(self, mocks, describe_result, tmp_path, monkeypatch):
+        """Invoke refresh with the shared mock harness; return set_metadata as a dict."""
+        mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted = mocks
+        mock_store, mock_crawler, mock_github, mock_source = (
+            TestRefreshCommand._make_mocks(TestRefreshCommand())
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=describe_result,
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        return mock_store, {
+            call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list
+        }
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_stamps_contract_version_and_indexed_revision(
+        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
+        mock_eiw_cls, mock_es_cls, mock_is_cls,
+        tmp_path, monkeypatch,
+    ):
+        _store, written = self._run_refresh(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            ("1.6.0", 55),
+            tmp_path,
+            monkeypatch,
+        )
+
+        assert written["metadata_contract_version"] == str(METADATA_CONTRACT_VERSION)
+        assert written["indexed_framework_version"] == "1.6.0"
+        assert written["indexed_framework_commits_ahead"] == "55"
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_undescribable_checkout_leaves_stamp_alone(
+        self, mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls,
+        mock_eiw_cls, mock_es_cls, mock_is_cls,
+        tmp_path, monkeypatch,
+    ):
+        """A checkout with no reachable tags must not clear a previous stamp."""
+        store, written = self._run_refresh(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            (None, None),
+            tmp_path,
+            monkeypatch,
+        )
+
+        assert "indexed_framework_version" not in written
+        deleted = {call.args[0] for call in store.delete_metadata.call_args_list}
+        assert "indexed_framework_version" not in deleted
+        assert "indexed_framework_commits_ahead" not in deleted
 
 
 class TestServeEmptyIndex:

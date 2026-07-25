@@ -8,6 +8,16 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`index_metadata` is a published read contract** — external tooling can answer "how
+  old is this index, and which pipecat version is it for" by reading
+  `<data dir>/metadata.db` read-only with the standard library, without importing the
+  hub. Every in-process query path constructs an `IndexStore`, which opens ChromaDB even
+  for lookups that need no embeddings, so neither importing the package nor shelling out
+  to `status` is cheap enough to run on every invocation of another tool. The database is
+  WAL, so a reader neither blocks nor is blocked by a concurrent `refresh` or a running
+  `serve`. Refresh now stamps `metadata_contract_version`; the contracted keys, the
+  required `PIPECAT_HUB_DATA_DIR` handling, and the compatibility rules are documented
+  under "Index Metadata Contract" in `docs/README.md`.
 - **The index records which pipecat revision it was built from** — every refresh now
   stamps `indexed_framework_version` (the nearest release tag, e.g. `1.6.0`) and
   `indexed_framework_commits_ahead` (the distance from that tag to the indexed commit),
@@ -41,6 +51,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   registry stops churning on unrelated line shifts. No behavior change: the
   consumer surfaces `location` verbatim and never parses it, so registries that
   still carry a `:line` suffix (older pipecat) keep working unchanged.
+
+### Fixed
+- **`pipecat_context_hub.__version__` reports the real version** — it was hard-coded to
+  `0.1.0` and had drifted three releases behind the package. It now derives from
+  `importlib.metadata`, and a test pins it to `pyproject.toml` alongside the existing
+  `_SERVER_VERSION` check, so it cannot silently drift again. External consumers reach
+  for `__version__` first.
 
 ### Security
 - **Batch transitive dependency bumps (PR #93)** — patches five advisories in the

@@ -478,6 +478,7 @@ def refresh(
         EmbeddingService,
     )
     from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+    from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
     from pipecat_context_hub.services.ingest.github_ingest import (
@@ -828,6 +829,7 @@ def refresh(
 
         # Persist refresh metadata for get_hub_status tool.
         now = datetime.now(timezone.utc).isoformat()
+        index_store.set_metadata("metadata_contract_version", str(METADATA_CONTRACT_VERSION))
         index_store.set_metadata("last_refresh_duration_seconds", str(duration))
         index_store.set_metadata("last_refresh_records_upserted", str(total_upserted))
         index_store.set_metadata("last_refresh_error_count", str(len(all_errors)))
