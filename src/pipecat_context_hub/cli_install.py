@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
+import subprocess  # nosec B404 - fixed-arg, timeout-guarded client CLI registration
 import sys
 from typing import Any
 
@@ -87,7 +87,9 @@ def _register_with_cli(client: str, command: list[str]) -> bool:
     argv = [exe, "mcp", "add", _SERVER_NAME, "--", *command]
     click.echo(f"  $ {' '.join(argv)}")
     try:
-        completed = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        completed = subprocess.run(  # nosec B603 - argv from _CLI_CLIENTS allowlist, no shell
+            argv, capture_output=True, text=True, timeout=60
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         click.echo(f"  failed to run {exe}: {exc}", err=True)
         return False
