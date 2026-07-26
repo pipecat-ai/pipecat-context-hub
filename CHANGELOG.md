@@ -8,6 +8,51 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Mounts into the Pipecat CLI as `pipecat mcp`** — installing this package alongside
+  `pipecat-ai[cli]` exposes every command as `pipecat mcp <command>`, with identical
+  parsing, JSON, and exit codes. Entry-point discovery is dynamic, so this works against
+  a Pipecat CLI that is already installed; no upgrade is needed on that side.
+  `uv tool install "pipecat-ai[cli]" --with pipecat-ai-context-hub`. The bridge
+  (`plugin.py`) registers one passthrough per click command and hands raw argv to the
+  click group rather than restating commands in Typer, which would drift every release —
+  and, because typer vendors a private copy of click whose exception types differ from
+  the real ones, keeping all parsing inside click is what makes usage errors, subcommand
+  `--help`, and exit codes behave the same through either front door. `typer` is a peer
+  dependency provided by `pipecat-ai[cli]`, not a runtime dependency of this package.
+- **`install` command** — registers the MCP server with a coding agent and builds the
+  index in one step, replacing four manual ones. Claude Code and Codex are configured
+  through their own CLI so they own the edit to their config file; Cursor, VS Code, and
+  Zed get the exact JSON and its location printed, since this command will not write to
+  a config file it does not own. `--print-config` shows what would be registered and
+  changes nothing; `--no-refresh` skips the index build. The registered command starts
+  this package directly — the `pipecat-context-hub` console script when it is on PATH,
+  otherwise the running interpreter's `-m pipecat_context_hub` — so serving never loads
+  the Pipecat CLI, and a co-install (where `--with` exposes no script for this package)
+  stays pinned to the installed version rather than resolving the latest one via `uvx`
+  at every start.
+- **`start` as an alias for `serve`** — reads naturally as `pipecat mcp start`.
+- **`index_metadata` is a published read contract** — external tooling can answer "how
+  old is this index, and which pipecat version is it for" by reading
+  `<data dir>/metadata.db` read-only with the standard library, without importing the
+  hub. Every in-process query path constructs an `IndexStore`, which opens ChromaDB even
+  for lookups that need no embeddings, so neither importing the package nor shelling out
+  to `status` is cheap enough to run on every invocation of another tool. The database is
+  WAL, so a reader neither blocks nor is blocked by a concurrent `refresh` or a running
+  `serve`. Refresh now stamps `metadata_contract_version`; the contracted keys, the
+  required `PIPECAT_HUB_DATA_DIR` handling, and the compatibility rules are documented
+  under "Index Metadata Contract" in `docs/README.md`.
+- **The index records which pipecat revision it was built from** — every refresh now
+  stamps `indexed_framework_version` (the nearest release tag, e.g. `1.6.0`) and
+  `indexed_framework_commits_ahead` (the distance from that tag to the indexed commit),
+  both surfaced by `get_hub_status`. Previously the only version signal was
+  `framework_version`, which records an operator's explicit `--framework-version` pin and
+  is *deleted* on any unpinned refresh — so a default index said nothing about which
+  release it reflected, and a consumer could not tell whether the index matched the
+  pipecat version a project builds against. The commit distance matters because an
+  unpinned refresh tracks the default branch, where the nearest tag is a floor rather than
+  an identity: an index built 55 commits past `v1.6.0` still describes as `1.6.0`. The two
+  keys are left untouched when the framework repo is not cloned in a run, so a transient
+  clone failure keeps the last known-good stamp instead of erasing it.
 - **`check_deprecation` is version-aware and reports removed symbols** — an optional
   `version` argument evaluates a symbol's lifecycle at that pipecat version, and responses
   now include a `status` (`current` / `deprecated` / `removed`) plus `announced_removed_in`.
@@ -29,6 +74,27 @@ This project uses [Semantic Versioning](https://semver.org/).
   registry stops churning on unrelated line shifts. No behavior change: the
   consumer surfaces `location` verbatim and never parses it, so registries that
   still carry a `:line` suffix (older pipecat) keep working unchanged.
+
+### Fixed
+- **`pipecat_context_hub.__version__` reports the real version** — it was hard-coded to
+  `0.1.0` and had drifted three releases behind the package. It now derives from
+  `importlib.metadata`, and a test pins it to `pyproject.toml` alongside the existing
+  `_SERVER_VERSION` check, so it cannot silently drift again. External consumers reach
+  for `__version__` first. Falls back to `"unknown"` (not a version-shaped `"0.0.0"`)
+  when running from a source tree with no installed distribution.
+- **A tainted framework repo is no longer stamped as indexed** — `indexed_framework_version`
+  was recorded from the framework checkout even when its ref was tainted and never
+  ingested (or its records were removed), claiming the index reflected a release it did
+  not actually hold. The capture now excludes tainted repos, and removing framework
+  records clears the stamp with them.
+- **`get_hub_status` no longer raises on malformed index metadata** — a single
+  unparseable stored value (e.g. a corrupted `indexed_framework_commits_ahead`)
+  crashed the whole status call; it now degrades that field to `None` and logs a
+  warning, covering `last_refresh_duration_seconds` too.
+- **`describe_framework_checkout` surfaces unexpected git failures** — a broken git
+  install or an unreadable checkout previously looked identical to the routine
+  no-reachable-tags case. It now logs those at `warning` so they're visible at
+  default log verbosity, while the routine case stays silent.
 
 ### Security
 - **Batch transitive dependency bumps (PR #93)** — patches five advisories in the

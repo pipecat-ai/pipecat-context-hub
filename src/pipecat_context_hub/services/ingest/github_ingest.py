@@ -12,7 +12,7 @@ import logging
 import re
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -92,9 +92,7 @@ _BOUNDARY_RE = re.compile(
 )
 
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-_REPO_SLUG_RE = re.compile(
-    r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$"
-)
+_REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 # Validation for git tag names (e.g. "v0.0.96", "0.0.96").
 _TAG_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
@@ -135,7 +133,11 @@ def repo_ref_is_tainted(repo_path: Path, commit_sha: str, tainted_refs: set[str]
         if normalized and _HEX_SHA_RE.fullmatch(normalized) and sha.startswith(normalized.lower()):
             return True
 
-    named_refs = [ref.strip() for ref in tainted_refs if ref.strip() and not _HEX_SHA_RE.fullmatch(ref.strip())]
+    named_refs = [
+        ref.strip()
+        for ref in tainted_refs
+        if ref.strip() and not _HEX_SHA_RE.fullmatch(ref.strip())
+    ]
     if not named_refs:
         return False
 
@@ -579,10 +581,16 @@ def _infer_domain(rel_path: str, language: str | None) -> str:
 
     # Config files by name or extension
     if language in ("yaml", "toml", "json") or name in (
-        "docker-compose.yml", "docker-compose.yaml",
-        "pcc-deploy.toml", ".env.example", "config.yaml",
-        "config.example.yaml", "requirements.txt", "pyproject.toml",
-        "package.json", "tsconfig.json",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "pcc-deploy.toml",
+        ".env.example",
+        "config.yaml",
+        "config.example.yaml",
+        "requirements.txt",
+        "pyproject.toml",
+        "package.json",
+        "tsconfig.json",
     ):
         return "config"
 
@@ -628,9 +636,7 @@ def _build_readme_chunk(
     if len(content) > max_chars:
         content = content[:max_chars] + "\n\n[Truncated — see full README on GitHub]"
 
-    chunk_id = hashlib.sha256(
-        f"readme:{repo_slug}:{commit_sha}".encode()
-    ).hexdigest()[:24]
+    chunk_id = hashlib.sha256(f"readme:{repo_slug}:{commit_sha}".encode()).hexdigest()[:24]
 
     source_url = f"https://github.com/{repo_slug}/blob/{commit_sha}/{readme_path.name}"
 
@@ -751,14 +757,51 @@ def _extract_pipecat_version(example_dir: Path, repo_root: Path) -> str | None:
     return None
 
 
-def _get_framework_version(repo_path: Path) -> str | None:
-    """Get pipecat version from git tag (setuptools_scm repos)."""
+def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None]:
+    """Describe a checkout as (nearest release tag, commits ahead of that tag).
+
+    An unpinned refresh tracks the default branch, where the nearest tag is a
+    floor rather than an identity — a checkout eighty commits past ``v1.5.0``
+    still describes as ``v1.5.0``. Anything comparing the index against a
+    project's installed pipecat needs the distance to tell "this index *is*
+    1.5.0" from "this index is somewhere after 1.5.0".
+
+    Returns ``(None, None)`` when the version cannot be determined — no reachable
+    tags, an unreadable repository, or output this cannot parse. Callers stamp
+    provenance from this, so a wrong answer is worse than no answer; the reason
+    is logged rather than raised.
+    """
     try:
         repo = GitRepo(str(repo_path))
-        tag = repo.git.describe("--tags", "--abbrev=0")
-        return str(tag).lstrip("v")  # "v0.0.108" → "0.0.108"
-    except Exception:
-        return None
+        described = str(repo.git.describe("--tags", "--long")).strip()
+    except GitCommandError:
+        # The ordinary case: a tag-less clone. `git describe` exits non-zero
+        # with "no names found", which is expected often enough not to log.
+        return None, None
+    except Exception as exc:
+        # A broken git install or an unreadable checkout is not the routine
+        # no-tags case — surface it at warning so it doesn't look identical
+        # to "no tags" and go unnoticed at default log verbosity.
+        logger.warning("Unexpected error describing checkout at %s: %s", repo_path, exc)
+        return None, None
+    # --long always renders as <tag>-<commits>-g<sha>. Splitting from the right
+    # keeps tags that themselves contain hyphens (e.g. v1.0.0-rc1) intact.
+    try:
+        tag, commits_ahead, _sha = described.rsplit("-", 2)
+        return tag.lstrip("v"), int(commits_ahead)
+    except ValueError:
+        logger.debug("Unexpected `git describe --long` output: %r", described)
+        return None, None
+
+
+def _get_framework_version(repo_path: Path) -> str | None:
+    """Get pipecat version from git tag (setuptools_scm repos).
+
+    The nearest tag only — see :func:`describe_framework_checkout` when the
+    distance from that tag matters too.
+    """
+    tag, _commits_ahead = describe_framework_checkout(repo_path)
+    return tag  # "v0.0.108" → "0.0.108"
 
 
 # Framework repo slug — examples in this repo derive version from git tag.
@@ -952,7 +995,7 @@ class GitHubRepoIngester:
                 commit_sha=commit_sha,
             )
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         chunking = self._config.chunking
 
         # Extract pipecat version: framework repo uses git tag,

@@ -2136,6 +2136,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "typer" },
 ]
 
 [package.dev-dependencies]
@@ -2165,6 +2166,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.0.0" },
     { name = "tree-sitter", specifier = ">=0.25,<1.0" },
     { name = "tree-sitter-typescript", specifier = ">=0.23,<1.0" },
+    { name = "typer", marker = "extra == 'dev'", specifier = ">=0.20.0,<1" },
 ]
 provides-extras = ["dev"]
 

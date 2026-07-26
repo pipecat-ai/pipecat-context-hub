@@ -11,6 +11,7 @@ import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,15 @@ from typing import Any
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
+
+# Version of the published read contract over `index_metadata` — the shape
+# external tooling may depend on when reading this database directly (see
+# "Index metadata contract" in docs/README.md). Bump only on a breaking change
+# to that table's shape or to the meaning of a documented key; adding a new key
+# is backwards compatible and does not warrant a bump. Written on refresh, so
+# an index built before the contract was published simply lacks it — consumers
+# treat an absent value as "pre-contract", not as an error.
+METADATA_CONTRACT_VERSION = 1
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -243,16 +253,18 @@ class FTSIndex:
 
             # `where_parts` only contains static clause templates; user input stays
             # parameterized in `params`, so joining the clauses is safe here.
-            sql = "\n".join([
-                "SELECT c.chunk_id, c.content, c.content_type, c.source_url,",
-                "       c.repo, c.path, c.commit_sha, c.indexed_at, c.metadata_json,",
-                "       bm25(chunks_fts) AS rank",
-                "FROM chunks_fts",
-                "JOIN chunks c ON c.rowid = chunks_fts.rowid",
-                "WHERE " + " AND ".join(where_parts),
-                "ORDER BY rank",
-                "LIMIT ?",
-            ])
+            sql = "\n".join(
+                [
+                    "SELECT c.chunk_id, c.content, c.content_type, c.source_url,",
+                    "       c.repo, c.path, c.commit_sha, c.indexed_at, c.metadata_json,",
+                    "       bm25(chunks_fts) AS rank",
+                    "FROM chunks_fts",
+                    "JOIN chunks c ON c.rowid = chunks_fts.rowid",
+                    "WHERE " + " AND ".join(where_parts),
+                    "ORDER BY rank",
+                    "LIMIT ?",
+                ]
+            )
             params.append(query.limit)
 
             cursor = self._conn.execute(sql, params)
@@ -354,14 +366,16 @@ class FTSIndex:
         if not filter_clauses:
             return []
 
-        sql = "\n".join([
-            "SELECT c.chunk_id, c.content, c.content_type, c.source_url,",
-            "       c.repo, c.path, c.commit_sha, c.indexed_at, c.metadata_json",
-            "FROM chunks c",
-            "WHERE " + " AND ".join(filter_clauses),
-            "ORDER BY c.rowid",
-            "LIMIT ?",
-        ])
+        sql = "\n".join(
+            [
+                "SELECT c.chunk_id, c.content, c.content_type, c.source_url,",
+                "       c.repo, c.path, c.commit_sha, c.indexed_at, c.metadata_json",
+                "FROM chunks c",
+                "WHERE " + " AND ".join(filter_clauses),
+                "ORDER BY c.rowid",
+                "LIMIT ?",
+            ]
+        )
         filter_params.append(query.limit)
 
         cursor = self._conn.execute(sql, filter_params)
@@ -369,8 +383,17 @@ class FTSIndex:
 
         items: list[IndexResult] = []
         for row in rows:
-            (cid, content, content_type, source_url, repo, path,
-             commit_sha, indexed_at_str, metadata_json) = row
+            (
+                cid,
+                content,
+                content_type,
+                source_url,
+                repo,
+                path,
+                commit_sha,
+                indexed_at_str,
+                metadata_json,
+            ) = row
             extra_meta: dict[str, Any] = json.loads(metadata_json) if metadata_json else {}
             record = ChunkedRecord(
                 chunk_id=cid,
@@ -415,6 +438,31 @@ class FTSIndex:
             self._conn.execute("DELETE FROM index_metadata WHERE key = ?", (key,))
             self._conn.commit()
 
+    def set_metadata_batch(self, pairs: dict[str, str], *, delete_keys: Iterable[str] = ()) -> None:
+        """Upsert and delete metadata keys atomically in a single commit.
+
+        Callers writing several related metadata keys (e.g. a refresh's
+        end-of-run metadata pass) should use this instead of individual
+        ``set_metadata``/``delete_metadata`` calls, so a reader never
+        observes a partially-updated related-key set.
+        """
+        with self._lock:
+            now = datetime.now().astimezone().isoformat()
+            for key, value in pairs.items():
+                self._conn.execute(
+                    """
+                    INSERT INTO index_metadata (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (key, value, now),
+                )
+            for key in delete_keys:
+                self._conn.execute("DELETE FROM index_metadata WHERE key = ?", (key,))
+            self._conn.commit()
+
     def get_all_metadata(self) -> dict[str, str]:
         """Return all index_metadata as a dict."""
         with self._lock:
@@ -426,9 +474,7 @@ class FTSIndex:
         with self._lock:
             counts: dict[str, int] = {}
             # Doc chunks have no repo — count them separately
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM chunks WHERE content_type = 'doc'"
-            )
+            cursor = self._conn.execute("SELECT COUNT(*) FROM chunks WHERE content_type = 'doc'")
             doc_count = cursor.fetchone()[0]
             if doc_count:
                 counts["docs.pipecat.ai"] = doc_count

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -82,9 +83,7 @@ class IndexStore:
             logger.exception("FTS upsert failed; vector index may have diverged")
             fts_count = 0
         if vector_count != fts_count:
-            logger.warning(
-                "Index divergence: vector=%d fts=%d records", vector_count, fts_count
-            )
+            logger.warning("Index divergence: vector=%d fts=%d records", vector_count, fts_count)
         return vector_count
 
     async def delete_by_content_type(self, content_type: str) -> int:
@@ -98,7 +97,9 @@ class IndexStore:
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (content_type=%s): vector=%d fts=%d",
-                content_type, vector_count, fts_count,
+                content_type,
+                vector_count,
+                fts_count,
             )
         return vector_count
 
@@ -113,7 +114,9 @@ class IndexStore:
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (repo=%s): vector=%d fts=%d",
-                repo, vector_count, fts_count,
+                repo,
+                vector_count,
+                fts_count,
             )
         return vector_count
 
@@ -128,7 +131,9 @@ class IndexStore:
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (source_url=%s): vector=%d fts=%d",
-                source_url, vector_count, fts_count,
+                source_url,
+                vector_count,
+                fts_count,
             )
         return vector_count
 
@@ -159,6 +164,10 @@ class IndexStore:
     def delete_metadata(self, key: str) -> None:
         """Remove a metadata key if it exists."""
         self._fts.delete_metadata(key)
+
+    def set_metadata_batch(self, pairs: dict[str, str], *, delete_keys: Iterable[str] = ()) -> None:
+        """Upsert and delete several metadata keys atomically in one commit."""
+        self._fts.set_metadata_batch(pairs, delete_keys=delete_keys)
 
     def get_all_metadata(self) -> dict[str, str]:
         """Return all persistent index metadata as a dict."""

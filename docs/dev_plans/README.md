@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| _(none)_ | | | | | | |
+| 2026-07-25 | feature | Expose the hub as an external API and mount it in the Pipecat CLI (`pipecat mcp`) | Phases 1-3 complete (hub side done); pipecat-side work pending | markbackman | `feature/indexed-framework-version` | `20260725-feature-pipecat-cli-plugin.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

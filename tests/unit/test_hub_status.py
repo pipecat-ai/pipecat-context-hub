@@ -10,7 +10,7 @@ Tests cover:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from unittest.mock import MagicMock
@@ -21,12 +21,11 @@ from pipecat_context_hub.server.main import _SERVER_VERSION
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.shared.types import ChunkedRecord, HubStatusOutput
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2026, 2, 26, tzinfo=timezone.utc)
+NOW = datetime(2026, 2, 26, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -91,6 +90,59 @@ class TestFTSMetadata:
         index2 = FTSIndex(db_path)
         assert index2.get_metadata("persist_key") == "persist_value"
         index2.close()
+
+    def test_set_metadata_batch_writes_all_pairs(self, fts_index):
+        fts_index.set_metadata_batch({"a": "1", "b": "2", "c": "3"})
+        assert fts_index.get_all_metadata() == {"a": "1", "b": "2", "c": "3"}
+
+    def test_set_metadata_batch_upserts_existing_keys(self, fts_index):
+        fts_index.set_metadata("a", "old")
+        fts_index.set_metadata_batch({"a": "new", "b": "2"})
+        assert fts_index.get_all_metadata() == {"a": "new", "b": "2"}
+
+    def test_set_metadata_batch_deletes_requested_keys(self, fts_index):
+        fts_index.set_metadata("stale", "gone")
+        fts_index.set_metadata("keep", "1")
+        fts_index.set_metadata_batch({"new": "value"}, delete_keys=["stale"])
+        assert fts_index.get_all_metadata() == {"keep": "1", "new": "value"}
+
+    def test_set_metadata_batch_commits_once(self, fts_index):
+        """A single commit for the whole batch — not one per key.
+
+        Guards the atomicity claim: readers should never observe a partially
+        written related-key set. We can't observe SQLite's internal commit
+        boundary directly, so we assert on the connection's commit() call
+        count instead, which is the mechanism `set_metadata_batch` uses to
+        make the write atomic.
+        """
+        # sqlite3.Connection is a C-level immutable type — its `commit` method
+        # cannot be patched in place, so we swap in a thin proxy on the
+        # FTSIndex instance's own `_conn` attribute (a plain, patchable
+        # instance attribute) that counts commits while delegating
+        # everything else to the real connection.
+        real_conn = fts_index._conn
+        commit_calls = []
+
+        class _CommitCountingProxy:
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+            def commit(self):
+                commit_calls.append(1)
+                return real_conn.commit()
+
+        fts_index._conn = _CommitCountingProxy()
+        try:
+            fts_index.set_metadata_batch({"a": "1", "b": "2", "c": "3"}, delete_keys=["stale"])
+        finally:
+            fts_index._conn = real_conn
+        assert len(commit_calls) == 1
+
+    def test_set_metadata_batch_empty_pairs_with_deletes(self, fts_index):
+        """Pure-delete batches (no new pairs) still work and still commit."""
+        fts_index.set_metadata("stale", "gone")
+        fts_index.set_metadata_batch({}, delete_keys=["stale"])
+        assert fts_index.get_all_metadata() == {}
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +262,78 @@ class TestHandleGetHubStatus:
         assert output.total_records == 10017
         assert output.counts_by_type == {"doc": 3520, "code": 1422, "source": 5075}
         assert sorted(output.commit_shas) == ["abc123", "def456"]
+
+    async def test_indexed_framework_version_absent_by_default(self):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        store = self._mock_index_store()
+        result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+        assert output.indexed_framework_version is None
+        assert output.indexed_framework_commits_ahead is None
+
+    async def test_indexed_framework_version_surfaced(self):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        # Unpinned refresh: framework_version (the pin) is absent, but the
+        # observed provenance is still reported.
+        store = self._mock_index_store(
+            metadata={
+                "indexed_framework_version": "1.5.0",
+                "indexed_framework_commits_ahead": "80",
+            },
+        )
+        result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+
+        assert output.framework_version is None
+        assert output.indexed_framework_version == "1.5.0"
+        assert output.indexed_framework_commits_ahead == 80
+
+    async def test_indexed_framework_exact_release(self):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        # Zero commits ahead must round-trip as 0, not collapse to None.
+        store = self._mock_index_store(
+            metadata={
+                "framework_version": "v1.5.0",
+                "indexed_framework_version": "1.5.0",
+                "indexed_framework_commits_ahead": "0",
+            },
+        )
+        result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+
+        assert output.framework_version == "v1.5.0"
+        assert output.indexed_framework_commits_ahead == 0
+
+    async def test_malformed_commits_ahead_degrades_to_none(self, caplog):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        # A corrupted or hand-edited metadata value must not crash the whole
+        # status call — it degrades to None, same as if the key were absent.
+        store = self._mock_index_store(
+            metadata={"indexed_framework_commits_ahead": "not-a-number"},
+        )
+        with caplog.at_level("WARNING"):
+            result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+
+        assert output.indexed_framework_commits_ahead is None
+        assert any("not-a-number" in r.message for r in caplog.records)
+
+    async def test_malformed_duration_degrades_to_none(self, caplog):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        store = self._mock_index_store(
+            metadata={"last_refresh_duration_seconds": "not-a-float"},
+        )
+        with caplog.at_level("WARNING"):
+            result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+
+        assert output.last_refresh_duration_seconds is None
+        assert any("not-a-float" in r.message for r in caplog.records)
 
     async def test_index_path_returned(self):
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
