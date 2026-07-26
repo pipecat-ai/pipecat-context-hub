@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-import mcp.types as types
+from mcp import types
 from mcp.server.lowlevel import Server
 
+from pipecat_context_hub.server.tools.check_deprecation import (
+    handle_check_deprecation,
+    resolve_framework_version,
+)
+from pipecat_context_hub.server.tools.get_code_snippet import handle_get_code_snippet
+from pipecat_context_hub.server.tools.get_doc import handle_get_doc
+from pipecat_context_hub.server.tools.get_example import handle_get_example
+from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+from pipecat_context_hub.server.tools.search_api import handle_search_api
+from pipecat_context_hub.server.tools.search_docs import handle_search_docs
+from pipecat_context_hub.server.tools.search_examples import handle_search_examples
 from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.shared.interfaces import Retriever
 from pipecat_context_hub.shared.staleness import annotate_response
@@ -23,17 +35,6 @@ from pipecat_context_hub.shared.types import (
     SearchDocsInput,
     SearchExamplesInput,
 )
-from pipecat_context_hub.server.tools.check_deprecation import (
-    handle_check_deprecation,
-    resolve_framework_version,
-)
-from pipecat_context_hub.server.tools.get_code_snippet import handle_get_code_snippet
-from pipecat_context_hub.server.tools.get_doc import handle_get_doc
-from pipecat_context_hub.server.tools.get_example import handle_get_example
-from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
-from pipecat_context_hub.server.tools.search_api import handle_search_api
-from pipecat_context_hub.server.tools.search_docs import handle_search_docs
-from pipecat_context_hub.server.tools.search_examples import handle_search_examples
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 # with a runtime lookup, the PyPI distribution name is "pipecat-ai-context-hub"
 # (not "pipecat-context-hub", which is only the command / server name) —
 # importlib.metadata.version() must use the former.
-_SERVER_VERSION = "0.2.1"
+_SERVER_VERSION = "0.3.0"
 
 # Tool name → (description, input schema, handler)
 _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
