@@ -7,6 +7,13 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`pipecat mcp --help` no longer truncates command descriptions** — the bridge asked
+  click for each command's summary without a length, taking the 45-character default
+  that click itself applies only after sizing it to the terminal. Descriptions that the
+  direct CLI renders in full were ellipsised through the Pipecat CLI. The bridge now
+  asks for the whole line and lets the help renderer wrap it.
+
 ## [0.3.0] - 2026-07-26
 
 ### Added
