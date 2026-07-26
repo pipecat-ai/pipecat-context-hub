@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-26
+
 ### Added
 - **Mounts into the Pipecat CLI as `pipecat mcp`** — installing this package alongside
   `pipecat-ai[cli]` exposes every command as `pipecat mcp <command>`, with identical
