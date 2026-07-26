@@ -13,7 +13,7 @@ import typer
 from typer.testing import CliRunner
 
 from pipecat_context_hub.cli import main as hub_cli
-from pipecat_context_hub.plugin import app
+from pipecat_context_hub.plugin import _SHORT_HELP_LIMIT, app
 
 runner = CliRunner()
 
@@ -43,7 +43,27 @@ class TestBridgeShape:
     def test_short_help_comes_from_the_click_command(self):
         by_name = {cmd.name: cmd for cmd in app.registered_commands}
         for name, command in hub_cli.commands.items():
-            assert by_name[name].short_help == command.get_short_help_str()
+            assert by_name[name].short_help == command.get_short_help_str(limit=_SHORT_HELP_LIMIT)
+
+    def test_short_help_is_not_truncated(self):
+        """`get_short_help_str` truncates at 45 characters by default.
+
+        Click applies that limit only after sizing it to the terminal, so
+        taking the default here ellipsises descriptions that the direct CLI
+        renders in full.
+        """
+        by_name = {cmd.name: cmd for cmd in app.registered_commands}
+        longer_than_the_default = [
+            name
+            for name, command in hub_cli.commands.items()
+            if len(command.get_short_help_str(limit=_SHORT_HELP_LIMIT)) > 45
+        ]
+        # Guards the guard: if every summary got short, this test proves nothing.
+        assert longer_than_the_default, "no command summary exceeds click's default limit"
+        for name in longer_than_the_default:
+            short_help = by_name[name].short_help
+            assert short_help is not None
+            assert not short_help.endswith("...")
 
 
 class TestBridgeDispatch:

@@ -35,6 +35,10 @@ _PASSTHROUGH: dict[str, object] = {
 
 _DEFAULT_LOG_LEVEL = "INFO"
 
+# Effectively "don't truncate": long enough for any command's summary line, so
+# the help renderer wraps to the terminal instead of us cutting it short.
+_SHORT_HELP_LIMIT = 200
+
 app = typer.Typer(
     add_completion=False,
     help="Pipecat Context Hub: local docs, examples, and API index for coding agents.",
@@ -80,7 +84,12 @@ def _passthrough(command_name: str) -> Callable[[typer.Context], None]:
 for _name, _command in sorted(hub_cli.commands.items()):
     app.command(
         _name,
-        short_help=_command.get_short_help_str(),
+        # click.Command.get_short_help_str truncates at 45 characters by default,
+        # which is a limit click itself only applies after sizing it to the
+        # terminal. Ask for the whole line and let the renderer decide where it
+        # wraps, or `pipecat mcp --help` ellipsises descriptions the direct CLI
+        # shows in full.
+        short_help=_command.get_short_help_str(limit=_SHORT_HELP_LIMIT),
         context_settings=_PASSTHROUGH,
     )(_passthrough(_name))
 
