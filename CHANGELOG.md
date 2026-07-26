@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-26
+
 ### Fixed
 - **`pipecat mcp --help` no longer truncates command descriptions** — the bridge asked
   click for each command's summary without a length, taking the 45-character default
