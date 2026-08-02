@@ -53,12 +53,12 @@ pipecat-context-hub = "pipecat_context_hub.cli:main"
 # (uvx runs the executable matching the package name).
 pipecat-ai-context-hub = "pipecat_context_hub.cli:main"
 
-# Mounts this CLI into the Pipecat CLI as `pipecat mcp`. The group name is
-# pipecat's (legacy) spelling and must match exactly. Discovery is dynamic, so
-# installing this package alongside `pipecat-ai[cli]` is sufficient — no
-# coordinated pipecat release is required. typer is a peer dependency supplied
-# by that extra; `pipecat_context_hub.plugin` is imported only by the Pipecat
-# CLI, never by this package's own entry points.
+# Mounts this CLI into the Pipecat CLI as `pipecat context-hub`, with `ch` as a
+# hidden short alias. Discovery is dynamic, so installing this package
+# alongside `pipecat-ai[cli]` is sufficient — no coordinated pipecat release is
+# required. typer is a peer dependency supplied by that extra;
+# `pipecat_context_hub.plugin` is imported only by the Pipecat CLI, never by
+# this package's own entry points.
 [project.entry-points."pipecat_cli.extensions"]
 context-hub = "pipecat_context_hub.plugin:app"
 # Short alias, hidden from `pipecat --help` so the command is listed once.

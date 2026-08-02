@@ -41,7 +41,8 @@ models (allow a few minutes).
 
 ### Inside the Pipecat CLI
 
-Installing this package alongside `pipecat-ai[cli]` mounts it as `pipecat context-hub`.
+Installing this package alongside `pipecat-ai[cli]` mounts it as `pipecat context-hub`,
+with `pipecat ch` as a shorter alias (hidden from `pipecat --help`, but equivalent).
 Discovery is dynamic, so this works with a Pipecat CLI that is already
 installed — no upgrade needed on that side.
 
