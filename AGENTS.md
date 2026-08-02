@@ -304,10 +304,10 @@ live local index:
    ```
    Note `--reinstall`: plain `--force` reuses a cached build of a local path and
    will silently test stale code. Then check parity with the direct CLI —
-   `pipecat mcp --help` lists every command, `pipecat mcp refresh --help` shows
-   `--force` (not an empty stub), `pipecat mcp refresh --bogus` exits 2,
-   `pipecat mcp get-doc` exits 1, `pipecat mcp status` exits 0 with **pure JSON on
-   stdout** (agents pipe it), and `pipecat mcp install --print-config` prints the
+   `pipecat context-hub --help` lists every command, `pipecat context-hub refresh --help` shows
+   `--force` (not an empty stub), `pipecat context-hub refresh --bogus` exits 2,
+   `pipecat context-hub get-doc` exits 1, `pipecat context-hub status` exits 0 with **pure JSON on
+   stdout** (agents pipe it), and `pipecat context-hub install --print-config` prints the
    config without changing anything.
 7. `PIPECAT_HUB_STALE_AFTER_DAYS=1 uv run pipecat-context-hub search-docs "TTS"`
    — response JSON carries `index_staleness` with `age_days >= 1` and a `hint`

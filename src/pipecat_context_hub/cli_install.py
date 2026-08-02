@@ -45,7 +45,7 @@ def _server_command() -> list[str]:
     Naming the interpreter also pins the client to the version that is installed,
     where ``uvx`` would resolve the latest published one at every server start.
 
-    Never ``pipecat mcp serve``: that would load typer and the Pipecat CLI's
+    Never ``pipecat context-hub serve``: that would load typer and the Pipecat CLI's
     plugin machinery on every start for no benefit.
     """
     if shutil.which(_SERVER_NAME):

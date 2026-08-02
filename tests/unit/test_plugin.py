@@ -1,4 +1,4 @@
-"""Tests for the Typer bridge that mounts this CLI as ``pipecat mcp``.
+"""Tests for the Typer bridge that mounts this CLI as ``pipecat context-hub``.
 
 The bridge exists so the Pipecat CLI can host a click-based CLI. Its failure
 modes are quiet: a subcommand can go missing, or ``--help`` on a subcommand can
@@ -13,7 +13,7 @@ import typer
 from typer.testing import CliRunner
 
 from pipecat_context_hub.cli import main as hub_cli
-from pipecat_context_hub.plugin import _SHORT_HELP_LIMIT, app
+from pipecat_context_hub.plugin import _SHORT_HELP_LIMIT, alias, app
 
 runner = CliRunner()
 
@@ -26,7 +26,8 @@ def _mounted() -> typer.Typer:
     def init() -> None:
         """Stand-in for a built-in command, so the root renders as a group."""
 
-    root.add_typer(app, name="mcp")
+    root.add_typer(app, name="context-hub")
+    root.add_typer(alias, name="ch")
     return root
 
 
@@ -34,6 +35,54 @@ class TestBridgeShape:
     def test_exports_a_typer_app(self):
         # pipecat's loader calls Typer.add_typer, which rejects anything else.
         assert isinstance(app, typer.Typer)
+        assert isinstance(alias, typer.Typer)
+
+
+class TestAlias:
+    """`ch` is the same command surface under a shorter name.
+
+    It is a separate Typer object because `hidden` is a property of the app, and
+    mounting one app twice would list the same description twice in
+    `pipecat --help`.
+    """
+
+    def test_alias_is_hidden_from_the_command_list(self):
+        result = runner.invoke(_mounted(), ["--help"])
+        assert result.exit_code == 0
+        assert "context-hub" in result.output
+        # The listing shows the canonical name only.
+        assert not any(line.strip().startswith("│ ch ") for line in result.output.splitlines())
+
+    def test_alias_exposes_the_same_commands(self):
+        by_app = {cmd.name for cmd in app.registered_commands}
+        by_alias = {cmd.name for cmd in alias.registered_commands}
+        assert by_app == by_alias == set(hub_cli.commands)
+
+    def test_alias_dispatches(self, monkeypatch):
+        seen: dict[str, list[str]] = {}
+
+        def _capture(args=None, prog_name=None, **kwargs):
+            seen["args"] = list(args or [])
+            raise SystemExit(0)
+
+        monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _capture)
+        result = runner.invoke(_mounted(), ["ch", "status"])
+        assert result.exit_code == 0
+        assert "status" in seen["args"]
+
+    def test_usage_names_the_command_the_user_typed(self, monkeypatch):
+        """A usage error under `ch` should not tell you to run `context-hub`."""
+        seen: dict[str, str] = {}
+
+        def _capture(args=None, prog_name="", **kwargs):
+            seen["prog_name"] = prog_name
+            raise SystemExit(0)
+
+        monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _capture)
+        runner.invoke(_mounted(), ["ch", "status"])
+        assert seen["prog_name"] == "pipecat ch"
+        runner.invoke(_mounted(), ["context-hub", "status"])
+        assert seen["prog_name"] == "pipecat context-hub"
 
     def test_every_click_command_is_bridged(self):
         """Parity: a command added to the CLI must not silently miss the plugin."""
@@ -68,7 +117,7 @@ class TestBridgeShape:
 
 class TestBridgeDispatch:
     def test_group_help_lists_hub_commands(self):
-        result = runner.invoke(_mounted(), ["mcp", "--help"])
+        result = runner.invoke(_mounted(), ["context-hub", "--help"])
         assert result.exit_code == 0
         assert "refresh" in result.output
         assert "check-deprecation" in result.output
@@ -79,17 +128,17 @@ class TestBridgeDispatch:
         The stub's help has no options, so asserting on a real flag is what
         distinguishes the two.
         """
-        result = runner.invoke(_mounted(), ["mcp", "refresh", "--help"])
+        result = runner.invoke(_mounted(), ["context-hub", "refresh", "--help"])
         assert result.exit_code == 0
         assert "--force" in result.output
         assert "--framework-version" in result.output
 
     def test_unknown_option_is_a_usage_error(self):
-        result = runner.invoke(_mounted(), ["mcp", "refresh", "--bogus"])
+        result = runner.invoke(_mounted(), ["context-hub", "refresh", "--bogus"])
         assert result.exit_code == 2
 
     def test_unknown_subcommand_is_a_usage_error(self):
-        result = runner.invoke(_mounted(), ["mcp", "nosuchcommand"])
+        result = runner.invoke(_mounted(), ["context-hub", "nosuchcommand"])
         assert result.exit_code == 2
 
 
@@ -102,7 +151,7 @@ class TestExitCodeTranslation:
             raise SystemExit(code)
 
         monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _boom)
-        result = runner.invoke(_mounted(), ["mcp", "status"])
+        result = runner.invoke(_mounted(), ["context-hub", "status"])
         assert result.exit_code == code
 
     def test_systemexit_none_is_success(self, monkeypatch):
@@ -110,7 +159,7 @@ class TestExitCodeTranslation:
             raise SystemExit(None)
 
         monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _boom)
-        result = runner.invoke(_mounted(), ["mcp", "status"])
+        result = runner.invoke(_mounted(), ["context-hub", "status"])
         assert result.exit_code == 0
 
     def test_systemexit_string_is_failure(self, monkeypatch):
@@ -120,7 +169,7 @@ class TestExitCodeTranslation:
             raise SystemExit("something went wrong")
 
         monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _boom)
-        result = runner.invoke(_mounted(), ["mcp", "status"])
+        result = runner.invoke(_mounted(), ["context-hub", "status"])
         assert result.exit_code == 1
 
 
@@ -133,7 +182,7 @@ class TestLogLevelForwarding:
             raise SystemExit(0)
 
         monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _capture)
-        result = runner.invoke(_mounted(), ["mcp", "--log-level", "DEBUG", "status"])
+        result = runner.invoke(_mounted(), ["context-hub", "--log-level", "DEBUG", "status"])
         assert result.exit_code == 0
         assert seen["args"][:2] == ["--log-level", "DEBUG"]
         assert "status" in seen["args"]
@@ -146,5 +195,5 @@ class TestLogLevelForwarding:
             raise SystemExit(0)
 
         monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _capture)
-        runner.invoke(_mounted(), ["mcp", "status"])
+        runner.invoke(_mounted(), ["context-hub", "status"])
         assert seen["args"][:2] == ["--log-level", "INFO"]
