@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-02
+
 ### Changed
 - **The CLI bridge is now `pipecat context-hub`, not `pipecat mcp`** — with `pipecat ch`
   as a shorter alias, hidden from `pipecat --help` so the command is listed once. `mcp`
