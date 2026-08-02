@@ -7,6 +7,17 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **The CLI bridge is now `pipecat context-hub`, not `pipecat mcp`** — with `pipecat ch`
+  as a shorter alias, hidden from `pipecat --help` so the command is listed once. `mcp`
+  named the minority feature: ten of the twelve subcommands have nothing to do with MCP,
+  and it collided with pipecat's own `pipecat-ai[mcp]` extra for `MCPClient`, a
+  bot-side service — a same-word, different-concept pair that the docs had to
+  disambiguate on two pages. Every other name for this tool is already
+  `pipecat-context-hub`: the package, the console script, the MCP server, the docs. This
+  is a breaking rename of a command introduced in 0.3.0 two days earlier, made now
+  precisely because nothing depends on it yet.
+
 ## [0.3.1] - 2026-07-26
 
 ### Fixed

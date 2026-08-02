@@ -39,7 +39,7 @@ class TestServerCommand:
             assert _server_command() == [sys.executable, "-m", "pipecat_context_hub", "serve"]
 
     def test_never_registers_the_pipecat_front_door(self):
-        """Registering `pipecat mcp serve` would load typer on every server start."""
+        """Registering `pipecat context-hub serve` would load typer on every server start."""
         for which in ("/usr/bin/x", None):
             with patch("pipecat_context_hub.cli_install.shutil.which", return_value=which):
                 assert _server_command()[0] != "pipecat"

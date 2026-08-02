@@ -25,7 +25,7 @@ uv run pipecat-context-hub install --print-config   # show MCP client config; ch
 ```
 
 Installed alongside `pipecat-ai[cli]`, every command is also reachable as
-`pipecat mcp <command>` — the same click group, bridged into the Pipecat CLI by
+`pipecat context-hub <command>` — the same click group, bridged into the Pipecat CLI by
 `plugin.py`. See "Typer bridge" below.
 
 Use `refresh --force --reset-index` when the persisted local Chroma index is
@@ -106,7 +106,7 @@ src/pipecat_context_hub/
 ├── cli.py                    # CLI entry point (serve + refresh)
 ├── cli_query.py              # One-shot query subcommands (the MCP tools as shell commands)
 ├── cli_install.py            # `install` — register the MCP server with a coding agent
-├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat mcp`
+├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat context-hub`
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
@@ -137,7 +137,7 @@ dashboard/
     └── extract_dashboard.py  # Index stats → dashboard_data.json
 ```
 
-## Typer Bridge (`pipecat mcp`)
+## Typer Bridge (`pipecat context-hub`)
 
 The Pipecat CLI mounts plugins with `Typer.add_typer`, so a plugin must expose a
 `typer.Typer`; this CLI is click. `plugin.py` registers one passthrough Typer
@@ -153,7 +153,7 @@ typer dispatch real click commands — is what keeps usage errors, subcommand
 Two things break quietly if changed:
 
 - **`help_option_names: []`** in the passthrough context settings. Without it,
-  `pipecat mcp <cmd> --help` renders the empty stub's help instead of the real
+  `pipecat context-hub <cmd> --help` renders the empty stub's help instead of the real
   command's. Pinned by `test_subcommand_help_is_the_real_one`.
 - **Command parity.** Registration is generated from `hub_cli.commands`, so a new
   command appears automatically; `test_every_click_command_is_bridged` fails if

@@ -24,11 +24,11 @@ IDE/Agent  ←stdio→  pipecat-context-hub serve  ←→  Local index (~/.pipec
 ## Install
 
 The quickest path is to co-install with the Pipecat CLI, which then hosts every
-command below under `pipecat mcp` and can wire up your coding agent for you:
+command below under `pipecat context-hub` and can wire up your coding agent for you:
 
 ```bash
 uv tool install "pipecat-ai[cli]" --with pipecat-ai-context-hub
-pipecat mcp install      # register the MCP server, then build the index
+pipecat context-hub install      # register the MCP server, then build the index
 ```
 
 Or run the hub on its own with [`uv`](https://docs.astral.sh/uv/). `uvx` fetches
@@ -41,20 +41,20 @@ models (allow a few minutes).
 
 ### Inside the Pipecat CLI
 
-Installing this package alongside `pipecat-ai[cli]` mounts it as `pipecat mcp`.
+Installing this package alongside `pipecat-ai[cli]` mounts it as `pipecat context-hub`.
 Discovery is dynamic, so this works with a Pipecat CLI that is already
 installed — no upgrade needed on that side.
 
 ```bash
-pipecat mcp --help                          # same commands as below
-pipecat mcp refresh
-pipecat mcp check-deprecation PipelineTask
+pipecat context-hub --help                          # same commands as below
+pipecat context-hub refresh
+pipecat context-hub check-deprecation PipelineTask
 ```
 
-`pipecat mcp <command>` and `pipecat-context-hub <command>` are equivalent —
+`pipecat context-hub <command>` and `pipecat-context-hub <command>` are equivalent —
 same parsing, same JSON, same exit codes. Point MCP clients at this package
-directly rather than at `pipecat mcp serve`, though, so starting the server does
-not load the Pipecat CLI first. `pipecat mcp install` works out the right command
+directly rather than at `pipecat context-hub serve`, though, so starting the server does
+not load the Pipecat CLI first. `pipecat context-hub install` works out the right command
 for your setup — note that a `--with` co-install exposes only the Pipecat CLI's
 own scripts, so `pipecat-context-hub` is importable but not on `PATH`.
 

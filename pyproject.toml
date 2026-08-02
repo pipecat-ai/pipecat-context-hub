@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 # after install — the command, the MCP server name, the data dir, the docs —
 # stays `pipecat-context-hub`; see the scripts alias below.
 name = "pipecat-ai-context-hub"
-version = "0.3.1"
+version = "0.4.0"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"
@@ -60,7 +60,9 @@ pipecat-ai-context-hub = "pipecat_context_hub.cli:main"
 # by that extra; `pipecat_context_hub.plugin` is imported only by the Pipecat
 # CLI, never by this package's own entry points.
 [project.entry-points."pipecat_cli.extensions"]
-mcp = "pipecat_context_hub.plugin:app"
+context-hub = "pipecat_context_hub.plugin:app"
+# Short alias, hidden from `pipecat --help` so the command is listed once.
+ch = "pipecat_context_hub.plugin:alias"
 
 [tool.uv]
 # Security floors for transitive dependencies the project does not import directly.
