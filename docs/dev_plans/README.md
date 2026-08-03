@@ -3,11 +3,12 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-08-03 | chore | Replace sentence-transformers/torch with ONNX Runtime (Linux install 5.1 GB → 351 MB; fixes multi-concept CLI crash) | In review | markbackman | `chore/onnx-runtime-migration` | `20260803-chore-onnx-runtime-migration.md` |
+| 2026-08-03 | feature | CLI/MCP self-report guidance parity (shared issue-template URLs, CLI bug-report hints, reranker `not_cached` warning) | Not Started | vr000m | `feature/self-report-guidance-parity` | `20260803-feature-cli-mcp-report-hint-parity.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-08-03 | chore | Replace sentence-transformers/torch with ONNX Runtime (Linux install 5.1 GB → 351 MB; fixes multi-concept CLI crash) | Complete (v0.5.0; PR #107) | markbackman | `chore/onnx-runtime-migration` | `20260803-chore-onnx-runtime-migration.md` |
 | 2026-07-27 | chore | Release 0.4.0 — rename the CLI bridge to `pipecat context-hub` (alias `ch`) | In progress (PR #106) | markbackman | `rename/context-hub-command` | _(no plan file)_ |
 | 2026-07-26 | chore | Release 0.3.0 — `pipecat mcp` CLI bridge, `install` command, indexed-framework-version tracking, version-aware `check_deprecation` | Complete (v0.3.0) | vr000m | `release/0.3.0` | _(no plan file)_ |
 | 2026-07-25 | feature | Expose the hub as an external API and mount it in the Pipecat CLI (`pipecat mcp`) | Complete (hub side; v0.3.0; PR #101); pipecat-side work pending | markbackman | `feature/indexed-framework-version` | `20260725-feature-pipecat-cli-plugin.md` |
