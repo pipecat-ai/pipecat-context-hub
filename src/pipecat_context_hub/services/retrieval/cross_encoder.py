@@ -1,9 +1,9 @@
 """Optional cross-encoder reranking service.
 
-Wraps a ``sentence-transformers`` ``CrossEncoder`` model for query-result
-pair scoring.  Runs inference in a thread to avoid blocking the event loop.
-Lazy-loads the model on first use; disabled gracefully if the model is not
-cached and the system is offline.
+Wraps an ONNX Runtime cross-encoder model for query-result pair scoring.
+Runs inference in a thread to avoid blocking the event loop.  Lazy-loads the
+model on first use; disabled gracefully if the model is not cached and the
+system is offline.
 """
 
 from __future__ import annotations
@@ -46,8 +46,7 @@ class CrossEncoderReranker:
     ) -> None:
         if model_name not in _ALLOWED_MODELS:
             logger.warning(
-                "Cross-encoder model '%s' not in allowlist — disabling. "
-                "Allowed models: %s",
+                "Cross-encoder model '%s' not in allowlist — disabling. Allowed models: %s",
                 model_name,
                 ", ".join(sorted(_ALLOWED_MODELS)),
             )
@@ -73,9 +72,9 @@ class CrossEncoderReranker:
             if self._model is not None:
                 return
             try:
-                from sentence_transformers import CrossEncoder
+                from pipecat_context_hub.services.onnx_backend import OnnxCrossEncoder
 
-                self._model = cast(_CrossEncoderModel, CrossEncoder(self._model_name))
+                self._model = cast(_CrossEncoderModel, OnnxCrossEncoder(self._model_name))
                 logger.info("Cross-encoder loaded: %s", self._model_name)
             except Exception:
                 logger.warning(
@@ -85,9 +84,7 @@ class CrossEncoderReranker:
                 )
                 self._available = False
 
-    def _score(
-        self, candidates: list[IndexResult], query: str
-    ) -> list[IndexResult]:
+    def _score(self, candidates: list[IndexResult], query: str) -> list[IndexResult]:
         """Score candidates against query using the cross-encoder (sync)."""
         self._load_model()
         if self._model is None:
@@ -120,9 +117,7 @@ class CrossEncoderReranker:
         reranked.extend(rest)
         return reranked
 
-    async def rerank(
-        self, candidates: list[IndexResult], query: str
-    ) -> list[IndexResult]:
+    async def rerank(self, candidates: list[IndexResult], query: str) -> list[IndexResult]:
         """Async cross-encoder reranking. Returns candidates unchanged if disabled."""
         if not self.enabled or not candidates:
             return candidates
@@ -147,38 +142,20 @@ class CrossEncoderReranker:
         and ``HUGGINGFACE_HUB_CACHE`` when ``huggingface_hub`` is installed;
         falls back to the legacy ``~/.cache/huggingface/hub`` path otherwise.
         """
-        try:
-            from huggingface_hub.constants import HF_HUB_CACHE
+        from pipecat_context_hub.services.onnx_backend import resolve_hf_cache_dir
 
-            return Path(HF_HUB_CACHE)
-        except Exception:
-            return Path.home() / ".cache" / "huggingface" / "hub"
+        return resolve_hf_cache_dir()
 
     @staticmethod
     def is_model_cached(model_name: str) -> bool:
-        """Check if a model is cached in the HuggingFace hub cache.
+        """Check if a model's ONNX weights are cached in the HuggingFace cache.
 
-        Uses ``huggingface_hub`` to resolve the actual cache directory
-        (respects ``HF_HOME``, ``HUGGINGFACE_HUB_CACHE``, ``XDG_CACHE_HOME``).
-        Falls back to a best-effort path check if the library is unavailable.
+        Probes ``onnx/model.onnx`` rather than ``config.json``: a cache
+        populated by the previous sentence-transformers backend holds
+        ``config.json`` and ``model.safetensors`` but no ONNX export, so the
+        old probe would report a cached model that cannot actually load
+        offline. See ``onnx_backend.is_model_cached``.
         """
-        try:
-            from huggingface_hub import try_to_load_from_cache
+        from pipecat_context_hub.services.onnx_backend import is_model_cached
 
-            # try_to_load_from_cache returns a path string if cached,
-            # None or _CACHED_NO_EXIST sentinel if not.
-            result = try_to_load_from_cache(model_name, "config.json")
-            return isinstance(result, str)
-        except ImportError:
-            logger.debug("huggingface_hub unavailable, falling back to cache-dir probe")
-        except Exception:
-            logger.debug(
-                "Model cache lookup via huggingface_hub failed, falling back to cache-dir probe",
-                exc_info=True,
-            )
-
-        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-        if not cache_dir.exists():
-            return False
-        safe_name = model_name.replace("/", "--")
-        return any(d.name.endswith(safe_name) for d in cache_dir.iterdir() if d.is_dir())
+        return is_model_cached(model_name)

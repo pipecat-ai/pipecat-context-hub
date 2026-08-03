@@ -62,11 +62,12 @@ def _warmup_enabled(env: dict[str, str] | None = None) -> bool:
 def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None:
     """Eagerly load retrieval models so the first MCP query is warm.
 
-    ``sentence_transformers`` import + weight load can take 30-130s on
-    Windows CPU. Running it at boot (rather than inside the first
-    ``asyncio.to_thread`` call) keeps first-query latency inside Claude
-    Code's tool-permission window. Failures are logged and swallowed —
-    the lazy-load paths still handle first-query loading.
+    Far cheaper than it once was: loading through ``sentence_transformers``
+    dragged in ``torch`` and could take 30-130s on Windows CPU, whereas the
+    ONNX backend imports and loads in well under a second. Pre-warming is kept
+    because it still moves that cost off the first query, and because
+    ``PIPECAT_HUB_WARMUP=0`` is a documented escape hatch. Failures are logged
+    and swallowed — the lazy-load paths still handle first-query loading.
     """
     if not _warmup_enabled():
         _module_logger.info("Model pre-warm skipped: PIPECAT_HUB_WARMUP=0")
@@ -529,6 +530,13 @@ def refresh(
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
+
+    # Pre-download the embedding model. refresh is the only code path allowed
+    # to reach the network (serve and the one-shot CLI both set
+    # HF_HUB_OFFLINE=1), so fetching here turns a missing or newly-required
+    # model file into a clear failure now rather than an opaque one on the
+    # first query. Cheap when already cached.
+    embedding_svc.ensure_model()
 
     # Pre-download cross-encoder model if enabled (env var or config)
     if config.reranker.effective_enabled:

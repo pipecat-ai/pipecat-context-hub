@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-08-03 | chore | Replace sentence-transformers/torch with ONNX Runtime (Linux install 5.1 GB → 351 MB; fixes multi-concept CLI crash) | In review | markbackman | `chore/onnx-runtime-migration` | `20260803-chore-onnx-runtime-migration.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

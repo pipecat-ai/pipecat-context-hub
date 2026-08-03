@@ -190,10 +190,19 @@ the indexed pipecat version; re-verify against the current registry if they drif
     state, and content-type counts are observable from the MCP trace)
 41. `PIPECAT_HUB_RERANKER_ENABLED=0 uv run pipecat-context-hub serve` — startup
     `WARNING` log line `Reranker disabled at startup: reason=config_disabled
-    configured_model=…` appears. Then re-run with
-    `PIPECAT_HUB_RERANKER_MODEL=cross-encoder/does-not-exist` — the warning
-    reports `reason=not_cached` and the remediation hint includes the HF cache
-    path that was probed (e.g. `checked HF cache: /…/huggingface/hub`)
+    configured_model=…` appears.
+
+    For `reason=not_cached`, point HF at an empty cache rather than naming a
+    bogus model: `HF_HOME=$(mktemp -d) uv run pipecat-context-hub serve`. The
+    warning must report `reason=not_cached` and name the probed path in the
+    remediation hint (`checked HF cache: /…/hub`), and `get_hub_status` must
+    report `reranker_disabled_reason: "not_cached"` with `reranker_model: null`.
+    An unknown `PIPECAT_HUB_RERANKER_MODEL` does **not** reach this path — the
+    allowlist in `RerankerConfig.effective_model` intercepts it first and falls
+    back to the default with its own warning, so the reranker ends up enabled.
+    (The cache probe looks for `onnx/model.onnx`; a cache holding only
+    `config.json` — the shape left by the pre-ONNX backend — must read as
+    not-cached. Pinned by `tests/unit/test_onnx_backend.py`.)
 42. **Orphan-watchdog smoke test** — spawn `serve` from a shell, note the
     PID, then `kill -9` the shell (or close the terminal). The orphaned
     `serve` process must exit on its own within ~5s. Confirm with
@@ -226,8 +235,9 @@ the indexed pipecat version; re-verify against the current registry if they drif
     and replaced by `Model pre-warm skipped: PIPECAT_HUB_WARMUP=0`.
     Confirms the first-query cold-start fix is active on boot and the
     opt-out escape hatch works (matters on Windows CPU where cold
-    loads can take 30-130s and exceed Claude Code's tool-permission
-    window).
+    loads once took 30-130s and could exceed Claude Code's
+    tool-permission window; the ONNX backend loads in under a second,
+    so pre-warm is now an optimisation rather than a necessity).
 45. **`location` surfaced (PR #85).** A `deprecated: true` response carries a
     `location` field as `path/to/file.py` (relative to the pipecat repo
     root) pointing at the file holding the deprecation marker — e.g. `ResampyResampler` →
@@ -314,6 +324,16 @@ live local index:
    (assuming the index is ≥1 day old); rerun without the env override on a fresh
    index and confirm `index_staleness` is **absent**. The footer must never
    appear on `status` / `get_hub_status` regardless of the threshold.
+8. **Multi-concept CLI query with the reranker enabled** — run
+   `uv run pipecat-context-hub search-docs "TTS + STT"` several times (say 5) with
+   the reranker at its default (enabled). Every run must exit 0 with JSON on
+   stdout. Frozen from a live failure: on the pre-ONNX backend this failed 12/12
+   (10 SIGSEGV/SIGBUS, 2 hangs) because multi-concept fans out concurrent
+   per-concept searches and the one-shot CLI has no pre-warm, so several threads
+   raced to lazily construct the torch cross-encoder. `serve` pre-warms at boot
+   and was unaffected, so only the CLI front door exposed it — run this from the
+   CLI, not through MCP. Unit-side counterpart:
+   `tests/integration/test_concurrent_model_load.py`.
 
 ## Upstream Drift Check
 
@@ -389,9 +409,15 @@ in future reviews unless the underlying circumstances change.
 
 - **[Security] resolved**: Batch advisory bumps (PR #93) — `cryptography` 46.0.7→49.0.0 (GHSA-537c-gmf6-5ccf), `python-multipart` 0.0.27→0.0.32 (CVE-2026-53538 / CVE-2026-53539 / CVE-2026-53540), `msgpack` 1.1.2→1.2.1 (GHSA-6v7p-g79w-8964), `pydantic-settings` 2.13.0→2.14.2 (GHSA-4xgf-cpjx-pc3j); `starlette` 1.1.0→1.3.1 rides along (no CVE). **`cryptography` is a direct dependency**, so its published floor was raised `>=46.0.7`→`>=48.0.1` (the GHSA fix floor) — a lock-only bump would leave `pyproject.toml` metadata admitting the vulnerable `46.0.7` for consumers who install from PyPI rather than this lockfile. The other four are **transitive with open upper bounds**: nothing in the tree caps them below the fix (verified — a re-lock pulls latest freely), so they follow the established no-pin pattern (same as the `pip`/`pyjwt` and `urllib3`/`idna`/`python-multipart#61` bumps) — a fresh `uvx`/`pip` resolve picks the latest compatible (patched) version. Deliberately **not** pinned in `[project.dependencies]` or `[tool.uv] constraint-dependencies`: unlike the `starlette`/`fastapi` case above, no intermediate caps them, so re-lock cannot regress. A Codex adversarial review flagged the lockfile-vs-published-metadata gap; accepted for the open-upper-bound transitives, fixed for the direct `cryptography` dep. (2026-06-19)
 
-- **[Security] won't-fix**: `torch` advisory PYSEC-2026-139 / CVE-2026-4538 — local-only deserialization in the pt2 loading handler, no upstream fix released (latest `2.10.0` is still affected; upstream "has not reacted yet"). Ignored via `--ignore-vuln PYSEC-2026-139` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe. `torch` is reached only via `sentence-transformers` for local embedding inference, and the hub never deserializes untrusted `pt2` artifacts. The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched `torch` release ships. (2026-05-24)
+- **[Security] resolved**: `torch` advisory PYSEC-2026-139 / CVE-2026-4538 — resolved by removing `torch` from the dependency tree entirely. Embedding and cross-encoder inference moved to ONNX Runtime against the same model weights (`services/onnx_backend.py`), so `sentence-transformers` — the only path that reached `torch` — is gone. The `--ignore-vuln PYSEC-2026-139` entry was removed from the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe. Verified: `pip-audit` reports no findings with only the chromadb ignore. (resolved 2026-08-02)
 
-- **[Security] won't-fix**: `torch` advisory CVE-2025-3000 / GHSA-rrmf-rvhw-rf47 / PYSEC-2025-194 — memory corruption in `torch.jit.script` on crafted input, local-only attack vector, no fixed release (pip-audit lists no fix for `2.10.0`). A 2025 CVE that only began flagging on 2026-06-12: the OSV record was modified 2026-06-10 (affected-range enrichment), which is when pip-audit's database picked it up — it failed the PR #75 Security gate despite that PR touching no dependencies. Unreachable here, same class as PYSEC-2026-139: `torch` is reached only via `sentence-transformers` for embedding inference, `src/` has zero direct `torch` references (verified by grep), and the hub never invokes the TorchScript compiler or compiles untrusted model code. Ignored via `--ignore-vuln CVE-2025-3000` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe (parity enforced by `tests/unit/test_audit_sync.py`). The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched `torch` release ships. (2026-06-12)
+- **[Security] resolved**: `torch` advisory CVE-2025-3000 / GHSA-rrmf-rvhw-rf47 / PYSEC-2025-194 — resolved the same way as PYSEC-2026-139: `torch` left the tree when embedding and reranking moved to ONNX Runtime. The `--ignore-vuln CVE-2025-3000` entry was removed from ci.yml and the justfile `audit-deps` recipe (parity enforced by `tests/unit/test_audit_sync.py`, which now sees a single-entry ignore set). (resolved 2026-08-02)
+
+- **[Security] accepted**: `services/onnx_backend.py::_download` carries a `# nosec B615` on its unpinned fallback. Every model the hub ships with is pinned to an immutable commit SHA in `_PINNED_REVISIONS` (supply-chain safety, and it stops an upstream re-export of `onnx/model.onnx` silently shifting the embedding space out from under an existing index). The fallback only fires for a caller-supplied `EmbeddingConfig.model_name`, for which no pin can exist; that value comes from local config, not untrusted input, and the previous sentence-transformers backend resolved *every* model unpinned. bandit will re-flag this on each run — the pin table plus the `test_every_shipped_model_is_pinned` guard is the mitigation. (2026-08-03)
+
+- **[Architecture] won't-fix**: `chromadb` hard-depends on `kubernetes` (~41 MB), `grpc` and `opentelemetry` for its client-server mode, none of which the hub can reach — it runs the embedded `PersistentClient` only. Verified unreachable by uninstalling `kubernetes` and confirming `PersistentClient` still opens, queries, and persists. Not removable from our side: they are unconditional dependencies of `chromadb`, not an extra, so `pyproject.toml` cannot express the exclusion and a post-install prune would only work for container builds, not `pip`/`uvx` users. Worth an upstream issue; do not re-flag as install-size debt we can fix here. (2026-08-03)
+
+- **[Packaging] accepted**: `requires-python` is deliberately unbounded above (`>=3.11`), matching `pipecat-ai`. A cap is viral for anyone installing this alongside `pipecat-ai[cli]`: once a new Python gains wheels, a capped hub would be the sole reason that combination fails to resolve, until a hub release shipped. The accepted cost is that an unsupported Python produces resolver backtracking rather than a clean "requires-python" rejection — on 3.15 today, `pipecat-ai[cli]` already silently resolves to `pipecat-ai==0.0.101` for exactly this reason, driven by `onnxruntime~=1.24.3` in pipecat's own core dependencies. Do not re-add a cap in response to a missing-wheel report. (2026-08-03)
 
 - **[Security] won't-fix**: `chromadb` CVE-2026-45829 / GHSA-f4j7-r4q5-qw2c — pre-authentication code injection in chromadb's HTTP **server** mode (arbitrary code execution via the `/api/v2/.../collections` endpoint with a malicious model repo and `trust_remote_code=true`). Affects 1.0.0–1.5.9 with no fixed release yet (1.5.9 is the latest 1.x). Unreachable here: the hub runs the embedded `PersistentClient` only (no server, no HTTP endpoint, no listener) and never uses chromadb's embedding functions / `trust_remote_code`. Ignored via `--ignore-vuln CVE-2026-45829` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe (parity enforced by `tests/unit/test_audit_sync.py`). The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched chromadb release ships. (2026-06-06)
 

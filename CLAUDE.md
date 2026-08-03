@@ -4,8 +4,8 @@ Local-first MCP server providing Pipecat docs, examples, and API context.
 
 ## Stack
 
-- **Python 3.11–3.14**, `uv` package manager, `hatchling` build
-- **Embeddings:** `all-MiniLM-L6-v2` (sentence-transformers, local)
+- **Python 3.11+** (no upper cap; CI covers 3.12 and 3.14), `uv` package manager, `hatchling` build
+- **Embeddings:** `all-MiniLM-L6-v2` (ONNX Runtime, local, CPU)
 - **Vector store:** ChromaDB | **Keyword index:** SQLite FTS5
 - **AST parsing:** Python `ast` module + `tree-sitter` (TypeScript/TSX)
 - **Transport:** stdio (MCP JSON-RPC)
@@ -119,6 +119,7 @@ src/pipecat_context_hub/
 │   └── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
 ├── services/
 │   ├── embedding.py          # EmbeddingService
+│   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
 │   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS tree-sitter, taxonomy, version extraction, deprecation map
 │   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
@@ -222,11 +223,11 @@ for semantic relevance after RRF merge, significantly improving result quality
   for, and `reranker_disabled_reason` explains why reranking is off
   (`config_disabled` | `not_cached` | `load_failed`) when `reranker_enabled` is false
 
-| Model | Size | Notes |
+| Model | ONNX download | Notes |
 |-------|------|-------|
-| `cross-encoder/ms-marco-MiniLM-L-6-v2` | ~80 MB | Default — balanced quality/speed |
-| `cross-encoder/ms-marco-MiniLM-L-12-v2` | ~130 MB | Higher quality, slower |
-| `cross-encoder/ms-marco-TinyBERT-L-2-v2` | ~17 MB | Fastest download, lower quality — use on slow/throttled networks |
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` | ~91 MB | Default — balanced quality/speed |
+| `cross-encoder/ms-marco-MiniLM-L-12-v2` | ~134 MB | Higher quality, slower |
+| `cross-encoder/ms-marco-TinyBERT-L-2-v2` | ~18 MB | Fastest download, lower quality — use on slow/throttled networks |
 
 After swapping models, run `uv run pipecat-context-hub refresh` once to
 pre-download the new model before the first MCP query.
@@ -243,8 +244,11 @@ pre-download the new model before the first MCP query.
   next `refresh` and re-clones; look for `Recovered N corrupt clone(s)` in the
   summary. As a manual remedy you can delete `%LOCALAPPDATA%\pipecat-context-hub\repos\`.
 - On `serve` boot the hub pre-warms the embedding model (and cross-encoder when
-  enabled) so the first MCP query doesn't hang. Windows CPU cold-starts can take
-  30-130s, long enough to exceed Claude Code's tool-permission window. Set
-  `PIPECAT_HUB_WARMUP=0` to skip pre-warm if you prefer faster boot. Look for
+  enabled) so the first MCP query doesn't hang. This used to matter a great
+  deal: loading through `sentence-transformers` dragged in `torch` and Windows
+  CPU cold-starts could take 30-130s, long enough to exceed Claude Code's
+  tool-permission window. The ONNX backend loads in well under a second, so
+  pre-warm is now a minor optimisation rather than a necessity. Set
+  `PIPECAT_HUB_WARMUP=0` to skip it. Look for
   `Embedding model pre-warmed in …s` and (optionally)
   `Cross-encoder pre-warmed in …s` in the startup log.

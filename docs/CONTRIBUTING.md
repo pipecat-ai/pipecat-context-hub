@@ -32,7 +32,7 @@ just sbom     # generate CycloneDX SBOM
 Ingestion:
   DocsCrawler (llms-full.txt)    ──┐
   GitHubRepoIngester (N repos)   ──┤→ EmbeddingIndexWriter → IndexStore
-  SourceIngester (AST + tree-sitter)─┤   (sentence-transformers)   (ChromaDB + FTS5)
+  SourceIngester (AST + tree-sitter)─┤   (ONNX Runtime)            (ChromaDB + FTS5)
   TaxonomyBuilder (auto-infer)   ──┘
 
 Retrieval:
@@ -49,7 +49,7 @@ Retrieval:
 
 ### Technology Stack
 
-- **Embeddings:** `all-MiniLM-L6-v2` via sentence-transformers (local, no API key)
+- **Embeddings:** `all-MiniLM-L6-v2` via ONNX Runtime on CPU (local, no API key)
 - **AST parsing:** Python `ast` module (Python), `tree-sitter` (TypeScript/TSX)
 - **Vector store:** ChromaDB with cosine distance
 - **Keyword index:** SQLite FTS5 with porter tokenizer
@@ -101,6 +101,7 @@ src/pipecat_context_hub/
 │   └── config.py                   # Configuration models
 ├── services/
 │   ├── embedding.py                # EmbeddingService + EmbeddingIndexWriter
+│   ├── onnx_backend.py             # ONNX Runtime inference (bi-encoder + cross-encoder)
 │   ├── ingest/
 │   │   ├── ast_extractor.py        # Python AST (classes, methods, imports, yields, calls)
 │   │   ├── docs_crawler.py         # llms-full.txt ingester + markdown chunker

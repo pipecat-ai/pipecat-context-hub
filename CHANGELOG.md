@@ -7,6 +7,88 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Embedding and reranking now run on ONNX Runtime instead of sentence-transformers**,
+  removing `torch` from the dependency tree. The install shrinks from **1.0 GB to 310 MB
+  on macOS** and from **5.1 GB to 351 MB on Linux** — a 93% reduction on Linux, where
+  `torch` pulled 15 `nvidia-*` CUDA packages plus `triton`: 4.5 GB of GPU kernels to run
+  a 22 MB MiniLM model that was already pinned to the CPU. `onnxruntime` and `tokenizers`
+  were already installed transitively via chromadb, so nothing new was added.
+
+  The same published model weights are used, via the official `onnx/model.onnx` exports.
+  An ONNX export is a format change, not a math change: measured parity against the old
+  backend is cosine `1.000000` with a max elementwise difference of 2.5e-07, and
+  cross-encoder logits match to 7.6e-06 with identical ranking. **Existing indexes remain
+  valid — no reindex is required.** `tests/integration/test_onnx_parity.py` pins this
+  against reference vectors captured from the previous backend.
+
+  Model topology (pooling mode, sequence length, normalisation) is read from the model
+  repo rather than hard-coded, so `EmbeddingConfig.model_name` remains free-form.
+
+  Measured A/B against the pre-migration build on the same index (macOS arm64, 18 cores):
+
+  | | before | after |
+  |---|---|---|
+  | `embed_query` | 2.91 ms | **0.76 ms** |
+  | `embed_texts` (64) | 18.90 ms | **14.55 ms** |
+  | rerank (20 pairs) | 8.12 ms | **7.36 ms** |
+  | first model load | 1765 ms | **127 ms** |
+  | `serve` boot-to-ready | 2183 ms | **1043 ms** |
+  | `search-docs` end-to-end | 3775 ms | **1238 ms** |
+  | peak RSS (search + rerank) | 1104 MB | **908 MB** |
+
+  Commands that do not load a model (`status`, `check-deprecation`, `--version`) are
+  unchanged within noise. Pre-warm on `serve` boot is retained but is now an
+  optimisation rather than a fix for 30-130s Windows cold starts.
+
+### Fixed
+- **Multi-concept CLI queries no longer crash.** On the previous backend,
+  `search-docs "A + B"` (and the `search-api` / `search-examples` / `get-code-snippet`
+  equivalents) failed 12 out of 12 runs with the reranker enabled — 10 SIGSEGV/SIGBUS and
+  2 hangs — on macOS arm64 / Python 3.14 / torch 2.13. Multi-concept queries fan out
+  concurrent per-concept searches, and the one-shot CLI has no pre-warm, so the torch
+  cross-encoder was being loaded from several threads at once. Single-concept queries and
+  the long-lived `serve` path (which pre-warms at boot) were unaffected, which is why this
+  went unnoticed. Reproduced on both a source build and the released 0.2.1 tool install;
+  the ONNX backend passes 12/12. Multi-concept search is a documented headline feature, so
+  this was a total failure of it from the CLI front door.
+
+  **Upgrade note:** the first `refresh` after upgrading downloads the ONNX weights
+  (~180 MB for both models); the previously cached `.safetensors` files are not reused and
+  can be reclaimed with `huggingface-cli delete-cache`. `refresh` pre-downloads both models
+  so this surfaces there rather than on the first query.
+
+- **`requires-python` upper bound removed** — now `>=3.11`, matching `pipecat-ai`. The
+  hub is designed to install alongside `pipecat-ai[cli]`, and a cap is viral there: once
+  `onnxruntime` ships wheels for a new Python, a capped hub would be the only reason
+  `pipecat-ai[cli]` fails to resolve on it, until a hub release went out. Wheel
+  availability remains the real constraint and reports itself clearly at install time.
+  No behaviour change on 3.11–3.14.
+
+### Removed
+- **`sentence-transformers` and `transformers` runtime dependencies.** The `transformers`
+  pin existed only as a CVE floor for a sentence-transformers transitive; nothing in
+  `src/` ever imported it.
+
+### Security
+- **Dropped two permanently-unfixable `torch` advisories** — `PYSEC-2026-139` /
+  CVE-2026-4538 (pt2-loader deserialization) and `CVE-2025-3000` / GHSA-rrmf-rvhw-rf47
+  (`torch.jit.script` memory corruption). Both had no upstream fix and were carried as
+  standing `--ignore-vuln` entries in the PR gate. Removing `torch` removes the exposure
+  rather than suppressing it; the `pip-audit` ignore set is now a single chromadb entry.
+- **Fixed a model-cache probe that would have misreported after this change.** The
+  reranker's `is_model_cached` checked for `config.json`, which a pre-migration cache
+  already contains. It now probes `onnx/model.onnx`, so an upgraded install cannot report
+  a cached reranker it can no longer load offline.
+- **Model downloads are now pinned to immutable commit SHAs** for every model the hub
+  ships with. Previously — under both backends — downloads resolved whatever `main`
+  pointed at, so a compromised or merely re-uploaded repo would be trusted silently.
+  Pinning also protects index compatibility: an upstream re-export of `onnx/model.onnx`
+  would otherwise start writing subtly different vectors into an index built from the
+  old ones, degrading retrieval with no visible error. Custom models set via
+  `EmbeddingConfig.model_name` have no pin available and resolve the default branch, as
+  before.
+
 ## [0.4.0] - 2026-08-02
 
 ### Changed

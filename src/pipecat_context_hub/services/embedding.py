@@ -1,6 +1,6 @@
 """Embedding service for the Pipecat Context Hub.
 
-Provides ``EmbeddingService`` (lazy-loaded sentence-transformers) and
+Provides ``EmbeddingService`` (lazy-loaded ONNX Runtime encoder) and
 ``EmbeddingIndexWriter`` (decorator that auto-computes embeddings before upsert).
 """
 
@@ -15,13 +15,13 @@ from pipecat_context_hub.shared.config import EmbeddingConfig
 from pipecat_context_hub.shared.types import ChunkedRecord
 
 if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
+    from pipecat_context_hub.services.onnx_backend import OnnxTextEncoder
 
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingService:
-    """Compute embeddings using a local sentence-transformers model.
+    """Compute embeddings using a local ONNX model.
 
     The model is loaded lazily on first use to avoid slow import at startup
     (important for ``serve`` where the model may not be needed immediately).
@@ -31,17 +31,29 @@ class EmbeddingService:
         cfg = config or EmbeddingConfig()
         self._model_name = cfg.model_name
         self._dimension = cfg.dimension
-        self._model: SentenceTransformer | None = None
+        self._model: OnnxTextEncoder | None = None
         self._model_lock = threading.RLock()
 
-    def _get_model(self) -> SentenceTransformer:
+    def _get_model(self) -> OnnxTextEncoder:
         with self._model_lock:
             if self._model is None:
-                from sentence_transformers import SentenceTransformer
+                from pipecat_context_hub.services.onnx_backend import OnnxTextEncoder
 
                 logger.info("Loading embedding model %s", self._model_name)
-                self._model = SentenceTransformer(self._model_name, device="cpu")
+                self._model = OnnxTextEncoder(self._model_name)
             return self._model
+
+    def ensure_model(self) -> None:
+        """Pre-download the model weights (called during ``refresh``).
+
+        ``refresh`` is the only code path permitted to reach the network, so
+        downloading here turns a missing model into a clear failure there
+        rather than an opaque one on the first query, where ``HF_HUB_OFFLINE``
+        forbids the fetch.
+        """
+        from pipecat_context_hub.services.onnx_backend import ensure_downloaded
+
+        ensure_downloaded(self._model_name)
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Compute embeddings for a batch of texts."""
@@ -49,7 +61,7 @@ class EmbeddingService:
             return []
         with self._model_lock:
             model = self._get_model()
-            embeddings: Any = model.encode(texts, show_progress_bar=False)
+            embeddings: Any = model.encode(texts)
             return embeddings.tolist()  # type: ignore[no-any-return]
 
     def embed_query(self, query: str) -> list[float]:

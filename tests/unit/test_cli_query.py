@@ -405,14 +405,12 @@ class TestQuietOutput:
             for var in (
                 "HF_HUB_OFFLINE",
                 "HF_HUB_DISABLE_PROGRESS_BARS",
-                "TRANSFORMERS_VERBOSITY",
             ):
                 os.environ.pop(var, None)
             result = runner.invoke(main, ["check-deprecation", "X"])
             assert result.exit_code == 0, result.stderr
             assert os.environ["HF_HUB_OFFLINE"] == "1"
             assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "1"
-            assert os.environ["TRANSFORMERS_VERBOSITY"] == "error"
 
     def test_explicit_env_wins_over_defaults(self, tmp_path):
         import os
