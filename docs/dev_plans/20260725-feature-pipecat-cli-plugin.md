@@ -30,7 +30,12 @@ code is wrong. Two gaps make that failure mode likely:
 
 The hub stays a separate package. Its retrieval stack is 488 locked packages and
 ~1.1 GB installed and caps Python at `<3.15`, where `pipecat-ai` is unbounded;
-merging it into the framework repo is not viable. The Pipecat CLI already has an
+merging it into the framework repo is not viable.
+*(Update 2026-08-03: both objections in that sentence are gone — the ONNX
+migration took the install to ~310 MB / 143 locked packages and dropped the
+`<3.15` cap to match `pipecat-ai`. The separate-package decision still holds on
+its own merits; this line is no longer a reason for it. See
+`20260803-chore-onnx-runtime-migration.md`.)* The Pipecat CLI already has an
 entry-point plugin mechanism (`pipecat_cli.extensions`, used by `pipecatcloud`),
 which is the seam this work targets.
 

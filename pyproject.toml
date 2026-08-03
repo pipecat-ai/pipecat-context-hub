@@ -12,21 +12,10 @@ version = "0.4.0"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"
-# Upper bound: <3.15. Raised from <3.14 once the compiled stack gained cp314
-# wheels and chromadb 1.x (pydantic-v2) replaced the 0.6.x shim that crashed on
-# 3.14. Full suite passes on 3.14.5 (CI covers 3.12 and 3.14, Linux + Windows).
-#
-# The cap still stands after the ONNX migration — torch was never what held it
-# here. `onnxruntime` is the binding constraint now: 1.28.0 publishes cp311
-# through cp314 only, so resolving for 3.15 fails outright with "no wheels with
-# a matching Python ABI tag (e.g., `cp315`)". numpy, pydantic-core, uvloop,
-# grpcio and tree-sitter are likewise cp-specific and need cp315 builds.
-# chromadb and tokenizers ship abi3 wheels and are not a constraint.
-#
-# 3.15 is at 3.15.0a8 as of 2026-08, so today the cap blocks only an alpha.
-# Bump it once onnxruntime publishes cp315 — verify with:
-#   uv pip install --dry-run --python-version 3.15 <the runtime deps>
-requires-python = ">=3.11,<3.15"
+# Deliberately unbounded above, matching `pipecat-ai` — a cap here is viral for
+# anyone installing alongside `pipecat-ai[cli]`. A new Python without wheels
+# fails clearly at install time; that is not a reason to re-add one.
+requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0,<3.0",
     "mcp>=1.0,<2.0",

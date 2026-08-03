@@ -58,6 +58,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   can be reclaimed with `huggingface-cli delete-cache`. `refresh` pre-downloads both models
   so this surfaces there rather than on the first query.
 
+- **`requires-python` upper bound removed** — now `>=3.11`, matching `pipecat-ai`. The
+  hub is designed to install alongside `pipecat-ai[cli]`, and a cap is viral there: once
+  `onnxruntime` ships wheels for a new Python, a capped hub would be the only reason
+  `pipecat-ai[cli]` fails to resolve on it, until a hub release went out. Wheel
+  availability remains the real constraint and reports itself clearly at install time.
+  No behaviour change on 3.11–3.14.
+
 ### Removed
 - **`sentence-transformers` and `transformers` runtime dependencies.** The `transformers`
   pin existed only as a CVE floor for a sentence-transformers transitive; nothing in

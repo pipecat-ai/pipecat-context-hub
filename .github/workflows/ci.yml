@@ -20,7 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Floor (3.12) + ceiling (3.14, the highest version requires-python allows).
+        # Floor (3.12) + the newest Python the compiled stack ships wheels for
+        # (3.14). requires-python is unbounded above; this matrix is what we test.
         python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4

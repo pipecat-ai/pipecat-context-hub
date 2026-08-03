@@ -63,6 +63,32 @@ deciding — a maintainer may reasonably call this a patch since nothing breaks.
 Per the release process, this PR leaves `CHANGELOG.md` under `[Unreleased]` and
 does **not** bump `pyproject.toml` / `_SERVER_VERSION`; the release chore does that.
 
+## The `requires-python` cap comes off
+
+`requires-python` goes from `>=3.11,<3.15` to `>=3.11`, matching `pipecat-ai`.
+
+This is packaging policy rather than a consequence of the migration — torch was
+never what held the cap, and dropping it does **not** make 3.15 work, since
+`onnxruntime` publishes cp311–cp314 and a 3.15 resolve fails on that either way.
+It lands here because the hub is meant to install alongside `pipecat-ai[cli]`,
+and a cap is viral in that arrangement: the day `onnxruntime` ships cp315,
+`pipecat-ai` would work on 3.15 while a capped hub would not, making the hub the
+sole reason `pipecat-ai[cli]` breaks on a Python that is otherwise fine — until
+someone cuts a hub release. All five published hub versions declare `<3.15`, so
+there is no older release for a resolver to fall back to.
+
+Worth recording, because it argues the other way: on 3.15 today,
+`pipecat-ai[cli]` silently resolves to `pipecat-ai==0.0.101` — a version so old
+uv warns it has no `cli` extra — because the resolver backtracks past
+`onnxruntime~=1.24.3` in pipecat's core dependencies. So removing the cap trades
+a loud failure for that silent downgrade. The trade is accepted here for release
+independence, but the upstream backtracking is worth a separate report; a
+`python_version < "3.15"` marker on pipecat's `onnxruntime` line would restore a
+clear error.
+
+Verified: lock resolves to the same 143 packages, `uv sync` and the full suite
+pass on 3.14, and 3.11–3.14 behaviour is unchanged.
+
 ## Parity is the whole argument
 
 An ONNX export is a format change, not a math change. Measured against the

@@ -4,7 +4,7 @@ Local-first MCP server providing Pipecat docs, examples, and API context.
 
 ## Stack
 
-- **Python 3.11–3.14**, `uv` package manager, `hatchling` build
+- **Python 3.11+** (no upper cap; CI covers 3.12 and 3.14), `uv` package manager, `hatchling` build
 - **Embeddings:** `all-MiniLM-L6-v2` (ONNX Runtime, local, CPU)
 - **Vector store:** ChromaDB | **Keyword index:** SQLite FTS5
 - **AST parsing:** Python `ast` module + `tree-sitter` (TypeScript/TSX)
