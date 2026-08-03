@@ -20,6 +20,10 @@ Investigation outcome (no data loss, no real leak):
 1. **Not a crash.** The hub idle-shut-down after exactly 1800s of no MCP requests — the **idle watchdog** firing as designed. It exists *only* as a workaround for the `uv run` gap: under `uv run` the chain is `client → uv → hub`, `uv` lingers after the client dies, so `os.getppid()` never flips and the parent-death watchdog cannot fire. The idle timer was the blunt fallback.
 2. **The "timed out" line** is our own 2.5s hard-exit backstop (`transport._hard_exit_on_hang`). On the developer's Python 3.13 + loaded reranker the graceful unwind exceeded 2.5s, so the backstop fired. Exit code 0; on-disk state crash-consistent. The wording reads like an error.
 3. **The leaked-semaphore line** is a side effect of `os._exit(0)` skipping `atexit`. The cross-encoder pulls in `torch`/`sklearn`→`loky`, which registers a resource-tracker semaphore cleaned up only at a normal exit. Reproduced locally: `os._exit(0)` → warning; `sys.exit(0)` → clean; `atexit._run_exitfuncs()` before `os._exit(0)` → clean. The resource_tracker child reaps it regardless — benign.
+   *(Update 2026-08-02: this symptom can no longer occur. Embedding and reranking moved
+   to ONNX Runtime, so `torch`/`sklearn`→`loky` are no longer in the dependency tree and
+   nothing registers a resource-tracker semaphore. The rest of this investigation still
+   stands.)*
 
 The desired experience: the hub should not self-terminate mid-session, and should exit cleanly/quietly when the client truly goes away.
 

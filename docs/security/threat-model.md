@@ -105,7 +105,7 @@ Operational policy:
 
 Path:
 
-- `sentence-transformers` model downloads and cache
+- HuggingFace Hub model downloads and cache (ONNX weights + tokenizer)
 - embedding model load
 - optional cross-encoder reranker load
 
