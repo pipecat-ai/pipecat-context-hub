@@ -133,7 +133,10 @@ class EmbeddingConfig(BaseModel):
 
     model_name: str = Field(
         default="all-MiniLM-L6-v2",
-        description="Sentence-transformers model for local embeddings.",
+        description=(
+            "Model for local embeddings, loaded from its ONNX export. A bare name "
+            "resolves against the sentence-transformers org on the HuggingFace Hub."
+        ),
     )
     dimension: int = Field(default=384, description="Embedding vector dimension.")
 
@@ -194,7 +197,7 @@ class RerankerConfig(BaseModel):
 
     cross_encoder_model: str = Field(
         default=_DEFAULT_RERANKER_MODEL,
-        description="Cross-encoder model name from sentence-transformers. "
+        description="Cross-encoder model name, loaded from its ONNX export. "
         "Override via PIPECAT_HUB_RERANKER_MODEL env var.",
     )
     top_n: int = Field(

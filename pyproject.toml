@@ -12,7 +12,7 @@ version = "0.4.0"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"
-# Upper bound: <3.15 once the compiled stack gained cp314 wheels (torch 2.12,
+# Upper bound: <3.15 once the compiled stack gained cp314 wheels (onnxruntime,
 # tokenizers 0.23) and chromadb 1.x (pydantic-v2) replaced the 0.6.x shim that
 # crashed on 3.14. Full suite passes on 3.14.5; bump the cap when 3.15 wheels land.
 requires-python = ">=3.11,<3.15"
@@ -21,7 +21,16 @@ dependencies = [
     "mcp>=1.0,<2.0",
     "httpx>=0.27,<1.0",
     "chromadb>=1.5,<2.0",
-    "sentence-transformers>=4.0,<6.0",
+    # Inference stack. Both were already installed transitively via chromadb;
+    # they are declared here because this package imports them directly (see
+    # services/onnx_backend.py). Running the MiniLM models through ONNX Runtime
+    # instead of sentence-transformers avoids a torch dependency, which on
+    # Linux pulls 15 nvidia-* CUDA packages plus triton — 4.5 GB of GPU kernels
+    # to run a 22 MB model that is pinned to the CPU.
+    "onnxruntime>=1.17,<2.0",
+    "tokenizers>=0.15,<1.0",
+    "huggingface-hub>=0.20,<2.0",
+    "numpy>=1.24,<3.0",
     "gitpython>=3.1.49,<4.0",
     "click>=8.0,<9.0",
     "tree-sitter>=0.25,<1.0",
@@ -31,7 +40,6 @@ dependencies = [
     # plain re-lock cannot regress to a vulnerable build (the prior >=46.0.7 still
     # admitted 46.0.7). Lock resolves to 49.0.0.
     "cryptography>=48.0.1",
-    "transformers>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -98,6 +106,13 @@ strict = true
 exclude = [
     "^tests/fixtures/",
 ]
+
+# Neither ships type stubs or a py.typed marker. Both are used only inside
+# services/onnx_backend.py, which annotates its own public surface, so the
+# untyped boundary stops there.
+[[tool.mypy.overrides]]
+module = ["onnxruntime.*", "tokenizers.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"

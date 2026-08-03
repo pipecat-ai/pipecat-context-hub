@@ -14,7 +14,7 @@ import os
 def quiet_model_loading() -> None:
     """Silence third-party model-loading noise and skip HF revalidation.
 
-    Must run before transformers/sentence-transformers are imported.
+    Must run before the ONNX backend imports ``huggingface_hub``.
     ``setdefault`` throughout, so an explicitly set environment always wins
     (e.g. ``HF_HUB_OFFLINE=0`` to force revalidation).
 
@@ -26,11 +26,13 @@ def quiet_model_loading() -> None:
       it probes rather than downloads the reranker). In the rare
       cache-wiped-but-index-survived case, the loader's error names the
       offline mode; set ``HF_HUB_OFFLINE=0`` and re-run.
-    - Progress bars and the transformers load report are interactive
-      affordances; in captured CLI output they are agent-context noise, and
-      in ``serve``'s MCP logs they bury the one-line telemetry operators
-      grep for.
+    - Progress bars are an interactive affordance; in captured CLI output
+      they are agent-context noise, and in ``serve``'s MCP logs they bury the
+      one-line telemetry operators grep for.
+
+    ``TRANSFORMERS_VERBOSITY`` was set here while the hub loaded models
+    through ``sentence-transformers``. The ONNX backend does not import
+    ``transformers``, so the variable no longer has a reader and is not set.
     """
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
