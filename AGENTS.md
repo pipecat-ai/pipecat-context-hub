@@ -190,10 +190,19 @@ the indexed pipecat version; re-verify against the current registry if they drif
     state, and content-type counts are observable from the MCP trace)
 41. `PIPECAT_HUB_RERANKER_ENABLED=0 uv run pipecat-context-hub serve` — startup
     `WARNING` log line `Reranker disabled at startup: reason=config_disabled
-    configured_model=…` appears. Then re-run with
-    `PIPECAT_HUB_RERANKER_MODEL=cross-encoder/does-not-exist` — the warning
-    reports `reason=not_cached` and the remediation hint includes the HF cache
-    path that was probed (e.g. `checked HF cache: /…/huggingface/hub`)
+    configured_model=…` appears.
+
+    For `reason=not_cached`, point HF at an empty cache rather than naming a
+    bogus model: `HF_HOME=$(mktemp -d) uv run pipecat-context-hub serve`. The
+    warning must report `reason=not_cached` and name the probed path in the
+    remediation hint (`checked HF cache: /…/hub`), and `get_hub_status` must
+    report `reranker_disabled_reason: "not_cached"` with `reranker_model: null`.
+    An unknown `PIPECAT_HUB_RERANKER_MODEL` does **not** reach this path — the
+    allowlist in `RerankerConfig.effective_model` intercepts it first and falls
+    back to the default with its own warning, so the reranker ends up enabled.
+    (The cache probe looks for `onnx/model.onnx`; a cache holding only
+    `config.json` — the shape left by the pre-ONNX backend — must read as
+    not-cached. Pinned by `tests/unit/test_onnx_backend.py`.)
 42. **Orphan-watchdog smoke test** — spawn `serve` from a shell, note the
     PID, then `kill -9` the shell (or close the terminal). The orphaned
     `serve` process must exit on its own within ~5s. Confirm with
@@ -403,6 +412,12 @@ in future reviews unless the underlying circumstances change.
 - **[Security] resolved**: `torch` advisory PYSEC-2026-139 / CVE-2026-4538 — resolved by removing `torch` from the dependency tree entirely. Embedding and cross-encoder inference moved to ONNX Runtime against the same model weights (`services/onnx_backend.py`), so `sentence-transformers` — the only path that reached `torch` — is gone. The `--ignore-vuln PYSEC-2026-139` entry was removed from the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe. Verified: `pip-audit` reports no findings with only the chromadb ignore. (resolved 2026-08-02)
 
 - **[Security] resolved**: `torch` advisory CVE-2025-3000 / GHSA-rrmf-rvhw-rf47 / PYSEC-2025-194 — resolved the same way as PYSEC-2026-139: `torch` left the tree when embedding and reranking moved to ONNX Runtime. The `--ignore-vuln CVE-2025-3000` entry was removed from ci.yml and the justfile `audit-deps` recipe (parity enforced by `tests/unit/test_audit_sync.py`, which now sees a single-entry ignore set). (resolved 2026-08-02)
+
+- **[Security] accepted**: `services/onnx_backend.py::_download` carries a `# nosec B615` on its unpinned fallback. Every model the hub ships with is pinned to an immutable commit SHA in `_PINNED_REVISIONS` (supply-chain safety, and it stops an upstream re-export of `onnx/model.onnx` silently shifting the embedding space out from under an existing index). The fallback only fires for a caller-supplied `EmbeddingConfig.model_name`, for which no pin can exist; that value comes from local config, not untrusted input, and the previous sentence-transformers backend resolved *every* model unpinned. bandit will re-flag this on each run — the pin table plus the `test_every_shipped_model_is_pinned` guard is the mitigation. (2026-08-03)
+
+- **[Architecture] won't-fix**: `chromadb` hard-depends on `kubernetes` (~41 MB), `grpc` and `opentelemetry` for its client-server mode, none of which the hub can reach — it runs the embedded `PersistentClient` only. Verified unreachable by uninstalling `kubernetes` and confirming `PersistentClient` still opens, queries, and persists. Not removable from our side: they are unconditional dependencies of `chromadb`, not an extra, so `pyproject.toml` cannot express the exclusion and a post-install prune would only work for container builds, not `pip`/`uvx` users. Worth an upstream issue; do not re-flag as install-size debt we can fix here. (2026-08-03)
+
+- **[Packaging] accepted**: `requires-python` is deliberately unbounded above (`>=3.11`), matching `pipecat-ai`. A cap is viral for anyone installing this alongside `pipecat-ai[cli]`: once a new Python gains wheels, a capped hub would be the sole reason that combination fails to resolve, until a hub release shipped. The accepted cost is that an unsupported Python produces resolver backtracking rather than a clean "requires-python" rejection — on 3.15 today, `pipecat-ai[cli]` already silently resolves to `pipecat-ai==0.0.101` for exactly this reason, driven by `onnxruntime~=1.24.3` in pipecat's own core dependencies. Do not re-add a cap in response to a missing-wheel report. (2026-08-03)
 
 - **[Security] won't-fix**: `chromadb` CVE-2026-45829 / GHSA-f4j7-r4q5-qw2c — pre-authentication code injection in chromadb's HTTP **server** mode (arbitrary code execution via the `/api/v2/.../collections` endpoint with a malicious model repo and `trust_remote_code=true`). Affects 1.0.0–1.5.9 with no fixed release yet (1.5.9 is the latest 1.x). Unreachable here: the hub runs the embedded `PersistentClient` only (no server, no HTTP endpoint, no listener) and never uses chromadb's embedding functions / `trust_remote_code`. Ignored via `--ignore-vuln CVE-2026-45829` in the PR-gating `pip-audit` (ci.yml) and the `audit-deps` justfile recipe (parity enforced by `tests/unit/test_audit_sync.py`). The unfiltered biweekly `security-audit.yml` job keeps surfacing it; remove the ignore once a patched chromadb release ships. (2026-06-06)
 
