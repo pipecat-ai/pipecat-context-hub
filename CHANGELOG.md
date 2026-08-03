@@ -7,6 +7,30 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`install` now registers an MCP server the client can actually start.** It recorded the
+  bare console-script name `pipecat-context-hub` whenever one was on `PATH`, which asks the
+  client to resolve it later, in a process this command cannot see — commonly one launched
+  from a GUI with no shell `PATH` at all. The registration started only in the shell that
+  wrote it and failed everywhere else with `ENOENT: Executable not found in $PATH`, and did
+  so silently: a coding agent whose MCP server fails to start is not told, so it answers
+  from training data instead. The command recorded is now always this interpreter and
+  module — an absolute path resolved once at install time, pinned to the hub you invoked:
+  the Pipecat CLI's bundled copy via `pipecat context-hub install`, the standalone tool via
+  `pipecat-context-hub install`.
+
+  Preferring the console script was correct when standalone was the normal install. Since
+  the hub became a dependency of `pipecat-ai[cli]`, `uv tool` exposes only the host
+  package's scripts, so that branch fires only for an *unrelated* hub on `PATH` — a
+  leftover standalone install, or any active project venv, since `pipecat-ai[evals]` pulls
+  in `pipecat-ai[cli]`.
+
+- **Reinstalling repairs a stale registration instead of skipping it.** `claude mcp add`
+  refuses a name it already has and leaves the existing entry alone, so registrations
+  written by earlier releases would have survived every reinstall. `install` now compares
+  the recorded command with the one it would write, replaces it when they differ, and
+  leaves a matching one untouched. "Already registered" is no longer reported as a failure.
+
 ## [0.5.0] - 2026-08-03
 
 ### Changed

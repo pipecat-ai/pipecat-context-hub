@@ -4,6 +4,7 @@
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
 | 2026-08-03 | chore | Replace sentence-transformers/torch with ONNX Runtime (Linux install 5.1 GB → 351 MB; fixes multi-concept CLI crash) | In review | markbackman | `chore/onnx-runtime-migration` | `20260803-chore-onnx-runtime-migration.md` |
+| 2026-08-03 | fix | Pin the registered MCP server command to the installed interpreter (bare console-script name fails to start outside the installing shell) | In review | markbackman | `fix/mcp-server-command-pinning` | `20260803-fix-mcp-server-command-pinning.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

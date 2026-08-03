@@ -18,6 +18,7 @@ from pipecat_context_hub.cli import main
 from pipecat_context_hub.cli_install import (
     _detect_cli_clients,
     _mcp_json,
+    _register_with_cli,
     _server_command,
 )
 
@@ -25,24 +26,75 @@ runner = CliRunner()
 
 
 class TestServerCommand:
-    def test_prefers_installed_console_script(self):
-        with patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/x"):
-            assert _server_command() == ["pipecat-context-hub", "serve"]
+    def test_names_this_interpreter_even_with_a_script_on_path(self):
+        """A script on PATH now does not mean one at the client's session start.
 
-    def test_falls_back_to_this_interpreter(self):
-        """A `--with` co-install exposes no script for this package, only pipecat's.
-
-        Naming the interpreter keeps the client on the installed version, where
-        uvx would resolve the latest published one at every server start.
+        Any project venv carrying ``pipecat-ai[cli]`` puts ``pipecat-context-hub`` on
+        PATH. Registering that bare name yielded a config that started only in the shell
+        that wrote it, and failed with ENOENT everywhere else.
         """
-        with patch("pipecat_context_hub.cli_install.shutil.which", return_value=None):
+        with patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/x"):
             assert _server_command() == [sys.executable, "-m", "pipecat_context_hub", "serve"]
+
+    def test_is_independent_of_the_environment(self):
+        """What gets registered must not depend on where install happened to run."""
+        seen = []
+        for which in ("/usr/bin/x", None):
+            with patch("pipecat_context_hub.cli_install.shutil.which", return_value=which):
+                seen.append(_server_command())
+        assert seen[0] == seen[1]
 
     def test_never_registers_the_pipecat_front_door(self):
         """Registering `pipecat context-hub serve` would load typer on every server start."""
-        for which in ("/usr/bin/x", None):
-            with patch("pipecat_context_hub.cli_install.shutil.which", return_value=which):
-                assert _server_command()[0] != "pipecat"
+        assert _server_command()[0] != "pipecat"
+
+
+class TestRegisterWithCli:
+    """``mcp add`` refuses a name it already has, so registering must repair, not skip."""
+
+    def _fake_client(self, *, get_code: int, get_stdout: str = "", add_code: int = 0):
+        """A client CLI whose `mcp get` and `mcp add` return the given codes."""
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[1:3] == ["mcp", "get"]:
+                return MagicMock(returncode=get_code, stdout=get_stdout, stderr="")
+            return MagicMock(returncode=add_code, stdout="", stderr="")
+
+        return calls, fake_run
+
+    def _subcommands(self, calls: list[list[str]]) -> list[str]:
+        return [argv[2] for argv in calls]
+
+    def test_a_matching_entry_is_left_alone(self):
+        """Removing a correct registration to rewrite it risks losing it for nothing."""
+        recorded = f"Command: {sys.executable}\n  Args: -m pipecat_context_hub serve"
+        calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) is True
+        assert self._subcommands(calls) == ["get"]
+
+    def test_a_stale_entry_is_replaced(self):
+        """The bare-name registrations already written must not survive a reinstall."""
+        calls, fake_run = self._fake_client(
+            get_code=0, get_stdout="Command: pipecat-context-hub\n  Args: serve"
+        )
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) is True
+        assert self._subcommands(calls) == ["get", "remove", "add"]
+
+    def test_registers_when_the_client_cannot_report_one(self):
+        """Covers both an absent server and a client CLI with no `mcp get`."""
+        calls, fake_run = self._fake_client(get_code=1)
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) is True
+        assert "add" in self._subcommands(calls)
+
+    def test_a_failed_add_is_reported(self):
+        calls, fake_run = self._fake_client(get_code=1, add_code=1)
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) is False
 
 
 class TestMcpJson:
@@ -136,7 +188,7 @@ class TestInstallCommand:
         assert argv[:4] == ["claude", "mcp", "add", "pipecat-context-hub"]
         # The `--` separator keeps the server's own args out of claude's parser.
         assert argv[4] == "--"
-        assert argv[5:] == ["pipecat-context-hub", "serve"]
+        assert argv[5:] == [sys.executable, "-m", "pipecat_context_hub", "serve"]
 
     def test_client_cli_failure_is_reported_as_error_exit(self):
         """A failed client registration is surfaced via a nonzero exit, not silently ignored."""
@@ -197,7 +249,8 @@ class TestInstallCommand:
             )
 
         assert result.exit_code != 0
-        assert run.call_count == 2
+        registered = [c.args[0][2] for c in run.call_args_list if c.args[0][1] == "mcp"]
+        assert registered.count("add") == 2
         assert "registered. Restart claude-code" in result.output
         assert "Failed to register with: codex" in result.output
         assert "claude-code" not in result.output.split("Failed to register with:")[1]

@@ -38,18 +38,18 @@ _FILE_CLIENTS = {
 def _server_command() -> list[str]:
     """The command a client should run to start the MCP server.
 
-    Prefers the console script when it is on PATH. Otherwise runs this very
-    interpreter's module, which is what a co-install needs: ``uv tool install
-    "pipecat-ai[cli]" --with pipecat-ai-context-hub`` exposes only the Pipecat
-    CLI's own scripts, so ``pipecat-context-hub`` is importable but not on PATH.
-    Naming the interpreter also pins the client to the version that is installed,
-    where ``uvx`` would resolve the latest published one at every server start.
+    Always names this interpreter, never the ``pipecat-context-hub`` console script.
+    The config outlives the shell that wrote it and is read by a different process at
+    session start — often one launched from a GUI, with no shell PATH at all — so a
+    bare script name defers resolution to an environment this command cannot see. An
+    absolute interpreter pins the client to the hub that was actually installed: the
+    Pipecat CLI's bundled copy when invoked through ``pipecat context-hub``, the
+    standalone tool when invoked directly. It also pins the version, where ``uvx``
+    would resolve the latest published one at every server start.
 
     Never ``pipecat context-hub serve``: that would load typer and the Pipecat CLI's
     plugin machinery on every start for no benefit.
     """
-    if shutil.which(_SERVER_NAME):
-        return [_SERVER_NAME, "serve"]
     return [sys.executable, "-m", "pipecat_context_hub", "serve"]
 
 
@@ -81,17 +81,53 @@ def _detect_cli_clients() -> list[str]:
     return [name for name, exe in _CLI_CLIENTS.items() if shutil.which(exe)]
 
 
-def _register_with_cli(client: str, command: list[str]) -> bool:
-    """Register the server via *client*'s own CLI. True when it succeeded."""
-    exe = _CLI_CLIENTS[client]
-    argv = [exe, "mcp", "add", _SERVER_NAME, "--", *command]
-    click.echo(f"  $ {' '.join(argv)}")
+def _run_client(exe: str, args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run a client CLI subcommand, or None when the executable could not be run."""
     try:
-        completed = subprocess.run(  # nosec B603 - argv from _CLI_CLIENTS allowlist, no shell
-            argv, capture_output=True, text=True, timeout=60
+        return subprocess.run(  # nosec B603 - argv from _CLI_CLIENTS allowlist, no shell
+            [exe, *args], capture_output=True, text=True, timeout=60
         )
     except (OSError, subprocess.SubprocessError) as exc:
         click.echo(f"  failed to run {exe}: {exc}", err=True)
+        return None
+
+
+def _already_registered(exe: str, command: list[str]) -> bool:
+    """Whether *exe* already records this exact server command.
+
+    Looks for our own command in the client's output rather than parsing that output's
+    shape. The question is only "is the registered entry already this one?", so a client
+    that changes how it prints costs a redundant rewrite rather than a broken server.
+    """
+    completed = _run_client(exe, ["mcp", "get", _SERVER_NAME])
+    if completed is None or completed.returncode != 0:
+        # Not registered, or a client CLI with no `get`. Nothing to compare against.
+        return False
+    return all(part in completed.stdout for part in command)
+
+
+def _register_with_cli(client: str, command: list[str]) -> bool:
+    """Register the server via *client*'s own CLI. True when it succeeded.
+
+    Replaces a mismatched entry rather than skipping it: ``mcp add`` refuses a name it
+    already has and leaves whatever is there, so a registration written by an earlier
+    release would otherwise survive every reinstall. Removing first is safe only because
+    an entry that already matches returns before we get here.
+    """
+    exe = _CLI_CLIENTS[client]
+    if _already_registered(exe, command):
+        # No restart advice: nothing changed, so the running client is already correct.
+        click.echo("  already registered; no change.")
+        return True
+
+    # Usually absent, and `mcp remove` exits non-zero for a name it does not have, so
+    # the result is deliberately ignored.
+    _run_client(exe, ["mcp", "remove", _SERVER_NAME])
+
+    args = ["mcp", "add", _SERVER_NAME, "--", *command]
+    click.echo(f"  $ {exe} {' '.join(args)}")
+    completed = _run_client(exe, args)
+    if completed is None:
         return False
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip().splitlines()
@@ -99,6 +135,7 @@ def _register_with_cli(client: str, command: list[str]) -> bool:
             f"  {exe} exited {completed.returncode}: {detail[0] if detail else ''}", err=True
         )
         return False
+    click.echo(f"  registered. Restart {client} to load it.")
     return True
 
 
@@ -154,9 +191,7 @@ def install_command(
                 click.echo(_mcp_json(command, client))
                 continue
             click.echo(f"Registering '{_SERVER_NAME}' with {client}:")
-            if _register_with_cli(client, command):
-                click.echo(f"  registered. Restart {client} to load it.")
-            else:
+            if not _register_with_cli(client, command):
                 click.echo(f"  registration failed for {client}.", err=True)
                 failures.append(client)
 
