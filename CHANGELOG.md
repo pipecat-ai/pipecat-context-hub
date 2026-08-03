@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-03
+
 ### Changed
 - **Embedding and reranking now run on ONNX Runtime instead of sentence-transformers**,
   removing `torch` from the dependency tree. The install shrinks from **1.0 GB to 310 MB
