@@ -10,37 +10,36 @@ Tests cover:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
+from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL, create_server
 from pipecat_context_hub.shared.types import (
     ApiHit,
     Citation,
+    CodeSnippet,
+    DocHit,
     EvidenceReport,
+    ExampleFile,
+    ExampleHit,
+    GetCodeSnippetOutput,
+    GetDocOutput,
+    GetExampleOutput,
     KnownItem,
     SearchApiOutput,
     SearchDocsOutput,
-    DocHit,
-    GetDocOutput,
     SearchExamplesOutput,
-    ExampleHit,
-    GetExampleOutput,
-    ExampleFile,
     TaxonomyEntry,
-    GetCodeSnippetOutput,
-    CodeSnippet,
 )
-from pipecat_context_hub.server.main import create_server, _BASE_TOOLS, _HUB_STATUS_TOOL
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2026, 2, 18, tzinfo=timezone.utc)
+NOW = datetime(2026, 2, 18, tzinfo=UTC)
 
 
 def _citation(**overrides: Any) -> Citation:
@@ -69,24 +68,35 @@ def mock_retriever():
     retriever.search_docs.return_value = SearchDocsOutput(
         hits=[
             DocHit(
-                doc_id="d1", title="T", snippet="S",
-                citation=_citation(), score=0.9,
+                doc_id="d1",
+                title="T",
+                snippet="S",
+                citation=_citation(),
+                score=0.9,
             )
         ],
         evidence=_evidence(),
     )
 
     retriever.get_doc.return_value = GetDocOutput(
-        doc_id="d1", title="T", content="C",
+        doc_id="d1",
+        title="T",
+        content="C",
         source_url="https://docs.pipecat.ai/test",
-        indexed_at=NOW, sections=[], evidence=_evidence(),
+        indexed_at=NOW,
+        sections=[],
+        evidence=_evidence(),
     )
 
     retriever.search_examples.return_value = SearchExamplesOutput(
         hits=[
             ExampleHit(
-                example_id="e1", summary="S", repo="r", path="p",
-                citation=_citation(), score=0.9,
+                example_id="e1",
+                summary="S",
+                repo="r",
+                path="p",
+                citation=_citation(),
+                score=0.9,
             )
         ],
         evidence=_evidence(),
@@ -96,14 +106,20 @@ def mock_retriever():
         example_id="e1",
         metadata=TaxonomyEntry(example_id="e1", repo="r", path="p"),
         files=[ExampleFile(path="f.py", content="pass", language="python")],
-        citation=_citation(), detected_symbols=[], evidence=_evidence(),
+        citation=_citation(),
+        detected_symbols=[],
+        evidence=_evidence(),
     )
 
     retriever.get_code_snippet.return_value = GetCodeSnippetOutput(
         snippets=[
             CodeSnippet(
-                content="pass", path="f.py", line_start=1, line_end=1,
-                language="python", citation=_citation(),
+                content="pass",
+                path="f.py",
+                line_start=1,
+                line_end=1,
+                language="python",
+                citation=_citation(),
             )
         ],
         evidence=_evidence(),
@@ -167,7 +183,7 @@ class TestToolRegistration:
         assert server.name == "pipecat-context-hub"
 
     async def test_list_tools_handler_registered(self, mock_retriever):
-        import mcp.types as types
+        from mcp import types
 
         server = create_server(mock_retriever)
         assert types.ListToolsRequest in server.request_handlers
@@ -175,7 +191,8 @@ class TestToolRegistration:
     async def test_list_tools_touches_idle_tracker(self, mock_retriever):
         """tools/list must reset the idle clock — clients that only poll
         capabilities (no tool calls) still represent an active session."""
-        import mcp.types as types
+        from mcp import types
+
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
@@ -191,7 +208,8 @@ class TestToolRegistration:
 
     async def test_call_tool_touches_idle_tracker(self, mock_retriever):
         """tools/call must reset the idle clock (existing behaviour, now pinned)."""
-        import mcp.types as types
+        from mcp import types
+
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
@@ -213,7 +231,8 @@ class TestToolRegistration:
         activity — otherwise a client keeping an idle session alive with
         periodic ping heartbeats would still be reaped as idle.
         """
-        import mcp.types as types
+        from mcp import types
+
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
@@ -232,7 +251,7 @@ class TestToolRegistration:
         """Omitting idle_tracker must leave the built-in ping handler
         in place unchanged — we don't want to break ping when idle
         watchdogging is disabled."""
-        import mcp.types as types
+        from mcp import types
 
         server = create_server(mock_retriever)  # no idle_tracker
         handler = server.request_handlers[types.PingRequest]
@@ -247,13 +266,14 @@ class TestToolRegistration:
 
 class TestToolDispatch:
     async def test_call_tool_handler_registered(self, mock_retriever):
-        import mcp.types as types
+        from mcp import types
 
         server = create_server(mock_retriever)
         assert types.CallToolRequest in server.request_handlers
 
     async def test_create_server_returns_server(self, mock_retriever):
         from mcp.server.lowlevel import Server
+
         server = create_server(mock_retriever)
         assert isinstance(server, Server)
 
@@ -383,6 +403,7 @@ class TestGetHubStatusRerankerFields:
 class TestTransport:
     def test_transport_module_importable(self):
         from pipecat_context_hub.server import transport
+
         assert hasattr(transport, "run_stdio")
         assert hasattr(transport, "serve_stdio")
         assert callable(transport.run_stdio)
@@ -397,22 +418,24 @@ class TestTransport:
 class TestCLI:
     def test_cli_main_importable(self):
         from pipecat_context_hub.cli import main
+
         assert main is not None
 
     def test_cli_has_serve_command(self):
         from pipecat_context_hub.cli import serve
+
         assert serve is not None
 
     def test_cli_has_refresh_command(self):
         from pipecat_context_hub.cli import refresh
+
         assert refresh is not None
 
     def test_cli_group_commands(self):
         from pipecat_context_hub.cli import main
+
         assert "serve" in main.commands
         assert "refresh" in main.commands
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +486,57 @@ class TestVersionConsistency:
             f"distribution metadata, so after bumping the version re-sync the "
             f"environment (`uv sync --extra dev --group dev`) before re-running."
         )
+
+
+class TestServerInstructions:
+    """Pin the self-report guidance in the MCP ``initialize`` instructions.
+
+    This text is advisory prose for the *connecting agent*, not a code path
+    that fires on an exception — nothing else in the tree references it (see
+    AGENTS.md item #50), so a wording edit that drops a clause or a URL would
+    otherwise pass silently.
+    """
+
+    def test_retrieval_quality_report_hint_present(self):
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "low_confidence" in _SERVER_INSTRUCTIONS
+        assert (
+            "github.com/pipecat-ai/pipecat-context-hub/issues/new"
+            "?template=retrieval-quality.yml" in _SERVER_INSTRUCTIONS
+        )
+
+    def test_degraded_hub_report_hint_present(self):
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "reranker_disabled_reason" in _SERVER_INSTRUCTIONS
+        assert "not_cached" in _SERVER_INSTRUCTIONS
+        assert "load_failed" in _SERVER_INSTRUCTIONS
+        assert (
+            "github.com/pipecat-ai/pipecat-context-hub/issues/new"
+            "?template=bug-report.yml" in _SERVER_INSTRUCTIONS
+        )
+
+    def test_config_disabled_is_excluded_from_bug_report_flow(self):
+        """``PIPECAT_HUB_RERANKER_ENABLED=0`` is an operator choice, not an incident.
+
+        Regression guard: if this clause is ever dropped, an operator who
+        deliberately disabled the reranker would get funnelled into filing a
+        bug report for expected behaviour.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "config_disabled" in _SERVER_INSTRUCTIONS
+        assert "not treat it as an incident" in _SERVER_INSTRUCTIONS
+
+    def test_instructions_are_wired_into_the_server(self):
+        """The constant must actually reach the MCP ``initialize`` response."""
+        import inspect
+
+        from pipecat_context_hub.server.main import create_server
+
+        source = inspect.getsource(create_server)
+        assert "instructions=_SERVER_INSTRUCTIONS" in source
 
 
 class TestEntryPoint:

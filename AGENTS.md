@@ -287,6 +287,19 @@ the indexed pipecat version; re-verify against the current registry if they drif
     passing `section=<title>` should narrow the page to that section's content
     without returning `null` or the full page.
 
+50. **MCP `initialize` instructions carry the self-report guidance.** Reconnect
+    an MCP client to `serve` and inspect the `initialize` response's
+    `instructions` field: it must still tell the connecting agent to suggest
+    filing at `.../issues/new?template=retrieval-quality.yml` on persistent
+    `low_confidence`/zero-hit results, and at
+    `.../issues/new?template=bug-report.yml` when `get_hub_status` reports
+    `reranker_disabled_reason` of `not_cached` or `load_failed` (explicitly
+    **not** for `config_disabled`, a supported operator choice). This is
+    advisory text for the connecting agent, not a code path triggered by an
+    exception — it only reaches clients that speak MCP (`serve`), never the
+    one-shot CLI (`cli_query.py`), which has no agent-in-the-loop to hand it
+    to. Unit-side counterpart: `tests/unit/test_server.py::TestServerInstructions`.
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
