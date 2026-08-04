@@ -712,6 +712,49 @@ or determined to be a false positive, not a waived defect)
   `CHANGELOG.md` changes when the boundary commit ran — ended up bundling
   Phase 3's content too; see the Phase 3 entry in `## Progress` state notes.
 
+- **2026-08-04 — Phase 4 investigation and fix.** Two independent
+  questions, both resolved with code evidence rather than assertion:
+
+  1. **Remediation-gap check: genuine gap found, closed.** Compared the
+     CLI's `not_cached` warning (`cli_query.py:130-133`: names
+     `pipecat-context-hub refresh` before the bug-report URL) against the
+     MCP degraded-hub clause in `server/main.py` — the clause routed
+     straight to "file a bug report" for `not_cached` and `load_failed`
+     alike, with no self-service step, even though `not_cached` has one and
+     `load_failed` doesn't. Added a remediation-first sentence to
+     `_SERVER_INSTRUCTIONS` naming `pipecat-context-hub refresh` for
+     `not_cached` specifically, before falling through to the existing
+     bug-report guidance for `load_failed` and non-zero boot exits (which
+     have no self-service fix). Updated `AGENTS.md` item #50 and appended
+     to the same `CHANGELOG.md` `[Unreleased]`/Added entry Phase 3 created
+     (no second entry). Added
+     `TestServerInstructions::test_not_cached_remediation_precedes_bug_report`
+     in `tests/unit/test_server.py` pinning both presence and ordering
+     (`refresh` text appears before `BUG_REPORT_ISSUE_URL`) — a regression
+     test, not just manual inspection.
+  2. **`load_failed` reachability: confirmed reachable, no removal.** Traced
+     the call path concretely rather than trusting the plan's prior
+     assertion: `CrossEncoderReranker._load_model()`
+     (`services/retrieval/cross_encoder.py:69-85`) swallows any exception
+     from constructing `OnnxCrossEncoder` and sets `self._available =
+     False`; `cli.py`'s `_reranker_status()` closure (`cli.py:391-411`)
+     checks `cross_encoder.enabled` (which is `self._enabled and
+     self._available`) and reports `disabled_reason="load_failed"` when a
+     `cross_encoder` was constructed at boot but its `.enabled` later
+     flipped false — i.e. the model was constructible but a lazy first-load
+     inside the long-lived `serve` process failed. This path is exercised
+     by an existing regression test,
+     `TestServeRerankerTelemetry::test_reranker_status_provider_reports_load_failed_on_runtime_flip`
+     (`tests/unit/test_cli.py:1401`), which the plan's Testing Notes
+     required for this phase and which already existed from Phase 2/3 work
+     — no new test needed here, only the reachability trace to confirm the
+     existing assertion in `_SERVER_INSTRUCTIONS` (and the corresponding
+     `test_degraded_hub_report_hint_present` pin) stays valid. No removal
+     was warranted.
+
+  Full suite (`uv run pytest tests/ -v`), `ruff check src/ tests/`, and
+  `mypy src/ tests/` all pass post-change (1271 passed, 6 skipped).
+
 ## Final Results
 
 (fill in on completion)

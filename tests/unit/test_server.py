@@ -521,6 +521,23 @@ class TestServerInstructions:
         assert "load_failed" in _SERVER_INSTRUCTIONS
         assert BUG_REPORT_ISSUE_URL in _SERVER_INSTRUCTIONS
 
+    def test_not_cached_remediation_precedes_bug_report(self):
+        """``not_cached`` has a self-service fix; ``load_failed`` does not.
+
+        Mirrors the CLI's remediation-first wording (``cli_query.py``): try
+        ``pipecat-context-hub refresh`` before routing to the bug tracker.
+        Regression guard for the MCP-side symmetry gap this phase closed —
+        the clause previously jumped straight to "file a bug report" for
+        both reasons alike.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        assert "pipecat-context-hub refresh" in _SERVER_INSTRUCTIONS
+        refresh_pos = _SERVER_INSTRUCTIONS.index("pipecat-context-hub refresh")
+        bug_report_pos = _SERVER_INSTRUCTIONS.index(BUG_REPORT_ISSUE_URL)
+        assert refresh_pos < bug_report_pos
+
     def test_config_disabled_is_excluded_from_bug_report_flow(self):
         """``PIPECAT_HUB_RERANKER_ENABLED=0`` is an operator choice, not an incident.
 

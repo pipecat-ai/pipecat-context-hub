@@ -185,8 +185,14 @@ a structured report for the maintainers.
 **When the hub itself is degraded:** If ``get_hub_status`` reports \
 ``reranker_disabled_reason`` of ``not_cached`` or ``load_failed``, or the \
 MCP connection fails at boot with a non-zero exit code, the hub is \
-running in a degraded mode. Share the full ``get_hub_status`` response and \
-any ``pipecat-context-hub`` startup log lines (look for \
+running in a degraded mode.
+
+If the reason is ``not_cached``, suggest the user run \
+``pipecat-context-hub refresh`` first — this downloads the reranker model \
+and is the most common fix. If that doesn't resolve it, or the reason is \
+``load_failed`` or a non-zero boot exit code (neither has a self-service \
+fix), share the full ``get_hub_status`` response and any \
+``pipecat-context-hub`` startup log lines (look for \
 ``Reranker disabled at startup`` and the ``pipecat-context-hub vX.Y.Z \
 starting`` banner) with the user and suggest they file a bug report at \
 {BUG_REPORT_ISSUE_URL} \

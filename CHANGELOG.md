@@ -24,7 +24,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   are unchanged; all new text is stderr-only. The two GitHub issue-template
   URLs now live in a single `shared/support_links.py` module that both the
   MCP instructions and the CLI import, so a template rename or repo move
-  can no longer update one copy and silently leave the other stale.
+  can no longer update one copy and silently leave the other stale. The MCP
+  `initialize` instructions' degraded-hub clause now carries the same
+  remediation-first gap-closer: for `reranker_disabled_reason ==
+  "not_cached"` it tells the connecting agent to suggest
+  `pipecat-context-hub refresh` before the bug-report URL, matching the
+  CLI's wording; `load_failed` and a non-zero boot exit code (no
+  self-service fix) still route straight to the bug report.
 
 ### Fixed
 - **`install` now registers an MCP server the client can actually start.** It recorded the

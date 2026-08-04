@@ -294,7 +294,12 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `low_confidence`/zero-hit results, and at
     `.../issues/new?template=bug-report.yml` when `get_hub_status` reports
     `reranker_disabled_reason` of `not_cached` or `load_failed` (explicitly
-    **not** for `config_disabled`, a supported operator choice). This is
+    **not** for `config_disabled`, a supported operator choice). For
+    `not_cached` specifically, the instructions tell the agent to suggest
+    `pipecat-context-hub refresh` (self-service — downloads the model)
+    *before* the bug-report URL, mirroring the CLI's remediation-first
+    wording; `load_failed` and a non-zero boot exit code have no
+    self-service fix and go straight to the bug-report suggestion. This is
     advisory text for the connecting agent, not a code path triggered by an
     exception — it only reaches clients that speak MCP (`serve`). The
     one-shot CLI (`cli_query.py`, `cli.py`) has no agent-in-the-loop to hand
