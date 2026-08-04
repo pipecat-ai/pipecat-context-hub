@@ -169,7 +169,7 @@ def main() -> None:
     print(f"Wrote {OUT_MEMBERS} ({size_mb:.1f} MB)")
 
     # Print top clusters
-    print(f"\nTop 15 clusters:")
+    print("\nTop 15 clusters:")
     for c in clusters[:15]:
         ct_str = ", ".join(f"{k}:{v}" for k, v in c["content_types"].items())
         print(f"  #{c['id']:3d}  {c['count']:5d} pts  [{ct_str}]  \"{c['label']}\"")
