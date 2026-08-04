@@ -1,9 +1,11 @@
 # Task: Pin the Registered MCP Server Command to the Installed Interpreter
 
-**Status**: Complete (unreleased) — all three changes implemented; full suite green (1217
-passed, 6 skipped), ruff + mypy + bandit clean. Verified against a live client: a seeded
-bare-name entry is replaced with the interpreter command and connects, and a second run is
-a no-op.
+**Status**: Complete (unreleased) — all three original changes implemented, plus a
+rollback-safety/repair-logic hardening pass driven by three rounds of adversarial Codex
+review and xhigh multi-agent code review (see "Post-review hardening" below). Full suite
+green (1232 passed, 6 skipped), ruff + mypy + bandit clean. Verified against a live
+client: a seeded bare-name entry is replaced with the interpreter command and connects,
+and a second run is a no-op.
 **Date**: 2026-08-03
 **Branch**: `fix/mcp-server-command-pinning`
 **Follows**: [`20260725-feature-pipecat-cli-plugin.md`](20260725-feature-pipecat-cli-plugin.md) — the CLI bridge whose distribution change exposed this.
@@ -140,12 +142,68 @@ This also corrects the reporting. `_register_with_cli` treats "already exists" a
 failure — its docstring claims a client that already has the server "says so and is not
 an error", but `claude mcp add` exits 1.
 
+**This "acceptable" call above turned out not to be** — see "Post-review hardening" below.
+Losing a registration silently (not just leaving it as it was) is a materially worse
+outcome than the failure this plan set out to fix, so three review rounds after the
+above was implemented, it was made rollback-safe instead.
+
+## Post-review hardening (adversarial + xhigh code review)
+
+Three rounds of Codex adversarial review and xhigh multi-agent code review, run after
+the approach above was implemented, found progressively deeper problems in exactly the
+non-atomic remove-then-add repair this plan flagged as "acceptable." Each was fixed and
+re-verified (full suite + ruff + mypy) before moving to the next round. Commits, in order:
+
+1. **`3159574`** — the repair path removed an existing registration and ignored the
+   removal's success before attempting the replacement; a failed replace after a
+   successful remove permanently lost a working registration. Fixed: fail closed unless
+   `mcp get` explicitly reports the entry missing; capture the exact Claude registration
+   before removal and restore it via `mcp add-json` if replacement fails; use Codex's
+   atomic overwrite instead of remove-then-add.
+2. **`ecc4337`** — the round-1 fix introduced its own bug: an unanchored regex could
+   match a scope-shaped substring inside a registration's `Args:` line ahead of the real
+   removal-instruction line, misdirecting repair to the wrong Claude scope. Fixed:
+   anchor the regex to the literal instruction line.
+3. **`9f28c63`** — the fail-closed inspection from round 1 aborted `install` on *any*
+   unrecognized `mcp get` failure, even on a fresh machine with nothing to protect.
+   Rollback failure was also indistinguishable from success, one repair branch skipped
+   rollback entirely, and the destructive `mcp remove` ran with no transcript echo.
+   Fixed: split "get itself failed" (safe to fall through to a plain add) from
+   "something exists but can't be parsed" (fail closed); thread rollback outcome through
+   a three-way `Literal["ok", "failed", "corrupted"]` return from `_register_with_cli`.
+4. **`56f543d`** — `"corrupted"` (registration lost, unrecoverable) and `"failed"`
+   (registration intact) both exited `1`, indistinguishable to a scripted caller. Added
+   `_EXIT_REGISTRATION_LOST = 4`.
+5. **`da3351f`** — a Codex transport value could crash `install` with an uncaught
+   `AttributeError`; an ambiguous `mcp get` failure skipped the remove-before-add safety
+   net the original repair path always applied; `_claude_config`'s local-scope lookup
+   `KeyError`'d on legitimate project paths differing only by symlink resolution; a
+   non-zero (vs. `None`) `mcp remove` result skipped rollback.
+6. **`1bca555`** — round 3 found that `da3351f`'s "ambiguous state" repair (a
+   destructive, unscoped `mcp remove` with no captured rollback state) could still
+   delete a working registration and misreport it as `"failed"` (implying it survived)
+   instead of `"corrupted"`. Three rounds in a row found a new bug in this exact corner,
+   so simplified instead of patching further: fold "ambiguous" back into "error" — fail
+   closed, no destructive remove attempted, matching every other unparseable-inspection
+   case in this module. Also fixed `_config_matches_command` crashing on an explicit
+   `"args": null`, and one stale/unreachable project path entry aborting the entire
+   local-scope lookup instead of being skipped.
+7. **`63531a9`** — bandit's Security CI job flagged the three `assert` statements added
+   by the rollback-safety fixes (B101). Suppressed with `# nosec B101` and a comment
+   documenting the invariant each guards, matching this file's existing suppression
+   convention.
+
+Net effect on the design above: (2)'s repair is no longer "acceptable to lose the entry
+on a failed replace" — it is rollback-safe for Claude Code (capture-before-remove,
+restore-on-failure) and atomic for Codex (native overwrite), with a dedicated exit code
+for the one case that still can't recover (rollback itself also fails).
+
 ## Files to modify
 
 | File | Change |
 |---|---|
-| `src/pipecat_context_hub/cli_install.py` | `_server_command()` unconditional; `_register_with_cli()` converges; docstrings |
-| `tests/` | see below |
+| `src/pipecat_context_hub/cli_install.py` | `_server_command()` unconditional; `_register_with_cli()` converges; docstrings; post-review: `_inspect_registration()`/`_Registration` state machine (`absent`/`matching`/`mismatched`/`unknown`/`error`), `_claude_config()` + `_restore_claude_registration()` for rollback capture/restore, `_fail_with_rollback()`/`_first_error_line()`/`_config_matches_command()` helpers, `_EXIT_REGISTRATION_LOST` |
+| `tests/unit/test_cli_install.py` | see below |
 | `CHANGELOG.md` | entry under **Fixed** |
 
 `shutil` stays imported — `_detect_cli_clients()` still uses it.
@@ -157,6 +215,13 @@ an error", but `claude mcp add` exits 1.
 - its result is independent of `PATH`, so registration never depends on the environment
 - converge: stale entry → remove then add; matching entry → no-op; absent → plain add
 - a client CLI with no `mcp get` falls back to plain `add`
+- post-review: rollback-on-failed-replace (add fails after a successful remove restores
+  the captured entry), `mcp get` timeout falls through to a plain non-destructive add,
+  anchored Claude scope-parsing regression (misleading `-s user` fragment in an `Args:`
+  line ahead of the real instruction), corrupted-vs-failed exit code (`4` vs `1`),
+  Codex non-dict transport guard, `_claude_config`'s real file-parsing logic directly
+  (project/user/local/symlinked-local scopes — previously only exercised through mocks),
+  `_config_matches_command` on an explicit `"args": null`
 
 ## Verification
 

@@ -40,6 +40,25 @@ This project uses [Semantic Versioning](https://semver.org/).
   the recorded command with the one it would write, replaces it when they differ, and
   leaves a matching one untouched. "Already registered" is no longer reported as a failure.
 
+- **The stale-registration repair above is now rollback-safe instead of destructive.**
+  Replacing a mismatched Claude Code entry used to remove it before adding the
+  replacement; if the add then failed, the previous — working — registration was
+  permanently lost with no way to recover it. `install` now captures the exact entry
+  before removing it and restores it via `claude mcp add-json` if the replacement fails;
+  Codex is unaffected, since its `mcp add` already overwrites atomically. A repair whose
+  rollback also fails now exits `4` rather than the generic `1`, so a caller scripting
+  around this command can tell "the previous registration is intact" from "it's gone and
+  needs manual attention" without parsing stderr. Inspection of an existing registration
+  also no longer aborts `install` on every unrecognized `mcp get` failure (it used to
+  break first-time installs whenever a client's error wording didn't match a hardcoded
+  string) and no longer crashes on a non-dict Codex transport value or a stored
+  registration with an explicit `"args": null`.
+
+### Security
+- Bumped `cryptography` 49.0.0 → 50.0.0 (CVE-2026-69247) and `gitpython` 3.1.56 → 3.1.57
+  (GHSA-3f7w-8rr8-f37f). Floors raised above the fix versions so a plain re-lock can't
+  regress.
+
 ## [0.5.0] - 2026-08-03
 
 ### Changed
