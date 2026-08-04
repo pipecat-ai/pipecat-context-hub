@@ -637,7 +637,7 @@ that section (designed for cross-component call chains) doesn't apply here.
 
 - [x] Phase 1: Shared report-hint constants module
 - [x] Phase 2: CLI stderr report-hints
-- [ ] Phase 3: Documentation and smoke coverage
+- [x] Phase 3: Documentation and smoke coverage
 - [ ] Phase 4: MCP-side symmetry audit (standalone)
 
 ## Findings
@@ -694,7 +694,23 @@ or determined to be a false positive, not a waived defect)
 
 ## Issues & Solutions
 
-(none yet)
+- **2026-08-04 — Phase 2's boundary-commit quality gate was under-scoped.**
+  The Phase 2 gate ran `mypy` against only `cli.py`/`cli_query.py`, not the
+  full `mypy src/ tests/` the plan requires as the exit gate for every
+  landing phase. That let two type-annotation gaps into the Phase 2 test
+  commit: `_run_semantic_command` in `tests/unit/test_cli_query.py` returned
+  `tuple[object, MagicMock]` (hiding `Result.stdout`/`.stderr`/`.exit_code`
+  attribute access), and `tests/unit/test_cli.py`'s
+  `TestServeRerankerTelemetry._patch_common` returned `dict[str, object]`,
+  so `captured_kwargs["reranker_status_provider"]()` was "object not
+  callable" to mypy. Caught when Phase 3's full-repo `mypy src/ tests/` gate
+  ran. Fixed by annotating the tuple's first element as
+  `click.testing.Result` and casting the provider lookup to
+  `Callable[[], Any]` — both are test-only annotation corrections, no
+  behavior change. Landed in commit `490803e`, which — because the fix
+  files were staged alongside Phase 3's already-staged `AGENTS.md`/
+  `CHANGELOG.md` changes when the boundary commit ran — ended up bundling
+  Phase 3's content too; see the Phase 3 entry in `## Progress` state notes.
 
 ## Final Results
 
