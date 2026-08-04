@@ -190,6 +190,38 @@ class TestRegisterWithCli:
 
         assert self._subcommands(calls) == ["get"]
 
+    def test_misleading_scope_fragment_in_args_is_not_mistaken_for_the_real_scope(self):
+        """An Args line that happens to contain `mcp remove ... -s user` must not
+        be matched ahead of the real instruction line reporting `-s local`."""
+        recorded = (
+            "Command: pipecat-context-hub\n"
+            "  Args: --note 'run: claude mcp remove pipecat-context-hub -s user'\n"
+            "To remove this server, run: claude mcp remove pipecat-context-hub -s local"
+        )
+        calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
+        existing = {"type": "stdio", "command": "pipecat-context-hub", "args": ["serve"]}
+        with (
+            patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
+            patch(
+                "pipecat_context_hub.cli_install._claude_config", return_value=existing
+            ) as mock_cfg,
+        ):
+            assert _register_with_cli("claude-code", _server_command()) is True
+        # must have read the scope reported on the *instruction* line, not the Args line
+        mock_cfg.assert_called_once_with("local")
+
+    def test_scope_fragment_without_the_real_instruction_line_is_treated_as_unparseable(self):
+        """No literal 'To remove this server, run:' line at all — must not
+        fall back to matching a scope-shaped fragment elsewhere in stdout."""
+        recorded = (
+            "Command: pipecat-context-hub\n"
+            "  Args: --note 'mcp remove pipecat-context-hub -s user'\n"
+        )
+        calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) is False
+        assert self._subcommands(calls) == ["get"]
+
 
 class TestMcpJson:
     def test_shape_matches_the_mcp_client_convention(self):

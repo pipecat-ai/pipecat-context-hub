@@ -19,8 +19,7 @@ import subprocess  # nosec B404 - fixed-arg, timeout-guarded client CLI registra
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
-from typing import Any
+from typing import Any, Literal
 
 import click
 
@@ -174,7 +173,12 @@ def _inspect_registration(client: str, exe: str, command: list[str]) -> _Registr
             )
             return _Registration("matching" if matches else "mismatched")
 
-        scope_match = re.search(r"mcp remove .* -s (local|user|project)", completed.stdout)
+        scope_match = re.search(
+            rf"^To remove this server, run: claude mcp remove {re.escape(_SERVER_NAME)} "
+            rf"-s (local|user|project)\s*$",
+            completed.stdout,
+            re.MULTILINE,
+        )
         if scope_match is None:
             raise ValueError("Claude did not report the registration scope")
         scope = scope_match.group(1)
