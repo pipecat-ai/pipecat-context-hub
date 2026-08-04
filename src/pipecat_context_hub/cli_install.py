@@ -53,7 +53,7 @@ _FILE_CLIENTS = {
 class _Registration:
     """Result of inspecting an existing client registration."""
 
-    state: Literal["absent", "matching", "mismatched", "unknown", "error"]
+    state: Literal["absent", "matching", "mismatched", "unknown", "ambiguous", "error"]
     config: dict[str, Any] | None = None
     scope: str | None = None
 
@@ -148,9 +148,10 @@ def _claude_config(scope: str) -> dict[str, Any]:
         return config
     if scope == "local":
         projects = document["projects"]
-        for project_path in (str(Path.cwd()), str(Path.cwd().resolve())):
-            if project_path in projects:
-                config = projects[project_path]["mcpServers"][_SERVER_NAME]
+        resolved_cwd = Path.cwd().resolve()
+        for project_path, entry in projects.items():
+            if Path(project_path).resolve() == resolved_cwd:
+                config = entry["mcpServers"][_SERVER_NAME]
                 if not isinstance(config, dict):
                     raise TypeError("Claude local registration is not an object")
                 return config
@@ -186,18 +187,19 @@ def _inspect_registration(client: str, exe: str, command: list[str]) -> _Registr
     if completed.returncode != 0:
         if _not_found(completed):
             return _Registration("absent")
-        detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+        detail = _first_error_line(completed) or "unknown error"
         click.echo(
-            f"  cannot inspect existing registration: "
-            f"{detail[0] if detail else 'unknown error'}; "
-            "assuming none and attempting a plain registration.",
+            f"  cannot inspect existing registration: {detail}; an entry may exist "
+            "here, attempting a repair-safe registration.",
             err=True,
         )
-        return _Registration("unknown")
+        return _Registration("ambiguous")
 
     try:
         if client == "codex":
             config = json.loads(completed.stdout)["transport"]
+            if not isinstance(config, dict):
+                raise TypeError("Codex transport entry is not an object")
             matches = _config_matches_command(config, command)
             return _Registration("matching" if matches else "mismatched")
 
@@ -218,9 +220,14 @@ def _inspect_registration(client: str, exe: str, command: list[str]) -> _Registr
         return _Registration("error")
 
 
-def _report_failure(exe: str, completed: subprocess.CompletedProcess[str]) -> None:
+def _first_error_line(completed: subprocess.CompletedProcess[str]) -> str:
+    """First non-blank line of *completed*'s stderr, falling back to stdout."""
     detail = (completed.stderr or completed.stdout or "").strip().splitlines()
-    click.echo(f"  {exe} exited {completed.returncode}: {detail[0] if detail else ''}", err=True)
+    return detail[0] if detail else ""
+
+
+def _report_failure(exe: str, completed: subprocess.CompletedProcess[str]) -> None:
+    click.echo(f"  {exe} exited {completed.returncode}: {_first_error_line(completed)}", err=True)
 
 
 def _restore_claude_registration(exe: str, registration: _Registration) -> bool:
@@ -249,6 +256,16 @@ def _restore_claude_registration(exe: str, registration: _Registration) -> bool:
     return True
 
 
+def _fail_with_rollback(exe: str, registration: _Registration) -> Literal["failed", "corrupted"]:
+    """Attempt to restore *registration* after a failed replacement.
+
+    Returns ``"failed"`` when rollback succeeded (previous registration intact),
+    ``"corrupted"`` when rollback also failed (nothing is registered any more).
+    """
+    restored = _restore_claude_registration(exe, registration)
+    return "failed" if restored else "corrupted"
+
+
 def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed", "corrupted"]:
     """Register the server via *client*'s own CLI.
 
@@ -264,6 +281,7 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
     exe = _CLI_CLIENTS[client]
     registration = _inspect_registration(client, exe, command)
     is_claude_mismatch = registration.state == "mismatched" and client == "claude-code"
+    is_claude_ambiguous = registration.state == "ambiguous" and client == "claude-code"
     if registration.state == "error":
         return "failed"
     if registration.state == "matching":
@@ -278,12 +296,18 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
         click.echo(f"  $ {exe} {' '.join(remove_args)}")
         removed = _run_client(exe, remove_args)
         if removed is None:
-            restored = _restore_claude_registration(exe, registration)
-            return "failed" if restored else "corrupted"
+            return _fail_with_rollback(exe, registration)
         if removed.returncode != 0:
             _report_failure(exe, removed)
-            return "failed"
+            return _fail_with_rollback(exe, registration)
         add_options = ["-s", registration.scope]
+    elif is_claude_ambiguous:
+        # Scope is unknown here (the `mcp get` output that would have named it was
+        # unparseable), so this remove is unscoped and best-effort: it's fine if
+        # there is nothing there to remove.
+        remove_args = ["mcp", "remove", _SERVER_NAME]
+        click.echo(f"  $ {exe} {' '.join(remove_args)}")
+        _run_client(exe, remove_args)
 
     # `codex mcp add` overwrites an existing name atomically. For an absent entry,
     # both clients take this same non-destructive path.
@@ -292,14 +316,12 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
     completed = _run_client(exe, args)
     if completed is None:
         if is_claude_mismatch:
-            restored = _restore_claude_registration(exe, registration)
-            return "failed" if restored else "corrupted"
+            return _fail_with_rollback(exe, registration)
         return "failed"
     if completed.returncode != 0:
         _report_failure(exe, completed)
         if is_claude_mismatch:
-            restored = _restore_claude_registration(exe, registration)
-            return "failed" if restored else "corrupted"
+            return _fail_with_rollback(exe, registration)
         return "failed"
     click.echo(f"  registered. Restart {client} to load it.")
     return "ok"
@@ -333,8 +355,10 @@ def install_command(
     \b
     Exit codes: 0 = a client was configured, 1 = a client CLI rejected the
     registration, 3 = nothing was configured and the config was printed to
-    paste instead. The file-configured editors (Cursor, VS Code, Zed) always
-    take the last path, as does a machine with no client CLI installed.
+    paste instead, 4 = a repair attempt failed and the previous registration
+    could not be restored either (nothing is registered for that client any
+    more). The file-configured editors (Cursor, VS Code, Zed) always take the
+    3 path, as does a machine with no client CLI installed.
     """
     from pipecat_context_hub.cli import refresh
 

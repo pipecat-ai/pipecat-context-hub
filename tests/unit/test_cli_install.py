@@ -11,14 +11,17 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import main
 from pipecat_context_hub.cli_install import (
     _EXIT_MANUAL_SETUP,
     _EXIT_REGISTRATION_LOST,
+    _claude_config,
     _detect_cli_clients,
     _mcp_json,
     _register_with_cli,
@@ -26,6 +29,20 @@ from pipecat_context_hub.cli_install import (
 )
 
 runner = CliRunner()
+
+
+def _absent_then_add(*, returncode: int = 0, stderr: str = ""):
+    """A fake `subprocess.run`: `mcp get` reports the entry absent, and the
+    terminal `mcp add` call returns the given result."""
+
+    def fake_run(argv, **_kwargs):
+        if argv[2] == "get":
+            return MagicMock(
+                returncode=1, stdout="", stderr='No MCP server named "pipecat-context-hub".'
+            )
+        return MagicMock(returncode=returncode, stdout="", stderr=stderr)
+
+    return fake_run
 
 
 class TestServerCommand:
@@ -50,6 +67,62 @@ class TestServerCommand:
     def test_never_registers_the_pipecat_front_door(self):
         """Registering `pipecat context-hub serve` would load typer on every server start."""
         assert _server_command()[0] != "pipecat"
+
+
+class TestClaudeConfig:
+    """`_claude_config` reads Claude's private config files directly; exercise
+    the real file-parsing logic instead of mocking it out."""
+
+    def test_project_scope_reads_mcp_json_in_cwd(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        entry = {"type": "stdio", "command": "x", "args": ["serve"]}
+        (tmp_path / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"pipecat-context-hub": entry}})
+        )
+        assert _claude_config("project") == entry
+
+    def test_user_scope_reads_top_level_mcp_servers(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        entry = {"type": "stdio", "command": "x", "args": ["serve"]}
+        (tmp_path / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"pipecat-context-hub": entry}})
+        )
+        assert _claude_config("user") == entry
+
+    def test_local_scope_matches_cwd_exactly(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.chdir(tmp_path)
+        entry = {"type": "stdio", "command": "x", "args": ["serve"]}
+        (tmp_path / ".claude.json").write_text(
+            json.dumps(
+                {"projects": {str(tmp_path): {"mcpServers": {"pipecat-context-hub": entry}}}}
+            )
+        )
+        assert _claude_config("local") == entry
+
+    def test_local_scope_matches_via_resolved_symlink(self, tmp_path, monkeypatch):
+        """A registration stored under a symlinked project path must still be
+        found when the process reports a different (but equivalent) cwd."""
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Patch Path.cwd directly rather than os.chdir(link): on POSIX,
+        # os.getcwd() already resolves symlinks at the OS level, which would
+        # silently defeat this test.
+        monkeypatch.setattr(Path, "cwd", lambda: real)
+        entry = {"type": "stdio", "command": "x", "args": ["serve"]}
+        (tmp_path / ".claude.json").write_text(
+            json.dumps({"projects": {str(link): {"mcpServers": {"pipecat-context-hub": entry}}}})
+        )
+        assert _claude_config("local") == entry
+
+    def test_missing_key_still_raises_key_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        with pytest.raises(KeyError):
+            _claude_config("project")
 
 
 class TestRegisterWithCli:
@@ -109,6 +182,16 @@ class TestRegisterWithCli:
             patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
             patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
         ):
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
+        assert self._subcommands(calls) == ["get", "remove", "add"]
+
+    def test_ambiguous_get_failure_attempts_a_repair_safe_registration(self):
+        """`mcp get` failing with an unrecognized error (not a clean "not found")
+        means an entry may or may not be there. Claude repairs this with a
+        best-effort unscoped remove before adding, rather than risking a
+        skipped registration or an outright failure."""
+        calls, fake_run = self._fake_client(get_code=1, get_stderr="internal error: corrupt state")
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
             assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert self._subcommands(calls) == ["get", "remove", "add"]
 
@@ -379,20 +462,11 @@ class TestInstallCommand:
         with patch("pipecat_context_hub.cli_install.subprocess.run"):
             manual = runner.invoke(main, ["install", "--client", "cursor", "--no-refresh"])
 
-        def absent_then_add(argv, **_kwargs):
-            if argv[2] == "get":
-                return MagicMock(
-                    returncode=1,
-                    stdout="",
-                    stderr='No MCP server named "pipecat-context-hub".',
-                )
-            return MagicMock(returncode=0, stdout="", stderr="")
-
         with (
             patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/claude"),
             patch(
                 "pipecat_context_hub.cli_install.subprocess.run",
-                side_effect=absent_then_add,
+                side_effect=_absent_then_add(),
             ),
         ):
             registered = runner.invoke(main, ["install", "--client", "claude-code", "--no-refresh"])
@@ -400,20 +474,11 @@ class TestInstallCommand:
         assert registered.exit_code == 0
 
     def test_cli_client_is_registered_through_its_own_cli(self):
-        def absent_then_add(argv, **_kwargs):
-            if argv[2] == "get":
-                return MagicMock(
-                    returncode=1,
-                    stdout="",
-                    stderr='No MCP server named "pipecat-context-hub".',
-                )
-            return MagicMock(returncode=0, stdout="", stderr="")
-
         with (
             patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/claude"),
             patch(
                 "pipecat_context_hub.cli_install.subprocess.run",
-                side_effect=absent_then_add,
+                side_effect=_absent_then_add(),
             ) as run,
         ):
             result = runner.invoke(main, ["install", "--client", "claude-code", "--no-refresh"])
@@ -428,20 +493,11 @@ class TestInstallCommand:
     def test_client_cli_failure_is_reported_as_error_exit(self):
         """A failed client registration is surfaced via a nonzero exit, not silently ignored."""
 
-        def absent_then_add_fails(argv, **_kwargs):
-            if argv[2] == "get":
-                return MagicMock(
-                    returncode=1,
-                    stdout="",
-                    stderr='No MCP server named "pipecat-context-hub".',
-                )
-            return MagicMock(returncode=1, stdout="", stderr="already exists")
-
         with (
             patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/claude"),
             patch(
                 "pipecat_context_hub.cli_install.subprocess.run",
-                side_effect=absent_then_add_fails,
+                side_effect=_absent_then_add(returncode=1, stderr="already exists"),
             ),
         ):
             result = runner.invoke(main, ["install", "--client", "claude-code", "--no-refresh"])
