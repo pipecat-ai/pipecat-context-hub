@@ -16,6 +16,7 @@ from click.testing import CliRunner
 
 from pipecat_context_hub.cli import main
 from pipecat_context_hub.cli_install import (
+    _EXIT_MANUAL_SETUP,
     _detect_cli_clients,
     _mcp_json,
     _register_with_cli,
@@ -168,10 +169,29 @@ class TestInstallCommand:
         """Cursor/VS Code/Zed configs are hand-edited; never write them."""
         with patch("pipecat_context_hub.cli_install.subprocess.run") as run:
             result = runner.invoke(main, ["install", "--client", "cursor", "--no-refresh"])
-        assert result.exit_code == 0
+        assert result.exit_code == _EXIT_MANUAL_SETUP
         assert "mcpServers" in result.output
         assert ".cursor/mcp.json" in result.output
         run.assert_not_called()
+
+    def test_manual_setup_is_distinguishable_from_a_configured_client(self):
+        """Both outcomes print and neither is an error, so only the exit code separates them.
+
+        A wrapper that captures the output — `pipecat init` does — otherwise reports a
+        registration that never happened, and swallows the config block the user needed.
+        """
+        with patch("pipecat_context_hub.cli_install.subprocess.run"):
+            manual = runner.invoke(main, ["install", "--client", "cursor", "--no-refresh"])
+        with (
+            patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/claude"),
+            patch(
+                "pipecat_context_hub.cli_install.subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="", stderr=""),
+            ),
+        ):
+            registered = runner.invoke(main, ["install", "--client", "claude-code", "--no-refresh"])
+        assert manual.exit_code == _EXIT_MANUAL_SETUP
+        assert registered.exit_code == 0
 
     def test_cli_client_is_registered_through_its_own_cli(self):
         with (
@@ -208,7 +228,7 @@ class TestInstallCommand:
     def test_vscode_client_prints_servers_schema(self):
         with patch("pipecat_context_hub.cli_install.subprocess.run") as run:
             result = runner.invoke(main, ["install", "--client", "vscode", "--no-refresh"])
-        assert result.exit_code == 0
+        assert result.exit_code == _EXIT_MANUAL_SETUP
         assert '"servers"' in result.output
         assert '"type": "stdio"' in result.output
         assert "mcpServers" not in result.output
@@ -217,7 +237,7 @@ class TestInstallCommand:
     def test_zed_client_prints_context_servers_schema(self):
         with patch("pipecat_context_hub.cli_install.subprocess.run") as run:
             result = runner.invoke(main, ["install", "--client", "zed", "--no-refresh"])
-        assert result.exit_code == 0
+        assert result.exit_code == _EXIT_MANUAL_SETUP
         assert '"context_servers"' in result.output
         assert '"source": "custom"' in result.output
         assert "mcpServers" not in result.output
@@ -262,7 +282,7 @@ class TestInstallCommand:
         ):
             result = runner.invoke(main, ["install", "--no-refresh"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == _EXIT_MANUAL_SETUP
         assert "mcpServers" in result.output
         for client in ("cursor", "vscode", "zed"):
             assert client in result.output
@@ -271,5 +291,5 @@ class TestInstallCommand:
     def test_no_refresh_skips_the_index_build(self):
         with patch("pipecat_context_hub.cli.refresh") as refresh:
             result = runner.invoke(main, ["install", "--client", "cursor", "--no-refresh"])
-        assert result.exit_code == 0
+        assert result.exit_code == _EXIT_MANUAL_SETUP
         refresh.assert_not_called()

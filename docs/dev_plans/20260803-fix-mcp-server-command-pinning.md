@@ -1,8 +1,9 @@
 # Task: Pin the Registered MCP Server Command to the Installed Interpreter
 
-**Status**: Complete (unreleased) — both changes implemented; full suite green (1216 passed,
-6 skipped), ruff + mypy + bandit clean. Verified against a live client: a seeded bare-name
-entry is replaced with the interpreter command and connects, and a second run is a no-op.
+**Status**: Complete (unreleased) — all three changes implemented; full suite green (1217
+passed, 6 skipped), ruff + mypy + bandit clean. Verified against a live client: a seeded
+bare-name entry is replaced with the interpreter command and connects, and a second run is
+a no-op.
 **Date**: 2026-08-03
 **Branch**: `fix/mcp-server-command-pinning`
 **Follows**: [`20260725-feature-pipecat-cli-plugin.md`](20260725-feature-pipecat-cli-plugin.md) — the CLI bridge whose distribution change exposed this.
@@ -106,6 +107,24 @@ entry and rewrite it — a redundant write, never a broken server.
 
 **Codex needs no special case.** If `codex mcp get` does not exist it exits non-zero,
 routing to the plain `add` path, which is exactly today's behaviour.
+
+### 3. Report whether anything was configured
+
+`install` exited `0` both when it registered the server and when it only printed the
+config to paste, so a caller cannot tell the two apart. A wrapper that captures the
+output — `pipecat init` does, to keep its own output to one line — then reports a
+registration that never happened and swallows the block the user needed.
+
+It now exits `3` when nothing was configured automatically: the path every
+file-configured editor (Cursor, VS Code, Zed) takes, and any machine with no client CLI
+installed. `1` still means a client CLI rejected the registration.
+
+Exit codes are already this CLI's machine-readable outcome channel — the main group
+documents `0`/`1`/`2` for the query commands — so collapsing two materially different
+outcomes into `0` was inconsistent with the hub's own convention, independent of who
+calls it.
+
+### Notes on (2)
 
 Replacement is not atomic: if `remove` succeeds and `add` fails, the entry is gone. That
 is acceptable only because the branch is reached solely when the entry was already

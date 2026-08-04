@@ -27,6 +27,11 @@ _SERVER_NAME = "pipecat-context-hub"
 # Clients configured by shelling out to their own CLI: name -> executable.
 _CLI_CLIENTS = {"claude-code": "claude", "codex": "codex"}
 
+# Exit code for "nothing was configured automatically; the config was printed to paste".
+# Distinct from success because a caller cannot see the difference otherwise, and from
+# failure because the command did everything it could for that client.
+_EXIT_MANUAL_SETUP = 3
+
 # Clients configured by hand-editing a JSON file: name -> where it lives.
 _FILE_CLIENTS = {
     "cursor": "~/.cursor/mcp.json (global) or .cursor/mcp.json (per project)",
@@ -163,6 +168,12 @@ def install_command(
     Configures every detected client CLI (Claude Code, Codex) unless --client
     is given, then runs the first refresh. MCP servers are read at session
     start, so restart your agent afterwards.
+
+    \b
+    Exit codes: 0 = a client was configured, 1 = a client CLI rejected the
+    registration, 3 = nothing was configured and the config was printed to
+    paste instead. The file-configured editors (Cursor, VS Code, Zed) always
+    take the last path, as does a machine with no client CLI installed.
     """
     from pipecat_context_hub.cli import refresh
 
@@ -175,6 +186,7 @@ def install_command(
 
     selected = list(clients) or _detect_cli_clients()
     failures: list[str] = []
+    configured = False
     if not selected:
         click.echo(
             "No client CLI detected (looked for: "
@@ -191,21 +203,22 @@ def install_command(
                 click.echo(_mcp_json(command, client))
                 continue
             click.echo(f"Registering '{_SERVER_NAME}' with {client}:")
-            if not _register_with_cli(client, command):
+            if _register_with_cli(client, command):
+                configured = True
+            else:
                 click.echo(f"  registration failed for {client}.", err=True)
                 failures.append(client)
 
     if no_refresh:
         click.echo("\nSkipped index build. Run `refresh` before the first query.")
-        if failures:
-            raise click.ClickException(f"Failed to register with: {', '.join(failures)}")
-        return
-
-    click.echo("\nBuilding the index (first run downloads models; allow several minutes)...")
-    ctx.invoke(refresh)
+    else:
+        click.echo("\nBuilding the index (first run downloads models; allow several minutes)...")
+        ctx.invoke(refresh)
 
     if failures:
         raise click.ClickException(f"Failed to register with: {', '.join(failures)}")
+    if not configured:
+        ctx.exit(_EXIT_MANUAL_SETUP)
 
 
 def register_install_command(group: click.Group) -> None:

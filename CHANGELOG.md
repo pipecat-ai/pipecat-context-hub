@@ -25,6 +25,15 @@ This project uses [Semantic Versioning](https://semver.org/).
   leftover standalone install, or any active project venv, since `pipecat-ai[evals]` pulls
   in `pipecat-ai[cli]`.
 
+- **`install` reports whether it configured anything.** It exited `0` both when it
+  registered the server with a client CLI and when it only printed the config for you to
+  paste, so a caller could not tell the two apart — and a wrapper that captures the output,
+  as `pipecat init` does, would report a registration that never happened while swallowing
+  the block the user needed. It now exits `3` when nothing was configured automatically,
+  which is the path every file-configured editor (Cursor, VS Code, Zed) takes, along with
+  any machine that has no client CLI installed. Exit `1` still means a client CLI rejected
+  the registration.
+
 - **Reinstalling repairs a stale registration instead of skipping it.** `claude mcp add`
   refuses a name it already has and leaves the existing entry alone, so registrations
   written by earlier releases would have survived every reinstall. `install` now compares
