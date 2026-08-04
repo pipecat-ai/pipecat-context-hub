@@ -60,12 +60,23 @@ backported to the MCP side for symmetry.
 ## Requirements
 
 - Both issue-template URLs live in exactly one place; MCP instructions and
-  CLI messages both import from it — no second hardcoded copy anywhere in
-  `src/`.
-- CLI gains a bug-report hint on all three `_EXIT_INDEX_UNREADY` stderr paths
-  (`IncompatibleIndexFormatError`, failed-to-open, empty-index —
-  `cli_query.py:150-184`; exploration found three call sites sharing this
-  exit code, not the two originally assumed).
+  the applicable CLI messages import from it — no second hardcoded copy
+  anywhere in `src/`. `cli_query.py` consumes both constants; `cli.py`
+  consumes `BUG_REPORT_ISSUE_URL` only.
+- CLI gains a retrieval-quality stderr hint for each semantic command when
+  its handler response reports `evidence.low_confidence == true` or returns
+  an empty result collection (`hits` / `snippets`). The hint is
+  remediation-first and asks the operator to file at
+  `RETRIEVAL_QUALITY_ISSUE_URL` only if the condition persists after retrying
+  without restrictive filters / with a larger limit. The handler's stdout
+  JSON bytes remain unchanged.
+- CLI gains a bug-report hint on every existing `_EXIT_INDEX_UNREADY` path:
+  the three one-shot query paths in `cli_query.py:150-184`, the three `serve`
+  startup paths in `cli.py:263-299` (where startup fails before MCP
+  `_SERVER_INSTRUCTIONS` can be delivered), and the incompatible-index
+  `refresh` path in `cli.py:523-530`. Each retains its existing remediation
+  before saying to file at `BUG_REPORT_ISSUE_URL` only if the problem
+  persists.
 - CLI gains a degraded-reranker stderr warning gated on
   `disabled_reason == "not_cached"` only (`probe_reranker()` never returns
   `"load_failed"` to the CLI, and `"config_disabled"` is a deliberate
@@ -102,7 +113,9 @@ backported to the MCP side for symmetry.
   no path.
 - Wording-drift risk: confirm the MCP-side prose, the CLI-query stderr line,
   and the `cli.py` startup log line all reference the *same* imported
-  constant, not independently retyped literals.
+  constant, not independently retyped literals. The stray-literal scan is
+  necessary but not sufficient: add a structural source/AST guard for the
+  imports and emitter references too.
 - Consistency risk: the plan's "don't mis-route a routine state to the bug
   tracker" reasoning is applied to the `not_cached` reranker warning; check
   whether the same reasoning should apply to the empty-index
@@ -112,10 +125,11 @@ backported to the MCP side for symmetry.
 ## Implementation Checklist
 
 Every phase that produces a commit runs the full quality gate before landing
-— `uv run pytest tests/ -q && uv run ruff check src/ tests/ && uv run mypy
-src/ tests/` — not just its own per-phase test command. Phase 1 introduces a
-new module imported by `server/main.py`; a stale import elsewhere should not
-be able to hide until the last phase.
+— `uv run ruff format src/ tests/ && uv run ruff check src/ tests/ && uv run
+mypy src/ tests/ && uv run pytest tests/ -q` — not just its own per-phase
+test command. Formatting runs first so every later check exercises the final
+bytes. Phase 1 introduces a new module imported by `server/main.py`; a stale
+import elsewhere should not be able to hide until the last phase.
 
 ### Phase 1: Shared report-hint constants module
 
@@ -150,24 +164,37 @@ be able to hide until the last phase.
   `TestSupportLinks::test_no_stray_issue_template_literals`) walking
   `src/**/*.py` and asserting the substring `"issues/new?template="`
   appears only inside `shared/support_links.py`. This finishes landing only
-  once Phase 2 (and, if adopted, the `cli.py` update) also import from the
-  shared module, so the test should be added now (it will trivially pass) and
-  re-run as a regression guard once Phase 2 removes the last hardcoded copy —
-  do not leave this as a manual `grep` note in Phase 4; the repo already has
+  once Phase 1 removes the current `server/main.py` literals; add it now and
+  re-run it after Phase 2 adds every CLI consumer. This guards against stray
+  literals but does not prove which symbols the emitters reference; Phase 2
+  adds a separate structural import/usage guard. Do not leave either check as
+  a manual `grep` note in Phase 4; the repo already has
   the equivalent pattern in `TestToolCommandParity` /
   `TestVersionConsistency`. (Known, accepted exception: `docs/README.md:444`
   carries a doc-only literal copy that this test does not and should not
-  cover — markdown can't import Python constants; see the Phase 4 note.)
+  cover — markdown can't import Python constants; see the Phase 3 note.)
 
 ### Phase 2: CLI stderr report-hints
 
 **Impl files:** `src/pipecat_context_hub/cli_query.py`, `src/pipecat_context_hub/cli.py`
-**Test files:** `tests/unit/test_cli_query.py`
-**Test command:** `uv run pytest tests/unit/test_cli_query.py -v`
-**Goal:** The three `_EXIT_INDEX_UNREADY` stderr paths, the reranker degraded-state case, and `cli.py`'s `serve`-startup `not_cached` log line all give the operator the same "where to report this" nudge the MCP instructions already give a connecting agent, without touching the stdout JSON contract or any exit code.
+**Test files:** `tests/unit/test_cli_query.py`, `tests/unit/test_cli.py`, `tests/unit/test_server.py`
+**Test command:** `uv run pytest tests/unit/test_cli_query.py tests/unit/test_cli.py tests/unit/test_server.py -v`
+**Goal:** Poor/missing semantic results, all seven `_EXIT_INDEX_UNREADY` stderr/log paths, the reranker degraded-state case, and `cli.py`'s `serve`-startup `not_cached` log line all give the operator the applicable "where to report this" nudge the MCP instructions already give a connecting agent, without touching stdout JSON or any exit code.
 
-- Import `BUG_REPORT_ISSUE_URL` from `shared/support_links.py` into
-  `cli_query.py` and `cli.py`.
+- Import both `RETRIEVAL_QUALITY_ISSUE_URL` and `BUG_REPORT_ISSUE_URL` from
+  `shared/support_links.py` into `cli_query.py`; import
+  `BUG_REPORT_ISSUE_URL` into `cli.py`.
+- Add a small post-dispatch predicate in `cli_query.py` that inspects the
+  semantic handler JSON without rewriting it. When `needs_embeddings` is
+  true and the decoded object has `evidence.low_confidence == true`, or its
+  result collection is empty (`hits` for search commands, `snippets` for
+  `get-code-snippet`), emit a one-line, remediation-first stderr hint using
+  `RETRIEVAL_QUALITY_ISSUE_URL`: retry with fewer filters / a larger limit,
+  and file only if poor or missing results persist. Lookup commands are out
+  of scope because they are direct lookups rather than ranked retrieval.
+  Keep the original result string byte-for-byte for stdout; the inspection
+  helper is read-only and must tolerate a decoded object without
+  `evidence`/result-list keys by treating it as "no hint."
 - Append a report-hint line to all three `_EXIT_INDEX_UNREADY` messages
   (`IncompatibleIndexFormatError` handler, failed-to-open handler,
   empty-index handler — `cli_query.py:150-184`), keeping the appended text
@@ -207,6 +234,19 @@ be able to hide until the last phase.
   (`cli.py:352-371`), so the third emitter of this exact operator guidance
   doesn't drift from the other two — this is the parity gap this plan exists
   to close, not an optional stretch goal.
+- Append the same remediation-first bug-report suffix to `cli.py`'s three
+  `serve` startup `_EXIT_INDEX_UNREADY` logger paths (`cli.py:263-299`). These
+  paths execute before `create_server(...)`, so the MCP initialize
+  instructions cannot provide their own report guidance. Also append it to
+  the incompatible-index `refresh` exit (`cli.py:523-530`), which shares the
+  same exit code and reset-index remediation. Preserve the existing
+  `_redact_home(...)` / `redact_home_in_text(...)` handling and keep the exact
+  `refresh --force --reset-index` remediation substring pinned by
+  `services/index/errors.py::RESET_INDEX_REMEDIATION`.
+- Add a structural source/AST test that verifies each consumer imports the
+  appropriate symbol from `shared.support_links` and each named emitter
+  references that symbol. Keep Phase 1's `"issues/new?template="` scan as a
+  separate stray-literal guard; it cannot catch a URL rebuilt from fragments.
 - **Accepted trade-off, not a bug to fix:** the CLI-query warning fires once
   per process, on every semantic-command invocation while the model stays
   uncached — an agent looping `search-api` calls sees it every time, which
@@ -239,9 +279,21 @@ be able to hide until the last phase.
     forcing `disabled_reason="not_cached"` via
     `probe_reranker`/`_resolve_reranker` mocking, that verifies: the warning
     fires on stderr; `json.loads(result.stdout)` still succeeds and contains
-    no `BUG_REPORT_ISSUE_URL`; and no home path leaks into the warning line.
+    no `BUG_REPORT_ISSUE_URL`; and the exact pre-annotation handler JSON is
+    not rewritten by warning inspection. Spy on
+    `cli_query.redact_home_in_text` and assert the warning is passed through
+    it — merely checking that the fixed, path-free template contains no home
+    path would pass even if the required wrapper were removed.
     A single-command test would miss a miswired `needs_embeddings` flag on
     any of the other three.
+  - Add retrieval-quality tests parametrized over all four semantic commands.
+    Cover `evidence.low_confidence=true`, an empty result collection with
+    `low_confidence=false`, and a healthy non-empty response. Assert the first
+    two emit `RETRIEVAL_QUALITY_ISSUE_URL` on stderr, the healthy response does
+    not, and stdout stays byte-for-byte identical apart from the pre-existing
+    staleness annotation behavior. Add a negative malformed/minimal-object
+    fixture with no `evidence`, `hits`, or `snippets` keys to pin the helper's
+    no-hint/no-crash fallback used by lightweight handler mocks.
   - Add a negative test verifying the warning does **not** fire when the
     reason is `config_disabled` or `None`.
   - Add a **negative test for an unknown/future reason value** (e.g. mock
@@ -260,10 +312,24 @@ be able to hide until the last phase.
     weakest example (its JSON body already surfaces
     `reranker_disabled_reason`), so it isn't sufficient on its own.
   - Add a **co-fire negative test**: for each of the three
-    `_EXIT_INDEX_UNREADY` exits, assert the reranker-warning's
-    `BUG_REPORT_ISSUE_URL` line does not also appear in stderr — these exits
-    raise before the reranker warning's emission point, and this pins that
-    invariant so a later refactor can't silently merge the two paths.
+    one-shot `_EXIT_INDEX_UNREADY` exits, assert stderr contains exactly one
+    bug-report URL (the index-unready suffix) and does not contain the
+    reranker-warning prefix or retrieval-quality URL. These exits raise before
+    either post-open warning point; checking only for `BUG_REPORT_ISSUE_URL`
+    would be ambiguous because the index-unready message intentionally uses
+    that same URL.
+- Extend `tests/unit/test_cli.py`:
+  - Cover all three `serve` startup index-unready branches and the `refresh`
+    incompatible-index branch. Each test pins exit code 2, the existing
+    remediation before `BUG_REPORT_ISSUE_URL`, and home redaction where the
+    branch includes a path.
+  - Add a mocked-serve / `caplog` test for startup reranker telemetry:
+    `not_cached` includes `BUG_REPORT_ISSUE_URL`, while `config_disabled`
+    does not. Capture the `reranker_status_provider` passed to
+    `create_server`; after forcing a constructed reranker's `enabled` property
+    false, assert the provider reports `disabled_reason="load_failed"`. This
+    is the Phase-4 reachability regression guard against the actual live
+    closure, not an assertion only about instruction prose.
 
 ### Phase 3: Documentation and smoke coverage
 
@@ -563,7 +629,7 @@ that section (designed for cross-component call chains) doesn't apply here.
   one-time manual check.
 - Code reviewed and approved.
 
-<!-- reviewed: 2026-08-04 @ 3852bf4cbcecc2f8568fbf523f20010a768dc89e -->
+<!-- reviewed: 2026-08-04 @ b964bbf1acd6b395a61441859757e5f92a7ea8ea -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
