@@ -247,8 +247,12 @@ def _restore_claude_registration(exe: str, registration: _Registration) -> bool:
     Returns True when the rollback succeeded, False when it did not (in which
     case the previous registration is lost, not merely unchanged).
     """
-    assert registration.config is not None
-    assert registration.scope is not None
+    # nosec B101 - invariant, not a runtime check: the only caller path that reaches
+    # here is gated on registration.state == "mismatched", which is the sole state
+    # _inspect_registration populates config/scope for. AssertionError would mean a
+    # caller-contract bug, not untrusted input.
+    assert registration.config is not None  # nosec B101
+    assert registration.scope is not None  # nosec B101
     rollback = _run_client(
         exe,
         [
@@ -301,7 +305,9 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
 
     add_options: list[str] = []
     if is_claude_mismatch:
-        assert registration.scope is not None
+        # nosec B101 - invariant: is_claude_mismatch implies state == "mismatched",
+        # the only state _inspect_registration populates scope for.
+        assert registration.scope is not None  # nosec B101
         remove_args = ["mcp", "remove", _SERVER_NAME, "-s", registration.scope]
         click.echo(f"  $ {exe} {' '.join(remove_args)}")
         removed = _run_client(exe, remove_args)
