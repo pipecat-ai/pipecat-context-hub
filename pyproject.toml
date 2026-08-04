@@ -31,15 +31,17 @@ dependencies = [
     "tokenizers>=0.15,<1.0",
     "huggingface-hub>=0.20,<2.0",
     "numpy>=1.24,<3.0",
-    "gitpython>=3.1.49,<4.0",
+    # gitpython < 3.1.57: GHSA-3f7w-8rr8-f37f. Floor raised above the fix so a
+    # plain re-lock cannot regress to a vulnerable build.
+    "gitpython>=3.1.57,<4.0",
     "click>=8.0,<9.0",
     "tree-sitter>=0.25,<1.0",
     "tree-sitter-typescript>=0.23,<1.0",
     "packaging>=21.0,<27.0",
-    # cryptography < 48.0.1: GHSA-537c-gmf6-5ccf. Floor raised above the fix so a
-    # plain re-lock cannot regress to a vulnerable build (the prior >=46.0.7 still
-    # admitted 46.0.7). Lock resolves to 49.0.0.
-    "cryptography>=48.0.1",
+    # cryptography < 50.0.0: CVE-2026-69247. Floor raised above the fix so a
+    # plain re-lock cannot regress to a vulnerable build (the prior >=48.0.1 still
+    # admitted 49.0.0).
+    "cryptography>=50.0.0",
 ]
 
 [project.optional-dependencies]
