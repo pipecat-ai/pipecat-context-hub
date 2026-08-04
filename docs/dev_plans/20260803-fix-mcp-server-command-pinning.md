@@ -105,8 +105,14 @@ prints human-readable text; we ask only whether the entry already invokes *this*
 interpreter and module. If that output format changes we fail to recognise our own
 entry and rewrite it — a redundant write, never a broken server.
 
-**Codex needs no special case.** If `codex mcp get` does not exist it exits non-zero,
-routing to the plain `add` path, which is exactly today's behaviour.
+**Codex needs no special case**, and this is what matching our own command buys. `codex
+mcp get` exists and prints a layout unrelated to Claude Code's — lowercase `command:` /
+`args:` against `Command:` / `Args:` — yet both converge, because the check never parses
+either. A client CLI with no `mcp get` at all exits non-zero and routes to the plain `add`
+path, which is the prior behaviour.
+
+The two also scope differently: Claude Code registers per project, codex globally. So a
+second project legitimately re-registers with Claude Code while codex reports no change.
 
 ### 3. Report whether anything was configured
 
@@ -160,6 +166,8 @@ an error", but `claude mcp add` exits 1.
 3. re-run over a stale bare-name entry → rewritten and connecting
 4. re-run over a correct entry → no-op, no config churn
 5. `pipecat init` end to end with a venv active — the case that reproduced it
+6. both client CLIs: `claude` and `codex` register, and each reports no change on a
+   re-run against its own config (per project for Claude Code, global for codex)
 
 ## Release
 
@@ -177,8 +185,9 @@ floor bump alone.
 
 ## Open questions
 
-- **Codex is unverified** — no `codex` on the development machine. The design degrades to
-  current behaviour if `mcp get` is missing, but someone with it installed should confirm.
+- **The paste-and-restart round trip is unverified.** The config printed for Cursor,
+  VS Code, and Zed is exercised only as far as its content; nobody has pasted it into one
+  of those editors and watched the server come up.
 - **Advise instead of repair?** Change 2 could print "a different server is registered,
   run `claude mcp remove …`" rather than rewriting. No clobbering risk and no mutation
   driven by parsing, at the cost of leaving work to the user in a command whose purpose is
