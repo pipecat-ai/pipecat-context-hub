@@ -1,12 +1,12 @@
 # Task: CLI/MCP self-report guidance parity
 
-**Status**: Not Started
+**Status**: Complete
 **Component**: cli, server (mcp instructions)
 **Assigned to**: Claude
 **Priority**: Low
 **Branch**: feature/self-report-guidance-parity
 **Created**: 2026-08-03
-**Completed**:
+**Completed**: 2026-08-04
 **Review Gates**: quick
 
 ## Objective
@@ -638,7 +638,7 @@ that section (designed for cross-component call chains) doesn't apply here.
 - [x] Phase 1: Shared report-hint constants module
 - [x] Phase 2: CLI stderr report-hints
 - [x] Phase 3: Documentation and smoke coverage
-- [ ] Phase 4: MCP-side symmetry audit (standalone)
+- [x] Phase 4: MCP-side symmetry audit (standalone)
 
 ## Findings
 
@@ -757,4 +757,13 @@ or determined to be a false positive, not a waived defect)
 
 ## Final Results
 
-(fill in on completion)
+All four phases landed on `feature/self-report-guidance-parity` via `/conduct --autonomous`:
+
+- Phase 1 (`e9d6bef`): `shared/support_links.py` created; `_SERVER_INSTRUCTIONS` interpolates from it.
+- Phase 2 (`4ccddb5`): CLI stderr report-hints added to `cli_query.py`/`cli.py`.
+- Phase 3 + a Phase-2 mypy-annotation fix (`490803e`): AGENTS.md item #50 reworded, new smoke item 9, CHANGELOG entry — bundled with a same-day fix for two type-annotation gaps in Phase 2's test helpers that the under-scoped Phase-2 gate missed (see `## Issues & Solutions`).
+- Phase 4 (`7e51bc5`): added a `not_cached`-only remediation-first step to the MCP degraded-hub clause (`pipecat-context-hub refresh` before the bug-report URL); confirmed `load_failed` is still reachable post-ONNX-migration — no removal needed.
+
+Full suite green throughout (1271 passed, 6 skipped at final commit); `ruff format`/`ruff check`/`mypy src/ tests/` clean, run both scoped per-phase and full-tree at every boundary commit. No `just ci`/`make ci`/`npm run ci`/`cargo test --all` entrypoint exists in this repo, so the equivalent `uv run ruff format && uv run ruff check && uv run mypy src/ tests/ && uv run pytest tests/ -q` pipeline (already run at every phase boundary per the Implementation Checklist's quality-gate requirement) stands in for the CI-parity gate.
+
+**Review Gates: `quick` (declared in the header) could not be auto-chained.** `/code-review` is registered with `disable-model-invocation`, so it cannot be triggered programmatically from within `/conduct`'s autonomous run — only a human-initiated session can invoke it. **Run `/code-review` on this branch before merging** to satisfy the plan's opted-in review gate; this is the one item this `/conduct` run could not complete on its own.
