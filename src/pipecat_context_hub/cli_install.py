@@ -53,7 +53,7 @@ _FILE_CLIENTS = {
 class _Registration:
     """Result of inspecting an existing client registration."""
 
-    state: Literal["absent", "matching", "mismatched", "unknown", "ambiguous", "error"]
+    state: Literal["absent", "matching", "mismatched", "unknown", "error"]
     config: dict[str, Any] | None = None
     scope: str | None = None
 
@@ -150,7 +150,17 @@ def _claude_config(scope: str) -> dict[str, Any]:
         projects = document["projects"]
         resolved_cwd = Path.cwd().resolve()
         for project_path, entry in projects.items():
-            if Path(project_path).resolve() == resolved_cwd:
+            # One broken entry (permission-denied, a stale symlink, a removed network
+            # mount) must not abort the lookup for every other entry in the same dict.
+            # This is a best-effort skip, not a guarantee: an entry that hangs instead
+            # of erroring (an unreachable-but-not-erroring network mount) still blocks
+            # here -- accepted fragility, same tradeoff this function already makes
+            # elsewhere (see docstring).
+            try:
+                matches = Path(project_path).resolve() == resolved_cwd
+            except OSError:
+                continue
+            if matches:
                 config = entry["mcpServers"][_SERVER_NAME]
                 if not isinstance(config, dict):
                     raise TypeError("Claude local registration is not an object")
@@ -172,7 +182,9 @@ def _config_matches_command(
     it's ``stdio``, the only transport this command ever writes.
     """
     actual_type = config.get("type", default_type)
-    return actual_type == "stdio" and [config.get("command"), *config.get("args", [])] == command
+    return (
+        actual_type == "stdio" and [config.get("command"), *(config.get("args") or [])] == command
+    )
 
 
 def _inspect_registration(client: str, exe: str, command: list[str]) -> _Registration:
@@ -189,11 +201,10 @@ def _inspect_registration(client: str, exe: str, command: list[str]) -> _Registr
             return _Registration("absent")
         detail = _first_error_line(completed) or "unknown error"
         click.echo(
-            f"  cannot inspect existing registration: {detail}; an entry may exist "
-            "here, attempting a repair-safe registration.",
+            f"  cannot inspect existing registration: {detail}; leaving it unchanged.",
             err=True,
         )
-        return _Registration("ambiguous")
+        return _Registration("error")
 
     try:
         if client == "codex":
@@ -281,7 +292,6 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
     exe = _CLI_CLIENTS[client]
     registration = _inspect_registration(client, exe, command)
     is_claude_mismatch = registration.state == "mismatched" and client == "claude-code"
-    is_claude_ambiguous = registration.state == "ambiguous" and client == "claude-code"
     if registration.state == "error":
         return "failed"
     if registration.state == "matching":
@@ -301,13 +311,6 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
             _report_failure(exe, removed)
             return _fail_with_rollback(exe, registration)
         add_options = ["-s", registration.scope]
-    elif is_claude_ambiguous:
-        # Scope is unknown here (the `mcp get` output that would have named it was
-        # unparseable), so this remove is unscoped and best-effort: it's fine if
-        # there is nothing there to remove.
-        remove_args = ["mcp", "remove", _SERVER_NAME]
-        click.echo(f"  $ {exe} {' '.join(remove_args)}")
-        _run_client(exe, remove_args)
 
     # `codex mcp add` overwrites an existing name atomically. For an absent entry,
     # both clients take this same non-destructive path.

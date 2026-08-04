@@ -22,6 +22,7 @@ from pipecat_context_hub.cli_install import (
     _EXIT_MANUAL_SETUP,
     _EXIT_REGISTRATION_LOST,
     _claude_config,
+    _config_matches_command,
     _detect_cli_clients,
     _mcp_json,
     _register_with_cli,
@@ -125,6 +126,16 @@ class TestClaudeConfig:
             _claude_config("project")
 
 
+class TestConfigMatchesCommand:
+    def test_explicit_null_args_does_not_raise_and_is_treated_as_empty(self):
+        """`config.get("args", [])` only applies the default when the key is
+        absent, not when it is present with value `None` -- a stored entry with
+        `"args": null` must be coalesced to `[]`, not unpacked as `None`."""
+        config = {"type": "stdio", "command": "x", "args": None}
+        assert _config_matches_command(config, ["x"], default_type="stdio") is True
+        assert _config_matches_command(config, ["x", "serve"], default_type="stdio") is False
+
+
 class TestRegisterWithCli:
     """``mcp add`` refuses a name it already has, so registering must repair, not skip."""
 
@@ -185,15 +196,16 @@ class TestRegisterWithCli:
             assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert self._subcommands(calls) == ["get", "remove", "add"]
 
-    def test_ambiguous_get_failure_attempts_a_repair_safe_registration(self):
+    def test_unparseable_get_failure_fails_closed_without_attempting_repair(self):
         """`mcp get` failing with an unrecognized error (not a clean "not found")
-        means an entry may or may not be there. Claude repairs this with a
-        best-effort unscoped remove before adding, rather than risking a
-        skipped registration or an outright failure."""
+        means an entry may or may not be there, and its scope is unknown. Rather
+        than attempting an unscoped, destructive `remove` with no captured
+        rollback state, this fails closed: report failure and leave whatever is
+        there untouched."""
         calls, fake_run = self._fake_client(get_code=1, get_stderr="internal error: corrupt state")
         with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
-            assert _register_with_cli("claude-code", _server_command()) == "ok"
-        assert self._subcommands(calls) == ["get", "remove", "add"]
+            assert _register_with_cli("claude-code", _server_command()) == "failed"
+        assert self._subcommands(calls) == ["get"]
 
     def test_codex_mismatch_uses_atomic_overwrite(self):
         recorded = json.dumps(
