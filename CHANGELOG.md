@@ -7,6 +7,58 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`install` now registers an MCP server the client can actually start.** It recorded the
+  bare console-script name `pipecat-context-hub` whenever one was on `PATH`, which asks the
+  client to resolve it later, in a process this command cannot see — commonly one launched
+  from a GUI with no shell `PATH` at all. The registration started only in the shell that
+  wrote it and failed everywhere else with `ENOENT: Executable not found in $PATH`, and did
+  so silently: a coding agent whose MCP server fails to start is not told, so it answers
+  from training data instead. The command recorded is now always this interpreter and
+  module — an absolute path resolved once at install time, pinned to the hub you invoked:
+  the Pipecat CLI's bundled copy via `pipecat context-hub install`, the standalone tool via
+  `pipecat-context-hub install`.
+
+  Preferring the console script was correct when standalone was the normal install. Since
+  the hub became a dependency of `pipecat-ai[cli]`, `uv tool` exposes only the host
+  package's scripts, so that branch fires only for an *unrelated* hub on `PATH` — a
+  leftover standalone install, or any active project venv, since `pipecat-ai[evals]` pulls
+  in `pipecat-ai[cli]`.
+
+- **`install` reports whether it configured anything.** It exited `0` both when it
+  registered the server with a client CLI and when it only printed the config for you to
+  paste, so a caller could not tell the two apart — and a wrapper that captures the output,
+  as `pipecat init` does, would report a registration that never happened while swallowing
+  the block the user needed. It now exits `3` when nothing was configured automatically,
+  which is the path every file-configured editor (Cursor, VS Code, Zed) takes, along with
+  any machine that has no client CLI installed. Exit `1` still means a client CLI rejected
+  the registration.
+
+- **Reinstalling repairs a stale registration instead of skipping it.** `claude mcp add`
+  refuses a name it already has and leaves the existing entry alone, so registrations
+  written by earlier releases would have survived every reinstall. `install` now compares
+  the recorded command with the one it would write, replaces it when they differ, and
+  leaves a matching one untouched. "Already registered" is no longer reported as a failure.
+
+- **The stale-registration repair above is now rollback-safe instead of destructive.**
+  Replacing a mismatched Claude Code entry used to remove it before adding the
+  replacement; if the add then failed, the previous — working — registration was
+  permanently lost with no way to recover it. `install` now captures the exact entry
+  before removing it and restores it via `claude mcp add-json` if the replacement fails;
+  Codex is unaffected, since its `mcp add` already overwrites atomically. A repair whose
+  rollback also fails now exits `4` rather than the generic `1`, so a caller scripting
+  around this command can tell "the previous registration is intact" from "it's gone and
+  needs manual attention" without parsing stderr. Inspection of an existing registration
+  also no longer aborts `install` on every unrecognized `mcp get` failure (it used to
+  break first-time installs whenever a client's error wording didn't match a hardcoded
+  string) and no longer crashes on a non-dict Codex transport value or a stored
+  registration with an explicit `"args": null`.
+
+### Security
+- Bumped `cryptography` 49.0.0 → 50.0.0 (CVE-2026-69247) and `gitpython` 3.1.56 → 3.1.57
+  (GHSA-3f7w-8rr8-f37f). Floors raised above the fix versions so a plain re-lock can't
+  regress.
+
 ## [0.5.0] - 2026-08-03
 
 ### Changed
