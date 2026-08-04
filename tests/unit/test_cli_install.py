@@ -18,6 +18,7 @@ from click.testing import CliRunner
 from pipecat_context_hub.cli import main
 from pipecat_context_hub.cli_install import (
     _EXIT_MANUAL_SETUP,
+    _EXIT_REGISTRATION_LOST,
     _detect_cli_clients,
     _mcp_json,
     _register_with_cli,
@@ -448,6 +449,38 @@ class TestInstallCommand:
         assert result.exit_code != 0
         assert "already exists" in result.output
         assert "Failed to register with: claude-code" in result.output
+
+    def test_corrupted_registration_gets_its_own_exit_code(self):
+        """A repair that loses the previous registration must be distinguishable
+        from a plain failure by exit code alone, not just message text — a caller
+        scripting around this command cannot rely on parsing stderr."""
+        existing = {"type": "stdio", "command": "old-command", "args": []}
+
+        def fake_run(argv, **_kwargs):
+            subcommand = argv[2]
+            if subcommand == "get":
+                stdout = (
+                    "Command: old-command\n"
+                    "To remove this server, run: claude mcp remove "
+                    "pipecat-context-hub -s user"
+                )
+                return MagicMock(returncode=0, stdout=stdout, stderr="")
+            if subcommand == "add":
+                return MagicMock(returncode=1, stdout="", stderr="permission denied")
+            if subcommand == "add-json":
+                return MagicMock(returncode=1, stdout="", stderr="rollback also failed")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/claude"),
+            patch("pipecat_context_hub.cli_install.subprocess.run", side_effect=fake_run),
+            patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
+        ):
+            result = runner.invoke(main, ["install", "--client", "claude-code", "--no-refresh"])
+
+        assert result.exit_code == _EXIT_REGISTRATION_LOST
+        assert result.exit_code != _EXIT_MANUAL_SETUP
+        assert "previous registration lost" in result.output
 
     def test_vscode_client_prints_servers_schema(self):
         with patch("pipecat_context_hub.cli_install.subprocess.run") as run:

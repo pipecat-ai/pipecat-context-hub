@@ -35,6 +35,12 @@ _CLI_CLIENTS = {"claude-code": "claude", "codex": "codex"}
 # failure because the command did everything it could for that client.
 _EXIT_MANUAL_SETUP = 3
 
+# Exit code for "repair failed AND the previous, working registration could not be
+# restored either" — the client now has no usable registration at all. Distinct from a
+# plain failure (exit 1, previous registration still intact) because a caller cannot
+# tell those apart from the message text alone, and this one needs to be seen.
+_EXIT_REGISTRATION_LOST = 4
+
 # Clients configured by hand-editing a JSON file: name -> where it lives.
 _FILE_CLIENTS = {
     "cursor": "~/.cursor/mcp.json (global) or .cursor/mcp.json (per project)",
@@ -387,7 +393,14 @@ def install_command(
             parts.append(
                 f"Failed to register with (previous registration lost): {', '.join(corrupted)}"
             )
-        raise click.ClickException("; ".join(parts))
+        message = "; ".join(parts)
+        if corrupted:
+            # A plain ClickException always exits 1, which would make this
+            # indistinguishable from a failure that left the old registration intact.
+            # Losing a working registration needs its own exit code.
+            click.echo(f"Error: {message}", err=True)
+            ctx.exit(_EXIT_REGISTRATION_LOST)
+        raise click.ClickException(message)
     if not configured:
         ctx.exit(_EXIT_MANUAL_SETUP)
 
