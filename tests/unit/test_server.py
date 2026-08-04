@@ -640,6 +640,103 @@ class TestSupportLinks:
             f"found stray '{needle}' literal(s) outside support_links.py: {offenders}"
         )
 
+    def test_consumers_import_and_reference_support_links_symbols(self):
+        """Structural guard, separate from the stray-literal scan above.
+
+        The stray-literal scan only catches a URL re-typed verbatim; it
+        cannot catch one rebuilt from fragments (e.g. string concatenation
+        or an f-string assembled from a base URL + template name), which
+        would contain no `"issues/new?template="` substring to grep for.
+        This test instead parses each consumer's AST and asserts (a) it
+        imports the required symbol(s) from `shared.support_links`, and
+        (b) each imported symbol is actually referenced as a `Name` load
+        somewhere else in the module — not merely imported and unused,
+        which would mean nothing built from it is really shared.
+
+        ``cli.py`` is intentionally not a direct consumer here: it imports
+        the shared ``_bug_report_hint()`` helper from ``cli_query`` instead
+        of duplicating the sentence that builds on ``BUG_REPORT_ISSUE_URL``
+        (avoids a second, separately-maintained copy of that wording, which
+        was itself a review finding). It still gets the URL transitively
+        through that helper — this test doesn't need to re-check that path
+        since ``cli_query.py``'s own entry below already pins the constant
+        at its one real source.
+        """
+        import ast
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        src_root = repo_root / "src" / "pipecat_context_hub"
+
+        consumers = {
+            "server/main.py": {"RETRIEVAL_QUALITY_ISSUE_URL", "BUG_REPORT_ISSUE_URL"},
+            "cli_query.py": {"RETRIEVAL_QUALITY_ISSUE_URL", "BUG_REPORT_ISSUE_URL"},
+        }
+
+        for rel_path, required_symbols in consumers.items():
+            path = src_root / rel_path
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+            imported_symbols: set[str] = set()
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "pipecat_context_hub.shared.support_links"
+                ):
+                    imported_symbols.update(alias.asname or alias.name for alias in node.names)
+
+            missing_imports = required_symbols - imported_symbols
+            assert not missing_imports, (
+                f"{rel_path} does not import {missing_imports} from "
+                "pipecat_context_hub.shared.support_links"
+            )
+
+            # Every Name node in the module, minus the import statement's own
+            # alias bindings, so an imported-but-never-used symbol doesn't
+            # count as "referenced" merely by appearing in its own import.
+            referenced_names = {
+                node.id
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            }
+            unreferenced = required_symbols - referenced_names
+            assert not unreferenced, (
+                f"{rel_path} imports {unreferenced} from support_links but never "
+                "references them — nothing in this file actually shares the constant"
+            )
+
+    def test_cli_imports_shared_bug_report_hint_helper(self):
+        """``cli.py`` must not carry its own copy of ``_bug_report_hint()``.
+
+        Companion to the consumers check above: since ``cli.py`` sources the
+        bug-report URL transitively through this helper rather than
+        importing ``BUG_REPORT_ISSUE_URL`` directly, pin that it actually
+        imports the helper — otherwise a future edit could silently
+        reintroduce a duplicated local definition with no test catching it.
+        """
+        import ast
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        cli_path = repo_root / "src" / "pipecat_context_hub" / "cli.py"
+        tree = ast.parse(cli_path.read_text(encoding="utf-8"), filename=str(cli_path))
+
+        imported_from_cli_query: set[str] = set()
+        local_defs: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "pipecat_context_hub.cli_query":
+                imported_from_cli_query.update(alias.asname or alias.name for alias in node.names)
+            if isinstance(node, ast.FunctionDef):
+                local_defs.add(node.name)
+
+        assert "_bug_report_hint" in imported_from_cli_query, (
+            "cli.py must import _bug_report_hint from cli_query rather than defining its own copy"
+        )
+        assert "_bug_report_hint" not in local_defs, (
+            "cli.py must not redefine _bug_report_hint locally — it shadows the "
+            "imported shared helper"
+        )
+
 
 class TestEntryPoint:
     def test_main_module_has_main(self):

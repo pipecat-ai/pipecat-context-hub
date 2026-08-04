@@ -20,27 +20,15 @@ from pathlib import Path
 import click
 
 from pipecat_context_hub.cli_install import register_install_command
-from pipecat_context_hub.cli_query import register_query_commands
+from pipecat_context_hub.cli_query import _bug_report_hint, register_query_commands
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
-from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
 
 # Back-compat alias: tests/unit/test_cli.py imports the underscored name and
 # the banner call sites below reference it. The redaction helper itself now
 # lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
 # import cycle); this re-export keeps that suite green and the call sites stable.
 _redact_home = redact_home
-
-
-def _bug_report_hint() -> str:
-    """Remediation-first suffix: name the fix, then the tracker as a fallback.
-
-    Kept identical to ``cli_query._bug_report_hint`` in wording so the two
-    front doors' bug-report hints read the same, even though this is the
-    module's own copy (see the plan's Architecture Decisions on why the
-    URL, not the sentence, is what's shared).
-    """
-    return f"If this persists after trying that, file a bug report at {BUG_REPORT_ISSUE_URL}."
 
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells

@@ -126,7 +126,7 @@ _HUB_STATUS_TOOL: tuple[str, str, dict[str, Any]] = (
 )
 
 
-_SERVER_INSTRUCTIONS = f"""\
+_SERVER_INSTRUCTIONS = """\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
 framework documentation, code examples, and API source.
 
@@ -201,7 +201,9 @@ so the maintainers can diagnose from the trace alone.
 A ``reranker_disabled_reason`` of ``config_disabled`` is a supported \
 operator choice (``PIPECAT_HUB_RERANKER_ENABLED=0``), not a degraded state \
 — do not treat it as an incident or route it into the bug-report flow.\
-"""
+""".replace("{RETRIEVAL_QUALITY_ISSUE_URL}", RETRIEVAL_QUALITY_ISSUE_URL).replace(
+    "{BUG_REPORT_ISSUE_URL}", BUG_REPORT_ISSUE_URL
+)
 
 
 def create_server(
