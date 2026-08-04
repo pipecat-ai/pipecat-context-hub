@@ -93,7 +93,7 @@ class TestRegisterWithCli:
             patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
             patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
         ):
-            assert _register_with_cli("claude-code", _server_command()) is True
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert self._subcommands(calls) == ["get"]
 
     def test_a_stale_entry_is_replaced(self):
@@ -108,7 +108,7 @@ class TestRegisterWithCli:
             patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
             patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
         ):
-            assert _register_with_cli("claude-code", _server_command()) is True
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert self._subcommands(calls) == ["get", "remove", "add"]
 
     def test_codex_mismatch_uses_atomic_overwrite(self):
@@ -123,7 +123,7 @@ class TestRegisterWithCli:
         )
         calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
         with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
-            assert _register_with_cli("codex", _server_command()) is True
+            assert _register_with_cli("codex", _server_command()) == "ok"
         assert self._subcommands(calls) == ["get", "add"]
 
     def test_registers_when_the_client_cannot_report_one(self):
@@ -132,7 +132,7 @@ class TestRegisterWithCli:
             get_code=1, get_stderr='No MCP server named "pipecat-context-hub".'
         )
         with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
-            assert _register_with_cli("claude-code", _server_command()) is True
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert "add" in self._subcommands(calls)
 
     def test_a_failed_add_is_reported(self):
@@ -142,7 +142,7 @@ class TestRegisterWithCli:
             add_code=1,
         )
         with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
-            assert _register_with_cli("claude-code", _server_command()) is False
+            assert _register_with_cli("claude-code", _server_command()) == "failed"
 
     def test_failed_replacement_restores_the_exact_existing_entry(self):
         existing = {
@@ -171,24 +171,94 @@ class TestRegisterWithCli:
             patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
             patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
         ):
-            assert _register_with_cli("claude-code", _server_command()) is False
+            assert _register_with_cli("claude-code", _server_command()) == "failed"
 
         assert self._subcommands(calls) == ["get", "remove", "add", "add-json"]
         rollback = calls[-1]
         assert rollback[3:6] == ["-s", "user", "pipecat-context-hub"]
         assert json.loads(rollback[6]) == existing
 
-    def test_get_timeout_does_not_attempt_destructive_repair(self):
+    def test_get_timeout_falls_through_to_a_plain_registration(self):
+        """A get failure means nothing is confirmed to exist, so it's safe to
+        fall through to a plain, non-destructive `mcp add` — never a `remove`."""
+        calls: list[list[str]] = []
+        first_call = True
+
+        def fake_run(argv, **kwargs):
+            nonlocal first_call
+            calls.append(argv)
+            if first_call:
+                first_call = False
+                raise subprocess.TimeoutExpired(argv, timeout=60)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
+
+        assert self._subcommands(calls) == ["get", "add"]
+
+    def test_failed_replacement_with_failed_rollback_is_reported_as_corrupted(self):
+        """When both the replacement add and the rollback fail, the previous
+        registration is gone, not merely unchanged — that must be surfaced
+        distinctly from a plain failure."""
+        existing = {
+            "type": "stdio",
+            "command": "old-command",
+            "args": ["arg with spaces"],
+        }
+
+        def fake_run(argv, **kwargs):
+            subcommand = argv[2]
+            if subcommand == "get":
+                stdout = (
+                    "Command: old-command\n"
+                    "To remove this server, run: claude mcp remove "
+                    "pipecat-context-hub -s user"
+                )
+                return MagicMock(returncode=0, stdout=stdout, stderr="")
+            if subcommand == "add":
+                return MagicMock(returncode=1, stdout="", stderr="permission denied")
+            if subcommand == "add-json":
+                return MagicMock(returncode=1, stdout="", stderr="rollback also failed")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
+            patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
+        ):
+            assert _register_with_cli("claude-code", _server_command()) == "corrupted"
+
+    def test_remove_timeout_still_attempts_rollback(self):
+        """`mcp remove` itself failing (not just returning nonzero) must still
+        trigger a rollback attempt for a captured Claude entry."""
+        existing = {
+            "type": "stdio",
+            "command": "old-command",
+            "args": ["arg with spaces"],
+        }
         calls: list[list[str]] = []
 
         def fake_run(argv, **kwargs):
             calls.append(argv)
-            raise subprocess.TimeoutExpired(argv, timeout=60)
+            subcommand = argv[2]
+            if subcommand == "get":
+                stdout = (
+                    "Command: old-command\n"
+                    "To remove this server, run: claude mcp remove "
+                    "pipecat-context-hub -s user"
+                )
+                return MagicMock(returncode=0, stdout=stdout, stderr="")
+            if subcommand == "remove":
+                raise subprocess.TimeoutExpired(argv, timeout=60)
+            return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
-            assert _register_with_cli("claude-code", _server_command()) is False
+        with (
+            patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
+            patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
+        ):
+            assert _register_with_cli("claude-code", _server_command()) == "failed"
 
-        assert self._subcommands(calls) == ["get"]
+        assert self._subcommands(calls) == ["get", "remove", "add-json"]
 
     def test_misleading_scope_fragment_in_args_is_not_mistaken_for_the_real_scope(self):
         """An Args line that happens to contain `mcp remove ... -s user` must not
@@ -206,7 +276,7 @@ class TestRegisterWithCli:
                 "pipecat_context_hub.cli_install._claude_config", return_value=existing
             ) as mock_cfg,
         ):
-            assert _register_with_cli("claude-code", _server_command()) is True
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
         # must have read the scope reported on the *instruction* line, not the Args line
         mock_cfg.assert_called_once_with("local")
 
@@ -219,7 +289,7 @@ class TestRegisterWithCli:
         )
         calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
         with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
-            assert _register_with_cli("claude-code", _server_command()) is False
+            assert _register_with_cli("claude-code", _server_command()) == "failed"
         assert self._subcommands(calls) == ["get"]
 
 
@@ -356,11 +426,21 @@ class TestInstallCommand:
 
     def test_client_cli_failure_is_reported_as_error_exit(self):
         """A failed client registration is surfaced via a nonzero exit, not silently ignored."""
+
+        def absent_then_add_fails(argv, **_kwargs):
+            if argv[2] == "get":
+                return MagicMock(
+                    returncode=1,
+                    stdout="",
+                    stderr='No MCP server named "pipecat-context-hub".',
+                )
+            return MagicMock(returncode=1, stdout="", stderr="already exists")
+
         with (
             patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/claude"),
             patch(
                 "pipecat_context_hub.cli_install.subprocess.run",
-                return_value=MagicMock(returncode=1, stdout="", stderr="already exists"),
+                side_effect=absent_then_add_fails,
             ),
         ):
             result = runner.invoke(main, ["install", "--client", "claude-code", "--no-refresh"])
