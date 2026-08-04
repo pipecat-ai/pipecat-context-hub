@@ -636,7 +636,7 @@ that section (designed for cross-component call chains) doesn't apply here.
 ## Progress
 
 - [x] Phase 1: Shared report-hint constants module
-- [ ] Phase 2: CLI stderr report-hints
+- [x] Phase 2: CLI stderr report-hints
 - [ ] Phase 3: Documentation and smoke coverage
 - [ ] Phase 4: MCP-side symmetry audit (standalone)
 
