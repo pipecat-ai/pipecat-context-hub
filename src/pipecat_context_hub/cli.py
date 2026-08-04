@@ -23,12 +23,25 @@ from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
 
 # Back-compat alias: tests/unit/test_cli.py imports the underscored name and
 # the banner call sites below reference it. The redaction helper itself now
 # lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
 # import cycle); this re-export keeps that suite green and the call sites stable.
 _redact_home = redact_home
+
+
+def _bug_report_hint() -> str:
+    """Remediation-first suffix: name the fix, then the tracker as a fallback.
+
+    Kept identical to ``cli_query._bug_report_hint`` in wording so the two
+    front doors' bug-report hints read the same, even though this is the
+    module's own copy (see the plan's Architecture Decisions on why the
+    URL, not the sentence, is what's shared).
+    """
+    return f"If this persists after trying that, file a bug report at {BUG_REPORT_ISSUE_URL}."
+
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
@@ -270,7 +283,7 @@ def serve(ctx: click.Context) -> None:
                 logger.exception("Failed to close partially-opened index store")
         # exc.__str__ embeds the absolute chroma_path; redact it for front-door
         # parity with the cli_query one-shot error sites.
-        logger.error("%s", redact_home_in_text(str(exc)))
+        logger.error("%s %s", redact_home_in_text(str(exc)), _bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         # IndexStore.__init__ opens two backends (Chroma + SQLite) without
@@ -282,9 +295,10 @@ def serve(ctx: click.Context) -> None:
                 logger.exception("Failed to close partially-opened index store")
         logger.error(
             "Failed to open index at %s: %s. "
-            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild.",
+            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild. %s",
             _redact_home(config.storage.data_dir),
             redact_home_in_text(str(exc)),
+            _bug_report_hint(),
         )
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
 
@@ -292,8 +306,9 @@ def serve(ctx: click.Context) -> None:
         logger.error(
             "Index at %s is empty (0 records). "
             "MCP clients would hang waiting for results. "
-            "Run 'uv run pipecat-context-hub refresh' before 'serve'.",
+            "Run 'uv run pipecat-context-hub refresh' before 'serve'. %s",
             _redact_home(config.storage.data_dir),
+            _bug_report_hint(),
         )
         index_store.close()
         raise SystemExit(_EXIT_INDEX_UNREADY)
@@ -361,7 +376,8 @@ def serve(ctx: click.Context) -> None:
                     "Run 'pipecat-context-hub refresh' to pre-download, or set "
                     "PIPECAT_HUB_RERANKER_MODEL to a smaller cached model "
                     "(e.g. cross-encoder/ms-marco-TinyBERT-L-2-v2). "
-                    "If this path is unexpected, check HF_HOME / HUGGINGFACE_HUB_CACHE."
+                    "If this path is unexpected, check HF_HOME / HUGGINGFACE_HUB_CACHE. "
+                    f"{_bug_report_hint()}"
                 )
             logger.warning(
                 "Reranker disabled at startup: reason=%s configured_model=%s — %s",
@@ -526,7 +542,7 @@ def refresh(
         # refresh against a stale 0.6 index — point the user at the rebuild.
         # exc.__str__ embeds the absolute chroma_path; redact for front-door
         # parity with the serve / cli_query error sites.
-        logger.error("%s", redact_home_in_text(str(exc)))
+        logger.error("%s %s", redact_home_in_text(str(exc)), _bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)

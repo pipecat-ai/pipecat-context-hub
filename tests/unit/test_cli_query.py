@@ -2,20 +2,46 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY as _SERVE_EXIT_INDEX_UNREADY
 from pipecat_context_hub.cli import main
 from pipecat_context_hub.cli_query import _EXIT_INDEX_UNREADY, _TOOL_TO_COMMAND
 from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL
+from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
+from pipecat_context_hub.shared.paths import redact_home_in_text as _real_redact_home_in_text
+from pipecat_context_hub.shared.support_links import (
+    BUG_REPORT_ISSUE_URL,
+    RETRIEVAL_QUALITY_ISSUE_URL,
+)
 from pipecat_context_hub.shared.types import EvidenceReport, SearchDocsOutput
 
 runner = CliRunner()
+
+
+def _assert_remediation_before_report_hint(stderr: str, remediation_substr: str, url: str) -> None:
+    """Pin the 'name the fix before the URL' ordering, not just presence."""
+    assert remediation_substr in stderr
+    assert url in stderr
+    assert stderr.index(remediation_substr) < stderr.index(url)
+
+
+def _assert_url_is_not_message_leading(stderr: str, url: str) -> None:
+    """Weaker, wording-agnostic version of the above: some remediation text
+    (of whatever exact phrasing the implementation chose) must precede the
+    URL on stderr — the hint must not open with "file a bug", i.e. it must
+    not be escalation-first."""
+    assert url in stderr
+    prefix = stderr[: stderr.index(url)]
+    assert prefix.strip() != "", "report-hint URL has no remediation text before it"
 
 
 def _index_store_mock(total: int) -> MagicMock:
@@ -64,7 +90,17 @@ class TestVersionFlag:
 
 
 class TestIndexUnready:
-    """Empty/unopenable index exits 2 with an actionable refresh hint."""
+    """Empty/unopenable/incompatible index exits 2 with an actionable hint.
+
+    Each of the three paths already names its own remediation before the
+    Phase-2 bug-report hint appended to it (empty-index: 'refresh';
+    unopenable: '--reset-index'; incompatible-format:
+    ``RESET_INDEX_REMEDIATION``, embedded verbatim in the exception message).
+    Every test here also pins the co-fire negative: exactly one occurrence
+    of the bug-report URL, and no retrieval-quality URL — these exits raise
+    before either post-open warning point, so a naive check for
+    ``BUG_REPORT_ISSUE_URL`` alone would be ambiguous.
+    """
 
     def test_empty_index_exits_with_refresh_hint(self):
         with patch(
@@ -73,8 +109,10 @@ class TestIndexUnready:
         ):
             result = runner.invoke(main, ["check-deprecation", "PipelineTask"])
         assert result.exit_code == _EXIT_INDEX_UNREADY
-        assert "refresh" in result.stderr
         assert result.stdout == ""
+        _assert_remediation_before_report_hint(result.stderr, "refresh", BUG_REPORT_ISSUE_URL)
+        assert result.stderr.count(BUG_REPORT_ISSUE_URL) == 1
+        assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
 
     def test_unopenable_index_exits_with_reset_hint(self):
         with patch(
@@ -83,7 +121,36 @@ class TestIndexUnready:
         ):
             result = runner.invoke(main, ["status"])
         assert result.exit_code == _EXIT_INDEX_UNREADY
-        assert "--reset-index" in result.stderr
+        assert result.stdout == ""
+        _assert_remediation_before_report_hint(result.stderr, "--reset-index", BUG_REPORT_ISSUE_URL)
+        assert result.stderr.count(BUG_REPORT_ISSUE_URL) == 1
+        assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
+
+    def test_incompatible_index_format_exits_with_bug_report_hint(self, monkeypatch, tmp_path):
+        """The previously-untested ``IncompatibleIndexFormatError`` path
+        (``cli_query.py:150-157``) — its message embeds the absolute
+        ``chroma_path``, so redaction must still hold with the hint appended.
+        """
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        data_dir = tmp_path / ".pipecat-context-hub"
+        chroma_path = data_dir / "chroma"
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                side_effect=IncompatibleIndexFormatError(chroma_path),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
+        ):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.stdout == ""
+        _assert_remediation_before_report_hint(
+            result.stderr, RESET_INDEX_REMEDIATION, BUG_REPORT_ISSUE_URL
+        )
+        assert result.stderr.count(BUG_REPORT_ISSUE_URL) == 1
+        assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
+        assert str(chroma_path) not in result.stderr
+        assert str(tmp_path) not in result.stderr
 
 
 class TestDispatch:
@@ -354,6 +421,295 @@ class TestDispatch:
         assert sent["query"] == "BaseTransport"
         assert sent["module"] == "pipecat.services"
         assert sent["limit"] == 7
+
+
+# ── Phase 2: reranker not_cached / retrieval-quality report hints ──────────
+
+# (cli_args, handler patch target, results-list key) for each semantic
+# command — the ones that pass ``needs_embeddings=True`` and are therefore
+# in scope for both the reranker-warning and retrieval-quality hints.
+_SEMANTIC_COMMANDS = [
+    pytest.param(
+        ["search-docs", "TTS"],
+        "pipecat_context_hub.server.tools.search_docs.handle_search_docs",
+        "hits",
+        id="search-docs",
+    ),
+    pytest.param(
+        ["search-examples", "idle timeout"],
+        "pipecat_context_hub.server.tools.search_examples.handle_search_examples",
+        "hits",
+        id="search-examples",
+    ),
+    pytest.param(
+        ["search-api", "BaseTransport"],
+        "pipecat_context_hub.server.tools.search_api.handle_search_api",
+        "hits",
+        id="search-api",
+    ),
+    pytest.param(
+        ["get-code-snippet", "--symbol", "DailyTransport.send_dtmf"],
+        "pipecat_context_hub.server.tools.get_code_snippet.handle_get_code_snippet",
+        "snippets",
+        id="get-code-snippet",
+    ),
+]
+
+# (cli_args, handler patch target or None, canned handler JSON or None) for
+# each lookup command — ``needs_embeddings=False``, so neither hint applies.
+# check-deprecation/status use their real handlers against the mocked store
+# (mirroring TestDispatch); get-doc/get-example need a patched handler to
+# avoid exercising the real retrieval path against a bare MagicMock store.
+_LOOKUP_COMMANDS = [
+    pytest.param(["check-deprecation", "PipelineTask"], None, None, id="check-deprecation"),
+    pytest.param(
+        ["get-doc", "--path", "/guides/x"],
+        "pipecat_context_hub.server.tools.get_doc.handle_get_doc",
+        json.dumps({"path": "/guides/x", "content": "hi"}),
+        id="get-doc",
+    ),
+    pytest.param(
+        ["get-example", "ex1"],
+        "pipecat_context_hub.server.tools.get_example.handle_get_example",
+        json.dumps({"example_id": "ex1", "files": []}),
+        id="get-example",
+    ),
+    pytest.param(["status"], None, None, id="status"),
+]
+
+
+def _healthy_handler_json(results_key: str) -> str:
+    """A non-empty, high-confidence response.
+
+    Used to isolate the reranker-warning tests from the retrieval-quality
+    hint (and vice versa) — neither condition should fire on this payload.
+    """
+    return json.dumps(
+        {
+            results_key: [{"id": "x1"}],
+            "evidence": {"low_confidence": False, "confidence": 1.0},
+        }
+    )
+
+
+def _run_semantic_command(
+    cli_args: list[str],
+    handler_target: str,
+    handler_json: str,
+    tmp_path: Path,
+    *,
+    is_model_cached: bool,
+    disabled_reason_override: str | None = "__unset__",
+) -> tuple[object, MagicMock]:
+    """Invoke a semantic command with a healthy handler and a controlled
+    reranker cache/disabled-reason state.
+
+    ``disabled_reason_override`` left at its sentinel drives the reranker
+    state through the real ``probe_reranker`` (via ``is_model_cached``);
+    passing an explicit value (including ``None``) instead patches
+    ``probe_reranker`` directly, which is the only way to reach a reason
+    (e.g. ``"load_failed"``) it cannot actually return.
+    """
+    handler = AsyncMock(return_value=handler_json)
+    env = {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=MagicMock(),
+            )
+        )
+        if disabled_reason_override != "__unset__":
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.shared.reranker.probe_reranker",
+                    return_value=(
+                        "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                        None,
+                        disabled_reason_override,
+                    ),
+                )
+            )
+        else:
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.services.retrieval.cross_encoder."
+                    "CrossEncoderReranker.is_model_cached",
+                    return_value=is_model_cached,
+                )
+            )
+        stack.enter_context(patch(handler_target, handler))
+        redact_spy = stack.enter_context(
+            patch(
+                "pipecat_context_hub.cli_query.redact_home_in_text",
+                side_effect=_real_redact_home_in_text,
+            )
+        )
+        stack.enter_context(patch.dict("os.environ", env))
+        result = runner.invoke(main, cli_args)
+    return result, redact_spy
+
+
+class TestRerankerNotCachedWarning:
+    """Semantic commands warn (remediation-first) when the reranker model
+    isn't cached; lookup commands and non-``not_cached`` reasons never do.
+    """
+
+    @pytest.mark.parametrize(("cli_args", "handler_target", "results_key"), _SEMANTIC_COMMANDS)
+    def test_fires_for_every_semantic_command(
+        self, tmp_path, cli_args, handler_target, results_key
+    ):
+        """A single-command test would miss a miswired needs_embeddings flag
+        on any of the other three — parametrize across all four."""
+        result, redact_spy = _run_semantic_command(
+            cli_args,
+            handler_target,
+            _healthy_handler_json(results_key),
+            tmp_path,
+            is_model_cached=False,
+        )
+        assert result.exit_code == 0, result.stderr
+        _assert_remediation_before_report_hint(result.stderr, "refresh", BUG_REPORT_ISSUE_URL)
+        # stdout is untouched: valid JSON, and the bug-report URL never
+        # leaks into the payload the handler produced.
+        payload = json.loads(result.stdout)
+        assert payload[results_key] == [{"id": "x1"}]
+        assert BUG_REPORT_ISSUE_URL not in result.stdout
+        # A removed redaction wrapper would still pass a naive "no literal
+        # home path in the warning" check, so spy on the call instead.
+        assert any(BUG_REPORT_ISSUE_URL in str(call.args[0]) for call in redact_spy.call_args_list)
+
+    @pytest.mark.parametrize("disabled_reason", ["config_disabled", None])
+    def test_does_not_fire_for_config_disabled_or_enabled(self, tmp_path, disabled_reason):
+        result, _ = _run_semantic_command(
+            ["search-docs", "TTS"],
+            "pipecat_context_hub.server.tools.search_docs.handle_search_docs",
+            _healthy_handler_json("hits"),
+            tmp_path,
+            is_model_cached=True,
+            disabled_reason_override=disabled_reason,
+        )
+        assert result.exit_code == 0, result.stderr
+        assert BUG_REPORT_ISSUE_URL not in result.stderr
+
+    def test_unknown_future_reason_is_a_silent_no_op(self, tmp_path):
+        """``probe_reranker`` never returns "load_failed" to the CLI today,
+        but the gate must not branch on it either — assert directly against
+        a forced future/unknown value, which is what actually enforces "no
+        load_failed branch" rather than resting on prose."""
+        result, _ = _run_semantic_command(
+            ["search-docs", "TTS"],
+            "pipecat_context_hub.server.tools.search_docs.handle_search_docs",
+            _healthy_handler_json("hits"),
+            tmp_path,
+            is_model_cached=True,
+            disabled_reason_override="load_failed",
+        )
+        assert result.exit_code == 0, result.stderr
+        assert BUG_REPORT_ISSUE_URL not in result.stderr
+
+    @pytest.mark.parametrize(("cli_args", "handler_target", "handler_json"), _LOOKUP_COMMANDS)
+    def test_lookup_commands_never_warn_even_when_not_cached(
+        self, tmp_path, cli_args, handler_target, handler_json
+    ):
+        """``_query_runtime`` calls ``_resolve_reranker(construct=False)``
+        unconditionally, so ``disabled_reason`` is populated even for lookup
+        commands that never construct a reranker; a naive implementation
+        checking only the status field (not also ``needs_embeddings``) would
+        warn on all four."""
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.services.index.store.IndexStore",
+                    return_value=_index_store_mock(total=10),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.services.embedding.EmbeddingService",
+                    side_effect=AssertionError("lookup commands must not load the embedding model"),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.services.retrieval.cross_encoder."
+                    "CrossEncoderReranker.is_model_cached",
+                    return_value=False,
+                )
+            )
+            if handler_target is not None:
+                stack.enter_context(patch(handler_target, AsyncMock(return_value=handler_json)))
+            stack.enter_context(patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}))
+            result = runner.invoke(main, cli_args)
+        assert result.exit_code == 0, result.stderr
+        assert BUG_REPORT_ISSUE_URL not in result.stderr
+
+
+class TestRetrievalQualityHint:
+    """Poor/missing semantic results get a remediation-first stderr nudge
+    toward the retrieval-quality issue template; healthy responses and
+    malformed handler payloads never do."""
+
+    @pytest.mark.parametrize(("cli_args", "handler_target", "results_key"), _SEMANTIC_COMMANDS)
+    def test_low_confidence_triggers_hint(self, tmp_path, cli_args, handler_target, results_key):
+        handler_json = json.dumps(
+            {
+                results_key: [{"id": "x1"}],
+                "evidence": {"low_confidence": True, "confidence": 0.1},
+            }
+        )
+        result, _ = _run_semantic_command(
+            cli_args, handler_target, handler_json, tmp_path, is_model_cached=True
+        )
+        assert result.exit_code == 0, result.stderr
+        _assert_url_is_not_message_leading(result.stderr, RETRIEVAL_QUALITY_ISSUE_URL)
+        assert json.loads(result.stdout)[results_key] == [{"id": "x1"}]
+
+    @pytest.mark.parametrize(("cli_args", "handler_target", "results_key"), _SEMANTIC_COMMANDS)
+    def test_empty_results_triggers_hint(self, tmp_path, cli_args, handler_target, results_key):
+        handler_json = json.dumps(
+            {results_key: [], "evidence": {"low_confidence": False, "confidence": 0.9}}
+        )
+        result, _ = _run_semantic_command(
+            cli_args, handler_target, handler_json, tmp_path, is_model_cached=True
+        )
+        assert result.exit_code == 0, result.stderr
+        _assert_url_is_not_message_leading(result.stderr, RETRIEVAL_QUALITY_ISSUE_URL)
+
+    @pytest.mark.parametrize(("cli_args", "handler_target", "results_key"), _SEMANTIC_COMMANDS)
+    def test_healthy_response_does_not_trigger_hint(
+        self, tmp_path, cli_args, handler_target, results_key
+    ):
+        result, _ = _run_semantic_command(
+            cli_args,
+            handler_target,
+            _healthy_handler_json(results_key),
+            tmp_path,
+            is_model_cached=True,
+        )
+        assert result.exit_code == 0, result.stderr
+        assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
+
+    def test_malformed_response_is_a_silent_no_op(self, tmp_path):
+        """A decoded object with none of evidence/hits/snippets — the shape
+        of a lightweight handler-mock fixture used elsewhere in this file —
+        must not crash the inspection helper or emit a hint."""
+        handler_json = json.dumps({"unexpected": "shape"})
+        result, _ = _run_semantic_command(
+            ["search-docs", "TTS"],
+            "pipecat_context_hub.server.tools.search_docs.handle_search_docs",
+            handler_json,
+            tmp_path,
+            is_model_cached=True,
+        )
+        assert result.exit_code == 0, result.stderr
+        assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
 
 
 class TestQuietOutput:

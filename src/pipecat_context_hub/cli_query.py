@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -43,6 +44,10 @@ import click
 
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
 from pipecat_context_hub.shared.paths import redact_home_in_text
+from pipecat_context_hub.shared.support_links import (
+    BUG_REPORT_ISSUE_URL,
+    RETRIEVAL_QUALITY_ISSUE_URL,
+)
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -55,6 +60,81 @@ if TYPE_CHECKING:
 # ``cli._EXIT_INDEX_UNREADY`` (enforced by tests/unit/test_cli_query.py).
 _EXIT_INDEX_UNREADY = 2
 _EXIT_BAD_INPUT = 1
+
+# Result-list key for each semantic command's JSON output, used only to
+# detect an empty result collection for the retrieval-quality stderr hint.
+# ``needs_embeddings=True`` is exactly these four commands, so no separate
+# name-list check is needed to gate this.
+_SEMANTIC_RESULT_KEY = {
+    "search_docs": "hits",
+    "search_examples": "hits",
+    "search_api": "hits",
+    "get_code_snippet": "snippets",
+}
+
+
+def _bug_report_hint() -> str:
+    """Remediation-first suffix: name the fix, then the tracker as a fallback."""
+    return f"If this persists after trying that, file a bug report at {BUG_REPORT_ISSUE_URL}."
+
+
+def _maybe_warn_poor_results(tool: str, needs_embeddings: bool, result: str) -> None:
+    """Emit a retrieval-quality stderr hint for low-confidence/empty semantic results.
+
+    Read-only: inspects the handler's JSON without rewriting it, so stdout
+    stays byte-for-byte the handler's output. Tolerates a decoded object
+    without ``evidence``/result-list keys by treating it as "no hint" —
+    lightweight handler mocks in tests don't need to carry every field.
+    """
+    if not needs_embeddings:
+        return
+    result_key = _SEMANTIC_RESULT_KEY.get(tool)
+    if result_key is None:
+        return
+    try:
+        data = json.loads(result)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    evidence = data.get("evidence")
+    low_confidence = isinstance(evidence, dict) and evidence.get("low_confidence") is True
+    results_list = data.get(result_key)
+    empty_results = isinstance(results_list, list) and len(results_list) == 0
+    if not (low_confidence or empty_results):
+        return
+    click.echo(
+        redact_home_in_text(
+            "Warning: results were poor or missing. Retry with fewer filters or a "
+            "larger --limit; if poor or missing results persist, file at "
+            f"{RETRIEVAL_QUALITY_ISSUE_URL}."
+        ),
+        err=True,
+    )
+
+
+def _maybe_warn_reranker_not_cached(
+    needs_embeddings: bool, reranker_status: RerankerStatus
+) -> None:
+    """Warn when a semantic command ran with the reranker model uncached.
+
+    Gated on the literal ``needs_embeddings`` flag (not a command-name list)
+    so a future semantic command inherits the warning automatically. Only
+    ``"not_cached"`` is handled: ``probe_reranker`` never returns
+    ``"load_failed"`` to the CLI, and ``"config_disabled"`` is a deliberate
+    operator choice, not an incident.
+    """
+    if not needs_embeddings or reranker_status.disabled_reason != "not_cached":
+        return
+    click.echo(
+        redact_home_in_text(
+            "Warning: reranking disabled (model not cached) — run "
+            "'pipecat-context-hub refresh' to download it; "
+            f"if it persists after that, file a bug report at {BUG_REPORT_ISSUE_URL}."
+        ),
+        err=True,
+    )
+
 
 # MCP tool name -> CLI command name. The drift guard in
 # tests/unit/test_cli_query.py asserts this covers every registered MCP tool,
@@ -153,7 +233,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
                 index_store.close()
         # exc.__str__ embeds the absolute chroma_path, so redact the whole
         # composed message (not just a data_dir token, which is absent here).
-        click.echo(redact_home_in_text(f"Error: {exc}"), err=True)
+        click.echo(redact_home_in_text(f"Error: {exc}\n{_bug_report_hint()}"), err=True)
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         if index_store is not None:
@@ -165,7 +245,8 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         click.echo(
             redact_home_in_text(
                 f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
-                "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild."
+                "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
+                f"{_bug_report_hint()}"
             ),
             err=True,
         )
@@ -177,7 +258,8 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
                 redact_home_in_text(
                     f"Error: the index at {config.storage.data_dir} is empty.\n"
                     "Run 'pipecat-context-hub refresh' first to build it "
-                    "(the first run downloads models and indexes sources — allow a few minutes)."
+                    "(the first run downloads models and indexes sources — allow a few minutes).\n"
+                    f"{_bug_report_hint()}"
                 ),
                 err=True,
             )
@@ -192,6 +274,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
             cross_encoder, reranker_status = _resolve_reranker(config, construct=True)
         else:
             _, reranker_status = _resolve_reranker(config, construct=False)
+        _maybe_warn_reranker_not_cached(needs_embeddings, reranker_status)
 
         retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
 
@@ -273,6 +356,9 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         except (ValidationError, ValueError) as exc:
             click.echo(f"Error: {exc}", err=True)
             raise SystemExit(_EXIT_BAD_INPUT) from exc
+        # Read-only inspection of the handler's raw JSON, before the staleness
+        # footer below touches it — the hint must not affect what gets annotated.
+        _maybe_warn_poor_results(tool, needs_embeddings, result)
         # Same staleness footer the MCP door attaches (status excluded — it
         # *is* the staleness report). Inside the runtime block: the store
         # must still be open to read its metadata.
