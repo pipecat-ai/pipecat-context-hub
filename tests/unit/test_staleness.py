@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -16,7 +16,7 @@ runner = CliRunner()
 
 def _store_refreshed_days_ago(days: float) -> MagicMock:
     store = MagicMock()
-    refreshed = datetime.now(timezone.utc) - timedelta(days=days)
+    refreshed = datetime.now(UTC) - timedelta(days=days)
     store.get_all_metadata.return_value = {"last_refresh_at": refreshed.isoformat()}
     store.get_index_stats.return_value = {"total": 10, "counts_by_type": {"doc": 10}}
     return store
@@ -98,6 +98,35 @@ class TestAnnotateResponse:
         raw = '{"hits": []}'
         assert annotate_response(raw, store) == raw
 
+    def test_parsed_payload_is_reused_without_reparsing(self):
+        """``parsed=`` lets a caller that already decoded ``result_json``
+
+        (e.g. the CLI's retrieval-quality hint inspection) skip a second
+        ``json.loads`` of the same string. Patch ``json.loads`` to raise if
+        called at all — the only way this test passes is if ``annotate_response``
+        never re-parses ``raw`` when a pre-decoded payload is supplied.
+        """
+        raw = '{"hits": []}'
+        parsed: dict[str, object] = {"hits": []}
+        with patch(
+            "pipecat_context_hub.shared.staleness.json.loads",
+            side_effect=AssertionError("must not re-parse when parsed= is supplied"),
+        ):
+            out = annotate_response(raw, _store_refreshed_days_ago(21), parsed=parsed)
+        payload = json.loads(out)
+        assert payload["hits"] == []
+        assert payload["index_staleness"]["age_days"] >= 20
+
+    def test_parsed_payload_omitted_still_parses_result_json(self):
+        """Backward-compat: no ``parsed=`` argument means the old behavior —
+
+        parse ``result_json`` itself — is unchanged for every existing caller.
+        """
+        out = annotate_response('{"hits": []}', _store_refreshed_days_ago(21))
+        payload = json.loads(out)
+        assert payload["hits"] == []
+        assert payload["index_staleness"]["age_days"] >= 20
+
 
 class TestBothFrontDoors:
     """The footer reaches responses on the CLI and MCP dispatch paths alike."""
@@ -140,7 +169,7 @@ class TestBothFrontDoors:
             server = server_main.create_server(retriever, store)
             # call_tool is registered via decorator; reach it through the
             # server's request handler for CallToolRequest.
-            import mcp.types as types
+            from mcp import types
 
             req = types.CallToolRequest(
                 method="tools/call",

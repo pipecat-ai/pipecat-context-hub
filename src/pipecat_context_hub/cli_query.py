@@ -78,31 +78,38 @@ def _bug_report_hint() -> str:
     return f"If this persists after trying that, file a bug report at {BUG_REPORT_ISSUE_URL}."
 
 
-def _maybe_warn_poor_results(tool: str, needs_embeddings: bool, result: str) -> None:
+def _maybe_warn_poor_results(
+    tool: str, needs_embeddings: bool, result: str
+) -> dict[str, Any] | None:
     """Emit a retrieval-quality stderr hint for low-confidence/empty semantic results.
 
     Read-only: inspects the handler's JSON without rewriting it, so stdout
     stays byte-for-byte the handler's output. Tolerates a decoded object
     without ``evidence``/result-list keys by treating it as "no hint" —
     lightweight handler mocks in tests don't need to carry every field.
+
+    Returns the decoded payload when parsing succeeds (whether or not a hint
+    fired), so ``_invoke`` can pass it to ``annotate_response`` instead of
+    that function re-parsing the same JSON string. Returns ``None`` when this
+    tool isn't a semantic command or the result didn't decode to a dict.
     """
     if not needs_embeddings:
-        return
+        return None
     result_key = _SEMANTIC_RESULT_KEY.get(tool)
     if result_key is None:
-        return
+        return None
     try:
         data = json.loads(result)
     except (TypeError, ValueError):
-        return
+        return None
     if not isinstance(data, dict):
-        return
+        return None
     evidence = data.get("evidence")
     low_confidence = isinstance(evidence, dict) and evidence.get("low_confidence") is True
     results_list = data.get(result_key)
     empty_results = isinstance(results_list, list) and len(results_list) == 0
     if not (low_confidence or empty_results):
-        return
+        return data
     click.echo(
         redact_home_in_text(
             "Warning: results were poor or missing. Retry with fewer filters or a "
@@ -111,6 +118,7 @@ def _maybe_warn_poor_results(tool: str, needs_embeddings: bool, result: str) -> 
         ),
         err=True,
     )
+    return data
 
 
 def _maybe_warn_reranker_not_cached(
@@ -358,12 +366,14 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
             raise SystemExit(_EXIT_BAD_INPUT) from exc
         # Read-only inspection of the handler's raw JSON, before the staleness
         # footer below touches it — the hint must not affect what gets annotated.
-        _maybe_warn_poor_results(tool, needs_embeddings, result)
+        # Reuses the decoded payload for the staleness footer below instead of
+        # parsing the same JSON string twice.
+        parsed = _maybe_warn_poor_results(tool, needs_embeddings, result)
         # Same staleness footer the MCP door attaches (status excluded — it
         # *is* the staleness report). Inside the runtime block: the store
         # must still be open to read its metadata.
         if tool != "get_hub_status":
-            result = annotate_response(result, runtime.index_store)
+            result = annotate_response(result, runtime.index_store, parsed=parsed)
     click.echo(result)
 
 

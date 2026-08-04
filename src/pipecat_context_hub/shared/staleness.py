@@ -27,7 +27,7 @@ import json
 import logging
 import math
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -85,9 +85,9 @@ def staleness_info(index_store: IndexStore) -> dict[str, Any] | None:
     except ValueError:
         return None
     if refreshed.tzinfo is None:
-        refreshed = refreshed.replace(tzinfo=timezone.utc)
+        refreshed = refreshed.replace(tzinfo=UTC)
 
-    age_days = (datetime.now(timezone.utc) - refreshed).total_seconds() / 86400
+    age_days = (datetime.now(UTC) - refreshed).total_seconds() / 86400
     if age_days < threshold:
         return None
 
@@ -100,18 +100,29 @@ def staleness_info(index_store: IndexStore) -> dict[str, Any] | None:
     }
 
 
-def annotate_response(result_json: str, index_store: IndexStore) -> str:
+def annotate_response(
+    result_json: str,
+    index_store: IndexStore,
+    *,
+    parsed: dict[str, Any] | None = None,
+) -> str:
     """Inject ``index_staleness`` into a tool handler's JSON response.
 
     Returns the input unchanged when the index is fresh, when the payload
     isn't a JSON object, or when anything at all goes wrong — the annotation
     is best-effort and must never cost a response.
+
+    *parsed* lets a caller that already decoded ``result_json`` for its own
+    purposes (e.g. inspecting it for a different hint) pass that dict through
+    instead of this function re-parsing the same string. Optional and
+    keyword-only so every existing caller is unaffected; when omitted this
+    parses ``result_json`` itself exactly as before.
     """
     try:
         info = staleness_info(index_store)
         if info is None:
             return result_json
-        payload = json.loads(result_json)
+        payload = parsed if parsed is not None else json.loads(result_json)
         if not isinstance(payload, dict):
             return result_json
         payload["index_staleness"] = info
