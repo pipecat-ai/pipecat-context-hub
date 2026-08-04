@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1429,7 +1431,7 @@ class TestServeRerankerTelemetry:
             result = CliRunner().invoke(main, ["serve"])
 
         assert result.exit_code == 0, result.output
-        provider = captured_kwargs["reranker_status_provider"]
+        provider = cast(Callable[[], Any], captured_kwargs["reranker_status_provider"])
         status = provider()
         assert status.enabled is False
         assert status.disabled_reason == "load_failed"

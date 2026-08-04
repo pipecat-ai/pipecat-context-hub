@@ -7,6 +7,25 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **CLI report-hint parity with MCP.** The one-shot CLI (`cli_query.py`,
+  `cli.py`) now gives the same "where to report this" nudge on stderr that
+  the MCP `initialize` instructions already give a connecting agent:
+  a remediation-first retrieval-quality hint when a semantic command
+  (`search-docs`, `search-examples`, `search-api`, `get-code-snippet`)
+  returns `low_confidence` or an empty result collection; a bug-report hint
+  appended to all three `_EXIT_INDEX_UNREADY` exits in `cli_query.py` and
+  `cli.py`'s `serve` startup and `refresh` paths; and a remediation-first
+  warning (naming `refresh` before the bug-report URL) when a semantic
+  command or `serve` startup finds the reranker model uncached
+  (`reranker_disabled_reason == "not_cached"`). Lookup commands
+  (`check-deprecation`, `get-doc`, `get-example`, `status`) are unaffected —
+  they are direct lookups, not ranked retrieval. Stdout JSON and exit codes
+  are unchanged; all new text is stderr-only. The two GitHub issue-template
+  URLs now live in a single `shared/support_links.py` module that both the
+  MCP instructions and the CLI import, so a template rename or repo move
+  can no longer update one copy and silently leave the other stale.
+
 ### Fixed
 - **`install` now registers an MCP server the client can actually start.** It recorded the
   bare console-script name `pipecat-context-hub` whenever one was on `PATH`, which asks the

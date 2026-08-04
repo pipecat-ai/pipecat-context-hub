@@ -296,9 +296,12 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `reranker_disabled_reason` of `not_cached` or `load_failed` (explicitly
     **not** for `config_disabled`, a supported operator choice). This is
     advisory text for the connecting agent, not a code path triggered by an
-    exception — it only reaches clients that speak MCP (`serve`), never the
-    one-shot CLI (`cli_query.py`), which has no agent-in-the-loop to hand it
-    to. Unit-side counterpart: `tests/unit/test_server.py::TestServerInstructions`.
+    exception — it only reaches clients that speak MCP (`serve`). The
+    one-shot CLI (`cli_query.py`, `cli.py`) has no agent-in-the-loop to hand
+    advisory text to, so it gets the equivalent guidance directly on stderr
+    instead, sourced from the same `shared/support_links.py` constants —
+    see CLI query smoke items 5 and 9 below. Unit-side counterpart:
+    `tests/unit/test_server.py::TestServerInstructions`.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
@@ -318,7 +321,10 @@ live local index:
 4. `uv run pipecat-context-hub get-doc` (no flags) — exit 1, one-line
    validation message on stderr, empty stdout
 5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —
-   exit 2, stderr says to run `refresh`
+   exit 2, stderr says to run `refresh`, and (this is an empty-index first
+   run, the most routine of the three `_EXIT_INDEX_UNREADY` paths) also
+   carries the "if this persists after trying that, file a bug report at
+   .../issues/new?template=bug-report.yml" hint
 6a. **Pipecat CLI bridge** (when `plugin.py`, the command set, or `pyproject.toml`
    entry points change). Unit tests mount the bridge in-process; this confirms the
    real entry-point discovery path, which they cannot:
@@ -347,6 +353,18 @@ live local index:
    and was unaffected, so only the CLI front door exposed it — run this from the
    CLI, not through MCP. Unit-side counterpart:
    `tests/integration/test_concurrent_model_load.py`.
+9. **Reranker `not_cached` stderr warning** — run
+   `PIPECAT_HUB_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-12-v2 uv run
+   pipecat-context-hub search-docs "TTS"` (an allowlisted model that is
+   typically not yet in the local HF cache; do **not** point `HF_HOME` at an
+   empty directory instead — `services/embedding.py` resolves the embedding
+   model from the same cache and `quiet_model_loading()` sets
+   `HF_HUB_OFFLINE=1`, so an empty `HF_HOME` fails the command outright
+   rather than reproducing this state). Confirm stdout is still valid JSON
+   with no report-hint URL in it, and stderr carries a remediation-first
+   warning naming `refresh` before
+   `.../issues/new?template=bug-report.yml`. Unit-side counterpart:
+   the `not_cached` parametrized tests in `tests/unit/test_cli_query.py`.
 
 ## Upstream Drift Check
 

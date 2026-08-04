@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY as _SERVE_EXIT_INDEX_UNREADY
 from pipecat_context_hub.cli import main
@@ -500,7 +500,7 @@ def _run_semantic_command(
     *,
     is_model_cached: bool,
     disabled_reason_override: str | None = "__unset__",
-) -> tuple[object, MagicMock]:
+) -> tuple[Result, MagicMock]:
     """Invoke a semantic command with a healthy handler and a controlled
     reranker cache/disabled-reason state.
 
