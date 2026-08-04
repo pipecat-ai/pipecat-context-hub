@@ -494,28 +494,32 @@ class TestServerInstructions:
     This text is advisory prose for the *connecting agent*, not a code path
     that fires on an exception — nothing else in the tree references it (see
     AGENTS.md item #50), so a wording edit that drops a clause or a URL would
-    otherwise pass silently.
+    otherwise pass silently. Also, the CLI (``cli_query.py``) now gets the
+    same guidance via the shared ``shared/support_links.py`` constants — see
+    ``TestSupportLinks`` below.
+
+    Assertions here check against the *imported* constants, not hardcoded
+    literals, so this class fails if ``_SERVER_INSTRUCTIONS`` stops
+    interpolating from ``shared/support_links.py``.
     """
 
     def test_retrieval_quality_report_hint_present(self):
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.shared.support_links import (
+            RETRIEVAL_QUALITY_ISSUE_URL,
+        )
 
         assert "low_confidence" in _SERVER_INSTRUCTIONS
-        assert (
-            "github.com/pipecat-ai/pipecat-context-hub/issues/new"
-            "?template=retrieval-quality.yml" in _SERVER_INSTRUCTIONS
-        )
+        assert RETRIEVAL_QUALITY_ISSUE_URL in _SERVER_INSTRUCTIONS
 
     def test_degraded_hub_report_hint_present(self):
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
 
         assert "reranker_disabled_reason" in _SERVER_INSTRUCTIONS
         assert "not_cached" in _SERVER_INSTRUCTIONS
         assert "load_failed" in _SERVER_INSTRUCTIONS
-        assert (
-            "github.com/pipecat-ai/pipecat-context-hub/issues/new"
-            "?template=bug-report.yml" in _SERVER_INSTRUCTIONS
-        )
+        assert BUG_REPORT_ISSUE_URL in _SERVER_INSTRUCTIONS
 
     def test_config_disabled_is_excluded_from_bug_report_flow(self):
         """``PIPECAT_HUB_RERANKER_ENABLED=0`` is an operator choice, not an incident.
@@ -537,6 +541,87 @@ class TestServerInstructions:
 
         source = inspect.getsource(create_server)
         assert "instructions=_SERVER_INSTRUCTIONS" in source
+
+
+class TestSupportLinks:
+    """Pin ``shared/support_links.py`` as the single source of truth for the
+    two GitHub issue-template URLs.
+
+    ``TestServerInstructions`` only pins that ``_SERVER_INSTRUCTIONS``
+    interpolates from these constants; it would pass even if a typo landed
+    in ``support_links.py`` itself, since the test and the source would
+    agree with each other trivially. The literal-value assertions below are
+    what actually catch that typo.
+    """
+
+    def test_retrieval_quality_issue_url_literal_value(self):
+        from pipecat_context_hub.shared.support_links import (
+            RETRIEVAL_QUALITY_ISSUE_URL,
+        )
+
+        assert RETRIEVAL_QUALITY_ISSUE_URL == (
+            "https://github.com/pipecat-ai/pipecat-context-hub/issues/new"
+            "?template=retrieval-quality.yml"
+        )
+
+    def test_bug_report_issue_url_literal_value(self):
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        assert BUG_REPORT_ISSUE_URL == (
+            "https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml"
+        )
+
+    def test_issue_template_files_exist(self):
+        """Each constant's ``template=`` value names a real workflow file.
+
+        Cheap cross-check against already-shipped behaviour: if either
+        template is ever renamed on the GitHub side without updating this
+        module, the constant would silently point at a 404.
+        """
+        import re
+        from pathlib import Path
+        from urllib.parse import parse_qs, urlparse
+
+        from pipecat_context_hub.shared.support_links import (
+            BUG_REPORT_ISSUE_URL,
+            RETRIEVAL_QUALITY_ISSUE_URL,
+        )
+
+        repo_root = Path(__file__).resolve().parents[2]
+        template_dir = repo_root / ".github" / "ISSUE_TEMPLATE"
+
+        for url in (RETRIEVAL_QUALITY_ISSUE_URL, BUG_REPORT_ISSUE_URL):
+            template = parse_qs(urlparse(url).query)["template"][0]
+            assert re.fullmatch(r"[\w.-]+\.ya?ml", template), template
+            assert (template_dir / template).is_file(), f"{template} not found in {template_dir}"
+
+    def test_no_stray_issue_template_literals(self):
+        """``"issues/new?template="`` may appear only in ``support_links.py``.
+
+        Guards the "one source of truth" requirement structurally: a new
+        hardcoded copy of either URL anywhere else under ``src/`` fails this
+        test, rather than relying on a manual grep during review. (A
+        known, accepted exception outside ``src/`` is ``docs/README.md`` —
+        markdown can't import Python constants — which this test does not
+        and should not cover.)
+        """
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        src_root = repo_root / "src"
+        needle = "issues/new?template="
+        support_links_path = src_root / "pipecat_context_hub" / "shared" / "support_links.py"
+
+        offenders = []
+        for path in src_root.rglob("*.py"):
+            if path == support_links_path:
+                continue
+            if needle in path.read_text(encoding="utf-8"):
+                offenders.append(str(path.relative_to(repo_root)))
+
+        assert offenders == [], (
+            f"found stray '{needle}' literal(s) outside support_links.py: {offenders}"
+        )
 
 
 class TestEntryPoint:

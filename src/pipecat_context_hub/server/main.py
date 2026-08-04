@@ -23,6 +23,10 @@ from pipecat_context_hub.server.tools.search_examples import handle_search_examp
 from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.shared.interfaces import Retriever
 from pipecat_context_hub.shared.staleness import annotate_response
+from pipecat_context_hub.shared.support_links import (
+    BUG_REPORT_ISSUE_URL,
+    RETRIEVAL_QUALITY_ISSUE_URL,
+)
 from pipecat_context_hub.shared.tracking import IdleTracker
 from pipecat_context_hub.shared.types import (
     CheckDeprecationInput,
@@ -122,7 +126,7 @@ _HUB_STATUS_TOOL: tuple[str, str, dict[str, Any]] = (
 )
 
 
-_SERVER_INSTRUCTIONS = """\
+_SERVER_INSTRUCTIONS = f"""\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
 framework documentation, code examples, and API source.
 
@@ -174,7 +178,7 @@ was filtered out.
 4. Check ``get_hub_status`` — the index may be stale or missing content types.
 
 If none of these work, suggest the user file a retrieval quality issue at \
-https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=retrieval-quality.yml \
+{RETRIEVAL_QUALITY_ISSUE_URL} \
 — the issue template includes a diagnostic prompt that you can run to generate \
 a structured report for the maintainers.
 
@@ -185,7 +189,7 @@ running in a degraded mode. Share the full ``get_hub_status`` response and \
 any ``pipecat-context-hub`` startup log lines (look for \
 ``Reranker disabled at startup`` and the ``pipecat-context-hub vX.Y.Z \
 starting`` banner) with the user and suggest they file a bug report at \
-https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml \
+{BUG_REPORT_ISSUE_URL} \
 so the maintainers can diagnose from the trace alone.
 
 A ``reranker_disabled_reason`` of ``config_disabled`` is a supported \
