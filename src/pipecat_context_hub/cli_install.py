@@ -13,9 +13,13 @@ to put it rather than writing into a file it does not own.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess  # nosec B404 - fixed-arg, timeout-guarded client CLI registration
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 from typing import Any
 
 import click
@@ -38,6 +42,15 @@ _FILE_CLIENTS = {
     "vscode": ".vscode/mcp.json",
     "zed": "~/.config/zed/settings.json (under `context_servers`)",
 }
+
+
+@dataclass(frozen=True)
+class _Registration:
+    """Result of inspecting an existing client registration."""
+
+    state: Literal["absent", "matching", "mismatched", "error"]
+    config: dict[str, Any] | None = None
+    scope: str | None = None
 
 
 def _server_command() -> list[str]:
@@ -97,48 +110,155 @@ def _run_client(exe: str, args: list[str]) -> subprocess.CompletedProcess[str] |
         return None
 
 
-def _already_registered(exe: str, command: list[str]) -> bool:
-    """Whether *exe* already records this exact server command.
+def _not_found(completed: subprocess.CompletedProcess[str]) -> bool:
+    """Whether a failed ``mcp get`` unambiguously means the entry is absent."""
+    output = f"{completed.stdout}\n{completed.stderr}".lower()
+    return "no mcp server named" in output or "no mcp server found with name" in output
 
-    Looks for our own command in the client's output rather than parsing that output's
-    shape. The question is only "is the registered entry already this one?", so a client
-    that changes how it prints costs a redundant rewrite rather than a broken server.
-    """
-    completed = _run_client(exe, ["mcp", "get", _SERVER_NAME])
-    if completed is None or completed.returncode != 0:
-        # Not registered, or a client CLI with no `get`. Nothing to compare against.
-        return False
-    return all(part in completed.stdout for part in command)
+
+def _claude_config(scope: str) -> dict[str, Any]:
+    """Read the exact Claude registration at *scope* for rollback."""
+    if scope == "project":
+        document = json.loads((Path.cwd() / ".mcp.json").read_text())
+        config = document["mcpServers"][_SERVER_NAME]
+        if not isinstance(config, dict):
+            raise TypeError("Claude project registration is not an object")
+        return config
+
+    document = json.loads((Path.home() / ".claude.json").read_text())
+    if scope == "user":
+        config = document["mcpServers"][_SERVER_NAME]
+        if not isinstance(config, dict):
+            raise TypeError("Claude user registration is not an object")
+        return config
+    if scope == "local":
+        projects = document["projects"]
+        for project_path in (str(Path.cwd()), str(Path.cwd().resolve())):
+            if project_path in projects:
+                config = projects[project_path]["mcpServers"][_SERVER_NAME]
+                if not isinstance(config, dict):
+                    raise TypeError("Claude local registration is not an object")
+                return config
+    raise KeyError(f"could not locate {_SERVER_NAME!r} in Claude's {scope!r} config")
+
+
+def _inspect_registration(client: str, exe: str, command: list[str]) -> _Registration:
+    """Inspect the entry, distinguishing absence from an unsafe inspection failure."""
+    get_args = ["mcp", "get"]
+    if client == "codex":
+        get_args.append("--json")
+    get_args.append(_SERVER_NAME)
+    completed = _run_client(exe, get_args)
+    if completed is None:
+        return _Registration("error")
+    if completed.returncode != 0:
+        if _not_found(completed):
+            return _Registration("absent")
+        detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+        click.echo(
+            f"  cannot inspect existing registration: {detail[0] if detail else 'unknown error'}",
+            err=True,
+        )
+        return _Registration("error")
+
+    try:
+        if client == "codex":
+            config = json.loads(completed.stdout)["transport"]
+            matches = (
+                config.get("type") == "stdio"
+                and [
+                    config.get("command"),
+                    *config.get("args", []),
+                ]
+                == command
+            )
+            return _Registration("matching" if matches else "mismatched")
+
+        scope_match = re.search(r"mcp remove .* -s (local|user|project)", completed.stdout)
+        if scope_match is None:
+            raise ValueError("Claude did not report the registration scope")
+        scope = scope_match.group(1)
+        config = _claude_config(scope)
+        matches = (
+            config.get("type", "stdio") == "stdio"
+            and [
+                config.get("command"),
+                *config.get("args", []),
+            ]
+            == command
+        )
+        return _Registration("matching" if matches else "mismatched", config, scope)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
+        click.echo(f"  cannot inspect existing registration safely: {exc}", err=True)
+        return _Registration("error")
+
+
+def _report_failure(exe: str, completed: subprocess.CompletedProcess[str]) -> None:
+    detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+    click.echo(f"  {exe} exited {completed.returncode}: {detail[0] if detail else ''}", err=True)
+
+
+def _restore_claude_registration(exe: str, registration: _Registration) -> None:
+    """Restore a captured Claude registration after replacement failed."""
+    assert registration.config is not None
+    assert registration.scope is not None
+    rollback = _run_client(
+        exe,
+        [
+            "mcp",
+            "add-json",
+            "-s",
+            registration.scope,
+            _SERVER_NAME,
+            json.dumps(registration.config, separators=(",", ":")),
+        ],
+    )
+    if rollback is None or rollback.returncode != 0:
+        click.echo("  failed to restore the previous registration.", err=True)
+    else:
+        click.echo("  restored the previous registration.", err=True)
 
 
 def _register_with_cli(client: str, command: list[str]) -> bool:
     """Register the server via *client*'s own CLI. True when it succeeded.
 
-    Replaces a mismatched entry rather than skipping it: ``mcp add`` refuses a name it
-    already has and leaves whatever is there, so a registration written by an earlier
-    release would otherwise survive every reinstall. Removing first is safe only because
-    an entry that already matches returns before we get here.
+    Replaces a mismatched entry rather than skipping it. Codex supports an atomic
+    overwrite. Claude does not, so its exact entry is captured before removal and
+    restored if adding the replacement fails.
     """
     exe = _CLI_CLIENTS[client]
-    if _already_registered(exe, command):
+    registration = _inspect_registration(client, exe, command)
+    if registration.state == "error":
+        return False
+    if registration.state == "matching":
         # No restart advice: nothing changed, so the running client is already correct.
         click.echo("  already registered; no change.")
         return True
 
-    # Usually absent, and `mcp remove` exits non-zero for a name it does not have, so
-    # the result is deliberately ignored.
-    _run_client(exe, ["mcp", "remove", _SERVER_NAME])
+    add_options: list[str] = []
+    if registration.state == "mismatched" and client == "claude-code":
+        assert registration.scope is not None
+        removed = _run_client(exe, ["mcp", "remove", _SERVER_NAME, "-s", registration.scope])
+        if removed is None:
+            return False
+        if removed.returncode != 0:
+            _report_failure(exe, removed)
+            return False
+        add_options = ["-s", registration.scope]
 
-    args = ["mcp", "add", _SERVER_NAME, "--", *command]
+    # `codex mcp add` overwrites an existing name atomically. For an absent entry,
+    # both clients take this same non-destructive path.
+    args = ["mcp", "add", *add_options, _SERVER_NAME, "--", *command]
     click.echo(f"  $ {exe} {' '.join(args)}")
     completed = _run_client(exe, args)
     if completed is None:
+        if registration.state == "mismatched" and client == "claude-code":
+            _restore_claude_registration(exe, registration)
         return False
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip().splitlines()
-        click.echo(
-            f"  {exe} exited {completed.returncode}: {detail[0] if detail else ''}", err=True
-        )
+        _report_failure(exe, completed)
+        if registration.state == "mismatched" and client == "claude-code":
+            _restore_claude_registration(exe, registration)
         return False
     click.echo(f"  registered. Restart {client} to load it.")
     return True
