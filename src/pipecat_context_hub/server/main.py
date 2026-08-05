@@ -218,6 +218,13 @@ operator choice (``PIPECAT_HUB_RERANKER_ENABLED=0``), not a degraded state \
 """.replace("{RETRIEVAL_QUALITY_ISSUE_URL}", RETRIEVAL_QUALITY_ISSUE_URL).replace(
     "{BUG_REPORT_ISSUE_URL}", BUG_REPORT_ISSUE_URL
 )
+assert "{" not in _SERVER_INSTRUCTIONS, (
+    "_SERVER_INSTRUCTIONS still contains an unsubstituted {PLACEHOLDER} — "
+    "a renamed/typo'd RETRIEVAL_QUALITY_ISSUE_URL or BUG_REPORT_ISSUE_URL "
+    "constant would otherwise ship literal placeholder text to MCP clients "
+    "with no error. Check the .replace() chain above against the two "
+    "shared/support_links.py constants."
+)
 
 
 def create_server(

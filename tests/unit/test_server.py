@@ -558,6 +558,23 @@ class TestServerInstructions:
         reconnect_pos = _SERVER_INSTRUCTIONS.index("restart or reconnect")
         assert refresh_pos < reconnect_pos
 
+    def test_no_unsubstituted_placeholder_remains(self):
+        """No literal ``{PLACEHOLDER}`` token survives the ``.replace()`` chain.
+
+        ``_SERVER_INSTRUCTIONS`` is built via ``.replace("{URL_CONST}", ...)``
+        rather than an f-string (a deliberate choice, ``d97e23d``, to avoid
+        breaking on a future stray brace in the prose). That trades a loud
+        f-string ``NameError`` for a silent failure mode: a renamed or
+        typo'd constant would make the substitution no-op, shipping literal
+        ``{PLACEHOLDER}`` text to MCP clients with no error anywhere. A
+        module-level ``assert`` in ``server/main.py`` guards this at import
+        time; this test pins the same invariant at the unit-test level so a
+        regression is caught without needing to trigger a fresh import.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "{" not in _SERVER_INSTRUCTIONS
+
     @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
     def test_boot_failure_guidance_matches_index_recovery_paths(
         self, index_state, tmp_path, monkeypatch, caplog
