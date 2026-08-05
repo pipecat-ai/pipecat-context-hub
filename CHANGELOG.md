@@ -91,6 +91,31 @@ This project uses [Semantic Versioning](https://semver.org/).
   string) and no longer crashes on a non-dict Codex transport value or a stored
   registration with an explicit `"args": null`.
 
+- **`redact_home_in_text` no longer corrupts report-hint URLs under a degenerate
+  `HOME=/`.** In root/minimal-container environments where `HOME` is exactly the path
+  separator, `home + os.sep` collapsed to a bare `"//"`, which also occurs inside every
+  `https://` URL — including the report-hint URLs this function's callers append. A naive
+  `text.replace("//", "~/")` mangled `"https://"` into `"https:~/"`. This degenerate home is
+  now treated as nothing-to-redact instead.
+
+- **The CLI's reranker `not_cached` warning no longer co-fires with unrelated errors or a
+  retrieval-quality hint that doesn't apply.** It used to fire from inside `_query_runtime`
+  immediately after resolving `reranker_status`, before dispatch and therefore before input
+  validation — a semantic command with bad arguments (a pydantic `ValidationError`, exit 1)
+  could print the reranker warning right next to an unrelated validation error. The warning
+  now fires only after a successful dispatch, alongside the retrieval-quality hint, and the
+  two no longer co-fire uncoordinated: when the reranker warning already explains a
+  low-confidence result, the retrieval-quality hint no longer pairs a second, mis-routed
+  nudge on top of it.
+
+- **The CLI's retrieval-quality hint no longer goes silent on a zero-hit query just because
+  the reranker is uncached.** `_maybe_warn_poor_results`'s `reranker_uncached` gate used to
+  suppress both the `low_confidence` and `empty_results` halves of the hint together. An
+  uncached reranker can only affect *ranking*, not whether the candidate set came back
+  empty, so a cold-cache operator whose query matched nothing saw only the "reranking
+  disabled" warning and no signal that their query itself found no hits. The gate now only
+  suppresses the `low_confidence`-driven half.
+
 ### Security
 - Bumped `cryptography` 49.0.0 → 50.0.0 (CVE-2026-69247) and `gitpython` 3.1.56 → 3.1.57
   (GHSA-3f7w-8rr8-f37f). Floors raised above the fix versions so a plain re-lock can't

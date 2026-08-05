@@ -61,8 +61,12 @@ backported to the MCP side for symmetry.
 
 - Both issue-template URLs live in exactly one place; MCP instructions and
   the applicable CLI messages import from it — no second hardcoded copy
-  anywhere in `src/`. `cli_query.py` consumes both constants; `cli.py`
-  consumes `BUG_REPORT_ISSUE_URL` only.
+  anywhere in `src/`. `cli_query.py` imports both constants directly;
+  `cli.py` imports `BUG_REPORT_ISSUE_URL` directly and, per the `d97e23d`
+  wording-centralization decision, also consumes `cli_query.py`'s private
+  `_bug_report_hint()` helper transitively rather than re-assembling its own
+  copy of the remediation sentence — pinned by
+  `test_cli_imports_shared_bug_report_hint_helper`.
 - CLI gains a retrieval-quality stderr hint for each semantic command when
   its handler response reports `evidence.low_confidence == true` or returns
   an empty result collection (`hits` / `snippets`). The hint is
@@ -786,3 +790,42 @@ Full suite green throughout (1271 passed, 6 skipped at final commit); `ruff form
 - **2026-08-05 — `/code-review xhigh --fix` rounds (`d97e23d`, `5b24fa3`, `6a795ad`).** Two xhigh review passes ran against this branch's diff; confirmed findings from each were fixed in place (see each commit's message for the full per-finding breakdown): centralizing `_bug_report_hint()`'s wording so `cli_query.py`'s reranker warning stopped hand-rolling a second, already-drifted copy of the bug-report sentence; a structural AST drift guard tying `_SEMANTIC_RESULT_KEY` to the `needs_embeddings=True` call sites it mirrors; and `annotate_response` copying its caller's dict instead of mutating it in place. Findings that re-litigated deliberate, already-tested decisions from `d97e23d` itself (`cli.py` importing the private `_bug_report_hint` helper from `cli_query.py`; `_SERVER_INSTRUCTIONS` using a `.replace()` chain instead of an f-string) were correctly left unchanged (`no_change_needed`) rather than reverted.
 
 - **2026-08-05 — `/deep-review` fix-up round (`9b8508d`).** Four independent lenses (Logic, Security, Architecture, Documentation — opus/high except Documentation at haiku/low) audited the full branch diff; Security and Documentation found nothing, Logic and Architecture each found two/three Minor issues, none Critical or Important. All five fixed together as one coherent simplification rather than five independent patches: (1) `_maybe_warn_reranker_not_cached`'s docstring corrected to say the CLI can't *detect* a `load_failed` cross-encoder (its `reranker_status` is captured once, before dispatch), not that the failure mode can't occur; (2) the retrieval-quality retry hint became per-command (`_SEMANTIC_RETRY_HINT`) so `get_code_snippet` stops being told to retry with a `--limit` flag it doesn't have; (3) `annotate_response` dropped its optional `parsed=` shortcut — a CLI-only perf knob expressed as a shadow argument on a function both front doors import — so `_invoke` now decodes the handler's JSON once for its own purposes and calls `annotate_response` the same way MCP does; (4) `_maybe_warn_poor_results` became a pure decide-and-emit function taking the already-decoded payload, instead of parsing JSON itself and returning it for `_invoke` to hand to `annotate_response`; (5) a new test pins `_SEMANTIC_RESULT_KEY`'s *values* against the real Pydantic output-model fields, not just its keys against the `needs_embeddings` call sites. Full suite (1281 passed, 6 skipped), `ruff check`/`ruff format`/`mypy src/ tests/` all clean; both wording changes verified live against the running CLI.
+
+- **2026-08-05 — round-1 fixer commits (`05fce43`, `f526f14`).** Two
+  functional fixes landed from an earlier convergence round: `05fce43`
+  guarded `redact_home_in_text` against a degenerate `HOME=/` collapsing
+  `home + os.sep` to a bare `"//"`, which a naive `text.replace("//",
+  "~/")` matched inside every `https://` URL — including the report-hint
+  URLs this function's callers append — mangling them into `"https:~/"`;
+  this degenerate home is now treated as nothing-to-redact. `f526f14`
+  moved the reranker `not_cached` warning from firing inside
+  `_query_runtime` (before dispatch, hence before input validation) to
+  firing only after a successful dispatch, so it no longer co-fires with
+  an unrelated pydantic `ValidationError`, and coordinated it with the
+  retrieval-quality hint via the `reranker_uncached` parameter so the two
+  don't both nudge the operator toward the wrong issue tracker for the
+  same low-confidence signal. CHANGELOG `[Unreleased]` entries added for
+  both in this round (they had none previously).
+
+- **2026-08-05 — round-2 fix: `reranker_uncached` gate over-suppressed the
+  empty-results hint.** Code-review/Codex/deep-review/security-review
+  convergence flagged that `_maybe_warn_poor_results`'s `reranker_uncached`
+  gate (added by `f526f14` above) suppressed *both* the `low_confidence`
+  and `empty_results` halves of the retrieval-quality hint together. An
+  uncached reranker can only affect ranking of whatever RRF already
+  returned — it cannot itself empty the candidate set — so a cold-cache
+  operator whose query genuinely matched nothing saw only the "reranking
+  disabled" warning and no signal that their query itself found no hits.
+  Narrowed the gate to `low_confidence and not reranker_uncached`, leaving
+  `empty_results` unconditional. Regression test:
+  `TestRerankerWarningDoesNotSuppressEmptyResultsHint::test_empty_results_and_not_cached_emits_both_warnings`
+  (paired with a same-round update to the existing
+  `test_not_cached_and_low_confidence_only_emits_reranker_warning`, which
+  had accidentally combined both conditions in its fixture and switched to
+  a non-empty result list to isolate the `low_confidence` half it actually
+  tests). The `reranker_uncached` parameter itself was left in place
+  (`no_change_needed`) — it's still load-bearing for the `low_confidence`
+  half of the gate, not incidental plumbing. Also reworded the Requirements
+  bullet on `cli.py`'s constant usage to describe the transitive
+  `_bug_report_hint()` import (`d97e23d`) as-shipped, rather than implying
+  `cli.py` only ever touches `BUG_REPORT_ISSUE_URL` directly.
