@@ -840,16 +840,20 @@ class TestRerankerWarningDoesNotCoFireWithValidationError:
 class TestRerankerWarningSuppressesRetrievalQualityHint:
     """Regression test for a fix-round finding: when the reranker
     ``not_cached`` warning fires, the retrieval-quality hint must not also
-    fire for the same invocation — an uncached reranker is a known,
-    already-explained cause of degraded ranking with its own remediation
-    (``refresh``), so pairing it with a second nudge toward the
-    retrieval-quality tracker would mis-route a known install/config state
-    into the wrong issue tracker.
+    fire *for the low_confidence signal* on the same invocation — an
+    uncached reranker is a known, already-explained cause of degraded
+    ranking with its own remediation (``refresh``), so pairing it with a
+    second nudge toward the retrieval-quality tracker would mis-route a
+    known install/config state into the wrong issue tracker. This uses a
+    non-empty result list specifically to isolate the ``low_confidence``
+    half of the gate from the ``empty_results`` half, which is covered
+    separately below (an uncached reranker cannot itself empty the result
+    set, so that half must never be suppressed).
     """
 
     def test_not_cached_and_low_confidence_only_emits_reranker_warning(self, tmp_path):
         handler_json = json.dumps(
-            {"hits": [], "evidence": {"low_confidence": True, "confidence": 0.05}}
+            {"hits": [{"id": "x1"}], "evidence": {"low_confidence": True, "confidence": 0.05}}
         )
         result, _ = _run_semantic_command(
             ["search-docs", "TTS"],
@@ -862,6 +866,34 @@ class TestRerankerWarningSuppressesRetrievalQualityHint:
         assert "reranking disabled" in result.stderr
         assert BUG_REPORT_ISSUE_URL in result.stderr
         assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
+
+
+class TestRerankerWarningDoesNotSuppressEmptyResultsHint:
+    """Regression test: an uncached reranker only affects *ranking* — it
+    can never empty the candidate set RRF already produced. The
+    ``reranker_uncached`` gate in ``_maybe_warn_poor_results`` used to
+    suppress both the ``low_confidence`` and ``empty_results`` halves of
+    the retrieval-quality hint together, which meant a cold-cache operator
+    whose query genuinely matched nothing saw only the reranker warning and
+    no signal that their query itself found no hits. Both warnings must
+    fire together in that case.
+    """
+
+    def test_empty_results_and_not_cached_emits_both_warnings(self, tmp_path):
+        handler_json = json.dumps(
+            {"hits": [], "evidence": {"low_confidence": False, "confidence": 0.9}}
+        )
+        result, _ = _run_semantic_command(
+            ["search-docs", "TTS"],
+            "pipecat_context_hub.server.tools.search_docs.handle_search_docs",
+            handler_json,
+            tmp_path,
+            is_model_cached=False,
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "reranking disabled" in result.stderr
+        assert BUG_REPORT_ISSUE_URL in result.stderr
+        assert RETRIEVAL_QUALITY_ISSUE_URL in result.stderr
 
 
 class TestQuietOutput:

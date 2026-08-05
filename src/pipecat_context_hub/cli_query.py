@@ -123,18 +123,26 @@ def _maybe_warn_poor_results(
 
     ``reranker_uncached`` is set when ``_maybe_warn_reranker_not_cached``
     already fired for this invocation: an uncached reranker is a known,
-    already-explained cause of degraded ranking with its own remediation
+    already-explained cause of degraded *ranking* with its own remediation
     (``refresh``), so also nudging the operator toward the
-    retrieval-quality tracker here would mis-route a known install/config
-    state into the wrong issue tracker.
+    retrieval-quality tracker for a ``low_confidence`` result would mis-route
+    a known install/config state into the wrong issue tracker. It does
+    *not* suppress the ``empty_results`` half of this hint: a missing
+    reranker never empties the candidate set (it can only re-rank whatever
+    RRF already returned), so a query that matched nothing is a genuine
+    retrieval-quality signal regardless of reranker cache state.
     """
-    if not needs_embeddings or payload is None or reranker_uncached:
+    if not needs_embeddings or payload is None:
         return
     result_key = _SEMANTIC_RESULT_KEY.get(tool)
     if result_key is None:
         return
     evidence = payload.get("evidence")
-    low_confidence = isinstance(evidence, dict) and evidence.get("low_confidence") is True
+    low_confidence = (
+        isinstance(evidence, dict)
+        and evidence.get("low_confidence") is True
+        and not reranker_uncached
+    )
     results_list = payload.get(result_key)
     empty_results = isinstance(results_list, list) and len(results_list) == 0
     if not (low_confidence or empty_results):
