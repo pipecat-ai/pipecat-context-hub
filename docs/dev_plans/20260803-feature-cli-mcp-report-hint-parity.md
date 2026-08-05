@@ -62,10 +62,10 @@ backported to the MCP side for symmetry.
 - Both issue-template URLs live in exactly one place; MCP instructions and
   the applicable CLI messages import from it — no second hardcoded copy
   anywhere in `src/`. `cli_query.py` imports both constants directly;
-  `cli.py` imports `BUG_REPORT_ISSUE_URL` directly and, per the `d97e23d`
-  wording-centralization decision, also consumes `cli_query.py`'s private
-  `_bug_report_hint()` helper transitively rather than re-assembling its own
-  copy of the remediation sentence — pinned by
+  `cli.py` does not import `BUG_REPORT_ISSUE_URL` directly — per the
+  `d97e23d` wording-centralization decision it consumes `cli_query.py`'s
+  private `_bug_report_hint()` helper, sourcing the URL transitively rather
+  than re-assembling its own copy of the remediation sentence — pinned by
   `test_cli_imports_shared_bug_report_hint_helper`.
 - CLI gains a retrieval-quality stderr hint for each semantic command when
   its handler response reports `evidence.low_confidence == true` or returns
@@ -506,8 +506,10 @@ import elsewhere should not be able to hide until the last phase.
   non-allowlisted name instead silently falls back to the cached default
   and never reaches `not_cached`). Jumping straight to "file a bug" would
   mis-route a self-service fix into the tracker. The same reasoning now
-  applies uniformly to all three `_EXIT_INDEX_UNREADY` messages too (Phase
-  2): each already names its own remediation before the appended
+  applies uniformly to every `_bug_report_hint()` call site (three
+  `_EXIT_INDEX_UNREADY` messages in `cli_query.py`, three `serve`-startup
+  paths in `cli.py`, and one `refresh` incompatible-index path in `cli.py`)
+  too (Phase 2): each already names its own remediation before the appended
   report-hint, phrased "if this persists after trying that, file <URL>," so
   the routine empty-index first-run case isn't treated as more
   escalation-worthy than `not_cached`.
@@ -644,7 +646,7 @@ that section (designed for cross-component call chains) doesn't apply here.
   one-time manual check.
 - Code reviewed and approved.
 
-<!-- reviewed: 2026-08-05 @ b159c6c9a60fc3ef1c27b58176844711a5d471b9 -->
+<!-- reviewed: 2026-08-05 @ d5e133c0dd3e2524a4cf7e18f26642858b57fe15 -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
@@ -807,7 +809,7 @@ Full suite green throughout (1271 passed, 6 skipped at final commit); `ruff form
   same low-confidence signal. CHANGELOG `[Unreleased]` entries added for
   both in this round (they had none previously).
 
-- **2026-08-05 — round-2 fix: `reranker_uncached` gate over-suppressed the
+- **2026-08-05 — round-2 fix (`8f3840b`): `reranker_uncached` gate over-suppressed the
   empty-results hint.** Code-review/Codex/deep-review/security-review
   convergence flagged that `_maybe_warn_poor_results`'s `reranker_uncached`
   gate (added by `f526f14` above) suppressed *both* the `low_confidence`
