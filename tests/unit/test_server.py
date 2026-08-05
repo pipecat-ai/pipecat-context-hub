@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -537,6 +537,55 @@ class TestServerInstructions:
         refresh_pos = _SERVER_INSTRUCTIONS.index("pipecat-context-hub refresh")
         bug_report_pos = _SERVER_INSTRUCTIONS.index(BUG_REPORT_ISSUE_URL)
         assert refresh_pos < bug_report_pos
+
+    @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
+    def test_boot_failure_guidance_matches_index_recovery_paths(
+        self, index_state, tmp_path, monkeypatch, caplog
+    ):
+        """Boot guidance must defer to the recovery emitted before MCP initialization.
+
+        Empty and incompatible indexes prescribe different commands on stderr,
+        but both exit before an MCP client can call ``get_hub_status``.
+        """
+        from click.testing import CliRunner
+
+        from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY, main
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+        from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
+
+        if index_state == "empty":
+            store = MagicMock()
+            store.get_index_stats.return_value = {
+                "counts_by_type": {},
+                "total": 0,
+                "commit_shas": [],
+            }
+            index_store = MagicMock(return_value=store)
+            emitted_remediation = "pipecat-context-hub refresh"
+            guided_remediation = "pipecat-context-hub refresh"
+        else:
+            chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
+            index_store = MagicMock(side_effect=IncompatibleIndexFormatError(chroma_path))
+            emitted_remediation = RESET_INDEX_REMEDIATION
+            guided_remediation = "pipecat-context-hub refresh --force --reset-index"
+
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore", index_store),
+            caplog.at_level("ERROR", logger="pipecat_context_hub.cli"),
+        ):
+            result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert emitted_remediation in caplog.text
+        assert guided_remediation in _SERVER_INSTRUCTIONS.replace("``", "")
+        assert "before MCP initialization" in _SERVER_INSTRUCTIONS
+        assert "get_hub_status`` is unavailable" in _SERVER_INSTRUCTIONS
+        assert "Follow the remediation in the startup stderr first" in _SERVER_INSTRUCTIONS
+        assert "Only request ``get_hub_status`` after successful initialization" in (
+            _SERVER_INSTRUCTIONS
+        )
 
     def test_config_disabled_is_excluded_from_bug_report_flow(self):
         """``PIPECAT_HUB_RERANKER_ENABLED=0`` is an operator choice, not an incident.

@@ -298,15 +298,26 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `not_cached` specifically, the instructions tell the agent to suggest
     `pipecat-context-hub refresh` (self-service — downloads the model)
     *before* the bug-report URL, mirroring the CLI's remediation-first
-    wording; `load_failed` and a non-zero boot exit code have no
-    self-service fix and go straight to the bug-report suggestion. This is
+    wording. For `load_failed`, the initialized client shares the full
+    `get_hub_status` response and startup logs before suggesting a bug report.
+    A non-zero boot exit happens before MCP initialization, so the instructions
+    instead tell the agent to follow the remediation in startup stderr first
+    (`refresh` for an empty index or `refresh --force --reset-index` for an
+    unreadable/incompatible index), reconnect, and request `get_hub_status`
+    only after initialization succeeds. This is
     advisory text for the connecting agent, not a code path triggered by an
     exception — it only reaches clients that speak MCP (`serve`). The
     one-shot CLI (`cli_query.py`, `cli.py`) has no agent-in-the-loop to hand
     advisory text to, so it gets the equivalent guidance directly on stderr
     instead, sourced from the same `shared/support_links.py` constants —
     see CLI query smoke items 5 and 9 below. Unit-side counterpart:
-    `tests/unit/test_server.py::TestServerInstructions`.
+    `tests/unit/test_server.py::TestServerInstructions`. E2e counterpart
+    (real `serve` subprocess, real stdio `initialize` round-trip, no
+    mocks): `tests/integration/test_report_hint_e2e.py::
+    test_mcp_initialize_delivers_report_hint_instructions` — guards against
+    a regression where the source-level wiring (`instructions=...` passed
+    to `create_server`) stays intact but delivery on the wire breaks (e.g.
+    an MCP SDK kwarg rename).
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
@@ -329,7 +340,10 @@ live local index:
    exit 2, stderr says to run `refresh`, and (this is an empty-index first
    run, the most routine of the three `_EXIT_INDEX_UNREADY` paths) also
    carries the "if this persists after trying that, file a bug report at
-   .../issues/new?template=bug-report.yml" hint
+   .../issues/new?template=bug-report.yml" hint. E2e counterpart (real CLI
+   subprocess against a genuinely empty on-disk index, no mocks):
+   `tests/integration/test_report_hint_e2e.py::
+   test_cli_empty_index_delivers_bug_report_hint_on_stderr`.
 6a. **Pipecat CLI bridge** (when `plugin.py`, the command set, or `pyproject.toml`
    entry points change). Unit tests mount the bridge in-process; this confirms the
    real entry-point discovery path, which they cannot:

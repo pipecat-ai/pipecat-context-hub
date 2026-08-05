@@ -182,21 +182,28 @@ If none of these work, suggest the user file a retrieval quality issue at \
 — the issue template includes a diagnostic prompt that you can run to generate \
 a structured report for the maintainers.
 
-**When the hub itself is degraded:** If ``get_hub_status`` reports \
-``reranker_disabled_reason`` of ``not_cached`` or ``load_failed``, or the \
-MCP connection fails at boot with a non-zero exit code, the hub is \
-running in a degraded mode.
+**When the hub itself is degraded after initialization:** If ``get_hub_status`` reports \
+``reranker_disabled_reason`` of ``not_cached`` or ``load_failed``, the \
+hub is running in a degraded mode.
 
 If the reason is ``not_cached``, suggest the user run \
 ``pipecat-context-hub refresh`` first — this downloads the reranker model \
 and is the most common fix. If that doesn't resolve it, or the reason is \
-``load_failed`` or a non-zero boot exit code (neither has a self-service \
-fix), share the full ``get_hub_status`` response and any \
+``load_failed``, share the full ``get_hub_status`` response and any \
 ``pipecat-context-hub`` startup log lines (look for \
 ``Reranker disabled at startup`` and the ``pipecat-context-hub vX.Y.Z \
 starting`` banner) with the user and suggest they file a bug report at \
 {BUG_REPORT_ISSUE_URL} \
 so the maintainers can diagnose from the trace alone.
+
+If the MCP connection fails at boot with a non-zero exit code, the failure \
+happened before MCP initialization, so ``get_hub_status`` is unavailable. \
+Follow the remediation in the startup stderr first, then reconnect. Empty \
+indexes prescribe ``pipecat-context-hub refresh``; unreadable or incompatible \
+indexes prescribe ``pipecat-context-hub refresh --force --reset-index``. Only \
+request ``get_hub_status`` after successful initialization. If the prescribed \
+remediation does not resolve the boot failure, share the startup stderr with \
+the user and suggest they file a bug report at {BUG_REPORT_ISSUE_URL}.
 
 A ``reranker_disabled_reason`` of ``config_disabled`` is a supported \
 operator choice (``PIPECAT_HUB_RERANKER_ENABLED=0``), not a degraded state \

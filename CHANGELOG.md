@@ -29,8 +29,17 @@ This project uses [Semantic Versioning](https://semver.org/).
   remediation-first gap-closer: for `reranker_disabled_reason ==
   "not_cached"` it tells the connecting agent to suggest
   `pipecat-context-hub refresh` before the bug-report URL, matching the
-  CLI's wording; `load_failed` and a non-zero boot exit code (no
-  self-service fix) still route straight to the bug report.
+  CLI's wording. For non-zero boot exits, which occur before MCP
+  initialization and make `get_hub_status` unavailable, the instructions now
+  tell agents to follow the remediation from startup stderr first, reconnect,
+  and request `get_hub_status` only after initialization succeeds. This covers
+  the existing `refresh` recovery for empty indexes and
+  `refresh --force --reset-index` recovery for unreadable or incompatible
+  indexes; unresolved failures still route to the bug report. New
+  `tests/integration/test_report_hint_e2e.py` guards both hints end to end
+  against real subprocesses (a real `serve` stdio `initialize` round-trip
+  and a real CLI run against a genuinely empty index) rather than mocked
+  handler responses.
 
 ### Fixed
 - **`install` now registers an MCP server the client can actually start.** It recorded the
