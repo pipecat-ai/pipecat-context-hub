@@ -73,6 +73,50 @@ class TestToolCommandParity:
         """CLI and serve must report 'index unready' with the same exit code."""
         assert _EXIT_INDEX_UNREADY == _SERVE_EXIT_INDEX_UNREADY
 
+    def test_semantic_result_key_matches_needs_embeddings_call_sites(self):
+        """``_SEMANTIC_RESULT_KEY`` must enroll exactly the tools invoked
+        with ``needs_embeddings=True`` — nothing more, nothing less.
+
+        The retrieval-quality hint (``_maybe_warn_poor_results``) is gated
+        on ``_SEMANTIC_RESULT_KEY`` membership, a separate, hand-maintained
+        dict from the ``needs_embeddings`` flag that gates the reranker
+        warning. A future semantic command that sets
+        ``needs_embeddings=True`` but forgets to enroll in
+        ``_SEMANTIC_RESULT_KEY`` would silently lose the retrieval-quality
+        hint with no other test catching it — parses the module's AST for
+        every ``_invoke(ctx, "<tool>", ..., needs_embeddings=True)`` call
+        site rather than hardcoding the expected tool list, so this stays
+        accurate as commands are added or removed.
+        """
+        import ast
+        import inspect
+
+        import pipecat_context_hub.cli_query as cli_query_module
+        from pipecat_context_hub.cli_query import _SEMANTIC_RESULT_KEY
+
+        source = inspect.getsource(cli_query_module)
+        tree = ast.parse(source)
+
+        embeddings_tools: set[str] = set()
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id != "_invoke":
+                continue
+            needs_embeddings = next(
+                (kw.value for kw in node.keywords if kw.arg == "needs_embeddings"), None
+            )
+            if not (isinstance(needs_embeddings, ast.Constant) and needs_embeddings.value is True):
+                continue
+            tool_arg = node.args[1] if len(node.args) > 1 else None
+            assert isinstance(tool_arg, ast.Constant) and isinstance(tool_arg.value, str), (
+                "expected a string literal as _invoke's tool argument"
+            )
+            embeddings_tools.add(tool_arg.value)
+
+        assert embeddings_tools, "AST walk found no needs_embeddings=True call sites — broken test"
+        assert embeddings_tools == set(_SEMANTIC_RESULT_KEY)
+
 
 class TestVersionFlag:
     """`--version` reports the package version with zero state."""

@@ -63,8 +63,11 @@ _EXIT_BAD_INPUT = 1
 
 # Result-list key for each semantic command's JSON output, used only to
 # detect an empty result collection for the retrieval-quality stderr hint.
-# ``needs_embeddings=True`` is exactly these four commands, so no separate
-# name-list check is needed to gate this.
+# Must enroll exactly the tools invoked with ``needs_embeddings=True`` — a
+# structural AST test
+# (test_semantic_result_key_matches_needs_embeddings_call_sites) guards
+# that a future semantic command can't gain the reranker warning without
+# also gaining this hint.
 _SEMANTIC_RESULT_KEY = {
     "search_docs": "hits",
     "search_examples": "hits",
@@ -137,8 +140,7 @@ def _maybe_warn_reranker_not_cached(
     click.echo(
         redact_home_in_text(
             "Warning: reranking disabled (model not cached) — run "
-            "'pipecat-context-hub refresh' to download it; "
-            f"if it persists after that, file a bug report at {BUG_REPORT_ISSUE_URL}."
+            f"'pipecat-context-hub refresh' to download it. {_bug_report_hint()}"
         ),
         err=True,
     )
