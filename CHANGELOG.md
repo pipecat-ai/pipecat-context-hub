@@ -29,7 +29,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   remediation-first gap-closer: for `reranker_disabled_reason ==
   "not_cached"` it tells the connecting agent to suggest
   `pipecat-context-hub refresh` before the bug-report URL, matching the
-  CLI's wording. For non-zero boot exits, which occur before MCP
+  CLI's wording — and, since a running `serve` process resolves its
+  reranker state once at startup and does not re-probe the model cache
+  while running, also tells the agent to restart or reconnect the server
+  after `refresh` completes before re-checking `get_hub_status`, since
+  re-checking on the same connection still reports `not_cached`. For
+  non-zero boot exits, which occur before MCP
   initialization and make `get_hub_status` unavailable, the instructions now
   tell agents to follow the remediation from startup stderr first, reconnect,
   and request `get_hub_status` only after initialization succeeds. This covers

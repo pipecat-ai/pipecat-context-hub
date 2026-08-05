@@ -298,7 +298,12 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `not_cached` specifically, the instructions tell the agent to suggest
     `pipecat-context-hub refresh` (self-service — downloads the model)
     *before* the bug-report URL, mirroring the CLI's remediation-first
-    wording. For `load_failed`, the initialized client shares the full
+    wording — and, since this `serve` process resolved its reranker state
+    once at startup and does not re-probe the model cache while running,
+    the instructions also tell the agent that the server must be restarted
+    or reconnected after `refresh` completes before re-checking
+    `get_hub_status`; re-checking on the same connection still reports
+    `not_cached`. For `load_failed`, the initialized client shares the full
     `get_hub_status` response and startup logs before suggesting a bug report.
     A non-zero boot exit happens before MCP initialization, so the instructions
     instead tell the agent to follow the remediation in startup stderr first
