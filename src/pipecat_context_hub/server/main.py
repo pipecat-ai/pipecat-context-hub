@@ -188,7 +188,14 @@ hub is running in a degraded mode.
 
 If the reason is ``not_cached``, suggest the user run \
 ``pipecat-context-hub refresh`` first — this downloads the reranker model \
-and is the most common fix. If that doesn't resolve it, or the reason is \
+and is the most common fix. This ``pipecat-context-hub`` MCP server process \
+already resolved its reranker state at startup and does not re-check the \
+model cache while running, so ``refresh`` alone will not change what this \
+connection reports: after it completes, the user must restart or reconnect \
+this MCP server, then re-run ``get_hub_status`` on the new connection to \
+confirm the fix — re-checking ``get_hub_status`` on the current connection \
+will still show ``not_cached`` even after a successful ``refresh``. If \
+restarting doesn't resolve it, or the reason is \
 ``load_failed``, share the full ``get_hub_status`` response and any \
 ``pipecat-context-hub`` startup log lines (look for \
 ``Reranker disabled at startup`` and the ``pipecat-context-hub vX.Y.Z \

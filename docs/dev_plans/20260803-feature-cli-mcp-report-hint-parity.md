@@ -831,3 +831,30 @@ Full suite green throughout (1271 passed, 6 skipped at final commit); `ruff form
   bullet on `cli.py`'s constant usage to describe the transitive
   `_bug_report_hint()` import (`d97e23d`) as-shipped, rather than implying
   `cli.py` only ever touches `BUG_REPORT_ISSUE_URL` directly.
+
+- **2026-08-05 — round-5 fix: `not_cached` remediation assumed a live
+  reconnect the running `serve` process can't provide.** Codex adversarial
+  review flagged that the degraded-hub clause's `not_cached` remediation
+  (added in the Phase 4 entry above) told a connecting agent to run
+  `pipecat-context-hub refresh` without warning that re-checking
+  `get_hub_status` on the *same* connection would still show `not_cached`.
+  That's a real gap for an already-running `serve` process: `cli.py`'s
+  `serve` command resolves `probe_reranker(config)` exactly once at startup,
+  and the `_reranker_status()` closure it hands to `create_server` as
+  `reranker_status_provider` only reads that captured
+  `startup_disabled_reason` / `cross_encoder` state — it never re-probes the
+  HF cache. `refresh` genuinely downloads the model to disk, but the running
+  process has no lazy-reload path to pick that up; only a restart/reconnect
+  re-runs `probe_reranker` and observes the new cache state.
+  `_SERVER_INSTRUCTIONS` now says so explicitly: after `refresh`, restart or
+  reconnect the MCP server, then re-check `get_hub_status` on the *new*
+  connection. Regression test:
+  `TestServerInstructions::test_not_cached_remediation_requires_reconnect`
+  (`tests/unit/test_server.py`). The CLI side needs no equivalent fix:
+  `cli_query.py`'s `_maybe_warn_reranker_not_cached` only tells the operator
+  to run `refresh` to download the model, with no claim that the *current*
+  invocation will reflect it — and since the one-shot CLI is a fresh process
+  per invocation, the next invocation genuinely does re-probe the cache and
+  pick up the download. `cli.py`'s own `serve`-startup `not_cached` log line
+  is emitted once at boot (before any stale-in-memory-state trap could
+  apply) and was likewise left unchanged.

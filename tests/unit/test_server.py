@@ -538,6 +538,26 @@ class TestServerInstructions:
         bug_report_pos = _SERVER_INSTRUCTIONS.index(BUG_REPORT_ISSUE_URL)
         assert refresh_pos < bug_report_pos
 
+    def test_not_cached_remediation_requires_reconnect(self):
+        """``refresh`` alone does not fix an already-running ``serve`` process.
+
+        Codex adversarial review (round 5): the reranker's disabled-reason is
+        resolved once at ``serve`` startup (``cli.py``'s ``probe_reranker``
+        call, captured by the ``_reranker_status`` closure) and never
+        re-probed while the process is alive. An agent that runs ``refresh``
+        and then re-calls ``get_hub_status`` on the *same* MCP connection
+        would still see ``not_cached`` and could wrongly escalate to filing a
+        bug report for what is actually stale in-memory state. The
+        instructions must say to restart/reconnect before re-checking.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "restart or reconnect" in _SERVER_INSTRUCTIONS
+        assert "does not re-check the" in _SERVER_INSTRUCTIONS
+        refresh_pos = _SERVER_INSTRUCTIONS.index("pipecat-context-hub refresh")
+        reconnect_pos = _SERVER_INSTRUCTIONS.index("restart or reconnect")
+        assert refresh_pos < reconnect_pos
+
     @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
     def test_boot_failure_guidance_matches_index_recovery_paths(
         self, index_state, tmp_path, monkeypatch, caplog
