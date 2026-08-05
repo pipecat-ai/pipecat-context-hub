@@ -13,7 +13,7 @@ from click.testing import CliRunner, Result
 
 from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY as _SERVE_EXIT_INDEX_UNREADY
 from pipecat_context_hub.cli import main
-from pipecat_context_hub.cli_query import _EXIT_INDEX_UNREADY, _TOOL_TO_COMMAND
+from pipecat_context_hub.cli_query import _EXIT_BAD_INPUT, _EXIT_INDEX_UNREADY, _TOOL_TO_COMMAND
 from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL
 from pipecat_context_hub.services.index import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
@@ -795,6 +795,72 @@ class TestRetrievalQualityHint:
             is_model_cached=True,
         )
         assert result.exit_code == 0, result.stderr
+        assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
+
+
+class TestRerankerWarningDoesNotCoFireWithValidationError:
+    """Regression test for a fix-round finding: the reranker ``not_cached``
+    warning used to be emitted from inside ``_query_runtime`` immediately
+    after resolving ``reranker_status`` — before dispatch, and therefore
+    before input validation. A semantic command with bad arguments (a
+    pydantic ``ValidationError``, exit code 1) would still print the
+    reranker warning on stderr right next to the unrelated validation
+    error, even though the two have nothing to do with each other. The
+    warning must now fire only after a successful dispatch.
+    """
+
+    def test_validation_error_suppresses_reranker_warning(self, tmp_path):
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "pipecat_context_hub.services.retrieval.cross_encoder."
+                "CrossEncoderReranker.is_model_cached",
+                return_value=False,
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            # get-code-snippet with no lookup mode (--symbol/--intent/--path)
+            # fails GetCodeSnippetInput's model validator before any handler
+            # runs — a pure input-validation failure, unrelated to reranking.
+            result = runner.invoke(main, ["get-code-snippet"])
+        assert result.exit_code == _EXIT_BAD_INPUT
+        assert "Error:" in result.stderr
+        assert BUG_REPORT_ISSUE_URL not in result.stderr
+        assert "reranking disabled" not in result.stderr
+        assert result.stdout == ""
+
+
+class TestRerankerWarningSuppressesRetrievalQualityHint:
+    """Regression test for a fix-round finding: when the reranker
+    ``not_cached`` warning fires, the retrieval-quality hint must not also
+    fire for the same invocation — an uncached reranker is a known,
+    already-explained cause of degraded ranking with its own remediation
+    (``refresh``), so pairing it with a second nudge toward the
+    retrieval-quality tracker would mis-route a known install/config state
+    into the wrong issue tracker.
+    """
+
+    def test_not_cached_and_low_confidence_only_emits_reranker_warning(self, tmp_path):
+        handler_json = json.dumps(
+            {"hits": [], "evidence": {"low_confidence": True, "confidence": 0.05}}
+        )
+        result, _ = _run_semantic_command(
+            ["search-docs", "TTS"],
+            "pipecat_context_hub.server.tools.search_docs.handle_search_docs",
+            handler_json,
+            tmp_path,
+            is_model_cached=False,
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "reranking disabled" in result.stderr
+        assert BUG_REPORT_ISSUE_URL in result.stderr
         assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
 
 

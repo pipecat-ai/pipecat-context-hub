@@ -89,12 +89,26 @@ _SEMANTIC_RETRY_HINT = {
 
 
 def _bug_report_hint() -> str:
-    """Remediation-first suffix: name the fix, then the tracker as a fallback."""
+    """Remediation-first suffix: name the fix, then the tracker as a fallback.
+
+    Precondition: the caller has already emitted its own remediation text
+    (e.g. "run 'refresh --force --reset-index'") immediately before this
+    string. This function only returns the trailing "if this persists..."
+    clause — it names no fix of its own — so appending it in isolation, with
+    no preceding remediation, reads as escalation-first rather than the
+    remediation-first ordering every call site relies on. Every current call
+    site (index-unready messages, the reranker not_cached warning) upholds
+    this by construction; keep that invariant when adding a new one.
+    """
     return f"If this persists after trying that, file a bug report at {BUG_REPORT_ISSUE_URL}."
 
 
 def _maybe_warn_poor_results(
-    tool: str, needs_embeddings: bool, payload: dict[str, Any] | None
+    tool: str,
+    needs_embeddings: bool,
+    payload: dict[str, Any] | None,
+    *,
+    reranker_uncached: bool = False,
 ) -> None:
     """Emit a retrieval-quality stderr hint for low-confidence/empty semantic results.
 
@@ -106,8 +120,15 @@ def _maybe_warn_poor_results(
     handler mocks in tests don't need to carry every field. ``payload`` is
     ``None`` whenever ``_invoke`` couldn't decode the handler's result to a
     dict, or gates it out before calling this at all — either way, no hint.
+
+    ``reranker_uncached`` is set when ``_maybe_warn_reranker_not_cached``
+    already fired for this invocation: an uncached reranker is a known,
+    already-explained cause of degraded ranking with its own remediation
+    (``refresh``), so also nudging the operator toward the
+    retrieval-quality tracker here would mis-route a known install/config
+    state into the wrong issue tracker.
     """
-    if not needs_embeddings or payload is None:
+    if not needs_embeddings or payload is None or reranker_uncached:
         return
     result_key = _SEMANTIC_RESULT_KEY.get(tool)
     if result_key is None:
@@ -130,7 +151,7 @@ def _maybe_warn_poor_results(
 
 def _maybe_warn_reranker_not_cached(
     needs_embeddings: bool, reranker_status: RerankerStatus
-) -> None:
+) -> bool:
     """Warn when a semantic command ran with the reranker model uncached.
 
     Gated on the literal ``needs_embeddings`` flag (not a command-name list)
@@ -144,9 +165,14 @@ def _maybe_warn_reranker_not_cached(
     catching the exception and flipping ``_available = False``) still can't
     be observed here. This function can't detect that case, not that it
     can't occur.
+
+    Returns whether the warning fired, so a caller can avoid pairing it with
+    an unrelated retrieval-quality hint (see ``_maybe_warn_poor_results``'s
+    ``reranker_uncached`` parameter) — a known, already-explained degraded
+    state shouldn't also get routed to the retrieval-quality tracker.
     """
     if not needs_embeddings or reranker_status.disabled_reason != "not_cached":
-        return
+        return False
     click.echo(
         redact_home_in_text(
             "Warning: reranking disabled (model not cached) — run "
@@ -154,6 +180,7 @@ def _maybe_warn_reranker_not_cached(
         ),
         err=True,
     )
+    return True
 
 
 # MCP tool name -> CLI command name. The drift guard in
@@ -294,8 +321,12 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
             cross_encoder, reranker_status = _resolve_reranker(config, construct=True)
         else:
             _, reranker_status = _resolve_reranker(config, construct=False)
-        _maybe_warn_reranker_not_cached(needs_embeddings, reranker_status)
-
+        # The not_cached warning is deliberately *not* emitted here. Doing so
+        # immediately after resolving reranker_status (before dispatch) meant
+        # it could appear next to an unrelated pydantic input-validation
+        # error (exit 1) that has nothing to do with reranking — see
+        # ``_invoke``, which emits it only once dispatch has actually
+        # succeeded.
         retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
 
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
@@ -388,7 +419,19 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
                 candidate = None
             if isinstance(candidate, dict):
                 payload = candidate
-        _maybe_warn_poor_results(tool, needs_embeddings, payload)
+        # Emitted here (post-dispatch-success) rather than from
+        # ``_query_runtime`` right after reranker resolution: firing before
+        # dispatch meant this warning could appear next to an unrelated
+        # pydantic input-validation error (exit 1), which has nothing to do
+        # with reranking. Its result gates the retrieval-quality hint below
+        # so a known, already-explained degraded state (uncached reranker)
+        # doesn't also get routed to the retrieval-quality tracker.
+        reranker_uncached = _maybe_warn_reranker_not_cached(
+            needs_embeddings, runtime.reranker_status
+        )
+        _maybe_warn_poor_results(
+            tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
+        )
         # Same staleness footer the MCP door attaches (status excluded — it
         # *is* the staleness report). Inside the runtime block: the store
         # must still be open to read its metadata.
