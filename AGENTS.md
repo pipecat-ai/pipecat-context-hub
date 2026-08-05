@@ -384,6 +384,20 @@ live local index:
    warning naming `refresh` before
    `.../issues/new?template=bug-report.yml`. Unit-side counterpart:
    the `not_cached` parametrized tests in `tests/unit/test_cli_query.py`.
+10. **Retrieval-quality stderr hint is command-aware** — run
+    `uv run pipecat-context-hub get-code-snippet --symbol NonexistentSymbolXYZ123`
+    (a symbol unlikely to resolve cleanly). Stdout stays valid JSON (an empty
+    `snippets` list, or a non-empty one the handler itself flagged
+    `low_confidence`) with no report-hint URL in it; stderr names
+    `--symbol/--intent/--path` (never `--limit`, a flag `get-code-snippet`
+    doesn't have) before
+    `.../issues/new?template=retrieval-quality.yml`. Contrast with
+    `uv run pipecat-context-hub search-docs "asdkjhaskjdhaksjdh nonsense query xyz123"`,
+    whose hint does name `--limit`, since that command has one. Regression
+    canary for a fix (`9b8508d`) where the hint's wording was a single fixed
+    phrase naming a flag not every semantic command carries. Unit-side
+    counterpart: `_SEMANTIC_RETRY_HINT`'s coverage test and
+    `TestRetrievalQualityHint` in `tests/unit/test_cli_query.py`.
 
 ## Upstream Drift Check
 

@@ -39,7 +39,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   `tests/integration/test_report_hint_e2e.py` guards both hints end to end
   against real subprocesses (a real `serve` stdio `initialize` round-trip
   and a real CLI run against a genuinely empty index) rather than mocked
-  handler responses.
+  handler responses. The retrieval-quality hint's retry clause is
+  per-command: `get-code-snippet` is told to retry with a different
+  `--symbol`/`--intent`/`--path` rather than a `--limit` flag it doesn't
+  have, while the three search commands still name `--limit`.
 
 ### Fixed
 - **`install` now registers an MCP server the client can actually start.** It recorded the
