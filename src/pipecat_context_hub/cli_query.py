@@ -75,6 +75,18 @@ _SEMANTIC_RESULT_KEY = {
     "get_code_snippet": "snippets",
 }
 
+# Retry-hint fragment for each semantic command's poor-results warning, keyed
+# the same as _SEMANTIC_RESULT_KEY. get_code_snippet has no --limit flag (it
+# takes --max-lines and three mutually exclusive lookup modes: --symbol,
+# --intent, or --path/--line-start), so the generic "larger --limit" advice
+# names a flag that command doesn't have.
+_SEMANTIC_RETRY_HINT = {
+    "search_docs": "fewer filters or a larger --limit",
+    "search_examples": "fewer filters or a larger --limit",
+    "search_api": "fewer filters or a larger --limit",
+    "get_code_snippet": "a different --symbol/--intent/--path, or fewer filters",
+}
+
 
 def _bug_report_hint() -> str:
     """Remediation-first suffix: name the fix, then the tracker as a fallback."""
@@ -82,46 +94,38 @@ def _bug_report_hint() -> str:
 
 
 def _maybe_warn_poor_results(
-    tool: str, needs_embeddings: bool, result: str
-) -> dict[str, Any] | None:
+    tool: str, needs_embeddings: bool, payload: dict[str, Any] | None
+) -> None:
     """Emit a retrieval-quality stderr hint for low-confidence/empty semantic results.
 
-    Read-only: inspects the handler's JSON without rewriting it, so stdout
-    stays byte-for-byte the handler's output. Tolerates a decoded object
-    without ``evidence``/result-list keys by treating it as "no hint" —
-    lightweight handler mocks in tests don't need to carry every field.
-
-    Returns the decoded payload when parsing succeeds (whether or not a hint
-    fired), so ``_invoke`` can pass it to ``annotate_response`` instead of
-    that function re-parsing the same JSON string. Returns ``None`` when this
-    tool isn't a semantic command or the result didn't decode to a dict.
+    Pure decide-and-emit: ``_invoke`` decodes the handler's JSON once and
+    passes the result through here, so this function never parses JSON and
+    never returns a value for a caller to reuse — it only inspects
+    ``payload`` and writes to stderr. Tolerates a payload without
+    ``evidence``/result-list keys by treating it as "no hint" — lightweight
+    handler mocks in tests don't need to carry every field. ``payload`` is
+    ``None`` whenever ``_invoke`` couldn't decode the handler's result to a
+    dict, or gates it out before calling this at all — either way, no hint.
     """
-    if not needs_embeddings:
-        return None
+    if not needs_embeddings or payload is None:
+        return
     result_key = _SEMANTIC_RESULT_KEY.get(tool)
     if result_key is None:
-        return None
-    try:
-        data = json.loads(result)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    evidence = data.get("evidence")
+        return
+    evidence = payload.get("evidence")
     low_confidence = isinstance(evidence, dict) and evidence.get("low_confidence") is True
-    results_list = data.get(result_key)
+    results_list = payload.get(result_key)
     empty_results = isinstance(results_list, list) and len(results_list) == 0
     if not (low_confidence or empty_results):
-        return data
+        return
+    retry_hint = _SEMANTIC_RETRY_HINT.get(tool, "fewer filters or a larger limit")
     click.echo(
         redact_home_in_text(
-            "Warning: results were poor or missing. Retry with fewer filters or a "
-            "larger --limit; if poor or missing results persist, file at "
-            f"{RETRIEVAL_QUALITY_ISSUE_URL}."
+            f"Warning: results were poor or missing. Retry with {retry_hint}; "
+            f"if poor or missing results persist, file at {RETRIEVAL_QUALITY_ISSUE_URL}."
         ),
         err=True,
     )
-    return data
 
 
 def _maybe_warn_reranker_not_cached(
@@ -131,9 +135,15 @@ def _maybe_warn_reranker_not_cached(
 
     Gated on the literal ``needs_embeddings`` flag (not a command-name list)
     so a future semantic command inherits the warning automatically. Only
-    ``"not_cached"`` is handled: ``probe_reranker`` never returns
-    ``"load_failed"`` to the CLI, and ``"config_disabled"`` is a deliberate
-    operator choice, not an incident.
+    ``"not_cached"`` is handled: ``"config_disabled"`` is a deliberate
+    operator choice, not an incident. ``probe_reranker`` never *returns*
+    ``"load_failed"`` to the CLI — that's a narrower claim than "the CLI
+    cannot hit this failure mode": ``reranker_status`` is captured once,
+    before dispatch, so a cross-encoder that fails to load its ONNX weights
+    lazily during the query itself (``CrossEncoderReranker._load_model``
+    catching the exception and flipping ``_available = False``) still can't
+    be observed here. This function can't detect that case, not that it
+    can't occur.
     """
     if not needs_embeddings or reranker_status.disabled_reason != "not_cached":
         return
@@ -368,14 +378,22 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
             raise SystemExit(_EXIT_BAD_INPUT) from exc
         # Read-only inspection of the handler's raw JSON, before the staleness
         # footer below touches it — the hint must not affect what gets annotated.
-        # Reuses the decoded payload for the staleness footer below instead of
-        # parsing the same JSON string twice.
-        parsed = _maybe_warn_poor_results(tool, needs_embeddings, result)
+        # Only semantic commands need the decode at all; a lookup command's
+        # result is never inspected here.
+        payload: dict[str, Any] | None = None
+        if needs_embeddings:
+            try:
+                candidate = json.loads(result)
+            except (TypeError, ValueError):
+                candidate = None
+            if isinstance(candidate, dict):
+                payload = candidate
+        _maybe_warn_poor_results(tool, needs_embeddings, payload)
         # Same staleness footer the MCP door attaches (status excluded — it
         # *is* the staleness report). Inside the runtime block: the store
         # must still be open to read its metadata.
         if tool != "get_hub_status":
-            result = annotate_response(result, runtime.index_store, parsed=parsed)
+            result = annotate_response(result, runtime.index_store)
     click.echo(result)
 
 

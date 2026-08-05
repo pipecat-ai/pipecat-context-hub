@@ -117,6 +117,48 @@ class TestToolCommandParity:
         assert embeddings_tools, "AST walk found no needs_embeddings=True call sites — broken test"
         assert embeddings_tools == set(_SEMANTIC_RESULT_KEY)
 
+    def test_semantic_result_key_values_match_output_model_fields(self):
+        """``_SEMANTIC_RESULT_KEY``'s *values* must be real fields on the
+        corresponding MCP output model.
+
+        The AST test above only pins the dict's keys (tool names); nothing
+        previously verified the values (``"hits"``/``"snippets"``) still
+        match the actual Pydantic field names. A field rename on any output
+        model would silently break empty-results detection — the lookup
+        would always return ``None``, so the retrieval-quality hint would
+        never fire for that command — with every existing test still green.
+        """
+        from pydantic import BaseModel
+
+        from pipecat_context_hub.cli_query import _SEMANTIC_RESULT_KEY
+        from pipecat_context_hub.shared.types import (
+            GetCodeSnippetOutput,
+            SearchApiOutput,
+            SearchDocsOutput,
+            SearchExamplesOutput,
+        )
+
+        output_models: dict[str, type[BaseModel]] = {
+            "search_docs": SearchDocsOutput,
+            "search_examples": SearchExamplesOutput,
+            "search_api": SearchApiOutput,
+            "get_code_snippet": GetCodeSnippetOutput,
+        }
+        assert set(output_models) == set(_SEMANTIC_RESULT_KEY)
+        for tool, model in output_models.items():
+            assert _SEMANTIC_RESULT_KEY[tool] in model.model_fields, (
+                f"{tool}: {_SEMANTIC_RESULT_KEY[tool]!r} is not a field on {model.__name__}"
+            )
+
+    def test_semantic_retry_hint_covers_every_semantic_result_key(self):
+        """``_SEMANTIC_RETRY_HINT`` must enroll exactly the same tools as
+        ``_SEMANTIC_RESULT_KEY`` — a command that can trigger the
+        poor-results warning must have a hint fragment naming flags it
+        actually has, not the generic (search-command) fallback."""
+        from pipecat_context_hub.cli_query import _SEMANTIC_RESULT_KEY, _SEMANTIC_RETRY_HINT
+
+        assert set(_SEMANTIC_RETRY_HINT) == set(_SEMANTIC_RESULT_KEY)
+
 
 class TestVersionFlag:
     """`--version` reports the package version with zero state."""

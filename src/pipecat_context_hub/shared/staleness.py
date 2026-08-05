@@ -100,31 +100,22 @@ def staleness_info(index_store: IndexStore) -> dict[str, Any] | None:
     }
 
 
-def annotate_response(
-    result_json: str,
-    index_store: IndexStore,
-    *,
-    parsed: dict[str, Any] | None = None,
-) -> str:
+def annotate_response(result_json: str, index_store: IndexStore) -> str:
     """Inject ``index_staleness`` into a tool handler's JSON response.
 
     Returns the input unchanged when the index is fresh, when the payload
     isn't a JSON object, or when anything at all goes wrong — the annotation
-    is best-effort and must never cost a response.
-
-    *parsed* lets a caller that already decoded ``result_json`` for its own
-    purposes (e.g. inspecting it for a different hint) pass that dict through
-    instead of this function re-parsing the same string. Optional and
-    keyword-only so every existing caller is unaffected; when omitted this
-    parses ``result_json`` itself exactly as before. This function never
-    mutates *parsed* — it copies before adding ``index_staleness``, so the
-    caller's own dict is safe to inspect or reuse afterward.
+    is best-effort and must never cost a response. Both front doors (MCP's
+    ``call_tool`` and the CLI's ``_invoke``) call this the same way, on the
+    handler's raw JSON string — this module carries no front-door-specific
+    parameters, so there is exactly one representation of the payload to
+    reason about here.
     """
     try:
         info = staleness_info(index_store)
         if info is None:
             return result_json
-        payload = dict(parsed) if parsed is not None else json.loads(result_json)
+        payload = json.loads(result_json)
         if not isinstance(payload, dict):
             return result_json
         payload["index_staleness"] = info

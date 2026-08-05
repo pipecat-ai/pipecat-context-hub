@@ -98,34 +98,23 @@ class TestAnnotateResponse:
         raw = '{"hits": []}'
         assert annotate_response(raw, store) == raw
 
-    def test_parsed_payload_is_reused_without_reparsing(self):
-        """``parsed=`` lets a caller that already decoded ``result_json``
+    def test_no_parsed_shortcut_parameter(self):
+        """``annotate_response`` takes exactly ``(result_json, index_store)``.
 
-        (e.g. the CLI's retrieval-quality hint inspection) skip a second
-        ``json.loads`` of the same string. Patch ``json.loads`` to raise if
-        called at all — the only way this test passes is if ``annotate_response``
-        never re-parses ``raw`` when a pre-decoded payload is supplied.
+        A prior revision accepted an optional ``parsed=`` dict so the CLI
+        could skip a second ``json.loads`` of a string it had already
+        decoded for its own retrieval-quality hint. That let a shared module
+        used by both front doors carry a CLI-only perf knob, expressible in
+        a way that could silently diverge from ``result_json``. Removed:
+        the CLI now decodes once in ``_invoke`` for its own purposes and
+        calls this function the same way MCP does, on the raw string —
+        the rare extra parse (only when the index actually is stale) is
+        cheaper than the API surface it bought.
         """
-        raw = '{"hits": []}'
-        parsed: dict[str, object] = {"hits": []}
-        with patch(
-            "pipecat_context_hub.shared.staleness.json.loads",
-            side_effect=AssertionError("must not re-parse when parsed= is supplied"),
-        ):
-            out = annotate_response(raw, _store_refreshed_days_ago(21), parsed=parsed)
-        payload = json.loads(out)
-        assert payload["hits"] == []
-        assert payload["index_staleness"]["age_days"] >= 20
+        import inspect
 
-    def test_parsed_payload_omitted_still_parses_result_json(self):
-        """Backward-compat: no ``parsed=`` argument means the old behavior —
-
-        parse ``result_json`` itself — is unchanged for every existing caller.
-        """
-        out = annotate_response('{"hits": []}', _store_refreshed_days_ago(21))
-        payload = json.loads(out)
-        assert payload["hits"] == []
-        assert payload["index_staleness"]["age_days"] >= 20
+        params = inspect.signature(annotate_response).parameters
+        assert list(params) == ["result_json", "index_store"]
 
 
 class TestBothFrontDoors:
