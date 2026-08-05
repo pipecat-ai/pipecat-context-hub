@@ -191,10 +191,15 @@ If the reason is ``not_cached``, suggest the user run \
 and is the most common fix. This ``pipecat-context-hub`` MCP server process \
 already resolved its reranker state at startup and does not re-check the \
 model cache while running, so ``refresh`` alone will not change what this \
-connection reports: after it completes, the user must restart or reconnect \
-this MCP server, then re-run ``get_hub_status`` on the new connection to \
-confirm the fix — re-checking ``get_hub_status`` on the current connection \
-will still show ``not_cached`` even after a successful ``refresh``. If \
+connection reports: the fix requires actually terminating and restarting \
+the underlying ``pipecat-context-hub`` server process — a client-side \
+"reconnect" that reuses the same running process will not help, since \
+this state was resolved once at that process's startup, not per \
+connection. After the process has genuinely restarted, re-run \
+``get_hub_status`` on the new connection to confirm the fix — \
+re-checking ``get_hub_status`` on the current connection, or on a \
+reconnect that did not restart the process, will still show \
+``not_cached`` even after a successful ``refresh``. If \
 restarting doesn't resolve it, or the reason is \
 ``load_failed``, share the full ``get_hub_status`` response and any \
 ``pipecat-context-hub`` startup log lines (look for \

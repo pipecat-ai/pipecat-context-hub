@@ -546,67 +546,88 @@ that section (designed for cross-component call chains) doesn't apply here.
 
 ### Test Approach
 
-- [ ] Unit test pinning the literal URL values in `support_links.py`
+- [x] Unit test pinning the literal URL values in `support_links.py`
       (Phase 1) — not just that `_SERVER_INSTRUCTIONS` interpolates them
-- [ ] Unit tests for shared-constant usage in `_SERVER_INSTRUCTIONS` (Phase 1)
-- [ ] Automated single-source-of-truth test: `"issues/new?template="`
+      (`TestSupportLinks::test_retrieval_quality_issue_url_literal_value`,
+      `test_bug_report_issue_url_literal_value`, `tests/unit/test_server.py`)
+- [x] Unit tests for shared-constant usage in `_SERVER_INSTRUCTIONS` (Phase 1)
+      (`TestServerInstructions`, `tests/unit/test_server.py`)
+- [x] Automated single-source-of-truth test: `"issues/new?template="`
       appears only in `shared/support_links.py` across `src/**/*.py` (Phase 1)
-- [ ] Unit tests for CLI stderr report-hint text on all three
+      (`TestSupportLinks::test_no_stray_issue_template_literals`)
+- [x] Unit tests for CLI stderr report-hint text on all three
       `_EXIT_INDEX_UNREADY` paths, including the previously-untested
       `IncompatibleIndexFormatError` path, each also asserting
-      `result.stdout` is unaffected (Phase 2)
-- [ ] Unit test, parametrized over all four semantic commands, for the
+      `result.stdout` is unaffected (Phase 2) (`tests/unit/test_cli_query.py`,
+      `IncompatibleIndexFormatError`-path test at line 216)
+- [x] Unit test, parametrized over all four semantic commands, for the
       reranker `not_cached` stderr warning, including negative cases
       (`config_disabled`, `None`, and an unknown/future reason value such as
       `load_failed`), each also asserting `stdout` parses as valid JSON with
-      no `BUG_REPORT_ISSUE_URL` in it (Phase 2)
-- [ ] Unit test, parametrized over all four lookup commands
+      no `BUG_REPORT_ISSUE_URL` in it (Phase 2) (`TestRerankerNotCachedWarning`)
+- [x] Unit test, parametrized over all four lookup commands
       (`check-deprecation`/`get-doc`/`get-example`/`status`), that none ever
       emits the reranker warning even when `not_cached` is forced (Phase 2)
-- [ ] Co-fire negative test: none of the three `_EXIT_INDEX_UNREADY` exits
+      (`test_lookup_commands_never_warn_even_when_not_cached`)
+- [x] Co-fire negative test: none of the three `_EXIT_INDEX_UNREADY` exits
       also emits the reranker-warning URL (Phase 2)
-- [ ] `cli.py`'s `serve`-startup `not_cached` log line carries
-      `BUG_REPORT_ISSUE_URL` (Phase 2)
-- [ ] AGENTS.md smoke coverage extended for the index-unready bug-report
+      (`TestRerankerWarningDoesNotCoFireWithValidationError`)
+- [x] `cli.py`'s `serve`-startup `not_cached` log line carries
+      `BUG_REPORT_ISSUE_URL` (Phase 2) (`tests/unit/test_cli.py:1173-1251`)
+- [x] AGENTS.md smoke coverage extended for the index-unready bug-report
       hints, not just the reranker warning; item #50 reworded to match
       reality (Phase 3)
-- [ ] Full suite + `ruff check` + `mypy` pass as the exit gate for every
-      phase that lands a commit, not just Phase 3
-- [ ] Phase 4's `load_failed`-reachability check lands a regression test (or,
+- [x] Full suite + `ruff check` + `mypy` pass as the exit gate for every
+      phase that lands a commit, not just Phase 3 (re-verified this round:
+      `uv run ruff format`, `ruff check`, `mypy src/ tests/`, and
+      `pytest tests/ -q` — 1295 passed, 6 skipped)
+- [x] Phase 4's `load_failed`-reachability check lands a regression test (or,
       if unreachable, removes the corresponding assertion) rather than
       resting on a one-time manual verification
+      (`test_reranker_status_provider_reports_load_failed_on_runtime_flip`,
+      `tests/unit/test_cli.py:1401`)
 
 ### Test Results
 
-- [ ] All existing tests pass
-- [ ] New tests added and passing
-- [ ] Manual verification complete
+- [x] All existing tests pass (`uv run pytest tests/ -q`: 1295 passed, 6 skipped)
+- [x] New tests added and passing (this round: `TestRerankerLoadFailedWarning`,
+      4 tests, `tests/unit/test_cli_query.py`)
+- [x] Manual verification complete (`ruff format`/`ruff check`/`mypy` clean;
+      focused suite `test_cli_query.py`+`test_cli.py`+`test_server.py`: 172
+      passed)
 
 ### Edge Cases Tested
 
-- [ ] `config_disabled` never triggers the CLI warning or MCP bug-report routing
-- [ ] An unknown/future `disabled_reason` value (e.g. `load_failed`) is a
+- [x] `config_disabled` never triggers the CLI warning or MCP bug-report routing
+- [x] An unknown/future `disabled_reason` value (e.g. `load_failed`) is a
       silent no-op, not a crash and not a warning
-- [ ] Lookup commands never emit the reranker warning even if the reranker
+- [x] Lookup commands never emit the reranker warning even if the reranker
       happens to be uncached, verified across all four lookup commands by a
       named test, not just inspection — `_query_runtime` probes the
       reranker for lookup commands too
-- [ ] Redaction still holds on all three index-unready messages after the
+- [x] Redaction still holds on all three index-unready messages after the
       appended hint line, including the previously-untested
       `IncompatibleIndexFormatError` path, and on the new reranker warning
       line
-- [ ] The `not_cached` CLI warning names `refresh` before the bug-report URL
+- [x] The `not_cached` CLI warning names `refresh` before the bug-report URL
       (remediation-first, not escalation-first); the three index-unready
       hints follow the same ordering
-- [ ] The `not_cached` warning fires for all four semantic commands, not
+- [x] The `not_cached` warning fires for all four semantic commands, not
       just one representative command
-- [ ] Neither the stdout JSON payload nor its parseability is affected by
+- [x] Neither the stdout JSON payload nor its parseability is affected by
       any new stderr text, on both the index-unready and reranker-warning
       paths
-- [ ] A non-allowlisted `PIPECAT_HUB_RERANKER_MODEL` value falls back to the
+- [x] A non-allowlisted `PIPECAT_HUB_RERANKER_MODEL` value falls back to the
       cached default and does not reach `not_cached` (documents the limit of
       the "routine swap" framing; not necessarily a new automated test if
       already covered by existing config tests)
+- [x] A *cached* reranker model that fails to load at runtime warns with a
+      bug-report hint (not a `refresh` hint) and suppresses only the
+      `low_confidence` half of the retrieval-quality hint, mirroring the
+      `not_cached` co-fire rules — added this round in response to Codex
+      adversarial review, closing the gap `_maybe_warn_reranker_not_cached`'s
+      docstring already documented as undetectable from its own vantage point
+      (`TestRerankerLoadFailedWarning`, `tests/unit/test_cli_query.py`)
 
 ## Acceptance Criteria
 
@@ -858,3 +879,52 @@ Full suite green throughout (1271 passed, 6 skipped at final commit); `ruff form
   pick up the download. `cli.py`'s own `serve`-startup `not_cached` log line
   is emitted once at boot (before any stale-in-memory-state trap could
   apply) and was likewise left unchanged.
+
+- **2026-08-06 — round-6 fixes: `/codex:adversarial-review` findings.** Three
+  findings, all fixed:
+  1. **"Restart or reconnect" was itself ambiguous** (`server/main.py`,
+     `Medium`). Round-5's wording (above) told an agent to "restart or
+     reconnect" the MCP server after `refresh`, but some MCP hosts keep the
+     underlying `pipecat-context-hub` process alive across a client-side
+     "reconnect" that only re-establishes the logical session — in that
+     case `get_hub_status` still reports `not_cached` after the reconnect,
+     leaving the agent stuck in the exact loop this instruction exists to
+     prevent. `_SERVER_INSTRUCTIONS` now names restarting the underlying
+     process as the actual fix and explicitly states that a same-process
+     reconnect will not help. AGENTS.md item #50 reworded to match.
+     Regression test updated:
+     `TestServerInstructions::test_not_cached_remediation_requires_reconnect`
+     (`tests/unit/test_server.py`).
+  2. **CLI missed a cached-but-unloadable reranker at runtime**
+     (`cli_query.py`, `Medium`). `_maybe_warn_reranker_not_cached` only sees
+     the pre-dispatch `reranker_status` snapshot — its own docstring already
+     named this exact gap ("this function can't detect that case, not that
+     it can't occur"). Closed it with a complementary
+     `_maybe_warn_reranker_load_failed`, which reads the live
+     `CrossEncoderReranker` instance (now threaded through `_QueryRuntime`)
+     *after* dispatch: `HybridRetriever` checks `cross_encoder.enabled`
+     before each rerank attempt and only then triggers the lazy
+     `_load_model()` call, so a load failure flips `.enabled` to `False`
+     mid-dispatch — exactly `serve`'s `load_failed` condition, now
+     observable from the one-shot CLI for the first time. Fires a
+     bug-report hint (not a `refresh` hint, since the model *is* cached)
+     and suppresses only the `low_confidence` half of the retrieval-quality
+     hint, mirroring the `not_cached` co-fire rules. The two warning paths
+     are mutually exclusive by construction (`cross_encoder` is only
+     non-`None` when `reranker_status` was already enabled pre-dispatch).
+     New tests: `TestRerankerLoadFailedWarning` (4 tests,
+     `tests/unit/test_cli_query.py`).
+  3. **Dev-plan `Complete` status contradicted its own unchecked
+     verification checklist** (this file, `Low`). The Test Approach/Test
+     Results/Edge Cases Tested checklists were never checked off despite the
+     work they describe being done and verified across prior rounds. Checked
+     off against fresh evidence gathered this round, each item citing the
+     specific test that backs it, rather than reconciling by assertion.
+  Verification this round: `uv run ruff format src/ tests/` (0 changes on
+  the five touched files — an initial run's 22-file reformat was a local
+  ruff-version drift on files unrelated to this change and was reverted, not
+  committed), `ruff check src/ tests/` (clean), `mypy src/ tests/` (clean,
+  111 files), `pytest tests/ -q` (1295 passed, 6 skipped — up from 1281 at
+  the last recorded full-suite run, the delta being this round's 4 new
+  tests plus tests added in intervening review rounds not yet reflected in
+  that count).

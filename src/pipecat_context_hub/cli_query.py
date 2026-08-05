@@ -170,9 +170,10 @@ def _maybe_warn_reranker_not_cached(
     cannot hit this failure mode": ``reranker_status`` is captured once,
     before dispatch, so a cross-encoder that fails to load its ONNX weights
     lazily during the query itself (``CrossEncoderReranker._load_model``
-    catching the exception and flipping ``_available = False``) still can't
-    be observed here. This function can't detect that case, not that it
-    can't occur.
+    catching the exception and flipping ``_available = False``) can't be
+    observed from ``reranker_status`` alone. See
+    ``_maybe_warn_reranker_load_failed`` (below), which detects that case
+    post-dispatch from the live ``CrossEncoderReranker`` instance instead.
 
     Returns whether the warning fired, so a caller can avoid pairing it with
     an unrelated retrieval-quality hint (see ``_maybe_warn_poor_results``'s
@@ -185,6 +186,45 @@ def _maybe_warn_reranker_not_cached(
         redact_home_in_text(
             "Warning: reranking disabled (model not cached) — run "
             f"'pipecat-context-hub refresh' to download it. {_bug_report_hint()}"
+        ),
+        err=True,
+    )
+    return True
+
+
+def _maybe_warn_reranker_load_failed(
+    needs_embeddings: bool, cross_encoder: CrossEncoderReranker | None
+) -> bool:
+    """Warn when a *cached* reranker model failed to load during this query.
+
+    Complements ``_maybe_warn_reranker_not_cached``, which can only see the
+    pre-dispatch ``reranker_status`` and therefore structurally cannot
+    detect this case (see its docstring). This function instead reads the
+    live ``CrossEncoderReranker`` instance *after* dispatch: ``_resolve_reranker``
+    only constructs one when the pre-dispatch probe found the model enabled
+    (not ``not_cached``/``config_disabled``), so ``cross_encoder`` is
+    non-``None`` here exactly when the model looked cached and configured.
+    ``HybridRetriever`` checks ``cross_encoder.enabled`` before each rerank
+    attempt and only then triggers the lazy ``_load_model()`` call; if that
+    load raises, ``_load_model`` catches the exception, logs a warning, and
+    flips ``_available`` (and therefore ``.enabled``) to ``False`` — this is
+    exactly the failure mode ``serve``'s ``_reranker_status()`` closure
+    labels ``load_failed``. Checking ``cross_encoder.enabled`` again after
+    dispatch has run therefore reveals a load that failed *during this
+    query*, which no pre-dispatch status snapshot could carry.
+
+    Returns whether the warning fired, so a caller can suppress the
+    unrelated retrieval-quality hint the same way
+    ``_maybe_warn_reranker_not_cached`` does — a load failure is a known,
+    already-explained cause of degraded ranking, not a retrieval-quality
+    signal about the query itself.
+    """
+    if not needs_embeddings or cross_encoder is None or cross_encoder.enabled:
+        return False
+    click.echo(
+        redact_home_in_text(
+            "Warning: reranking disabled (the cached model failed to load during "
+            f"this query — see stderr warnings above for details). {_bug_report_hint()}"
         ),
         err=True,
     )
@@ -213,6 +253,12 @@ class _QueryRuntime:
     retriever: HybridRetriever
     index_store: IndexStore
     reranker_status: RerankerStatus
+    # The live CrossEncoderReranker instance, or None when ``reranker_status``
+    # was already disabled pre-dispatch (``not_cached``/``config_disabled``) or
+    # ``needs_embeddings`` is False. Kept alongside ``reranker_status`` so a
+    # caller can check ``.enabled`` *after* dispatch — see
+    # ``_maybe_warn_reranker_load_failed``.
+    cross_encoder: CrossEncoderReranker | None
 
 
 def _quiet_query_logging(ctx: click.Context) -> None:
@@ -344,7 +390,10 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         )
 
         yield _QueryRuntime(
-            retriever=retriever, index_store=index_store, reranker_status=reranker_status
+            retriever=retriever,
+            index_store=index_store,
+            reranker_status=reranker_status,
+            cross_encoder=cross_encoder,
         )
     finally:
         if index_store is not None:
@@ -434,9 +483,15 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         # with reranking. Its result gates the retrieval-quality hint below
         # so a known, already-explained degraded state (uncached reranker)
         # doesn't also get routed to the retrieval-quality tracker.
+        # ``_maybe_warn_reranker_load_failed`` covers the complementary case
+        # ``_maybe_warn_reranker_not_cached`` cannot see (see its docstring):
+        # a *cached* model that failed to load lazily during this dispatch.
+        # The two are mutually exclusive by construction — ``cross_encoder``
+        # is only non-None when ``reranker_status`` was already enabled
+        # pre-dispatch — so at most one of them fires.
         reranker_uncached = _maybe_warn_reranker_not_cached(
             needs_embeddings, runtime.reranker_status
-        )
+        ) or _maybe_warn_reranker_load_failed(needs_embeddings, runtime.cross_encoder)
         _maybe_warn_poor_results(
             tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
         )

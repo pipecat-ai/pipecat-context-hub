@@ -737,6 +737,109 @@ class TestRerankerNotCachedWarning:
         assert BUG_REPORT_ISSUE_URL not in result.stderr
 
 
+class TestRerankerLoadFailedWarning:
+    """A *cached* reranker model that fails to load lazily during dispatch
+    gets a bug-report warning — the complementary case
+    ``_maybe_warn_reranker_not_cached`` cannot see (see its docstring).
+
+    Codex adversarial review: ``_maybe_warn_reranker_not_cached`` only
+    inspects the pre-dispatch ``reranker_status`` snapshot, so a model that
+    looked cached and enabled at probe time but then failed to load its ONNX
+    weights during this exact dispatch degraded silently — the CLI emitted
+    no warning at all, and a resulting ``low_confidence`` result was
+    mis-routed to the retrieval-quality tracker instead of the bug tracker.
+    """
+
+    def _run_with_cross_encoder(
+        self, tmp_path, *, cross_encoder_enabled: bool, handler_json: str
+    ) -> tuple[Result, MagicMock]:
+        mock_cross_encoder = MagicMock()
+        mock_cross_encoder.enabled = cross_encoder_enabled
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.services.retrieval.cross_encoder.CrossEncoderReranker",
+                    return_value=mock_cross_encoder,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.services.index.store.IndexStore",
+                    return_value=_index_store_mock(total=10),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.services.embedding.EmbeddingService",
+                    return_value=MagicMock(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.server.tools.search_docs.handle_search_docs",
+                    AsyncMock(return_value=handler_json),
+                )
+            )
+            redact_spy = stack.enter_context(
+                patch(
+                    "pipecat_context_hub.cli_query.redact_home_in_text",
+                    side_effect=_real_redact_home_in_text,
+                )
+            )
+            stack.enter_context(patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}))
+            result = runner.invoke(main, ["search-docs", "TTS"])
+        return result, redact_spy
+
+    def test_fires_when_cached_model_fails_to_load_at_runtime(self, tmp_path):
+        result, redact_spy = self._run_with_cross_encoder(
+            tmp_path, cross_encoder_enabled=False, handler_json=_healthy_handler_json("hits")
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "failed to load" in result.stderr
+        _assert_remediation_before_report_hint(
+            result.stderr, "failed to load", BUG_REPORT_ISSUE_URL
+        )
+        payload = json.loads(result.stdout)
+        assert payload["hits"] == [{"id": "x1"}]
+        assert BUG_REPORT_ISSUE_URL not in result.stdout
+        assert any(BUG_REPORT_ISSUE_URL in str(call.args[0]) for call in redact_spy.call_args_list)
+
+    def test_does_not_fire_when_cross_encoder_stays_enabled(self, tmp_path):
+        result, _ = self._run_with_cross_encoder(
+            tmp_path, cross_encoder_enabled=True, handler_json=_healthy_handler_json("hits")
+        )
+        assert result.exit_code == 0, result.stderr
+        assert BUG_REPORT_ISSUE_URL not in result.stderr
+
+    def test_suppresses_low_confidence_retrieval_quality_hint(self, tmp_path):
+        """Same mis-routing rule as the ``not_cached`` case: a load failure
+        already explains degraded ranking, so it must not also route a
+        ``low_confidence`` result to the retrieval-quality tracker."""
+        handler_json = json.dumps(
+            {"hits": [{"id": "x1"}], "evidence": {"low_confidence": True, "confidence": 0.05}}
+        )
+        result, _ = self._run_with_cross_encoder(
+            tmp_path, cross_encoder_enabled=False, handler_json=handler_json
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "failed to load" in result.stderr
+        assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
+
+    def test_does_not_suppress_empty_results_hint(self, tmp_path):
+        """A load failure only affects *ranking* — like the ``not_cached``
+        case, it cannot itself empty the candidate set, so a genuinely
+        empty result is still a retrieval-quality signal in its own right."""
+        handler_json = json.dumps(
+            {"hits": [], "evidence": {"low_confidence": False, "confidence": 0.9}}
+        )
+        result, _ = self._run_with_cross_encoder(
+            tmp_path, cross_encoder_enabled=False, handler_json=handler_json
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "failed to load" in result.stderr
+        assert RETRIEVAL_QUALITY_ISSUE_URL in result.stderr
+
+
 class TestRetrievalQualityHint:
     """Poor/missing semantic results get a remediation-first stderr nudge
     toward the retrieval-quality issue template; healthy responses and

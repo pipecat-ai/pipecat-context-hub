@@ -549,14 +549,24 @@ class TestServerInstructions:
         would still see ``not_cached`` and could wrongly escalate to filing a
         bug report for what is actually stale in-memory state. The
         instructions must say to restart/reconnect before re-checking.
+
+        Codex adversarial review (round 6): "restart or reconnect" as a pair
+        was itself misleading — some MCP hosts keep the underlying
+        ``pipecat-context-hub`` process alive across a client-side
+        "reconnect" (re-establishing only the logical session), which would
+        not re-resolve reranker state and leaves the agent stuck in the same
+        loop this instruction exists to prevent. The instructions must now
+        name restarting the underlying process as the actual fix and
+        explicitly call out that a same-process reconnect will not help.
         """
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
 
-        assert "restart or reconnect" in _SERVER_INSTRUCTIONS
+        assert "restarting the underlying" in _SERVER_INSTRUCTIONS
+        assert "reuses the same running process will not help" in _SERVER_INSTRUCTIONS
         assert "does not re-check the" in _SERVER_INSTRUCTIONS
         refresh_pos = _SERVER_INSTRUCTIONS.index("pipecat-context-hub refresh")
-        reconnect_pos = _SERVER_INSTRUCTIONS.index("restart or reconnect")
-        assert refresh_pos < reconnect_pos
+        restart_pos = _SERVER_INSTRUCTIONS.index("restarting the underlying")
+        assert refresh_pos < restart_pos
 
     def test_no_unsubstituted_placeholder_remains(self):
         """No literal ``{PLACEHOLDER}`` token survives the ``.replace()`` chain.

@@ -31,9 +31,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   `pipecat-context-hub refresh` before the bug-report URL, matching the
   CLI's wording — and, since a running `serve` process resolves its
   reranker state once at startup and does not re-probe the model cache
-  while running, also tells the agent to restart or reconnect the server
-  after `refresh` completes before re-checking `get_hub_status`, since
-  re-checking on the same connection still reports `not_cached`. For
+  while running, also tells the agent that the underlying server process
+  must actually be restarted after `refresh` completes before re-checking
+  `get_hub_status` — a client-side reconnect that reuses the same running
+  process will not help — since re-checking on the same connection, or on
+  such a reconnect, still reports `not_cached`. For
   non-zero boot exits, which occur before MCP
   initialization and make `get_hub_status` unavailable, the instructions now
   tell agents to follow the remediation from startup stderr first, reconnect,
@@ -50,6 +52,23 @@ This project uses [Semantic Versioning](https://semver.org/).
   have, while the three search commands still name `--limit`.
 
 ### Fixed
+- **The CLI now warns when a *cached* reranker model fails to load at runtime, instead of
+  degrading silently.** `_maybe_warn_reranker_not_cached` only ever saw the pre-dispatch
+  reranker probe, so a model that looked cached and enabled but then failed to load its
+  ONNX weights during the query itself (`serve`'s `load_failed` condition) went unreported
+  by the one-shot CLI — a resulting low-confidence result was mis-routed to the
+  retrieval-quality tracker instead of the bug tracker, or no hint fired at all. A new
+  `_maybe_warn_reranker_load_failed` reads the live `CrossEncoderReranker` instance after
+  dispatch and fires a bug-report hint (not a `refresh` hint, since the model is cached),
+  suppressing only the `low_confidence` half of the retrieval-quality hint the same way the
+  `not_cached` warning already does.
+- **The MCP `not_cached` remediation no longer says "restart or reconnect" as if the two
+  were interchangeable.** Some MCP hosts keep the underlying `pipecat-context-hub` process
+  alive across a client-side reconnect that only re-establishes the logical session — in
+  that case `get_hub_status` still reported `not_cached` after the "reconnect" the
+  instructions suggested, leaving the agent stuck in the same loop the guidance exists to
+  prevent. The instructions now name restarting the underlying process as the fix and
+  explicitly say a same-process reconnect will not help.
 - **`install` now registers an MCP server the client can actually start.** It recorded the
   bare console-script name `pipecat-context-hub` whenever one was on `PATH`, which asks the
   client to resolve it later, in a process this command cannot see — commonly one launched
