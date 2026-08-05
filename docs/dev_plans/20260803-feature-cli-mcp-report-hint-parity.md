@@ -644,7 +644,7 @@ that section (designed for cross-component call chains) doesn't apply here.
   one-time manual check.
 - Code reviewed and approved.
 
-<!-- reviewed: 2026-08-04 @ b964bbf1acd6b395a61441859757e5f92a7ea8ea -->
+<!-- reviewed: 2026-08-05 @ b159c6c9a60fc3ef1c27b58176844711a5d471b9 -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
