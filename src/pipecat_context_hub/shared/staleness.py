@@ -27,7 +27,7 @@ import json
 import logging
 import math
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -85,9 +85,9 @@ def staleness_info(index_store: IndexStore) -> dict[str, Any] | None:
     except ValueError:
         return None
     if refreshed.tzinfo is None:
-        refreshed = refreshed.replace(tzinfo=UTC)
+        refreshed = refreshed.replace(tzinfo=timezone.utc)
 
-    age_days = (datetime.now(UTC) - refreshed).total_seconds() / 86400
+    age_days = (datetime.now(timezone.utc) - refreshed).total_seconds() / 86400
     if age_days < threshold:
         return None
 

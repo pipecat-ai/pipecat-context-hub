@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -126,6 +127,9 @@ _HUB_STATUS_TOOL: tuple[str, str, dict[str, Any]] = (
 )
 
 
+_UNSUBSTITUTED_PLACEHOLDER = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
+
+
 def _assert_no_unsubstituted_placeholder(text: str) -> None:
     """Raise if ``text`` still contains an unsubstituted ``{PLACEHOLDER}``.
 
@@ -137,11 +141,17 @@ def _assert_no_unsubstituted_placeholder(text: str) -> None:
     no-op instead, shipping literal ``{PLACEHOLDER}`` text to MCP clients with
     no error. This guard closes that gap.
 
+    The check matches ``{UPPER_SNAKE_CASE}`` specifically — the naming
+    convention every ``.replace()`` target in this module follows — rather
+    than any literal brace, so a future JSON example in the prose (e.g.
+    ``{"query": "TTS"}``) does not itself trip this guard; only an actual
+    unresolved placeholder token does.
+
     Raise rather than ``assert`` so the guard survives ``python -O`` (which
     strips asserts) — see transport.py's ``_INTERMEDIATE_LAUNCHERS`` guard
     for the same convention: fail loudly at import/CI instead.
     """
-    if "{" in text:
+    if _UNSUBSTITUTED_PLACEHOLDER.search(text):
         raise ValueError(
             "_SERVER_INSTRUCTIONS still contains an unsubstituted {PLACEHOLDER} — "
             "a renamed/typo'd RETRIEVAL_QUALITY_ISSUE_URL or BUG_REPORT_ISSUE_URL "

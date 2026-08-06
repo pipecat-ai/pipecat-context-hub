@@ -113,16 +113,18 @@ def _maybe_warn_poor_results(
     ``None`` whenever ``_invoke`` couldn't decode the handler's result to a
     dict, or gates it out before calling this at all — either way, no hint.
 
-    ``reranker_uncached`` is set when ``_maybe_warn_reranker_not_cached``
-    already fired for this invocation: an uncached reranker is a known,
+    ``reranker_uncached`` is set when *either* ``_maybe_warn_reranker_not_cached``
+    or ``_maybe_warn_reranker_load_failed`` already fired for this invocation
+    (the caller ORs the two — they're mutually exclusive by construction, so
+    at most one ever does): an uncached or a load-failed reranker is a known,
     already-explained cause of degraded *ranking* with its own remediation
     (``refresh``), so also nudging the operator toward the
     retrieval-quality tracker for a ``low_confidence`` result would mis-route
     a known install/config state into the wrong issue tracker. It does
-    *not* suppress the ``empty_results`` half of this hint: a missing
-    reranker never empties the candidate set (it can only re-rank whatever
-    RRF already returned), so a query that matched nothing is a genuine
-    retrieval-quality signal regardless of reranker cache state.
+    *not* suppress the ``empty_results`` half of this hint: a missing or
+    load-failed reranker never empties the candidate set (it can only
+    re-rank whatever RRF already returned), so a query that matched nothing
+    is a genuine retrieval-quality signal regardless of reranker state.
     """
     if not needs_embeddings or payload is None:
         return
@@ -221,7 +223,8 @@ def _maybe_warn_reranker_load_failed(
     click.echo(
         redact_home_in_text(
             "Warning: reranking disabled (the cached model failed to load during "
-            f"this query — see stderr warnings above for details). {bug_report_hint()}"
+            "this query). Run 'pipecat-context-hub refresh' to re-download it; see "
+            f"stderr warnings above for details. {bug_report_hint()}"
         ),
         err=True,
     )

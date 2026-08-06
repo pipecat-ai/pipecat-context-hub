@@ -604,6 +604,21 @@ class TestServerInstructions:
         # And confirm it's a no-op (no raise) on clean text.
         _assert_no_unsubstituted_placeholder("no placeholders here")
 
+    def test_placeholder_guard_ignores_non_placeholder_braces(self):
+        """A literal brace that isn't an ``{UPPER_SNAKE_CASE}`` placeholder must not raise.
+
+        This is the guard's own reason for existing via ``.replace()`` instead
+        of an f-string (see the module docstring, ``d97e23d``): a future JSON
+        example added to the instructions prose must not crash import. The
+        guard matches the ``{UPPER_SNAKE_CASE}`` naming convention every real
+        ``.replace()`` target follows, not any literal ``{``/``}`` — confirm a
+        JSON-shaped brace and a lowercase/mixed-case brace both pass through.
+        """
+        from pipecat_context_hub.server.main import _assert_no_unsubstituted_placeholder
+
+        _assert_no_unsubstituted_placeholder('e.g. search_docs({"query": "TTS"})')
+        _assert_no_unsubstituted_placeholder("a set like {a, b, c} or {ok}")
+
     @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
     def test_boot_failure_guidance_matches_index_recovery_paths(
         self, index_state, tmp_path, monkeypatch, caplog

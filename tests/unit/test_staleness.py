@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -16,7 +16,7 @@ runner = CliRunner()
 
 def _store_refreshed_days_ago(days: float) -> MagicMock:
     store = MagicMock()
-    refreshed = datetime.now(UTC) - timedelta(days=days)
+    refreshed = datetime.now(timezone.utc) - timedelta(days=days)
     store.get_all_metadata.return_value = {"last_refresh_at": refreshed.isoformat()}
     store.get_index_stats.return_value = {"total": 10, "counts_by_type": {"doc": 10}}
     return store

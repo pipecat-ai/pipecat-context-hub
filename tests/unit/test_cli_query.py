@@ -796,9 +796,11 @@ class TestRerankerLoadFailedWarning:
         )
         assert result.exit_code == 0, result.stderr
         assert "failed to load" in result.stderr
-        _assert_remediation_before_report_hint(
-            result.stderr, "failed to load", BUG_REPORT_ISSUE_URL
-        )
+        # bug_report_hint()'s "if this persists after trying that" wording
+        # presupposes the caller already named an action to try — pin that
+        # this message actually names one ('refresh') before the hint, not
+        # just that some fix-shaped text precedes the URL.
+        _assert_remediation_before_report_hint(result.stderr, "refresh", BUG_REPORT_ISSUE_URL)
         payload = json.loads(result.stdout)
         assert payload["hits"] == [{"id": "x1"}]
         assert BUG_REPORT_ISSUE_URL not in result.stdout
