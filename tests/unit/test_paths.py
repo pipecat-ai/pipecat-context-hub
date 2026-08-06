@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pipecat_context_hub.shared.paths import redact_home_in_text
 
@@ -37,7 +38,10 @@ class TestRedactHomeInText:
         )
         result = redact_home_in_text(text)
         assert result == text
-        assert "https://github.com" in result
+        url_token = next(part for part in result.split() if part.startswith("https://"))
+        parsed = urlparse(url_token)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "github.com"
         assert "https:~/" not in result
 
     def test_empty_home_is_a_no_op(self, monkeypatch):
