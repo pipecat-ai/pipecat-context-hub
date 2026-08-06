@@ -983,3 +983,20 @@ Full suite green throughout (1271 passed, 6 skipped at final commit); `ruff form
   passed, 6 skipped — up from 1295, the new placeholder-guard mutation
   test), `ruff check`/`ruff format --check` clean, `mypy` clean on every
   touched file. Committed as `3aa75c3`.
+
+- **2026-08-06 — CodeQL fix on PR #111.** GitHub Advanced Security flagged
+  `py/incomplete-url-substring-sanitization` (High) on check-run
+  `92629423012`, `tests/unit/test_paths.py:40` —
+  `assert "https://github.com" in result` read as an incomplete URL
+  sanitization check even though it is a plain test assertion, not
+  sanitization logic. Replaced the substring check with
+  `urlparse`-based `scheme`/`hostname` assertions per GHAS's suggested
+  fix. `pytest tests/unit/test_paths.py` (5 passed), `ruff check` clean.
+  Committed as `c9e559b`; CodeQL rescan on that commit shows the alert
+  `state: fixed`, no open `py/incomplete-url-substring-sanitization`
+  alerts remain.
+
+- **2026-08-06 — `_echo_stderr_warning` extraction.** Deduped the
+  `click.echo(redact_home_in_text(...), err=True)` pattern repeated
+  verbatim at six call sites in `cli_query.py` into a single helper.
+  Committed as `770bd97`.
