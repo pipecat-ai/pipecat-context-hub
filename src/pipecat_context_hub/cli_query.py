@@ -57,6 +57,18 @@ if TYPE_CHECKING:
     from pipecat_context_hub.shared.config import HubConfig
     from pipecat_context_hub.shared.types import RerankerStatus
 
+
+def _echo_stderr_warning(text: str) -> None:
+    """Redact home paths and write a stderr warning/error hint.
+
+    Single choke point for the "redact, then echo to stderr" pattern shared
+    by every warning/error hint in this module, so a future formatting
+    change (a common prefix, ``click.secho`` coloring, a log-level tag)
+    lands once instead of drifting across call sites.
+    """
+    click.echo(redact_home_in_text(text), err=True)
+
+
 # Exit code for a missing/empty/unreadable local index. Keep in sync with
 # ``cli._EXIT_INDEX_UNREADY`` (enforced by tests/unit/test_cli_query.py).
 _EXIT_INDEX_UNREADY = 2
@@ -141,12 +153,9 @@ def _maybe_warn_poor_results(
     empty_results = isinstance(results_list, list) and len(results_list) == 0
     if not (low_confidence or empty_results):
         return
-    click.echo(
-        redact_home_in_text(
-            f"Warning: results were poor or missing. Retry with {meta.retry_hint}; "
-            f"if poor or missing results persist, file at {RETRIEVAL_QUALITY_ISSUE_URL}."
-        ),
-        err=True,
+    _echo_stderr_warning(
+        f"Warning: results were poor or missing. Retry with {meta.retry_hint}; "
+        f"if poor or missing results persist, file at {RETRIEVAL_QUALITY_ISSUE_URL}."
     )
 
 
@@ -175,12 +184,9 @@ def _maybe_warn_reranker_not_cached(
     """
     if not needs_embeddings or reranker_status.disabled_reason != "not_cached":
         return False
-    click.echo(
-        redact_home_in_text(
-            "Warning: reranking disabled (model not cached) — run "
-            f"'pipecat-context-hub refresh' to download it. {bug_report_hint()}"
-        ),
-        err=True,
+    _echo_stderr_warning(
+        "Warning: reranking disabled (model not cached) — run "
+        f"'pipecat-context-hub refresh' to download it. {bug_report_hint()}"
     )
     return True
 
@@ -220,13 +226,10 @@ def _maybe_warn_reranker_load_failed(
         return False
     if runtime_reranker_reason(cross_encoder, None) != "load_failed":
         return False
-    click.echo(
-        redact_home_in_text(
-            "Warning: reranking disabled (the cached model failed to load during "
-            "this query). Run 'pipecat-context-hub refresh' to re-download it; see "
-            f"stderr warnings above for details. {bug_report_hint()}"
-        ),
-        err=True,
+    _echo_stderr_warning(
+        "Warning: reranking disabled (the cached model failed to load during "
+        "this query). Run 'pipecat-context-hub refresh' to re-download it; see "
+        f"stderr warnings above for details. {bug_report_hint()}"
     )
     return True
 
@@ -334,7 +337,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
                 index_store.close()
         # exc.__str__ embeds the absolute chroma_path, so redact the whole
         # composed message (not just a data_dir token, which is absent here).
-        click.echo(redact_home_in_text(f"Error: {exc}\n{bug_report_hint()}"), err=True)
+        _echo_stderr_warning(f"Error: {exc}\n{bug_report_hint()}")
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         if index_store is not None:
@@ -343,26 +346,20 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         # Both the data_dir token and the {exc} rendering (e.g. a
         # FileNotFoundError carrying .../chroma.sqlite3) can leak an absolute
         # path, so redact the full formatted string, not a single argument.
-        click.echo(
-            redact_home_in_text(
-                f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
-                "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
-                f"{bug_report_hint()}"
-            ),
-            err=True,
+        _echo_stderr_warning(
+            f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
+            "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
+            f"{bug_report_hint()}"
         )
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
 
     try:
         if stats.get("total", 0) == 0:
-            click.echo(
-                redact_home_in_text(
-                    f"Error: the index at {config.storage.data_dir} is empty.\n"
-                    "Run 'pipecat-context-hub refresh' first to build it "
-                    "(the first run downloads models and indexes sources — allow a few minutes).\n"
-                    f"{bug_report_hint()}"
-                ),
-                err=True,
+            _echo_stderr_warning(
+                f"Error: the index at {config.storage.data_dir} is empty.\n"
+                "Run 'pipecat-context-hub refresh' first to build it "
+                "(the first run downloads models and indexes sources — allow a few minutes).\n"
+                f"{bug_report_hint()}"
             )
             raise SystemExit(_EXIT_INDEX_UNREADY)
 
