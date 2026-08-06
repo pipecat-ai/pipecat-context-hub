@@ -56,15 +56,29 @@ harness gets re-checked against the exact query that once broke.
     qualifier to rank above Python hits, but should improve as retrieval
     quality improves (cross-encoder, corpus weighting). If the bare query
     starts passing, that's a positive signal.
-18. `search_api("PipecatClientOptions")` — returns TS interface from
-    `pipecat-ai/pipecat-client-web` with `language="typescript"` metadata
+18. `search_api("PipecatClientOptions")` — a bare query may rank
+    `PipecatClientOptions`-referencing method/const chunks (e.g.
+    `MediaManager.setClientOptions`, `Transport.initialize`) ahead of the
+    interface declaration itself — expected per the bare-query note below,
+    not a blocker. Use `chunk_type="class_overview"` (test 26) for the
+    reliable check that the TS interface from `pipecat-ai/pipecat-client-web`
+    is indexed. (Note: `search_api` hits don't carry a `language` field —
+    that's only on `get_code_snippet`/`get_example` results.)
 19. `search_api("SmallWebRTCTransport")` — returns TS hits from
     `pipecat-ai/pipecat-client-web-transports` or `pipecat-ai/voice-ui-kit`
 20. `search_docs("pipecat-client-ios")` — returns at least one hit from an
     iOS SDK repo (README fallback for zero-code-chunk repos)
-21. `search_api("PipecatClientProvider")` — returns TS const export from
-    `pipecat-ai/pipecat-client-web` with full arrow-function body (not
-    truncated at the parameter list)
+21. `search_api("PipecatClientProvider")` — a bare query may rank other
+    files that merely *import* `PipecatClientProvider` (e.g.
+    `PipecatAppBase`, Ladle story `Provider` consts) ahead of the actual
+    definition — same bare-query ranking behavior as test 18, extended to
+    `chunk_type="function"` (const/arrow-component exports), not previously
+    called out below. For the reliable check that the const export from
+    `pipecat-ai/pipecat-client-web` is indexed with its full arrow-function
+    body (not truncated at the parameter list), use
+    `search_api("PipecatClientProvider", chunk_type="function")` or
+    `get_code_snippet(symbol="PipecatClientProvider")` — both return it as
+    the top/only hit.
 22. `search_api("SmallWebRTCTransport", class_name="SmallWebRTCTransport")` —
     returns TS class from `pipecat-ai/pipecat-client-web-transports` (verifies
     nested-package TS detection for `pipecat-prebuilt`, formerly
@@ -95,7 +109,15 @@ without `chunk_type` or `class_name` filters): after Phase 2 method
 extraction, method/getter chunks may rank ahead of the class declaration.
 This is expected — don't treat "class is not top result" as a hard blocker.
 Use `chunk_type="class_overview"` (tests 25-26) when class-level ranking
-matters.
+matters. The same behavior extends to const/arrow-function exports
+(`chunk_type="function"`, test 21): files that merely *reference* or
+*import* a symbol can outrank its actual definition. When a bare query's
+top hit looks wrong, don't conclude the symbol is unindexed — retry with
+the matching `chunk_type` filter or `get_code_snippet(symbol=...)` before
+treating it as a regression (frozen from a live false-positive during the
+2026-08-06 report-hint parity smoke run, where tests 18/21 were initially
+misdiagnosed as ranking misses before the filtered/symbol-lookup form
+confirmed both were indexed correctly).
 
 30. `search_examples("TTS pipeline", pipecat_version="0.0.95", domain="backend")`
     — all hits have `version_compatibility: "newer_required"` (framework
