@@ -405,7 +405,8 @@ live local index:
     whose hint does name `--limit`, since that command has one. Regression
     canary for a fix (`9b8508d`) where the hint's wording was a single fixed
     phrase naming a flag not every semantic command carries. Unit-side
-    counterpart: `_SEMANTIC_RETRY_HINT`'s coverage test and
+    counterpart: `_SEMANTIC_META`'s AST enrollment guard
+    (`test_semantic_meta_matches_needs_embeddings_call_sites`) and
     `TestRetrievalQualityHint` in `tests/unit/test_cli_query.py`.
 
 ## Upstream Drift Check

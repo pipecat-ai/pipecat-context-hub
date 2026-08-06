@@ -928,3 +928,58 @@ Full suite green throughout (1271 passed, 6 skipped at final commit); `ruff form
   the last recorded full-suite run, the delta being this round's 4 new
   tests plus tests added in intervening review rounds not yet reflected in
   that count).
+
+- **2026-08-06 — round-7 fixes: `/skein:deep-review` architecture-lens
+  findings.** A dedicated architecture-lens pass (Logic/Security/Documentation
+  lenses failed to return in this run — see commit `3aa75c3`'s discussion;
+  their coverage remains outstanding) found four issues, all fixed and each
+  independently verified against its original finding text before commit:
+  1. **`load_failed` reranker-state derivation was duplicated**
+     (`cli_query.py` / `cli.py`, `Important`). Round-6's new
+     `_maybe_warn_reranker_load_failed` re-derived "constructed
+     `CrossEncoderReranker` whose `.enabled` flipped to `False` means
+     `load_failed`" independently of `cli.py`'s `_reranker_status()`
+     closure — neither routed through `shared/reranker.py`, re-introducing
+     the exact two-front-door drift that module's docstring says it exists
+     to prevent. Added `shared/reranker.py::runtime_reranker_reason()` and
+     switched both call sites to it; corrected the module docstring's
+     now-false claim that the one-shot CLI never re-probes a live reranker.
+  2. **`cli.py` imported the private `_bug_report_hint` from
+     `cli_query.py`** (`Important`). A helper consumed across a module
+     boundary by a sibling front door is public API, not private —
+     `shared/support_links.py` already existed as the single source of
+     truth for the two issue-template URLs, and `server/main.py` already
+     imported from it correctly. Moved `bug_report_hint()` there as a
+     public function (docstring verbatim); `cli.py` and `cli_query.py` both
+     now import it from `shared/`. The pinning test that used to assert the
+     private cross-module import now asserts the opposite — that `cli.py`
+     does neither that nor a local redefinition.
+  3. **`_SEMANTIC_RESULT_KEY`/`_SEMANTIC_RETRY_HINT` were two parallel
+     dicts that had to stay keyed identically** (`cli_query.py`, `Minor`).
+     One was AST-guarded (every `needs_embeddings=True` command must
+     enroll); the other was read via a silent `.get(tool, "fewer filters or
+     a larger limit")` fallback with no equivalent guard. Collapsed to a
+     single `_SEMANTIC_META: dict[str, _SemanticMeta]` (`NamedTuple`) map
+     so the existing AST test covers both fields by construction and the
+     silent fallback is gone entirely — a missing entry now means no
+     warning fires, rather than a wrong one.
+  4. **The `_SERVER_INSTRUCTIONS` unsubstituted-placeholder guard was a
+     bare module-level `assert`** (`server/main.py`, `Minor`), which
+     `python -O` strips — exactly the deployment mode where shipping
+     literal `{PLACEHOLDER}` text to MCP clients would go unnoticed.
+     `transport.py` already documents this repo's raise-not-assert
+     convention for import-time invariants. Extracted a raising
+     `_assert_no_unsubstituted_placeholder()` helper (the
+     `_SERVER_INSTRUCTIONS` prose and its `.replace()` chain are
+     byte-identical — only the guard's failure mode changed) plus a new
+     mutation test, `test_placeholder_guard_raises_on_missed_substitution`,
+     that calls the guard directly with a synthetic unsubstituted string to
+     prove the raise path is live rather than only pinning today's already-clean
+     output.
+  Each fix went through a clean-context architect → implement → test →
+  verify subagent chain per fix (root-cause plan, mechanical edit, full
+  suite, independent re-check against the original finding text) rather
+  than an inline patch. Verification: `uv run pytest tests/ -x -q` (1296
+  passed, 6 skipped — up from 1295, the new placeholder-guard mutation
+  test), `ruff check`/`ruff format --check` clean, `mypy` clean on every
+  touched file. Committed as `3aa75c3`.
