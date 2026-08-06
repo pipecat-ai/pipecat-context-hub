@@ -73,16 +73,16 @@ class TestToolCommandParity:
         """CLI and serve must report 'index unready' with the same exit code."""
         assert _EXIT_INDEX_UNREADY == _SERVE_EXIT_INDEX_UNREADY
 
-    def test_semantic_result_key_matches_needs_embeddings_call_sites(self):
-        """``_SEMANTIC_RESULT_KEY`` must enroll exactly the tools invoked
+    def test_semantic_meta_matches_needs_embeddings_call_sites(self):
+        """``_SEMANTIC_META`` must enroll exactly the tools invoked
         with ``needs_embeddings=True`` — nothing more, nothing less.
 
         The retrieval-quality hint (``_maybe_warn_poor_results``) is gated
-        on ``_SEMANTIC_RESULT_KEY`` membership, a separate, hand-maintained
+        on ``_SEMANTIC_META`` membership, a separate, hand-maintained
         dict from the ``needs_embeddings`` flag that gates the reranker
         warning. A future semantic command that sets
         ``needs_embeddings=True`` but forgets to enroll in
-        ``_SEMANTIC_RESULT_KEY`` would silently lose the retrieval-quality
+        ``_SEMANTIC_META`` would silently lose the retrieval-quality
         hint with no other test catching it — parses the module's AST for
         every ``_invoke(ctx, "<tool>", ..., needs_embeddings=True)`` call
         site rather than hardcoding the expected tool list, so this stays
@@ -92,7 +92,7 @@ class TestToolCommandParity:
         import inspect
 
         import pipecat_context_hub.cli_query as cli_query_module
-        from pipecat_context_hub.cli_query import _SEMANTIC_RESULT_KEY
+        from pipecat_context_hub.cli_query import _SEMANTIC_META
 
         source = inspect.getsource(cli_query_module)
         tree = ast.parse(source)
@@ -115,11 +115,11 @@ class TestToolCommandParity:
             embeddings_tools.add(tool_arg.value)
 
         assert embeddings_tools, "AST walk found no needs_embeddings=True call sites — broken test"
-        assert embeddings_tools == set(_SEMANTIC_RESULT_KEY)
+        assert embeddings_tools == set(_SEMANTIC_META)
 
     def test_semantic_result_key_values_match_output_model_fields(self):
-        """``_SEMANTIC_RESULT_KEY``'s *values* must be real fields on the
-        corresponding MCP output model.
+        """``_SEMANTIC_META``'s *result_key* values must be real fields on
+        the corresponding MCP output model.
 
         The AST test above only pins the dict's keys (tool names); nothing
         previously verified the values (``"hits"``/``"snippets"``) still
@@ -130,7 +130,7 @@ class TestToolCommandParity:
         """
         from pydantic import BaseModel
 
-        from pipecat_context_hub.cli_query import _SEMANTIC_RESULT_KEY
+        from pipecat_context_hub.cli_query import _SEMANTIC_META
         from pipecat_context_hub.shared.types import (
             GetCodeSnippetOutput,
             SearchApiOutput,
@@ -144,20 +144,20 @@ class TestToolCommandParity:
             "search_api": SearchApiOutput,
             "get_code_snippet": GetCodeSnippetOutput,
         }
-        assert set(output_models) == set(_SEMANTIC_RESULT_KEY)
+        assert set(output_models) == set(_SEMANTIC_META)
         for tool, model in output_models.items():
-            assert _SEMANTIC_RESULT_KEY[tool] in model.model_fields, (
-                f"{tool}: {_SEMANTIC_RESULT_KEY[tool]!r} is not a field on {model.__name__}"
+            assert _SEMANTIC_META[tool].result_key in model.model_fields, (
+                f"{tool}: {_SEMANTIC_META[tool].result_key!r} is not a field on {model.__name__}"
             )
 
-    def test_semantic_retry_hint_covers_every_semantic_result_key(self):
-        """``_SEMANTIC_RETRY_HINT`` must enroll exactly the same tools as
-        ``_SEMANTIC_RESULT_KEY`` — a command that can trigger the
-        poor-results warning must have a hint fragment naming flags it
-        actually has, not the generic (search-command) fallback."""
-        from pipecat_context_hub.cli_query import _SEMANTIC_RESULT_KEY, _SEMANTIC_RETRY_HINT
+    def test_semantic_meta_retry_hints_are_nonempty(self):
+        """Every _SEMANTIC_META entry carries a non-empty retry hint —
+        the NamedTuple structure guarantees the field exists, but not
+        that someone didn't leave it blank."""
+        from pipecat_context_hub.cli_query import _SEMANTIC_META
 
-        assert set(_SEMANTIC_RETRY_HINT) == set(_SEMANTIC_RESULT_KEY)
+        for tool, meta in _SEMANTIC_META.items():
+            assert meta.retry_hint.strip(), f"{tool}: empty retry_hint"
 
 
 class TestVersionFlag:

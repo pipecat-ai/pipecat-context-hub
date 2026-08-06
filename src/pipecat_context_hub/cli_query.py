@@ -38,15 +38,16 @@ import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
 from pipecat_context_hub.shared.paths import redact_home_in_text
+from pipecat_context_hub.shared.reranker import runtime_reranker_reason
 from pipecat_context_hub.shared.support_links import (
-    BUG_REPORT_ISSUE_URL,
     RETRIEVAL_QUALITY_ISSUE_URL,
+    bug_report_hint,
 )
 
 if TYPE_CHECKING:
@@ -61,46 +62,37 @@ if TYPE_CHECKING:
 _EXIT_INDEX_UNREADY = 2
 _EXIT_BAD_INPUT = 1
 
-# Result-list key for each semantic command's JSON output, used only to
-# detect an empty result collection for the retrieval-quality stderr hint.
-# Must enroll exactly the tools invoked with ``needs_embeddings=True`` — a
-# structural AST test
-# (test_semantic_result_key_matches_needs_embeddings_call_sites) guards
-# that a future semantic command can't gain the reranker warning without
-# also gaining this hint.
-_SEMANTIC_RESULT_KEY = {
-    "search_docs": "hits",
-    "search_examples": "hits",
-    "search_api": "hits",
-    "get_code_snippet": "snippets",
-}
 
-# Retry-hint fragment for each semantic command's poor-results warning, keyed
-# the same as _SEMANTIC_RESULT_KEY. get_code_snippet has no --limit flag (it
-# takes --max-lines and three mutually exclusive lookup modes: --symbol,
-# --intent, or --path/--line-start), so the generic "larger --limit" advice
-# names a flag that command doesn't have.
-_SEMANTIC_RETRY_HINT = {
-    "search_docs": "fewer filters or a larger --limit",
-    "search_examples": "fewer filters or a larger --limit",
-    "search_api": "fewer filters or a larger --limit",
-    "get_code_snippet": "a different --symbol/--intent/--path, or fewer filters",
-}
+class _SemanticMeta(NamedTuple):
+    """Per-semantic-command constants for the poor-results stderr hint.
 
-
-def _bug_report_hint() -> str:
-    """Remediation-first suffix: name the fix, then the tracker as a fallback.
-
-    Precondition: the caller has already emitted its own remediation text
-    (e.g. "run 'refresh --force --reset-index'") immediately before this
-    string. This function only returns the trailing "if this persists..."
-    clause — it names no fix of its own — so appending it in isolation, with
-    no preceding remediation, reads as escalation-first rather than the
-    remediation-first ordering every call site relies on. Every current call
-    site (index-unready messages, the reranker not_cached warning) upholds
-    this by construction; keep that invariant when adding a new one.
+    ``result_key`` is the JSON output field holding the result list, used
+    only to detect an empty result collection. ``retry_hint`` is the
+    flag-specific retry suggestion for that command — ``get_code_snippet``
+    has no ``--limit`` flag (it takes ``--max-lines`` and three mutually
+    exclusive lookup modes: ``--symbol``, ``--intent``, or
+    ``--path``/``--line-start``), so the generic "larger --limit" advice
+    would name a flag that command doesn't have.
     """
-    return f"If this persists after trying that, file a bug report at {BUG_REPORT_ISSUE_URL}."
+
+    result_key: str
+    retry_hint: str
+
+
+# Must enroll exactly the tools invoked with ``needs_embeddings=True`` — a
+# structural AST test (test_semantic_meta_matches_needs_embeddings_call_sites)
+# guards that a future semantic command can't gain the reranker warning
+# without also gaining this entry. Combining both fields into one NamedTuple
+# (rather than two parallel dicts) makes that guard cover both fields by
+# construction — there is no second dict that can silently fall out of sync.
+_SEMANTIC_META: dict[str, _SemanticMeta] = {
+    "search_docs": _SemanticMeta("hits", "fewer filters or a larger --limit"),
+    "search_examples": _SemanticMeta("hits", "fewer filters or a larger --limit"),
+    "search_api": _SemanticMeta("hits", "fewer filters or a larger --limit"),
+    "get_code_snippet": _SemanticMeta(
+        "snippets", "a different --symbol/--intent/--path, or fewer filters"
+    ),
+}
 
 
 def _maybe_warn_poor_results(
@@ -134,8 +126,8 @@ def _maybe_warn_poor_results(
     """
     if not needs_embeddings or payload is None:
         return
-    result_key = _SEMANTIC_RESULT_KEY.get(tool)
-    if result_key is None:
+    meta = _SEMANTIC_META.get(tool)
+    if meta is None:
         return
     evidence = payload.get("evidence")
     low_confidence = (
@@ -143,14 +135,13 @@ def _maybe_warn_poor_results(
         and evidence.get("low_confidence") is True
         and not reranker_uncached
     )
-    results_list = payload.get(result_key)
+    results_list = payload.get(meta.result_key)
     empty_results = isinstance(results_list, list) and len(results_list) == 0
     if not (low_confidence or empty_results):
         return
-    retry_hint = _SEMANTIC_RETRY_HINT.get(tool, "fewer filters or a larger limit")
     click.echo(
         redact_home_in_text(
-            f"Warning: results were poor or missing. Retry with {retry_hint}; "
+            f"Warning: results were poor or missing. Retry with {meta.retry_hint}; "
             f"if poor or missing results persist, file at {RETRIEVAL_QUALITY_ISSUE_URL}."
         ),
         err=True,
@@ -185,7 +176,7 @@ def _maybe_warn_reranker_not_cached(
     click.echo(
         redact_home_in_text(
             "Warning: reranking disabled (model not cached) — run "
-            f"'pipecat-context-hub refresh' to download it. {_bug_report_hint()}"
+            f"'pipecat-context-hub refresh' to download it. {bug_report_hint()}"
         ),
         err=True,
     )
@@ -213,18 +204,24 @@ def _maybe_warn_reranker_load_failed(
     dispatch has run therefore reveals a load that failed *during this
     query*, which no pre-dispatch status snapshot could carry.
 
+    This check is delegated to the shared ``runtime_reranker_reason`` (also
+    used by ``serve``'s ``_reranker_status()``), so the two front doors cannot
+    drift on how ``load_failed`` is derived.
+
     Returns whether the warning fired, so a caller can suppress the
     unrelated retrieval-quality hint the same way
     ``_maybe_warn_reranker_not_cached`` does — a load failure is a known,
     already-explained cause of degraded ranking, not a retrieval-quality
     signal about the query itself.
     """
-    if not needs_embeddings or cross_encoder is None or cross_encoder.enabled:
+    if not needs_embeddings:
+        return False
+    if runtime_reranker_reason(cross_encoder, None) != "load_failed":
         return False
     click.echo(
         redact_home_in_text(
             "Warning: reranking disabled (the cached model failed to load during "
-            f"this query — see stderr warnings above for details). {_bug_report_hint()}"
+            f"this query — see stderr warnings above for details). {bug_report_hint()}"
         ),
         err=True,
     )
@@ -334,7 +331,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
                 index_store.close()
         # exc.__str__ embeds the absolute chroma_path, so redact the whole
         # composed message (not just a data_dir token, which is absent here).
-        click.echo(redact_home_in_text(f"Error: {exc}\n{_bug_report_hint()}"), err=True)
+        click.echo(redact_home_in_text(f"Error: {exc}\n{bug_report_hint()}"), err=True)
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         if index_store is not None:
@@ -347,7 +344,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
             redact_home_in_text(
                 f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
                 "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
-                f"{_bug_report_hint()}"
+                f"{bug_report_hint()}"
             ),
             err=True,
         )
@@ -360,7 +357,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
                     f"Error: the index at {config.storage.data_dir} is empty.\n"
                     "Run 'pipecat-context-hub refresh' first to build it "
                     "(the first run downloads models and indexes sources — allow a few minutes).\n"
-                    f"{_bug_report_hint()}"
+                    f"{bug_report_hint()}"
                 ),
                 err=True,
             )

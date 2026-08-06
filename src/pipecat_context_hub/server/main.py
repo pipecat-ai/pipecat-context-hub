@@ -126,6 +126,31 @@ _HUB_STATUS_TOOL: tuple[str, str, dict[str, Any]] = (
 )
 
 
+def _assert_no_unsubstituted_placeholder(text: str) -> None:
+    """Raise if ``text`` still contains an unsubstituted ``{PLACEHOLDER}``.
+
+    ``_SERVER_INSTRUCTIONS`` is built via ``.replace("{URL_CONST}", ...)``
+    rather than an f-string or ``.format()`` — a deliberate choice (``d97e23d``)
+    so a future stray brace in the prose (e.g. a JSON example) can't crash
+    import. That tradeoff means a renamed/typo'd ``RETRIEVAL_QUALITY_ISSUE_URL``
+    or ``BUG_REPORT_ISSUE_URL`` constant would make the substitution a silent
+    no-op instead, shipping literal ``{PLACEHOLDER}`` text to MCP clients with
+    no error. This guard closes that gap.
+
+    Raise rather than ``assert`` so the guard survives ``python -O`` (which
+    strips asserts) — see transport.py's ``_INTERMEDIATE_LAUNCHERS`` guard
+    for the same convention: fail loudly at import/CI instead.
+    """
+    if "{" in text:
+        raise ValueError(
+            "_SERVER_INSTRUCTIONS still contains an unsubstituted {PLACEHOLDER} — "
+            "a renamed/typo'd RETRIEVAL_QUALITY_ISSUE_URL or BUG_REPORT_ISSUE_URL "
+            "constant would otherwise ship literal placeholder text to MCP clients "
+            "with no error. Check the .replace() chain above against the two "
+            "shared/support_links.py constants."
+        )
+
+
 _SERVER_INSTRUCTIONS = """\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
 framework documentation, code examples, and API source.
@@ -223,13 +248,7 @@ operator choice (``PIPECAT_HUB_RERANKER_ENABLED=0``), not a degraded state \
 """.replace("{RETRIEVAL_QUALITY_ISSUE_URL}", RETRIEVAL_QUALITY_ISSUE_URL).replace(
     "{BUG_REPORT_ISSUE_URL}", BUG_REPORT_ISSUE_URL
 )
-assert "{" not in _SERVER_INSTRUCTIONS, (
-    "_SERVER_INSTRUCTIONS still contains an unsubstituted {PLACEHOLDER} — "
-    "a renamed/typo'd RETRIEVAL_QUALITY_ISSUE_URL or BUG_REPORT_ISSUE_URL "
-    "constant would otherwise ship literal placeholder text to MCP clients "
-    "with no error. Check the .replace() chain above against the two "
-    "shared/support_links.py constants."
-)
+_assert_no_unsubstituted_placeholder(_SERVER_INSTRUCTIONS)
 
 
 def create_server(

@@ -577,13 +577,32 @@ class TestServerInstructions:
         f-string ``NameError`` for a silent failure mode: a renamed or
         typo'd constant would make the substitution no-op, shipping literal
         ``{PLACEHOLDER}`` text to MCP clients with no error anywhere. A
-        module-level ``assert`` in ``server/main.py`` guards this at import
-        time; this test pins the same invariant at the unit-test level so a
-        regression is caught without needing to trigger a fresh import.
+        module-level call to ``_assert_no_unsubstituted_placeholder`` in
+        ``server/main.py`` guards this at import time (raising, not
+        ``assert``, so the guard survives ``python -O``); this test pins the
+        same invariant at the unit-test level so a regression is caught
+        without needing to trigger a fresh import.
         """
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
 
         assert "{" not in _SERVER_INSTRUCTIONS
+
+    def test_placeholder_guard_raises_on_missed_substitution(self):
+        """The guard function itself raises when a placeholder survives.
+
+        Unlike the previous test (which only pins the *result* on the real,
+        already-substituted ``_SERVER_INSTRUCTIONS``), this calls the guard
+        directly with a synthetic string to prove the raise path is live —
+        i.e. that a future renamed/typo'd URL constant would actually be
+        caught, not just that today's constants happen to line up.
+        """
+        from pipecat_context_hub.server.main import _assert_no_unsubstituted_placeholder
+
+        with pytest.raises(ValueError, match="unsubstituted"):
+            _assert_no_unsubstituted_placeholder("...file a bug report at {BUG_REPORT_ISSUE_URL}.")
+
+        # And confirm it's a no-op (no raise) on clean text.
+        _assert_no_unsubstituted_placeholder("no placeholders here")
 
     @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
     def test_boot_failure_guidance_matches_index_recovery_paths(
@@ -749,14 +768,6 @@ class TestSupportLinks:
         somewhere else in the module — not merely imported and unused,
         which would mean nothing built from it is really shared.
 
-        ``cli.py`` is intentionally not a direct consumer here: it imports
-        the shared ``_bug_report_hint()`` helper from ``cli_query`` instead
-        of duplicating the sentence that builds on ``BUG_REPORT_ISSUE_URL``
-        (avoids a second, separately-maintained copy of that wording, which
-        was itself a review finding). It still gets the URL transitively
-        through that helper — this test doesn't need to re-check that path
-        since ``cli_query.py``'s own entry below already pins the constant
-        at its one real source.
         """
         import ast
         from pathlib import Path
@@ -766,7 +777,8 @@ class TestSupportLinks:
 
         consumers = {
             "server/main.py": {"RETRIEVAL_QUALITY_ISSUE_URL", "BUG_REPORT_ISSUE_URL"},
-            "cli_query.py": {"RETRIEVAL_QUALITY_ISSUE_URL", "BUG_REPORT_ISSUE_URL"},
+            "cli_query.py": {"RETRIEVAL_QUALITY_ISSUE_URL", "bug_report_hint"},
+            "cli.py": {"bug_report_hint"},
         }
 
         for rel_path, required_symbols in consumers.items():
@@ -802,13 +814,15 @@ class TestSupportLinks:
             )
 
     def test_cli_imports_shared_bug_report_hint_helper(self):
-        """``cli.py`` must not carry its own copy of ``_bug_report_hint()``.
+        """``cli.py`` must not carry its own copy of ``bug_report_hint()``.
 
-        Companion to the consumers check above: since ``cli.py`` sources the
-        bug-report URL transitively through this helper rather than
-        importing ``BUG_REPORT_ISSUE_URL`` directly, pin that it actually
-        imports the helper — otherwise a future edit could silently
-        reintroduce a duplicated local definition with no test catching it.
+        Companion to the consumers check above: that check pins that cli.py
+        imports and uses ``bug_report_hint`` from ``shared.support_links``.
+        This test additionally guards against the specific regression that
+        caused this helper to move here in the first place — cli.py
+        reaching into cli_query.py's private surface instead of importing
+        the shared public helper, or cli.py redefining its own local copy
+        that would shadow the shared one.
         """
         import ast
         from pathlib import Path
@@ -825,11 +839,12 @@ class TestSupportLinks:
             if isinstance(node, ast.FunctionDef):
                 local_defs.add(node.name)
 
-        assert "_bug_report_hint" in imported_from_cli_query, (
-            "cli.py must import _bug_report_hint from cli_query rather than defining its own copy"
+        assert "bug_report_hint" not in imported_from_cli_query, (
+            "cli.py must not import bug_report_hint from cli_query — that module's "
+            "private surface is not a public API; import from shared.support_links instead"
         )
-        assert "_bug_report_hint" not in local_defs, (
-            "cli.py must not redefine _bug_report_hint locally — it shadows the "
+        assert "bug_report_hint" not in local_defs, (
+            "cli.py must not redefine bug_report_hint locally — it shadows the "
             "imported shared helper"
         )
 
