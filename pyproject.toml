@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 # after install — the command, the MCP server name, the data dir, the docs —
 # stays `pipecat-context-hub`; see the scripts alias below.
 name = "pipecat-ai-context-hub"
-version = "0.5.0"
+version = "0.5.1"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"

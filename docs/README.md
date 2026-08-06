@@ -427,6 +427,17 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   cause (`config_disabled` | `not_cached`) and, for `not_cached`, the
   exact HF cache directory probed.
 
+- **Where to report what** — you shouldn't usually need to look this up: both
+  front doors surface it themselves. The one-shot CLI prints a remediation-first
+  hint on stderr (never on stdout, so piped JSON stays clean) whenever a
+  semantic command returns poor/empty results or the reranker model is
+  uncached; `serve`'s MCP `initialize` response gives a connecting agent the
+  same guidance. If you're filing directly: poor or missing search results go
+  to [retrieval-quality.yml](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=retrieval-quality.yml)
+  (the template includes a diagnostic prompt your coding agent can run to
+  generate a structured report); crashes, incorrect behavior, or anything else
+  go to [bug-report.yml](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml).
+
 ### Windows
 
 - **Refresh appears to hang or returns zero code results** — a prior
@@ -440,10 +451,6 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   etc.) cannot encode. The server falls back to ASCII automatically. To
   opt into the full Unicode output, set `PYTHONIOENCODING=utf-8` before
   invoking `refresh`, or use Windows Terminal (which defaults to UTF-8).
-
-If the server returns poor or missing results, [file a retrieval quality issue](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=retrieval-quality.yml) —
-the issue template includes a diagnostic prompt your coding agent can run to
-generate a structured report.
 
 ## Contributing
 

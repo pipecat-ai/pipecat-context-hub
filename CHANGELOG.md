@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-06
+
 ### Added
 - **CLI report-hint parity with MCP.** The one-shot CLI (`cli_query.py`,
   `cli.py`) now gives the same "where to report this" nudge on stderr that
