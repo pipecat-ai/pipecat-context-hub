@@ -105,7 +105,11 @@ def annotate_response(result_json: str, index_store: IndexStore) -> str:
 
     Returns the input unchanged when the index is fresh, when the payload
     isn't a JSON object, or when anything at all goes wrong — the annotation
-    is best-effort and must never cost a response.
+    is best-effort and must never cost a response. Both front doors (MCP's
+    ``call_tool`` and the CLI's ``_invoke``) call this the same way, on the
+    handler's raw JSON string — this module carries no front-door-specific
+    parameters, so there is exactly one representation of the payload to
+    reason about here.
     """
     try:
         info = staleness_info(index_store)

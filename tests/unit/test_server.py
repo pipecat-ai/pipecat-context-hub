@@ -10,37 +10,36 @@ Tests cover:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL, create_server
 from pipecat_context_hub.shared.types import (
     ApiHit,
     Citation,
+    CodeSnippet,
+    DocHit,
     EvidenceReport,
+    ExampleFile,
+    ExampleHit,
+    GetCodeSnippetOutput,
+    GetDocOutput,
+    GetExampleOutput,
     KnownItem,
     SearchApiOutput,
     SearchDocsOutput,
-    DocHit,
-    GetDocOutput,
     SearchExamplesOutput,
-    ExampleHit,
-    GetExampleOutput,
-    ExampleFile,
     TaxonomyEntry,
-    GetCodeSnippetOutput,
-    CodeSnippet,
 )
-from pipecat_context_hub.server.main import create_server, _BASE_TOOLS, _HUB_STATUS_TOOL
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2026, 2, 18, tzinfo=timezone.utc)
+NOW = datetime(2026, 2, 18, tzinfo=UTC)
 
 
 def _citation(**overrides: Any) -> Citation:
@@ -69,24 +68,35 @@ def mock_retriever():
     retriever.search_docs.return_value = SearchDocsOutput(
         hits=[
             DocHit(
-                doc_id="d1", title="T", snippet="S",
-                citation=_citation(), score=0.9,
+                doc_id="d1",
+                title="T",
+                snippet="S",
+                citation=_citation(),
+                score=0.9,
             )
         ],
         evidence=_evidence(),
     )
 
     retriever.get_doc.return_value = GetDocOutput(
-        doc_id="d1", title="T", content="C",
+        doc_id="d1",
+        title="T",
+        content="C",
         source_url="https://docs.pipecat.ai/test",
-        indexed_at=NOW, sections=[], evidence=_evidence(),
+        indexed_at=NOW,
+        sections=[],
+        evidence=_evidence(),
     )
 
     retriever.search_examples.return_value = SearchExamplesOutput(
         hits=[
             ExampleHit(
-                example_id="e1", summary="S", repo="r", path="p",
-                citation=_citation(), score=0.9,
+                example_id="e1",
+                summary="S",
+                repo="r",
+                path="p",
+                citation=_citation(),
+                score=0.9,
             )
         ],
         evidence=_evidence(),
@@ -96,14 +106,20 @@ def mock_retriever():
         example_id="e1",
         metadata=TaxonomyEntry(example_id="e1", repo="r", path="p"),
         files=[ExampleFile(path="f.py", content="pass", language="python")],
-        citation=_citation(), detected_symbols=[], evidence=_evidence(),
+        citation=_citation(),
+        detected_symbols=[],
+        evidence=_evidence(),
     )
 
     retriever.get_code_snippet.return_value = GetCodeSnippetOutput(
         snippets=[
             CodeSnippet(
-                content="pass", path="f.py", line_start=1, line_end=1,
-                language="python", citation=_citation(),
+                content="pass",
+                path="f.py",
+                line_start=1,
+                line_end=1,
+                language="python",
+                citation=_citation(),
             )
         ],
         evidence=_evidence(),
@@ -167,7 +183,7 @@ class TestToolRegistration:
         assert server.name == "pipecat-context-hub"
 
     async def test_list_tools_handler_registered(self, mock_retriever):
-        import mcp.types as types
+        from mcp import types
 
         server = create_server(mock_retriever)
         assert types.ListToolsRequest in server.request_handlers
@@ -175,7 +191,8 @@ class TestToolRegistration:
     async def test_list_tools_touches_idle_tracker(self, mock_retriever):
         """tools/list must reset the idle clock — clients that only poll
         capabilities (no tool calls) still represent an active session."""
-        import mcp.types as types
+        from mcp import types
+
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
@@ -191,7 +208,8 @@ class TestToolRegistration:
 
     async def test_call_tool_touches_idle_tracker(self, mock_retriever):
         """tools/call must reset the idle clock (existing behaviour, now pinned)."""
-        import mcp.types as types
+        from mcp import types
+
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
@@ -213,7 +231,8 @@ class TestToolRegistration:
         activity — otherwise a client keeping an idle session alive with
         periodic ping heartbeats would still be reaped as idle.
         """
-        import mcp.types as types
+        from mcp import types
+
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
@@ -232,7 +251,7 @@ class TestToolRegistration:
         """Omitting idle_tracker must leave the built-in ping handler
         in place unchanged — we don't want to break ping when idle
         watchdogging is disabled."""
-        import mcp.types as types
+        from mcp import types
 
         server = create_server(mock_retriever)  # no idle_tracker
         handler = server.request_handlers[types.PingRequest]
@@ -247,13 +266,14 @@ class TestToolRegistration:
 
 class TestToolDispatch:
     async def test_call_tool_handler_registered(self, mock_retriever):
-        import mcp.types as types
+        from mcp import types
 
         server = create_server(mock_retriever)
         assert types.CallToolRequest in server.request_handlers
 
     async def test_create_server_returns_server(self, mock_retriever):
         from mcp.server.lowlevel import Server
+
         server = create_server(mock_retriever)
         assert isinstance(server, Server)
 
@@ -383,6 +403,7 @@ class TestGetHubStatusRerankerFields:
 class TestTransport:
     def test_transport_module_importable(self):
         from pipecat_context_hub.server import transport
+
         assert hasattr(transport, "run_stdio")
         assert hasattr(transport, "serve_stdio")
         assert callable(transport.run_stdio)
@@ -397,22 +418,24 @@ class TestTransport:
 class TestCLI:
     def test_cli_main_importable(self):
         from pipecat_context_hub.cli import main
+
         assert main is not None
 
     def test_cli_has_serve_command(self):
         from pipecat_context_hub.cli import serve
+
         assert serve is not None
 
     def test_cli_has_refresh_command(self):
         from pipecat_context_hub.cli import refresh
+
         assert refresh is not None
 
     def test_cli_group_commands(self):
         from pipecat_context_hub.cli import main
+
         assert "serve" in main.commands
         assert "refresh" in main.commands
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +485,382 @@ class TestVersionConsistency:
             f"version={pyproject_version!r}. __version__ comes from installed "
             f"distribution metadata, so after bumping the version re-sync the "
             f"environment (`uv sync --extra dev --group dev`) before re-running."
+        )
+
+
+class TestServerInstructions:
+    """Pin the self-report guidance in the MCP ``initialize`` instructions.
+
+    This text is advisory prose for the *connecting agent*, not a code path
+    that fires on an exception — nothing else in the tree references it (see
+    AGENTS.md item #50), so a wording edit that drops a clause or a URL would
+    otherwise pass silently. Also, the CLI (``cli_query.py``) now gets the
+    same guidance via the shared ``shared/support_links.py`` constants — see
+    ``TestSupportLinks`` below.
+
+    Assertions here check against the *imported* constants, not hardcoded
+    literals, so this class fails if ``_SERVER_INSTRUCTIONS`` stops
+    interpolating from ``shared/support_links.py``.
+    """
+
+    def test_retrieval_quality_report_hint_present(self):
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.shared.support_links import (
+            RETRIEVAL_QUALITY_ISSUE_URL,
+        )
+
+        assert "low_confidence" in _SERVER_INSTRUCTIONS
+        assert RETRIEVAL_QUALITY_ISSUE_URL in _SERVER_INSTRUCTIONS
+
+    def test_degraded_hub_report_hint_present(self):
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        assert "reranker_disabled_reason" in _SERVER_INSTRUCTIONS
+        assert "not_cached" in _SERVER_INSTRUCTIONS
+        assert "load_failed" in _SERVER_INSTRUCTIONS
+        assert BUG_REPORT_ISSUE_URL in _SERVER_INSTRUCTIONS
+
+    def test_not_cached_remediation_precedes_bug_report(self):
+        """``not_cached`` has a self-service fix; ``load_failed`` does not.
+
+        Mirrors the CLI's remediation-first wording (``cli_query.py``): try
+        ``pipecat-context-hub refresh`` before routing to the bug tracker.
+        Regression guard for the MCP-side symmetry gap this phase closed —
+        the clause previously jumped straight to "file a bug report" for
+        both reasons alike.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        assert "pipecat-context-hub refresh" in _SERVER_INSTRUCTIONS
+        refresh_pos = _SERVER_INSTRUCTIONS.index("pipecat-context-hub refresh")
+        bug_report_pos = _SERVER_INSTRUCTIONS.index(BUG_REPORT_ISSUE_URL)
+        assert refresh_pos < bug_report_pos
+
+    def test_not_cached_remediation_requires_reconnect(self):
+        """``refresh`` alone does not fix an already-running ``serve`` process.
+
+        Codex adversarial review (round 5): the reranker's disabled-reason is
+        resolved once at ``serve`` startup (``cli.py``'s ``probe_reranker``
+        call, captured by the ``_reranker_status`` closure) and never
+        re-probed while the process is alive. An agent that runs ``refresh``
+        and then re-calls ``get_hub_status`` on the *same* MCP connection
+        would still see ``not_cached`` and could wrongly escalate to filing a
+        bug report for what is actually stale in-memory state. The
+        instructions must say to restart/reconnect before re-checking.
+
+        Codex adversarial review (round 6): "restart or reconnect" as a pair
+        was itself misleading — some MCP hosts keep the underlying
+        ``pipecat-context-hub`` process alive across a client-side
+        "reconnect" (re-establishing only the logical session), which would
+        not re-resolve reranker state and leaves the agent stuck in the same
+        loop this instruction exists to prevent. The instructions must now
+        name restarting the underlying process as the actual fix and
+        explicitly call out that a same-process reconnect will not help.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "restarting the underlying" in _SERVER_INSTRUCTIONS
+        assert "reuses the same running process will not help" in _SERVER_INSTRUCTIONS
+        assert "does not re-check the" in _SERVER_INSTRUCTIONS
+        refresh_pos = _SERVER_INSTRUCTIONS.index("pipecat-context-hub refresh")
+        restart_pos = _SERVER_INSTRUCTIONS.index("restarting the underlying")
+        assert refresh_pos < restart_pos
+
+    def test_no_unsubstituted_placeholder_remains(self):
+        """No literal ``{PLACEHOLDER}`` token survives the ``.replace()`` chain.
+
+        ``_SERVER_INSTRUCTIONS`` is built via ``.replace("{URL_CONST}", ...)``
+        rather than an f-string (a deliberate choice, ``d97e23d``, to avoid
+        breaking on a future stray brace in the prose). That trades a loud
+        f-string ``NameError`` for a silent failure mode: a renamed or
+        typo'd constant would make the substitution no-op, shipping literal
+        ``{PLACEHOLDER}`` text to MCP clients with no error anywhere. A
+        module-level call to ``_assert_no_unsubstituted_placeholder`` in
+        ``server/main.py`` guards this at import time (raising, not
+        ``assert``, so the guard survives ``python -O``); this test pins the
+        same invariant at the unit-test level so a regression is caught
+        without needing to trigger a fresh import.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "{" not in _SERVER_INSTRUCTIONS
+
+    def test_placeholder_guard_raises_on_missed_substitution(self):
+        """The guard function itself raises when a placeholder survives.
+
+        Unlike the previous test (which only pins the *result* on the real,
+        already-substituted ``_SERVER_INSTRUCTIONS``), this calls the guard
+        directly with a synthetic string to prove the raise path is live —
+        i.e. that a future renamed/typo'd URL constant would actually be
+        caught, not just that today's constants happen to line up.
+        """
+        from pipecat_context_hub.server.main import _assert_no_unsubstituted_placeholder
+
+        with pytest.raises(ValueError, match="unsubstituted"):
+            _assert_no_unsubstituted_placeholder("...file a bug report at {BUG_REPORT_ISSUE_URL}.")
+
+        # And confirm it's a no-op (no raise) on clean text.
+        _assert_no_unsubstituted_placeholder("no placeholders here")
+
+    def test_placeholder_guard_ignores_non_placeholder_braces(self):
+        """A literal brace that isn't an ``{UPPER_SNAKE_CASE}`` placeholder must not raise.
+
+        This is the guard's own reason for existing via ``.replace()`` instead
+        of an f-string (see the module docstring, ``d97e23d``): a future JSON
+        example added to the instructions prose must not crash import. The
+        guard matches the ``{UPPER_SNAKE_CASE}`` naming convention every real
+        ``.replace()`` target follows, not any literal ``{``/``}`` — confirm a
+        JSON-shaped brace and a lowercase/mixed-case brace both pass through.
+        """
+        from pipecat_context_hub.server.main import _assert_no_unsubstituted_placeholder
+
+        _assert_no_unsubstituted_placeholder('e.g. search_docs({"query": "TTS"})')
+        _assert_no_unsubstituted_placeholder("a set like {a, b, c} or {ok}")
+
+    @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
+    def test_boot_failure_guidance_matches_index_recovery_paths(
+        self, index_state, tmp_path, monkeypatch, caplog
+    ):
+        """Boot guidance must defer to the recovery emitted before MCP initialization.
+
+        Empty and incompatible indexes prescribe different commands on stderr,
+        but both exit before an MCP client can call ``get_hub_status``.
+        """
+        from click.testing import CliRunner
+
+        from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY, main
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+        from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
+
+        if index_state == "empty":
+            store = MagicMock()
+            store.get_index_stats.return_value = {
+                "counts_by_type": {},
+                "total": 0,
+                "commit_shas": [],
+            }
+            index_store = MagicMock(return_value=store)
+            emitted_remediation = "pipecat-context-hub refresh"
+            guided_remediation = "pipecat-context-hub refresh"
+        else:
+            chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
+            index_store = MagicMock(side_effect=IncompatibleIndexFormatError(chroma_path))
+            emitted_remediation = RESET_INDEX_REMEDIATION
+            guided_remediation = "pipecat-context-hub refresh --force --reset-index"
+
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore", index_store),
+            caplog.at_level("ERROR", logger="pipecat_context_hub.cli"),
+        ):
+            result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert emitted_remediation in caplog.text
+        assert guided_remediation in _SERVER_INSTRUCTIONS.replace("``", "")
+        assert "before MCP initialization" in _SERVER_INSTRUCTIONS
+        assert "get_hub_status`` is unavailable" in _SERVER_INSTRUCTIONS
+        assert "Follow the remediation in the startup stderr first" in _SERVER_INSTRUCTIONS
+        assert "Only request ``get_hub_status`` after successful initialization" in (
+            _SERVER_INSTRUCTIONS
+        )
+
+    def test_config_disabled_is_excluded_from_bug_report_flow(self):
+        """``PIPECAT_HUB_RERANKER_ENABLED=0`` is an operator choice, not an incident.
+
+        Regression guard: if this clause is ever dropped, an operator who
+        deliberately disabled the reranker would get funnelled into filing a
+        bug report for expected behaviour.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "config_disabled" in _SERVER_INSTRUCTIONS
+        assert "not treat it as an incident" in _SERVER_INSTRUCTIONS
+
+    def test_instructions_are_wired_into_the_server(self):
+        """The constant must actually reach the MCP ``initialize`` response."""
+        import inspect
+
+        from pipecat_context_hub.server.main import create_server
+
+        source = inspect.getsource(create_server)
+        assert "instructions=_SERVER_INSTRUCTIONS" in source
+
+
+class TestSupportLinks:
+    """Pin ``shared/support_links.py`` as the single source of truth for the
+    two GitHub issue-template URLs.
+
+    ``TestServerInstructions`` only pins that ``_SERVER_INSTRUCTIONS``
+    interpolates from these constants; it would pass even if a typo landed
+    in ``support_links.py`` itself, since the test and the source would
+    agree with each other trivially. The literal-value assertions below are
+    what actually catch that typo.
+    """
+
+    def test_retrieval_quality_issue_url_literal_value(self):
+        from pipecat_context_hub.shared.support_links import (
+            RETRIEVAL_QUALITY_ISSUE_URL,
+        )
+
+        assert RETRIEVAL_QUALITY_ISSUE_URL == (
+            "https://github.com/pipecat-ai/pipecat-context-hub/issues/new"
+            "?template=retrieval-quality.yml"
+        )
+
+    def test_bug_report_issue_url_literal_value(self):
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        assert BUG_REPORT_ISSUE_URL == (
+            "https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml"
+        )
+
+    def test_issue_template_files_exist(self):
+        """Each constant's ``template=`` value names a real workflow file.
+
+        Cheap cross-check against already-shipped behaviour: if either
+        template is ever renamed on the GitHub side without updating this
+        module, the constant would silently point at a 404.
+        """
+        import re
+        from pathlib import Path
+        from urllib.parse import parse_qs, urlparse
+
+        from pipecat_context_hub.shared.support_links import (
+            BUG_REPORT_ISSUE_URL,
+            RETRIEVAL_QUALITY_ISSUE_URL,
+        )
+
+        repo_root = Path(__file__).resolve().parents[2]
+        template_dir = repo_root / ".github" / "ISSUE_TEMPLATE"
+
+        for url in (RETRIEVAL_QUALITY_ISSUE_URL, BUG_REPORT_ISSUE_URL):
+            template = parse_qs(urlparse(url).query)["template"][0]
+            assert re.fullmatch(r"[\w.-]+\.ya?ml", template), template
+            assert (template_dir / template).is_file(), f"{template} not found in {template_dir}"
+
+    def test_no_stray_issue_template_literals(self):
+        """``"issues/new?template="`` may appear only in ``support_links.py``.
+
+        Guards the "one source of truth" requirement structurally: a new
+        hardcoded copy of either URL anywhere else under ``src/`` fails this
+        test, rather than relying on a manual grep during review. (A
+        known, accepted exception outside ``src/`` is ``docs/README.md`` —
+        markdown can't import Python constants — which this test does not
+        and should not cover.)
+        """
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        src_root = repo_root / "src"
+        needle = "issues/new?template="
+        support_links_path = src_root / "pipecat_context_hub" / "shared" / "support_links.py"
+
+        offenders = []
+        for path in src_root.rglob("*.py"):
+            if path == support_links_path:
+                continue
+            if needle in path.read_text(encoding="utf-8"):
+                offenders.append(str(path.relative_to(repo_root)))
+
+        assert offenders == [], (
+            f"found stray '{needle}' literal(s) outside support_links.py: {offenders}"
+        )
+
+    def test_consumers_import_and_reference_support_links_symbols(self):
+        """Structural guard, separate from the stray-literal scan above.
+
+        The stray-literal scan only catches a URL re-typed verbatim; it
+        cannot catch one rebuilt from fragments (e.g. string concatenation
+        or an f-string assembled from a base URL + template name), which
+        would contain no `"issues/new?template="` substring to grep for.
+        This test instead parses each consumer's AST and asserts (a) it
+        imports the required symbol(s) from `shared.support_links`, and
+        (b) each imported symbol is actually referenced as a `Name` load
+        somewhere else in the module — not merely imported and unused,
+        which would mean nothing built from it is really shared.
+
+        """
+        import ast
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        src_root = repo_root / "src" / "pipecat_context_hub"
+
+        consumers = {
+            "server/main.py": {"RETRIEVAL_QUALITY_ISSUE_URL", "BUG_REPORT_ISSUE_URL"},
+            "cli_query.py": {"RETRIEVAL_QUALITY_ISSUE_URL", "bug_report_hint"},
+            "cli.py": {"bug_report_hint"},
+        }
+
+        for rel_path, required_symbols in consumers.items():
+            path = src_root / rel_path
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+            imported_symbols: set[str] = set()
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "pipecat_context_hub.shared.support_links"
+                ):
+                    imported_symbols.update(alias.asname or alias.name for alias in node.names)
+
+            missing_imports = required_symbols - imported_symbols
+            assert not missing_imports, (
+                f"{rel_path} does not import {missing_imports} from "
+                "pipecat_context_hub.shared.support_links"
+            )
+
+            # Every Name node in the module, minus the import statement's own
+            # alias bindings, so an imported-but-never-used symbol doesn't
+            # count as "referenced" merely by appearing in its own import.
+            referenced_names = {
+                node.id
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            }
+            unreferenced = required_symbols - referenced_names
+            assert not unreferenced, (
+                f"{rel_path} imports {unreferenced} from support_links but never "
+                "references them — nothing in this file actually shares the constant"
+            )
+
+    def test_cli_imports_shared_bug_report_hint_helper(self):
+        """``cli.py`` must not carry its own copy of ``bug_report_hint()``.
+
+        Companion to the consumers check above: that check pins that cli.py
+        imports and uses ``bug_report_hint`` from ``shared.support_links``.
+        This test additionally guards against the specific regression that
+        caused this helper to move here in the first place — cli.py
+        reaching into cli_query.py's private surface instead of importing
+        the shared public helper, or cli.py redefining its own local copy
+        that would shadow the shared one.
+        """
+        import ast
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        cli_path = repo_root / "src" / "pipecat_context_hub" / "cli.py"
+        tree = ast.parse(cli_path.read_text(encoding="utf-8"), filename=str(cli_path))
+
+        imported_from_cli_query: set[str] = set()
+        local_defs: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "pipecat_context_hub.cli_query":
+                imported_from_cli_query.update(alias.asname or alias.name for alias in node.names)
+            if isinstance(node, ast.FunctionDef):
+                local_defs.add(node.name)
+
+        assert "bug_report_hint" not in imported_from_cli_query, (
+            "cli.py must not import bug_report_hint from cli_query — that module's "
+            "private surface is not a public API; import from shared.support_links instead"
+        )
+        assert "bug_report_hint" not in local_defs, (
+            "cli.py must not redefine bug_report_hint locally — it shadows the "
+            "imported shared helper"
         )
 
 

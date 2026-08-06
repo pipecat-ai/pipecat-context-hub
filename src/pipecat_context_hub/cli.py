@@ -23,12 +23,14 @@ from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+from pipecat_context_hub.shared.support_links import bug_report_hint
 
 # Back-compat alias: tests/unit/test_cli.py imports the underscored name and
 # the banner call sites below reference it. The redaction helper itself now
 # lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
 # import cycle); this re-export keeps that suite green and the call sites stable.
 _redact_home = redact_home
+
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
@@ -270,7 +272,7 @@ def serve(ctx: click.Context) -> None:
                 logger.exception("Failed to close partially-opened index store")
         # exc.__str__ embeds the absolute chroma_path; redact it for front-door
         # parity with the cli_query one-shot error sites.
-        logger.error("%s", redact_home_in_text(str(exc)))
+        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         # IndexStore.__init__ opens two backends (Chroma + SQLite) without
@@ -282,9 +284,10 @@ def serve(ctx: click.Context) -> None:
                 logger.exception("Failed to close partially-opened index store")
         logger.error(
             "Failed to open index at %s: %s. "
-            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild.",
+            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild. %s",
             _redact_home(config.storage.data_dir),
             redact_home_in_text(str(exc)),
+            bug_report_hint(),
         )
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
 
@@ -292,8 +295,9 @@ def serve(ctx: click.Context) -> None:
         logger.error(
             "Index at %s is empty (0 records). "
             "MCP clients would hang waiting for results. "
-            "Run 'uv run pipecat-context-hub refresh' before 'serve'.",
+            "Run 'uv run pipecat-context-hub refresh' before 'serve'. %s",
             _redact_home(config.storage.data_dir),
+            bug_report_hint(),
         )
         index_store.close()
         raise SystemExit(_EXIT_INDEX_UNREADY)
@@ -331,7 +335,7 @@ def serve(ctx: click.Context) -> None:
         # get_hub_status even on a typo'd env var) is shared with the one-shot
         # CLI via probe_reranker so the two front doors cannot drift on which
         # reasons disable the reranker.
-        from pipecat_context_hub.shared.reranker import probe_reranker
+        from pipecat_context_hub.shared.reranker import probe_reranker, runtime_reranker_reason
         from pipecat_context_hub.shared.types import RerankerStatus
 
         cross_encoder: CrossEncoderReranker | None = None
@@ -361,7 +365,8 @@ def serve(ctx: click.Context) -> None:
                     "Run 'pipecat-context-hub refresh' to pre-download, or set "
                     "PIPECAT_HUB_RERANKER_MODEL to a smaller cached model "
                     "(e.g. cross-encoder/ms-marco-TinyBERT-L-2-v2). "
-                    "If this path is unexpected, check HF_HOME / HUGGINGFACE_HUB_CACHE."
+                    "If this path is unexpected, check HF_HOME / HUGGINGFACE_HUB_CACHE. "
+                    f"{bug_report_hint()}"
                 )
             logger.warning(
                 "Reranker disabled at startup: reason=%s configured_model=%s — %s",
@@ -374,24 +379,17 @@ def serve(ctx: click.Context) -> None:
 
         def _reranker_status() -> RerankerStatus:
             """Compute live reranker status at get_hub_status query time."""
-            if cross_encoder is None:
-                return RerankerStatus(
-                    enabled=False,
-                    configured_model=requested_model,
-                    disabled_reason=startup_disabled_reason,
-                )
-            if cross_encoder.enabled:
+            reason = runtime_reranker_reason(cross_encoder, startup_disabled_reason)
+            if reason is None:
                 return RerankerStatus(
                     enabled=True,
                     model=active_model,
                     configured_model=requested_model,
                 )
-            # Reranker was constructed but its .enabled flipped to False —
-            # first model-load attempt failed at runtime.
             return RerankerStatus(
                 enabled=False,
                 configured_model=requested_model,
-                disabled_reason="load_failed",
+                disabled_reason=reason,
             )
 
         retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
@@ -526,7 +524,7 @@ def refresh(
         # refresh against a stale 0.6 index — point the user at the rebuild.
         # exc.__str__ embeds the absolute chroma_path; redact for front-door
         # parity with the serve / cli_query error sites.
-        logger.error("%s", redact_home_in_text(str(exc)))
+        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)

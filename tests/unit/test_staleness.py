@@ -98,6 +98,24 @@ class TestAnnotateResponse:
         raw = '{"hits": []}'
         assert annotate_response(raw, store) == raw
 
+    def test_no_parsed_shortcut_parameter(self):
+        """``annotate_response`` takes exactly ``(result_json, index_store)``.
+
+        A prior revision accepted an optional ``parsed=`` dict so the CLI
+        could skip a second ``json.loads`` of a string it had already
+        decoded for its own retrieval-quality hint. That let a shared module
+        used by both front doors carry a CLI-only perf knob, expressible in
+        a way that could silently diverge from ``result_json``. Removed:
+        the CLI now decodes once in ``_invoke`` for its own purposes and
+        calls this function the same way MCP does, on the raw string —
+        the rare extra parse (only when the index actually is stale) is
+        cheaper than the API surface it bought.
+        """
+        import inspect
+
+        params = inspect.signature(annotate_response).parameters
+        assert list(params) == ["result_json", "index_store"]
+
 
 class TestBothFrontDoors:
     """The footer reaches responses on the CLI and MCP dispatch paths alike."""
@@ -140,7 +158,7 @@ class TestBothFrontDoors:
             server = server_main.create_server(retriever, store)
             # call_tool is registered via decorator; reach it through the
             # server's request handler for CallToolRequest.
-            import mcp.types as types
+            from mcp import types
 
             req = types.CallToolRequest(
                 method="tools/call",

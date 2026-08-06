@@ -7,7 +7,68 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **CLI report-hint parity with MCP.** The one-shot CLI (`cli_query.py`,
+  `cli.py`) now gives the same "where to report this" nudge on stderr that
+  the MCP `initialize` instructions already give a connecting agent:
+  a remediation-first retrieval-quality hint when a semantic command
+  (`search-docs`, `search-examples`, `search-api`, `get-code-snippet`)
+  returns `low_confidence` or an empty result collection; a bug-report hint
+  appended to all three `_EXIT_INDEX_UNREADY` exits in `cli_query.py` and
+  `cli.py`'s `serve` startup and `refresh` paths; and a remediation-first
+  warning (naming `refresh` before the bug-report URL) when a semantic
+  command or `serve` startup finds the reranker model uncached
+  (`reranker_disabled_reason == "not_cached"`). Lookup commands
+  (`check-deprecation`, `get-doc`, `get-example`, `status`) are unaffected —
+  they are direct lookups, not ranked retrieval. Stdout JSON and exit codes
+  are unchanged; all new text is stderr-only. The two GitHub issue-template
+  URLs now live in a single `shared/support_links.py` module that both the
+  MCP instructions and the CLI import, so a template rename or repo move
+  can no longer update one copy and silently leave the other stale. The MCP
+  `initialize` instructions' degraded-hub clause now carries the same
+  remediation-first gap-closer: for `reranker_disabled_reason ==
+  "not_cached"` it tells the connecting agent to suggest
+  `pipecat-context-hub refresh` before the bug-report URL, matching the
+  CLI's wording — and, since a running `serve` process resolves its
+  reranker state once at startup and does not re-probe the model cache
+  while running, also tells the agent that the underlying server process
+  must actually be restarted after `refresh` completes before re-checking
+  `get_hub_status` — a client-side reconnect that reuses the same running
+  process will not help — since re-checking on the same connection, or on
+  such a reconnect, still reports `not_cached`. For
+  non-zero boot exits, which occur before MCP
+  initialization and make `get_hub_status` unavailable, the instructions now
+  tell agents to follow the remediation from startup stderr first, reconnect,
+  and request `get_hub_status` only after initialization succeeds. This covers
+  the existing `refresh` recovery for empty indexes and
+  `refresh --force --reset-index` recovery for unreadable or incompatible
+  indexes; unresolved failures still route to the bug report. New
+  `tests/integration/test_report_hint_e2e.py` guards both hints end to end
+  against real subprocesses (a real `serve` stdio `initialize` round-trip
+  and a real CLI run against a genuinely empty index) rather than mocked
+  handler responses. The retrieval-quality hint's retry clause is
+  per-command: `get-code-snippet` is told to retry with a different
+  `--symbol`/`--intent`/`--path` rather than a `--limit` flag it doesn't
+  have, while the three search commands still name `--limit`.
+
 ### Fixed
+- **The CLI now warns when a *cached* reranker model fails to load at runtime, instead of
+  degrading silently.** `_maybe_warn_reranker_not_cached` only ever saw the pre-dispatch
+  reranker probe, so a model that looked cached and enabled but then failed to load its
+  ONNX weights during the query itself (`serve`'s `load_failed` condition) went unreported
+  by the one-shot CLI — a resulting low-confidence result was mis-routed to the
+  retrieval-quality tracker instead of the bug tracker, or no hint fired at all. A new
+  `_maybe_warn_reranker_load_failed` reads the live `CrossEncoderReranker` instance after
+  dispatch and fires a bug-report hint (not a `refresh` hint, since the model is cached),
+  suppressing only the `low_confidence` half of the retrieval-quality hint the same way the
+  `not_cached` warning already does.
+- **The MCP `not_cached` remediation no longer says "restart or reconnect" as if the two
+  were interchangeable.** Some MCP hosts keep the underlying `pipecat-context-hub` process
+  alive across a client-side reconnect that only re-establishes the logical session — in
+  that case `get_hub_status` still reported `not_cached` after the "reconnect" the
+  instructions suggested, leaving the agent stuck in the same loop the guidance exists to
+  prevent. The instructions now name restarting the underlying process as the fix and
+  explicitly say a same-process reconnect will not help.
 - **`install` now registers an MCP server the client can actually start.** It recorded the
   bare console-script name `pipecat-context-hub` whenever one was on `PATH`, which asks the
   client to resolve it later, in a process this command cannot see — commonly one launched
@@ -53,6 +114,31 @@ This project uses [Semantic Versioning](https://semver.org/).
   break first-time installs whenever a client's error wording didn't match a hardcoded
   string) and no longer crashes on a non-dict Codex transport value or a stored
   registration with an explicit `"args": null`.
+
+- **`redact_home_in_text` no longer corrupts report-hint URLs under a degenerate
+  `HOME=/`.** In root/minimal-container environments where `HOME` is exactly the path
+  separator, `home + os.sep` collapsed to a bare `"//"`, which also occurs inside every
+  `https://` URL — including the report-hint URLs this function's callers append. A naive
+  `text.replace("//", "~/")` mangled `"https://"` into `"https:~/"`. This degenerate home is
+  now treated as nothing-to-redact instead.
+
+- **The CLI's reranker `not_cached` warning no longer co-fires with unrelated errors or a
+  retrieval-quality hint that doesn't apply.** It used to fire from inside `_query_runtime`
+  immediately after resolving `reranker_status`, before dispatch and therefore before input
+  validation — a semantic command with bad arguments (a pydantic `ValidationError`, exit 1)
+  could print the reranker warning right next to an unrelated validation error. The warning
+  now fires only after a successful dispatch, alongside the retrieval-quality hint, and the
+  two no longer co-fire uncoordinated: when the reranker warning already explains a
+  low-confidence result, the retrieval-quality hint no longer pairs a second, mis-routed
+  nudge on top of it.
+
+- **The CLI's retrieval-quality hint no longer goes silent on a zero-hit query just because
+  the reranker is uncached.** `_maybe_warn_poor_results`'s `reranker_uncached` gate used to
+  suppress both the `low_confidence` and `empty_results` halves of the hint together. An
+  uncached reranker can only affect *ranking*, not whether the candidate set came back
+  empty, so a cold-cache operator whose query matched nothing saw only the "reranking
+  disabled" warning and no signal that their query itself found no hits. The gate now only
+  suppresses the `low_confidence`-driven half.
 
 ### Security
 - Bumped `cryptography` 49.0.0 → 50.0.0 (CVE-2026-69247) and `gitpython` 3.1.56 → 3.1.57

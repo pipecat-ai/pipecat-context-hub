@@ -25,3 +25,4 @@ artifacts/
 .conduct/
 .python-version
 /.gauntlet
+/.review-plan

@@ -56,15 +56,29 @@ harness gets re-checked against the exact query that once broke.
     qualifier to rank above Python hits, but should improve as retrieval
     quality improves (cross-encoder, corpus weighting). If the bare query
     starts passing, that's a positive signal.
-18. `search_api("PipecatClientOptions")` — returns TS interface from
-    `pipecat-ai/pipecat-client-web` with `language="typescript"` metadata
+18. `search_api("PipecatClientOptions")` — a bare query may rank
+    `PipecatClientOptions`-referencing method/const chunks (e.g.
+    `MediaManager.setClientOptions`, `Transport.initialize`) ahead of the
+    interface declaration itself — expected per the bare-query note below,
+    not a blocker. Use `chunk_type="class_overview"` (test 26) for the
+    reliable check that the TS interface from `pipecat-ai/pipecat-client-web`
+    is indexed. (Note: `search_api` hits don't carry a `language` field —
+    that's only on `get_code_snippet`/`get_example` results.)
 19. `search_api("SmallWebRTCTransport")` — returns TS hits from
     `pipecat-ai/pipecat-client-web-transports` or `pipecat-ai/voice-ui-kit`
 20. `search_docs("pipecat-client-ios")` — returns at least one hit from an
     iOS SDK repo (README fallback for zero-code-chunk repos)
-21. `search_api("PipecatClientProvider")` — returns TS const export from
-    `pipecat-ai/pipecat-client-web` with full arrow-function body (not
-    truncated at the parameter list)
+21. `search_api("PipecatClientProvider")` — a bare query may rank other
+    files that merely *import* `PipecatClientProvider` (e.g.
+    `PipecatAppBase`, Ladle story `Provider` consts) ahead of the actual
+    definition — same bare-query ranking behavior as test 18, extended to
+    `chunk_type="function"` (const/arrow-component exports), not previously
+    called out below. For the reliable check that the const export from
+    `pipecat-ai/pipecat-client-web` is indexed with its full arrow-function
+    body (not truncated at the parameter list), use
+    `search_api("PipecatClientProvider", chunk_type="function")` or
+    `get_code_snippet(symbol="PipecatClientProvider")` — both return it as
+    the top/only hit.
 22. `search_api("SmallWebRTCTransport", class_name="SmallWebRTCTransport")` —
     returns TS class from `pipecat-ai/pipecat-client-web-transports` (verifies
     nested-package TS detection for `pipecat-prebuilt`, formerly
@@ -95,7 +109,15 @@ without `chunk_type` or `class_name` filters): after Phase 2 method
 extraction, method/getter chunks may rank ahead of the class declaration.
 This is expected — don't treat "class is not top result" as a hard blocker.
 Use `chunk_type="class_overview"` (tests 25-26) when class-level ranking
-matters.
+matters. The same behavior extends to const/arrow-function exports
+(`chunk_type="function"`, test 21): files that merely *reference* or
+*import* a symbol can outrank its actual definition. When a bare query's
+top hit looks wrong, don't conclude the symbol is unindexed — retry with
+the matching `chunk_type` filter or `get_code_snippet(symbol=...)` before
+treating it as a regression (frozen from a live false-positive during the
+2026-08-06 report-hint parity smoke run, where tests 18/21 were initially
+misdiagnosed as ranking misses before the filtered/symbol-lookup form
+confirmed both were indexed correctly).
 
 30. `search_examples("TTS pipeline", pipecat_version="0.0.95", domain="backend")`
     — all hits have `version_compatibility: "newer_required"` (framework
@@ -287,6 +309,47 @@ the indexed pipecat version; re-verify against the current registry if they drif
     passing `section=<title>` should narrow the page to that section's content
     without returning `null` or the full page.
 
+50. **MCP `initialize` instructions carry the self-report guidance.** Reconnect
+    an MCP client to `serve` and inspect the `initialize` response's
+    `instructions` field: it must still tell the connecting agent to suggest
+    filing at `.../issues/new?template=retrieval-quality.yml` on persistent
+    `low_confidence`/zero-hit results, and at
+    `.../issues/new?template=bug-report.yml` when `get_hub_status` reports
+    `reranker_disabled_reason` of `not_cached` or `load_failed` (explicitly
+    **not** for `config_disabled`, a supported operator choice). For
+    `not_cached` specifically, the instructions tell the agent to suggest
+    `pipecat-context-hub refresh` (self-service — downloads the model)
+    *before* the bug-report URL, mirroring the CLI's remediation-first
+    wording — and, since this `serve` process resolved its reranker state
+    once at startup and does not re-probe the model cache while running,
+    the instructions also tell the agent that the underlying server process
+    must actually be restarted after `refresh` completes before re-checking
+    `get_hub_status` — a client-side reconnect that reuses the same running
+    process will not help (Codex adversarial review round 6: a bare
+    "restart or reconnect" pairing was ambiguous, since some MCP hosts keep
+    the process alive across a logical reconnect); re-checking on the same
+    connection, or on a reconnect that didn't restart the process, still
+    reports `not_cached`. For `load_failed`, the initialized client shares the full
+    `get_hub_status` response and startup logs before suggesting a bug report.
+    A non-zero boot exit happens before MCP initialization, so the instructions
+    instead tell the agent to follow the remediation in startup stderr first
+    (`refresh` for an empty index or `refresh --force --reset-index` for an
+    unreadable/incompatible index), reconnect, and request `get_hub_status`
+    only after initialization succeeds. This is
+    advisory text for the connecting agent, not a code path triggered by an
+    exception — it only reaches clients that speak MCP (`serve`). The
+    one-shot CLI (`cli_query.py`, `cli.py`) has no agent-in-the-loop to hand
+    advisory text to, so it gets the equivalent guidance directly on stderr
+    instead, sourced from the same `shared/support_links.py` constants —
+    see CLI query smoke items 5 and 9 below. Unit-side counterpart:
+    `tests/unit/test_server.py::TestServerInstructions`. E2e counterpart
+    (real `serve` subprocess, real stdio `initialize` round-trip, no
+    mocks): `tests/integration/test_report_hint_e2e.py::
+    test_mcp_initialize_delivers_report_hint_instructions` — guards against
+    a regression where the source-level wiring (`instructions=...` passed
+    to `create_server`) stays intact but delivery on the wire breaks (e.g.
+    an MCP SDK kwarg rename).
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
@@ -305,7 +368,13 @@ live local index:
 4. `uv run pipecat-context-hub get-doc` (no flags) — exit 1, one-line
    validation message on stderr, empty stdout
 5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —
-   exit 2, stderr says to run `refresh`
+   exit 2, stderr says to run `refresh`, and (this is an empty-index first
+   run, the most routine of the three `_EXIT_INDEX_UNREADY` paths) also
+   carries the "if this persists after trying that, file a bug report at
+   .../issues/new?template=bug-report.yml" hint. E2e counterpart (real CLI
+   subprocess against a genuinely empty on-disk index, no mocks):
+   `tests/integration/test_report_hint_e2e.py::
+   test_cli_empty_index_delivers_bug_report_hint_on_stderr`.
 6a. **Pipecat CLI bridge** (when `plugin.py`, the command set, or `pyproject.toml`
    entry points change). Unit tests mount the bridge in-process; this confirms the
    real entry-point discovery path, which they cannot:
@@ -334,6 +403,33 @@ live local index:
    and was unaffected, so only the CLI front door exposed it — run this from the
    CLI, not through MCP. Unit-side counterpart:
    `tests/integration/test_concurrent_model_load.py`.
+9. **Reranker `not_cached` stderr warning** — run
+   `PIPECAT_HUB_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-12-v2 uv run
+   pipecat-context-hub search-docs "TTS"` (an allowlisted model that is
+   typically not yet in the local HF cache; do **not** point `HF_HOME` at an
+   empty directory instead — `services/embedding.py` resolves the embedding
+   model from the same cache and `quiet_model_loading()` sets
+   `HF_HUB_OFFLINE=1`, so an empty `HF_HOME` fails the command outright
+   rather than reproducing this state). Confirm stdout is still valid JSON
+   with no report-hint URL in it, and stderr carries a remediation-first
+   warning naming `refresh` before
+   `.../issues/new?template=bug-report.yml`. Unit-side counterpart:
+   the `not_cached` parametrized tests in `tests/unit/test_cli_query.py`.
+10. **Retrieval-quality stderr hint is command-aware** — run
+    `uv run pipecat-context-hub get-code-snippet --symbol NonexistentSymbolXYZ123`
+    (a symbol unlikely to resolve cleanly). Stdout stays valid JSON (an empty
+    `snippets` list, or a non-empty one the handler itself flagged
+    `low_confidence`) with no report-hint URL in it; stderr names
+    `--symbol/--intent/--path` (never `--limit`, a flag `get-code-snippet`
+    doesn't have) before
+    `.../issues/new?template=retrieval-quality.yml`. Contrast with
+    `uv run pipecat-context-hub search-docs "asdkjhaskjdhaksjdh nonsense query xyz123"`,
+    whose hint does name `--limit`, since that command has one. Regression
+    canary for a fix (`9b8508d`) where the hint's wording was a single fixed
+    phrase naming a flag not every semantic command carries. Unit-side
+    counterpart: `_SEMANTIC_META`'s AST enrollment guard
+    (`test_semantic_meta_matches_needs_embeddings_call_sites`) and
+    `TestRetrievalQualityHint` in `tests/unit/test_cli_query.py`.
 
 ## Upstream Drift Check
 

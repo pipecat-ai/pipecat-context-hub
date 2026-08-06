@@ -56,7 +56,14 @@ def redact_home_in_text(text: str) -> str:
     """
     try:
         home = str(Path.home())
-        if not home:
+        # A degenerate home of exactly the separator (e.g. `HOME=/`, seen in
+        # some minimal/root containers) makes `home + os.sep` a bare `"//"`,
+        # which occurs *inside* every `https://` URL — including the
+        # report-hint URLs this function's own callers append. Redacting it
+        # would silently mangle those URLs (`https://` -> `https:~/`) instead
+        # of a real path, so treat it as nothing-to-redact rather than
+        # matching `os.sep` doubled.
+        if not home or home == os.sep:
             return text
         # Replace `home + sep` (a path continuing past home — the common case)
         # with `~/`. Anchoring on the trailing separator avoids over-matching a

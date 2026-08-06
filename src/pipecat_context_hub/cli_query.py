@@ -34,15 +34,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
 from pipecat_context_hub.shared.paths import redact_home_in_text
+from pipecat_context_hub.shared.reranker import runtime_reranker_reason
+from pipecat_context_hub.shared.support_links import (
+    RETRIEVAL_QUALITY_ISSUE_URL,
+    bug_report_hint,
+)
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -51,10 +57,182 @@ if TYPE_CHECKING:
     from pipecat_context_hub.shared.config import HubConfig
     from pipecat_context_hub.shared.types import RerankerStatus
 
+
+def _echo_stderr_warning(text: str) -> None:
+    """Redact home paths and write a stderr warning/error hint.
+
+    Single choke point for the "redact, then echo to stderr" pattern shared
+    by every warning/error hint in this module, so a future formatting
+    change (a common prefix, ``click.secho`` coloring, a log-level tag)
+    lands once instead of drifting across call sites.
+    """
+    click.echo(redact_home_in_text(text), err=True)
+
+
 # Exit code for a missing/empty/unreadable local index. Keep in sync with
 # ``cli._EXIT_INDEX_UNREADY`` (enforced by tests/unit/test_cli_query.py).
 _EXIT_INDEX_UNREADY = 2
 _EXIT_BAD_INPUT = 1
+
+
+class _SemanticMeta(NamedTuple):
+    """Per-semantic-command constants for the poor-results stderr hint.
+
+    ``result_key`` is the JSON output field holding the result list, used
+    only to detect an empty result collection. ``retry_hint`` is the
+    flag-specific retry suggestion for that command — ``get_code_snippet``
+    has no ``--limit`` flag (it takes ``--max-lines`` and three mutually
+    exclusive lookup modes: ``--symbol``, ``--intent``, or
+    ``--path``/``--line-start``), so the generic "larger --limit" advice
+    would name a flag that command doesn't have.
+    """
+
+    result_key: str
+    retry_hint: str
+
+
+# Must enroll exactly the tools invoked with ``needs_embeddings=True`` — a
+# structural AST test (test_semantic_meta_matches_needs_embeddings_call_sites)
+# guards that a future semantic command can't gain the reranker warning
+# without also gaining this entry. Combining both fields into one NamedTuple
+# (rather than two parallel dicts) makes that guard cover both fields by
+# construction — there is no second dict that can silently fall out of sync.
+_SEMANTIC_META: dict[str, _SemanticMeta] = {
+    "search_docs": _SemanticMeta("hits", "fewer filters or a larger --limit"),
+    "search_examples": _SemanticMeta("hits", "fewer filters or a larger --limit"),
+    "search_api": _SemanticMeta("hits", "fewer filters or a larger --limit"),
+    "get_code_snippet": _SemanticMeta(
+        "snippets", "a different --symbol/--intent/--path, or fewer filters"
+    ),
+}
+
+
+def _maybe_warn_poor_results(
+    tool: str,
+    needs_embeddings: bool,
+    payload: dict[str, Any] | None,
+    *,
+    reranker_uncached: bool = False,
+) -> None:
+    """Emit a retrieval-quality stderr hint for low-confidence/empty semantic results.
+
+    Pure decide-and-emit: ``_invoke`` decodes the handler's JSON once and
+    passes the result through here, so this function never parses JSON and
+    never returns a value for a caller to reuse — it only inspects
+    ``payload`` and writes to stderr. Tolerates a payload without
+    ``evidence``/result-list keys by treating it as "no hint" — lightweight
+    handler mocks in tests don't need to carry every field. ``payload`` is
+    ``None`` whenever ``_invoke`` couldn't decode the handler's result to a
+    dict, or gates it out before calling this at all — either way, no hint.
+
+    ``reranker_uncached`` is set when *either* ``_maybe_warn_reranker_not_cached``
+    or ``_maybe_warn_reranker_load_failed`` already fired for this invocation
+    (the caller ORs the two — they're mutually exclusive by construction, so
+    at most one ever does): an uncached or a load-failed reranker is a known,
+    already-explained cause of degraded *ranking* with its own remediation
+    (``refresh``), so also nudging the operator toward the
+    retrieval-quality tracker for a ``low_confidence`` result would mis-route
+    a known install/config state into the wrong issue tracker. It does
+    *not* suppress the ``empty_results`` half of this hint: a missing or
+    load-failed reranker never empties the candidate set (it can only
+    re-rank whatever RRF already returned), so a query that matched nothing
+    is a genuine retrieval-quality signal regardless of reranker state.
+    """
+    if not needs_embeddings or payload is None:
+        return
+    meta = _SEMANTIC_META.get(tool)
+    if meta is None:
+        return
+    evidence = payload.get("evidence")
+    low_confidence = (
+        isinstance(evidence, dict)
+        and evidence.get("low_confidence") is True
+        and not reranker_uncached
+    )
+    results_list = payload.get(meta.result_key)
+    empty_results = isinstance(results_list, list) and len(results_list) == 0
+    if not (low_confidence or empty_results):
+        return
+    _echo_stderr_warning(
+        f"Warning: results were poor or missing. Retry with {meta.retry_hint}; "
+        f"if poor or missing results persist, file at {RETRIEVAL_QUALITY_ISSUE_URL}."
+    )
+
+
+def _maybe_warn_reranker_not_cached(
+    needs_embeddings: bool, reranker_status: RerankerStatus
+) -> bool:
+    """Warn when a semantic command ran with the reranker model uncached.
+
+    Gated on the literal ``needs_embeddings`` flag (not a command-name list)
+    so a future semantic command inherits the warning automatically. Only
+    ``"not_cached"`` is handled: ``"config_disabled"`` is a deliberate
+    operator choice, not an incident. ``probe_reranker`` never *returns*
+    ``"load_failed"`` to the CLI — that's a narrower claim than "the CLI
+    cannot hit this failure mode": ``reranker_status`` is captured once,
+    before dispatch, so a cross-encoder that fails to load its ONNX weights
+    lazily during the query itself (``CrossEncoderReranker._load_model``
+    catching the exception and flipping ``_available = False``) can't be
+    observed from ``reranker_status`` alone. See
+    ``_maybe_warn_reranker_load_failed`` (below), which detects that case
+    post-dispatch from the live ``CrossEncoderReranker`` instance instead.
+
+    Returns whether the warning fired, so a caller can avoid pairing it with
+    an unrelated retrieval-quality hint (see ``_maybe_warn_poor_results``'s
+    ``reranker_uncached`` parameter) — a known, already-explained degraded
+    state shouldn't also get routed to the retrieval-quality tracker.
+    """
+    if not needs_embeddings or reranker_status.disabled_reason != "not_cached":
+        return False
+    _echo_stderr_warning(
+        "Warning: reranking disabled (model not cached) — run "
+        f"'pipecat-context-hub refresh' to download it. {bug_report_hint()}"
+    )
+    return True
+
+
+def _maybe_warn_reranker_load_failed(
+    needs_embeddings: bool, cross_encoder: CrossEncoderReranker | None
+) -> bool:
+    """Warn when a *cached* reranker model failed to load during this query.
+
+    Complements ``_maybe_warn_reranker_not_cached``, which can only see the
+    pre-dispatch ``reranker_status`` and therefore structurally cannot
+    detect this case (see its docstring). This function instead reads the
+    live ``CrossEncoderReranker`` instance *after* dispatch: ``_resolve_reranker``
+    only constructs one when the pre-dispatch probe found the model enabled
+    (not ``not_cached``/``config_disabled``), so ``cross_encoder`` is
+    non-``None`` here exactly when the model looked cached and configured.
+    ``HybridRetriever`` checks ``cross_encoder.enabled`` before each rerank
+    attempt and only then triggers the lazy ``_load_model()`` call; if that
+    load raises, ``_load_model`` catches the exception, logs a warning, and
+    flips ``_available`` (and therefore ``.enabled``) to ``False`` — this is
+    exactly the failure mode ``serve``'s ``_reranker_status()`` closure
+    labels ``load_failed``. Checking ``cross_encoder.enabled`` again after
+    dispatch has run therefore reveals a load that failed *during this
+    query*, which no pre-dispatch status snapshot could carry.
+
+    This check is delegated to the shared ``runtime_reranker_reason`` (also
+    used by ``serve``'s ``_reranker_status()``), so the two front doors cannot
+    drift on how ``load_failed`` is derived.
+
+    Returns whether the warning fired, so a caller can suppress the
+    unrelated retrieval-quality hint the same way
+    ``_maybe_warn_reranker_not_cached`` does — a load failure is a known,
+    already-explained cause of degraded ranking, not a retrieval-quality
+    signal about the query itself.
+    """
+    if not needs_embeddings:
+        return False
+    if runtime_reranker_reason(cross_encoder, None) != "load_failed":
+        return False
+    _echo_stderr_warning(
+        "Warning: reranking disabled (the cached model failed to load during "
+        "this query). Run 'pipecat-context-hub refresh' to re-download it; see "
+        f"stderr warnings above for details. {bug_report_hint()}"
+    )
+    return True
+
 
 # MCP tool name -> CLI command name. The drift guard in
 # tests/unit/test_cli_query.py asserts this covers every registered MCP tool,
@@ -78,6 +256,12 @@ class _QueryRuntime:
     retriever: HybridRetriever
     index_store: IndexStore
     reranker_status: RerankerStatus
+    # The live CrossEncoderReranker instance, or None when ``reranker_status``
+    # was already disabled pre-dispatch (``not_cached``/``config_disabled``) or
+    # ``needs_embeddings`` is False. Kept alongside ``reranker_status`` so a
+    # caller can check ``.enabled`` *after* dispatch — see
+    # ``_maybe_warn_reranker_load_failed``.
+    cross_encoder: CrossEncoderReranker | None
 
 
 def _quiet_query_logging(ctx: click.Context) -> None:
@@ -153,7 +337,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
                 index_store.close()
         # exc.__str__ embeds the absolute chroma_path, so redact the whole
         # composed message (not just a data_dir token, which is absent here).
-        click.echo(redact_home_in_text(f"Error: {exc}"), err=True)
+        _echo_stderr_warning(f"Error: {exc}\n{bug_report_hint()}")
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     except Exception as exc:
         if index_store is not None:
@@ -162,24 +346,20 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         # Both the data_dir token and the {exc} rendering (e.g. a
         # FileNotFoundError carrying .../chroma.sqlite3) can leak an absolute
         # path, so redact the full formatted string, not a single argument.
-        click.echo(
-            redact_home_in_text(
-                f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
-                "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild."
-            ),
-            err=True,
+        _echo_stderr_warning(
+            f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
+            "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
+            f"{bug_report_hint()}"
         )
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
 
     try:
         if stats.get("total", 0) == 0:
-            click.echo(
-                redact_home_in_text(
-                    f"Error: the index at {config.storage.data_dir} is empty.\n"
-                    "Run 'pipecat-context-hub refresh' first to build it "
-                    "(the first run downloads models and indexes sources — allow a few minutes)."
-                ),
-                err=True,
+            _echo_stderr_warning(
+                f"Error: the index at {config.storage.data_dir} is empty.\n"
+                "Run 'pipecat-context-hub refresh' first to build it "
+                "(the first run downloads models and indexes sources — allow a few minutes).\n"
+                f"{bug_report_hint()}"
             )
             raise SystemExit(_EXIT_INDEX_UNREADY)
 
@@ -192,7 +372,12 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
             cross_encoder, reranker_status = _resolve_reranker(config, construct=True)
         else:
             _, reranker_status = _resolve_reranker(config, construct=False)
-
+        # The not_cached warning is deliberately *not* emitted here. Doing so
+        # immediately after resolving reranker_status (before dispatch) meant
+        # it could appear next to an unrelated pydantic input-validation
+        # error (exit 1) that has nothing to do with reranking — see
+        # ``_invoke``, which emits it only once dispatch has actually
+        # succeeded.
         retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
 
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
@@ -202,7 +387,10 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         )
 
         yield _QueryRuntime(
-            retriever=retriever, index_store=index_store, reranker_status=reranker_status
+            retriever=retriever,
+            index_store=index_store,
+            reranker_status=reranker_status,
+            cross_encoder=cross_encoder,
         )
     finally:
         if index_store is not None:
@@ -273,6 +461,37 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         except (ValidationError, ValueError) as exc:
             click.echo(f"Error: {exc}", err=True)
             raise SystemExit(_EXIT_BAD_INPUT) from exc
+        # Read-only inspection of the handler's raw JSON, before the staleness
+        # footer below touches it — the hint must not affect what gets annotated.
+        # Only semantic commands need the decode at all; a lookup command's
+        # result is never inspected here.
+        payload: dict[str, Any] | None = None
+        if needs_embeddings:
+            try:
+                candidate = json.loads(result)
+            except (TypeError, ValueError):
+                candidate = None
+            if isinstance(candidate, dict):
+                payload = candidate
+        # Emitted here (post-dispatch-success) rather than from
+        # ``_query_runtime`` right after reranker resolution: firing before
+        # dispatch meant this warning could appear next to an unrelated
+        # pydantic input-validation error (exit 1), which has nothing to do
+        # with reranking. Its result gates the retrieval-quality hint below
+        # so a known, already-explained degraded state (uncached reranker)
+        # doesn't also get routed to the retrieval-quality tracker.
+        # ``_maybe_warn_reranker_load_failed`` covers the complementary case
+        # ``_maybe_warn_reranker_not_cached`` cannot see (see its docstring):
+        # a *cached* model that failed to load lazily during this dispatch.
+        # The two are mutually exclusive by construction — ``cross_encoder``
+        # is only non-None when ``reranker_status`` was already enabled
+        # pre-dispatch — so at most one of them fires.
+        reranker_uncached = _maybe_warn_reranker_not_cached(
+            needs_embeddings, runtime.reranker_status
+        ) or _maybe_warn_reranker_load_failed(needs_embeddings, runtime.cross_encoder)
+        _maybe_warn_poor_results(
+            tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
+        )
         # Same staleness footer the MCP door attaches (status excluded — it
         # *is* the staleness report). Inside the runtime block: the store
         # must still be open to read its metadata.

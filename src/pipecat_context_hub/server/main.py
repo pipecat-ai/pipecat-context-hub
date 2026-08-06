@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -23,6 +24,10 @@ from pipecat_context_hub.server.tools.search_examples import handle_search_examp
 from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.shared.interfaces import Retriever
 from pipecat_context_hub.shared.staleness import annotate_response
+from pipecat_context_hub.shared.support_links import (
+    BUG_REPORT_ISSUE_URL,
+    RETRIEVAL_QUALITY_ISSUE_URL,
+)
 from pipecat_context_hub.shared.tracking import IdleTracker
 from pipecat_context_hub.shared.types import (
     CheckDeprecationInput,
@@ -122,6 +127,40 @@ _HUB_STATUS_TOOL: tuple[str, str, dict[str, Any]] = (
 )
 
 
+_UNSUBSTITUTED_PLACEHOLDER = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
+
+
+def _assert_no_unsubstituted_placeholder(text: str) -> None:
+    """Raise if ``text`` still contains an unsubstituted ``{PLACEHOLDER}``.
+
+    ``_SERVER_INSTRUCTIONS`` is built via ``.replace("{URL_CONST}", ...)``
+    rather than an f-string or ``.format()`` — a deliberate choice (``d97e23d``)
+    so a future stray brace in the prose (e.g. a JSON example) can't crash
+    import. That tradeoff means a renamed/typo'd ``RETRIEVAL_QUALITY_ISSUE_URL``
+    or ``BUG_REPORT_ISSUE_URL`` constant would make the substitution a silent
+    no-op instead, shipping literal ``{PLACEHOLDER}`` text to MCP clients with
+    no error. This guard closes that gap.
+
+    The check matches ``{UPPER_SNAKE_CASE}`` specifically — the naming
+    convention every ``.replace()`` target in this module follows — rather
+    than any literal brace, so a future JSON example in the prose (e.g.
+    ``{"query": "TTS"}``) does not itself trip this guard; only an actual
+    unresolved placeholder token does.
+
+    Raise rather than ``assert`` so the guard survives ``python -O`` (which
+    strips asserts) — see transport.py's ``_INTERMEDIATE_LAUNCHERS`` guard
+    for the same convention: fail loudly at import/CI instead.
+    """
+    if _UNSUBSTITUTED_PLACEHOLDER.search(text):
+        raise ValueError(
+            "_SERVER_INSTRUCTIONS still contains an unsubstituted {PLACEHOLDER} — "
+            "a renamed/typo'd RETRIEVAL_QUALITY_ISSUE_URL or BUG_REPORT_ISSUE_URL "
+            "constant would otherwise ship literal placeholder text to MCP clients "
+            "with no error. Check the .replace() chain above against the two "
+            "shared/support_links.py constants."
+        )
+
+
 _SERVER_INSTRUCTIONS = """\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
 framework documentation, code examples, and API source.
@@ -174,24 +213,52 @@ was filtered out.
 4. Check ``get_hub_status`` — the index may be stale or missing content types.
 
 If none of these work, suggest the user file a retrieval quality issue at \
-https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=retrieval-quality.yml \
+{RETRIEVAL_QUALITY_ISSUE_URL} \
 — the issue template includes a diagnostic prompt that you can run to generate \
 a structured report for the maintainers.
 
-**When the hub itself is degraded:** If ``get_hub_status`` reports \
-``reranker_disabled_reason`` of ``not_cached`` or ``load_failed``, or the \
-MCP connection fails at boot with a non-zero exit code, the hub is \
-running in a degraded mode. Share the full ``get_hub_status`` response and \
-any ``pipecat-context-hub`` startup log lines (look for \
+**When the hub itself is degraded after initialization:** If ``get_hub_status`` reports \
+``reranker_disabled_reason`` of ``not_cached`` or ``load_failed``, the \
+hub is running in a degraded mode.
+
+If the reason is ``not_cached``, suggest the user run \
+``pipecat-context-hub refresh`` first — this downloads the reranker model \
+and is the most common fix. This ``pipecat-context-hub`` MCP server process \
+already resolved its reranker state at startup and does not re-check the \
+model cache while running, so ``refresh`` alone will not change what this \
+connection reports: the fix requires actually terminating and restarting \
+the underlying ``pipecat-context-hub`` server process — a client-side \
+"reconnect" that reuses the same running process will not help, since \
+this state was resolved once at that process's startup, not per \
+connection. After the process has genuinely restarted, re-run \
+``get_hub_status`` on the new connection to confirm the fix — \
+re-checking ``get_hub_status`` on the current connection, or on a \
+reconnect that did not restart the process, will still show \
+``not_cached`` even after a successful ``refresh``. If \
+restarting doesn't resolve it, or the reason is \
+``load_failed``, share the full ``get_hub_status`` response and any \
+``pipecat-context-hub`` startup log lines (look for \
 ``Reranker disabled at startup`` and the ``pipecat-context-hub vX.Y.Z \
 starting`` banner) with the user and suggest they file a bug report at \
-https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml \
+{BUG_REPORT_ISSUE_URL} \
 so the maintainers can diagnose from the trace alone.
+
+If the MCP connection fails at boot with a non-zero exit code, the failure \
+happened before MCP initialization, so ``get_hub_status`` is unavailable. \
+Follow the remediation in the startup stderr first, then reconnect. Empty \
+indexes prescribe ``pipecat-context-hub refresh``; unreadable or incompatible \
+indexes prescribe ``pipecat-context-hub refresh --force --reset-index``. Only \
+request ``get_hub_status`` after successful initialization. If the prescribed \
+remediation does not resolve the boot failure, share the startup stderr with \
+the user and suggest they file a bug report at {BUG_REPORT_ISSUE_URL}.
 
 A ``reranker_disabled_reason`` of ``config_disabled`` is a supported \
 operator choice (``PIPECAT_HUB_RERANKER_ENABLED=0``), not a degraded state \
 — do not treat it as an incident or route it into the bug-report flow.\
-"""
+""".replace("{RETRIEVAL_QUALITY_ISSUE_URL}", RETRIEVAL_QUALITY_ISSUE_URL).replace(
+    "{BUG_REPORT_ISSUE_URL}", BUG_REPORT_ISSUE_URL
+)
+_assert_no_unsubstituted_placeholder(_SERVER_INSTRUCTIONS)
 
 
 def create_server(

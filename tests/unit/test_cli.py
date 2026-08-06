@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1159,11 +1161,49 @@ class TestRefreshProvenanceMetadata:
         assert "indexed_framework_commits_ahead" not in deleted
 
 
-class TestServeEmptyIndex:
-    """Serve must fail fast on empty or unopenable indexes rather than hang."""
+class TestRefreshIncompatibleIndex:
+    """`refresh` against a pre-1.0 Chroma dir exits 2 with a bug-report hint."""
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
-    def test_empty_index_exits_nonzero(self, mock_is_cls, tmp_path, monkeypatch):
+    def test_incompatible_index_exits_with_bug_report_hint(
+        self, mock_is_cls, tmp_path, monkeypatch, caplog
+    ):
+        from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+        from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
+        mock_is_cls.side_effect = IncompatibleIndexFormatError(chroma_path)
+
+        monkeypatch.chdir(tmp_path)
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 2
+        # Existing remediation (embedded verbatim in exc.__str__) before the
+        # Phase-2 bug-report hint appended to it.
+        assert RESET_INDEX_REMEDIATION in caplog.text
+        assert BUG_REPORT_ISSUE_URL in caplog.text
+        assert caplog.text.index(RESET_INDEX_REMEDIATION) < caplog.text.index(BUG_REPORT_ISSUE_URL)
+        # exc.__str__ embeds the absolute chroma_path; redaction must hold
+        # with the appended hint in place.
+        assert str(chroma_path) not in caplog.text
+        assert str(tmp_path) not in caplog.text
+
+
+class TestServeEmptyIndex:
+    """Serve must fail fast on empty or unopenable indexes rather than hang.
+
+    Each index-unready branch also gets a Phase-2 bug-report hint appended
+    after its existing remediation — verified via ``caplog`` since these
+    paths log through ``logging``, not ``click.echo``.
+    """
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_empty_index_exits_nonzero(self, mock_is_cls, tmp_path, monkeypatch, caplog):
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
         mock_store = MagicMock()
         mock_store.get_index_stats = MagicMock(
             return_value={
@@ -1176,19 +1216,54 @@ class TestServeEmptyIndex:
         mock_is_cls.return_value = mock_store
 
         monkeypatch.chdir(tmp_path)
-        result = CliRunner().invoke(main, ["serve"])
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["serve"])
 
         assert result.exit_code == 2
         mock_store.close.assert_called_once()
+        assert "refresh" in caplog.text
+        assert BUG_REPORT_ISSUE_URL in caplog.text
+        assert caplog.text.index("refresh") < caplog.text.index(BUG_REPORT_ISSUE_URL)
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
-    def test_open_failure_exits_nonzero(self, mock_is_cls, tmp_path, monkeypatch):
+    def test_open_failure_exits_nonzero(self, mock_is_cls, tmp_path, monkeypatch, caplog):
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
         mock_is_cls.side_effect = RuntimeError("corrupt sqlite")
 
         monkeypatch.chdir(tmp_path)
-        result = CliRunner().invoke(main, ["serve"])
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["serve"])
 
         assert result.exit_code == 2
+        assert "--reset-index" in caplog.text
+        assert BUG_REPORT_ISSUE_URL in caplog.text
+        assert caplog.text.index("--reset-index") < caplog.text.index(BUG_REPORT_ISSUE_URL)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_incompatible_index_format_exits_with_bug_report_hint(
+        self, mock_is_cls, tmp_path, monkeypatch, caplog
+    ):
+        """The third serve-startup index-unready branch (:263-274), distinct
+        from the generic open-failure branch above."""
+        from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+        from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
+        mock_is_cls.side_effect = IncompatibleIndexFormatError(chroma_path)
+
+        monkeypatch.chdir(tmp_path)
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == 2
+        assert RESET_INDEX_REMEDIATION in caplog.text
+        assert BUG_REPORT_ISSUE_URL in caplog.text
+        assert caplog.text.index(RESET_INDEX_REMEDIATION) < caplog.text.index(BUG_REPORT_ISSUE_URL)
+        assert str(chroma_path) not in caplog.text
+        assert str(tmp_path) not in caplog.text
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     def test_stats_failure_closes_store(self, mock_is_cls, tmp_path, monkeypatch):
@@ -1227,6 +1302,139 @@ class TestServeEmptyIndex:
 
         assert result.exit_code != 0
         mock_store.close.assert_called_once()
+
+
+class TestServeRerankerTelemetry:
+    """`serve`'s startup reranker-disabled log line gets the same
+    ``BUG_REPORT_ISSUE_URL`` treatment as the other two emitters (the
+    cli_query warning and the MCP degraded-hub clause) for `not_cached`,
+    and never for `config_disabled` (a deliberate operator choice).
+    """
+
+    def _mock_store(self) -> MagicMock:
+        store = MagicMock()
+        store.get_index_stats = MagicMock(
+            return_value={"counts_by_type": {"doc": 1}, "total": 1, "commit_shas": []}
+        )
+        store.close = MagicMock()
+        return store
+
+    def _patch_common(self, stack, mock_store: MagicMock) -> dict[str, object]:
+        """Patch the index/embedding/transport layer and capture the kwargs
+        `create_server` was called with, without letting `serve_stdio`
+        actually block on stdio."""
+        stack.enter_context(
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=mock_store,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=MagicMock(),
+            )
+        )
+        stack.enter_context(
+            patch("pipecat_context_hub.server.transport.serve_stdio", return_value=None)
+        )
+        captured_kwargs: dict[str, object] = {}
+
+        def _fake_create_server(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock()
+
+        stack.enter_context(
+            patch(
+                "pipecat_context_hub.server.main.create_server",
+                side_effect=_fake_create_server,
+            )
+        )
+        return captured_kwargs
+
+    def test_not_cached_includes_bug_report_url(self, tmp_path, monkeypatch, caplog):
+        import contextlib
+
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        monkeypatch.chdir(tmp_path)
+        with contextlib.ExitStack() as stack:
+            self._patch_common(stack, self._mock_store())
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.shared.reranker.probe_reranker",
+                    return_value=("cross-encoder/ms-marco-MiniLM-L-6-v2", None, "not_cached"),
+                )
+            )
+            with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+                result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == 0, result.output
+        assert "refresh" in caplog.text
+        assert BUG_REPORT_ISSUE_URL in caplog.text
+        assert caplog.text.index("refresh") < caplog.text.index(BUG_REPORT_ISSUE_URL)
+
+    def test_config_disabled_omits_bug_report_url(self, tmp_path, monkeypatch, caplog):
+        import contextlib
+
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        monkeypatch.chdir(tmp_path)
+        with contextlib.ExitStack() as stack:
+            self._patch_common(stack, self._mock_store())
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.shared.reranker.probe_reranker",
+                    return_value=(
+                        "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                        None,
+                        "config_disabled",
+                    ),
+                )
+            )
+            with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+                result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == 0, result.output
+        assert BUG_REPORT_ISSUE_URL not in caplog.text
+
+    def test_reranker_status_provider_reports_load_failed_on_runtime_flip(
+        self, tmp_path, monkeypatch
+    ):
+        """Phase-4 reachability guard, not just an assertion about
+        instruction prose: force a constructed reranker's ``.enabled`` false
+        (simulating a runtime ONNX load failure inside the long-lived
+        `serve` process) and confirm the live `_reranker_status()` closure
+        passed to `create_server` reports `disabled_reason="load_failed"` —
+        the exact mechanism the MCP degraded-hub clause names.
+        """
+        import contextlib
+
+        fake_cross_encoder = MagicMock()
+        fake_cross_encoder.enabled = False
+
+        monkeypatch.chdir(tmp_path)
+        with contextlib.ExitStack() as stack:
+            captured_kwargs = self._patch_common(stack, self._mock_store())
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.shared.reranker.probe_reranker",
+                    return_value=("cross-encoder/ms-marco-MiniLM-L-6-v2", None, None),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.services.retrieval.cross_encoder.CrossEncoderReranker",
+                    return_value=fake_cross_encoder,
+                )
+            )
+            result = CliRunner().invoke(main, ["serve"])
+
+        assert result.exit_code == 0, result.output
+        provider = cast(Callable[[], Any], captured_kwargs["reranker_status_provider"])
+        status = provider()
+        assert status.enabled is False
+        assert status.disabled_reason == "load_failed"
 
 
 class TestSafeHr:
