@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-08-07 | feature | Global config.toml fallback for machine-scoped hub installs | Not Started | vr000m | `feature/global-config-toml` | `20260807-feature-global-config-toml.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
