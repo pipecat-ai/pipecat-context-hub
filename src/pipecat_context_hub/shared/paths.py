@@ -1,4 +1,4 @@
-"""Home-path redaction helpers for user-facing log/stderr output.
+"""Path helpers: home redaction for logs, plus filesystem-identity predicates.
 
 Startup telemetry and one-shot CLI error messages are included in the "share
 this with maintainers" guidance, so stripping usernames out of absolute paths
@@ -16,12 +16,61 @@ Two helpers, because the leak has two shapes:
 Lives in ``shared/`` (not ``cli.py``) because ``cli.py`` imports ``cli_query``;
 importing the helper back from ``cli.py`` would be a cycle. ``shared/`` peers
 import neither CLI module, so the layer stays leaf-level.
+
+:func:`same_dir` and :func:`is_inside` are the general filesystem-identity
+primitives shared by every deletion guard in this project (``env_loading``'s
+``config_collides_with_dir()`` and ``cli.py``'s ``_refuse_unsafe_data_dir()``).
+They live here rather than in ``env_loading`` because they are path predicates,
+not env-var/config-file loading.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+
+def same_dir(path: Path, dir_stat: os.stat_result) -> bool:
+    """True when ``path`` is the same on-disk directory as ``dir_stat``.
+
+    Public because it is the single filesystem-identity primitive shared by
+    every deletion guard in this project: ``env_loading``'s
+    ``config_collides_with_dir()`` and ``cli.py``'s
+    ``_refuse_unsafe_data_dir()``. Both must compare ``(st_dev, st_ino)``
+    rather than path strings, because ``Path.resolve()`` preserves the
+    caller's casing on case-insensitive volumes (macOS APFS, Windows NTFS) —
+    so ``/Users/Varun`` and ``/Users/varun`` compare unequal while naming one
+    directory that ``shutil.rmtree`` would happily delete.
+    """
+    try:
+        return os.path.samestat(path.stat(), dir_stat)
+    except (OSError, ValueError):
+        return False
+
+
+def is_inside(path: Path, directory: Path, dir_stat: os.stat_result | None) -> bool:
+    """True when ``path`` lives under ``directory``.
+
+    Two checks, because a path-string comparison alone is not sound:
+
+    1. Lexical containment (``is_relative_to``) — works for paths that don't
+       exist yet, and is the common case.
+    2. Filesystem identity — walk ``path``'s ancestors and compare
+       ``(st_dev, st_ino)`` against ``directory``'s. This is what catches a
+       spelling of ``directory`` that names the *same* directory without
+       matching character-for-character: a differently-cased spelling on a
+       case-insensitive volume (macOS APFS, Windows NTFS), where
+       ``Path.resolve()`` preserves the caller's casing so
+       ``~/.CONFIG/...`` and ``~/.config/...`` compare unequal while being one
+       directory on disk; or a path reached through a symlinked ancestor.
+       Skipped when either side doesn't exist (nothing to stat) — which is
+       safe, because a directory that doesn't exist cannot be ``rmtree``'d.
+    """
+    if path.is_relative_to(directory):
+        return True
+    if dir_stat is None:
+        return False
+    return any(same_dir(ancestor, dir_stat) for ancestor in path.parents)
 
 
 def redact_home(path: Path | str) -> str:

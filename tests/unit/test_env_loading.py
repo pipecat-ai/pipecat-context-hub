@@ -1040,7 +1040,10 @@ class TestConfigFileOwnershipGuard:
 
     def test_foreign_owner_config_is_ignored(self, tmp_path: Path, monkeypatch, caplog):
         self._write(tmp_path, monkeypatch, 0o600)
-        real_stat = Path.stat
+        # Patches `os.fstat`, not `Path.stat`: round-3 finding #4 moved the
+        # trust gate onto the *opened descriptor* so the bytes handed to
+        # tomllib are the bytes that were validated (TOCTOU close).
+        real_fstat = os.fstat
 
         class _ForeignStat:
             def __init__(self, st):
@@ -1051,10 +1054,10 @@ class TestConfigFileOwnershipGuard:
 
             st_uid = os.getuid() + 12345
 
-        def _stat(self, *args, **kwargs):
-            return _ForeignStat(real_stat(self, *args, **kwargs))
+        def _fstat(fd, *args, **kwargs):
+            return _ForeignStat(real_fstat(fd, *args, **kwargs))
 
-        monkeypatch.setattr(Path, "stat", _stat)
+        monkeypatch.setattr(os, "fstat", _fstat)
         with caplog.at_level("WARNING"):
             load_global_config()
         assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
@@ -1157,3 +1160,134 @@ class TestConfigPathLogsAreHomeRedacted:
         assert loaded, caplog.text
         assert str(home) not in loaded[0]
         assert loaded[0].endswith("~/.config/pipecat-context-hub/config.toml")
+
+
+class TestConfigFileCrashSafety:
+    """Round-3 findings #2 and #3: a config *path* the operator can name but
+    the loader cannot safely open must degrade to "no config available",
+    never hang or raise, per this module's "entry points never crash on a bad
+    config" contract.
+    """
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs require POSIX")
+    def test_fifo_config_path_is_skipped_without_blocking(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """Round-3 finding #2: a FIFO passed the ownership/mode trust gate,
+        and the subsequent `open("rb")` blocked in the kernel until a writer
+        appeared — hanging every CLI invocation before argv was dispatched.
+        Run on a worker thread so the pre-fix hang fails the test instead of
+        wedging the suite.
+        """
+        import threading
+
+        fifo = tmp_path / "config.toml"
+        os.mkfifo(fifo)
+        _use_config_file(monkeypatch, fifo)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+
+        done = threading.Event()
+        error: list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                load_global_config()
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                error.append(exc)
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=_run, daemon=True)
+        with caplog.at_level("WARNING"):
+            worker.start()
+            finished = done.wait(timeout=10)
+
+        assert finished, "load_global_config() blocked on a FIFO config path"
+        assert not error, error
+        assert str(fifo) in caplog.text
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+
+    def test_unknown_user_override_does_not_crash(self, monkeypatch, caplog):
+        """Round-3 finding #3: `Path.expanduser()` raises RuntimeError for a
+        user it can't resolve, so `PIPECAT_HUB_CONFIG_FILE=~nosuchuser/...`
+        took down every command with an uncaught exception before the
+        loader's own guarded read could classify it.
+        """
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", "~definitely-no-such-user-9f3a/config.toml")
+        with caplog.at_level("WARNING"):
+            assert resolve_global_config_path() is None
+            load_global_config()  # must not raise
+        assert "PIPECAT_HUB_CONFIG_FILE" in caplog.text
+
+    def test_directory_config_path_is_skipped_with_warning(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """A directory is not a regular file; the loader names it and moves on."""
+        config_dir = tmp_path / "config.toml"
+        config_dir.mkdir()
+        _use_config_file(monkeypatch, config_dir)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert str(config_dir) in caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership/mode semantics")
+class TestConfigFileTrustGate:
+    """Round-3 finding #4: the trust gate validated the config file's own
+    owner/mode but not the writability of the directory that authorizes
+    unlink-and-replace, nor the identity of a symlink standing in for it.
+    """
+
+    def test_world_writable_parent_dir_is_refused(self, tmp_path: Path, monkeypatch, caplog):
+        config_dir = tmp_path / "loose-dir"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')
+        config_file.chmod(0o600)
+        config_dir.chmod(0o777)  # world-writable, no sticky bit
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        try:
+            with caplog.at_level("WARNING"):
+                load_global_config()
+        finally:
+            config_dir.chmod(0o755)
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert "world-writable" in caplog.text
+
+    def test_sticky_world_writable_parent_dir_is_allowed(self, tmp_path: Path, monkeypatch):
+        """`/tmp`-style dirs are safe: the sticky bit is what withdraws the
+        unlink permission the refusal above is actually about."""
+        config_dir = tmp_path / "sticky-dir"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')
+        config_file.chmod(0o600)
+        config_dir.chmod(0o1777)
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        try:
+            load_global_config()
+        finally:
+            config_dir.chmod(0o755)
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "42"
+
+    def test_self_owned_symlinked_config_still_loads(self, tmp_path: Path, monkeypatch):
+        """Regression floor for the fix itself: pointing the config path at a
+        dotfiles checkout (GNU stow et al.) is a legitimate, common setup and
+        must not be refused just because it is a symlink."""
+        real_dir = tmp_path / "dotfiles"
+        real_dir.mkdir()
+        real_file = real_dir / "hub-config.toml"
+        real_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')
+        link_dir = tmp_path / "config-home"
+        link_dir.mkdir()
+        link = link_dir / "config.toml"
+        try:
+            link.symlink_to(real_file)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+        _use_config_file(monkeypatch, link)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "42"

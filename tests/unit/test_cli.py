@@ -2766,6 +2766,38 @@ class TestDataDirSafetyFloor:
             _delete_local_index_storage(tmp_path / "HOME")
         rmtree.assert_not_called()
 
+    def test_symlinked_data_dir_stays_resolvable_after_reset(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Round-3 finding #1: with `PIPECAT_HUB_DATA_DIR` pointing at a
+        symlink to a directory, `rmtree(resolved_data_dir)` deletes the
+        link's *target* through the link, leaving the link dangling.
+        `IndexStore`'s subsequent `data_dir.mkdir(parents=True,
+        exist_ok=True)` then raises `FileExistsError` — `exist_ok` only
+        suppresses when the existing path `is_dir()`, which a dangling
+        symlink is not — so the reset aborts the rebuild it exists to
+        enable.
+        """
+        self._no_config_file(monkeypatch, tmp_path)
+        real = tmp_path / "real-data"
+        real.mkdir()
+        (real / "marker").write_text("x")
+        link = tmp_path / "hub-data"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        _delete_local_index_storage(link)
+
+        # The index contents really were deleted (this is still a reset)...
+        assert not (real / "marker").exists()
+        # ...but the operator's symlink is not left dangling.
+        assert link.is_symlink()
+        assert link.is_dir()
+        # The exact call IndexStore makes next must not raise.
+        link.mkdir(parents=True, exist_ok=True)
+
     def test_refuses_home_reached_through_a_symlinked_ancestor(
         self, monkeypatch, tmp_path: Path
     ) -> None:

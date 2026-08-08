@@ -9,6 +9,7 @@ import re
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -567,6 +568,35 @@ def _import_script(path: Path, module_name_hint: str):
     return module
 
 
+# Directories holding standalone (non-package) entry points, and the config
+# classes whose construction marks a script as one. Module-level so *both*
+# legs of the entry-point contract — the source scan
+# (TestDashboardScriptConfigParity) and the behavioral resolution check
+# (TestDashboardScriptDataDirResolution) — are driven by one discovery pass.
+# Round-3 finding #7: a hand-maintained list on the behavioral leg would let a
+# fourth entry-point script be covered by the scan while silently escaping the
+# behavioral test, which is the exact drift the discovery-based scan removed.
+_ENTRY_POINT_DIRS = ("dashboard/scripts", "scripts")
+_CONFIG_CLASSES = ("HubConfig", "StorageConfig")
+
+
+def _discover_config_entry_points() -> dict[str, tuple[Path, str, int]]:
+    """Every standalone script that constructs a config object.
+
+    Returns ``{rel_path: (path, first_constructed_class, offset)}``.
+    """
+    discovered: dict[str, tuple[Path, str, int]] = {}
+    for rel_dir in _ENTRY_POINT_DIRS:
+        for path in sorted((_REPO_ROOT / rel_dir).glob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            hits = [(source.find(f"{cls}("), cls) for cls in _CONFIG_CLASSES if f"{cls}(" in source]
+            if not hits:
+                continue
+            offset, cls = min(hits)
+            discovered[path.relative_to(_REPO_ROOT).as_posix()] = (path, cls, offset)
+    return discovered
+
+
 class TestDashboardScriptConfigParity:
     """Source-level parity: each independent entry point that constructs
     StorageConfig()/HubConfig() outside cli.py:main() must call
@@ -584,15 +614,13 @@ class TestDashboardScriptConfigParity:
     behavioral test ... not source-scan alone").
     """
 
-    # Directories holding standalone (non-package) entry points. Every *.py
-    # here is scanned; the registry is *discovered*, not hand-maintained, so a
+    # The registry under test is *discovered* (see
+    # `_discover_config_entry_points()` above), not hand-maintained, so a
     # fourth script added later can't silently escape this contract — the
     # failure mode `load_env_layers()` was introduced to eliminate (round-2
     # finding #5). Mirrors test_every_click_command_is_bridged, which derives
     # its set from `hub_cli.commands` rather than listing commands.
-    _ENTRY_POINT_DIRS = ("dashboard/scripts", "scripts")
-    _CONFIG_CLASSES = ("HubConfig", "StorageConfig")
-
+    #
     # Non-vacuity floor only: these must always be discovered. Never the
     # source of the set under test.
     _KNOWN_ENTRY_POINTS = frozenset(
@@ -603,25 +631,7 @@ class TestDashboardScriptConfigParity:
         }
     )
 
-    def _discover_entry_points(self) -> dict[str, tuple[Path, str, int]]:
-        """Every standalone script that constructs a config object.
-
-        Returns ``{rel_path: (path, first_constructed_class, offset)}``.
-        """
-        discovered: dict[str, tuple[Path, str, int]] = {}
-        for rel_dir in self._ENTRY_POINT_DIRS:
-            for path in sorted((_REPO_ROOT / rel_dir).glob("*.py")):
-                source = path.read_text(encoding="utf-8")
-                hits = [
-                    (source.find(f"{cls}("), cls)
-                    for cls in self._CONFIG_CLASSES
-                    if f"{cls}(" in source
-                ]
-                if not hits:
-                    continue
-                offset, cls = min(hits)
-                discovered[path.relative_to(_REPO_ROOT).as_posix()] = (path, cls, offset)
-        return discovered
+    _discover_entry_points = staticmethod(_discover_config_entry_points)
 
     def test_discovery_finds_the_known_entry_points(self):
         """Guards the discovery pass itself: a glob that stops matching (a
@@ -670,31 +680,28 @@ class TestDashboardScriptConfigParity:
         assert calls == ["cwd", "global"]
 
 
-# (path, module-name hint, resolved-StorageConfig accessor) for each of the
-# three entry points. smoke_check_removals.py's _bootstrap() returns a
-# HubConfig (it also needs other HubConfig fields elsewhere in the script),
-# so its data_dir is one level deeper than the two dashboard scripts', which
-# bootstrap a bare StorageConfig.
+# Derived from the same discovery pass as the source-level scan above, not
+# hand-maintained (round-3 finding #7): a fourth entry-point script must not be
+# able to appear in the scan while silently escaping this behavioral check.
 _BOOTSTRAP_TARGETS = [
-    pytest.param(
-        _REPO_ROOT / "dashboard" / "scripts" / "extract_dashboard.py",
-        "extract_dashboard",
-        lambda cfg: cfg.data_dir,
-        id="extract_dashboard.py",
-    ),
-    pytest.param(
-        _REPO_ROOT / "dashboard" / "scripts" / "extract_embeddings.py",
-        "extract_embeddings",
-        lambda cfg: cfg.data_dir,
-        id="extract_embeddings.py",
-    ),
-    pytest.param(
-        _REPO_ROOT / "scripts" / "smoke_check_removals.py",
-        "smoke_check_removals",
-        lambda cfg: cfg.storage.data_dir,
-        id="smoke_check_removals.py",
-    ),
+    pytest.param(path, path.stem, id=path.name)
+    for path, _cls, _offset in _discover_config_entry_points().values()
 ]
+
+
+def _bootstrapped_data_dir(cfg: object) -> Path:
+    """The resolved data dir of whatever config object ``_bootstrap()`` returned.
+
+    Duck-typed rather than a per-script lambda: ``smoke_check_removals.py``'s
+    ``_bootstrap()`` returns a ``HubConfig`` (it needs other HubConfig fields
+    elsewhere in the script), so its ``data_dir`` is one level deeper than the
+    dashboard scripts', which bootstrap a bare ``StorageConfig``. Resolving
+    that difference here keeps the target list purely discovery-driven.
+    """
+    storage: Any = getattr(cfg, "storage", cfg)
+    data_dir = storage.data_dir
+    assert isinstance(data_dir, Path)
+    return data_dir
 
 
 class TestDashboardScriptDataDirResolution:
@@ -708,9 +715,9 @@ class TestDashboardScriptDataDirResolution:
     weaker source-level scan alone).
     """
 
-    @pytest.mark.parametrize("script_path, module_hint, get_data_dir", _BOOTSTRAP_TARGETS)
+    @pytest.mark.parametrize("script_path, module_hint", _BOOTSTRAP_TARGETS)
     def test_bootstrap_honors_config_toml_data_dir(
-        self, tmp_path, monkeypatch, script_path, module_hint, get_data_dir
+        self, tmp_path, monkeypatch, script_path, module_hint
     ):
         data_dir = tmp_path / "resolved-data"
         config_file = tmp_path / "config.toml"
@@ -728,6 +735,6 @@ class TestDashboardScriptDataDirResolution:
         monkeypatch.chdir(tmp_path)
 
         module = _import_script(script_path, module_hint)
-        resolved = get_data_dir(module._bootstrap())
+        resolved = _bootstrapped_data_dir(module._bootstrap())
 
         assert resolved == data_dir.expanduser().resolve(strict=False)

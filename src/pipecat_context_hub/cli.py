@@ -24,7 +24,7 @@ from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
-from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text, same_dir
 from pipecat_context_hub.shared.support_links import bug_report_hint
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -135,7 +135,7 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
     rejected: it would refuse a perfectly reasonable containerised
     ``PIPECAT_HUB_DATA_DIR=/data``.
 
-    Comparison is by *filesystem identity* (``env_loading.same_dir``, i.e.
+    Comparison is by *filesystem identity* (``shared.paths.same_dir``, i.e.
     ``(st_dev, st_ino)``), not ``==``, for the same reason
     ``config_collides_with_dir()`` uses it: ``Path.resolve()`` preserves the
     caller's casing on case-insensitive volumes, so
@@ -163,7 +163,7 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
             return True
         if target_stat is None:
             return False
-        return env_loading.same_dir(candidate, target_stat)
+        return same_dir(candidate, target_stat)
 
     if any(_is_unsafe(candidate) for candidate in unsafe):
         raise click.ClickException(
@@ -197,13 +197,32 @@ def _delete_local_index_storage(data_dir: Path) -> None:
 
     Both guards, and the deletion itself, operate on the *normalized* path, so
     what was validated is exactly what is removed.
+
+    One post-deletion repair: when ``data_dir`` is itself a symlink to a
+    directory, ``rmtree(resolved_data_dir)`` deletes the link's *target*
+    through the link, leaving the link dangling. ``IndexStore``'s subsequent
+    ``data_dir.mkdir(parents=True, exist_ok=True)`` then raises
+    ``FileExistsError`` — ``exist_ok`` only suppresses when the existing path
+    ``is_dir()``, which a dangling symlink is not — so the reset would abort
+    the very rebuild it exists to enable. Recreating the resolved directory
+    restores the link. Deliberately scoped to the symlink case: for an
+    ordinary directory the contract is "gone after reset", which
+    ``TestDataDirSafetyFloor`` pins.
     """
     try:
-        resolved_data_dir = data_dir.expanduser().resolve(strict=False)
+        expanded_data_dir = data_dir.expanduser()
+    except (ValueError, OSError, RuntimeError):
+        expanded_data_dir = data_dir
+    try:
+        resolved_data_dir = expanded_data_dir.resolve(strict=False)
     except (ValueError, OSError, RuntimeError):
         # Same crash-safety contract as env_loading.config_collides_with_dir:
         # `resolve()` raises RuntimeError for a symlink loop on Python <=3.12.
         resolved_data_dir = Path(os.path.abspath(data_dir))
+    try:
+        data_dir_was_symlink = expanded_data_dir.is_symlink()
+    except (ValueError, OSError):
+        data_dir_was_symlink = False
     _refuse_unsafe_data_dir(data_dir, resolved_data_dir)
     colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
     if colliding_config_path is not None:
@@ -213,6 +232,21 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             "or the config file so they don't collide, then retry --reset-index."
         )
     shutil.rmtree(resolved_data_dir, ignore_errors=True)
+    if data_dir_was_symlink:
+        # See the docstring: the symlink survives, its target does not. Put
+        # the target back so `PIPECAT_HUB_DATA_DIR=<symlink>` still resolves
+        # to a directory for the rebuild that immediately follows.
+        try:
+            resolved_data_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # Never fatal: the rebuild's own mkdir gets the next attempt, and
+            # a reset that deleted successfully has already done its job.
+            _module_logger.warning(
+                "Could not recreate %s after reset (%s); the symlinked data dir may "
+                "need to be recreated manually",
+                redact_home(resolved_data_dir),
+                exc,
+            )
 
 
 async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> None:
@@ -401,7 +435,7 @@ def serve(ctx: click.Context) -> None:
     # server, whose cwd/env may differ from an operator's interactive shell.
     # Key names only, never values (PIPECAT_HUB_EXTRA_REPOS can be ~70 repos).
     _log_serve_cwd(logger)
-    if os.environ.get("PIPECAT_HUB_DEBUG_PROBE") == "1":
+    if os.environ.get(env_loading.DEBUG_PROBE_ENV_VAR) == "1":
         _write_serve_debug_probe(logger)
 
     # Resolve the client-death watch plan now, before the slow index +

@@ -15,13 +15,14 @@ stay public for tests, but no entry point should hand-replicate the ordering.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import stat
 import tomllib
 from pathlib import Path
 
-from pipecat_context_hub.shared.paths import redact_home
+from pipecat_context_hub.shared.paths import is_inside, redact_home
 
 _module_logger = logging.getLogger(__name__)
 
@@ -56,6 +57,11 @@ except RuntimeError as _home_exc:
 # --prune/_prune_enabled() wiring in cli.py.
 PRUNE_ENV_VAR = "PIPECAT_HUB_PRUNE"
 
+# Single source of truth for the PIPECAT_HUB_DEBUG_PROBE literal, referenced
+# (not re-hardcoded) by _INVOCATION_SCOPED_KEYS below and by cli.py's
+# serve-time debug-probe gate — the structural sibling of PRUNE_ENV_VAR.
+DEBUG_PROBE_ENV_VAR = "PIPECAT_HUB_DEBUG_PROBE"
+
 # Keys that look like PIPECAT_HUB_* but must never be set from config.toml,
 # each for its own one-clause reason (see dev plan Phase 1): PRUNE keeps
 # refresh's deletion behavior an explicit per-run choice; DEBUG_PROBE must
@@ -66,7 +72,7 @@ PRUNE_ENV_VAR = "PIPECAT_HUB_PRUNE"
 _INVOCATION_SCOPED_KEYS = frozenset(
     {
         PRUNE_ENV_VAR,
-        "PIPECAT_HUB_DEBUG_PROBE",
+        DEBUG_PROBE_ENV_VAR,
         "PIPECAT_HUB_CONFIG_FILE",
         "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK",
         "PIPECAT_HUB_STABILITY_OUTPUT",
@@ -169,51 +175,28 @@ def resolve_global_config_path() -> Path | None:
         # expanduser so a `~`-rooted override resolves to a real path instead
         # of a literal `~` directory that silently takes the missing-file
         # branch (no warning, no config).
-        return Path(override).expanduser()
+        #
+        # Guarded for the same reason DEFAULT_CONFIG_PATH's `Path.home()` is:
+        # `expanduser()` raises RuntimeError when the home directory of the
+        # named user can't be determined — `~nosuchuser/config.toml`, or a
+        # bare `~` in a container with no passwd entry. An uncaught raise here
+        # would crash *every* CLI command before argv is even dispatched,
+        # violating this module's "entry points never crash on a bad config"
+        # contract. Degrade to "no config file available" instead of silently
+        # falling back to DEFAULT_CONFIG_PATH: the operator asked for a
+        # specific file, and quietly reading a different one would be worse
+        # than reading none.
+        try:
+            return Path(override).expanduser()
+        except (RuntimeError, ValueError, OSError) as exc:
+            _module_logger.warning(
+                "Ignoring %s=%r: not a usable path (%s); no config.toml will be loaded",
+                _CONFIG_FILE_ENV_VAR,
+                override,
+                exc,
+            )
+            return None
     return DEFAULT_CONFIG_PATH
-
-
-def same_dir(path: Path, dir_stat: os.stat_result) -> bool:
-    """True when ``path`` is the same on-disk directory as ``dir_stat``.
-
-    Public because it is the single filesystem-identity primitive shared by
-    every deletion guard in this project: this module's
-    ``config_collides_with_dir()`` and ``cli.py``'s
-    ``_refuse_unsafe_data_dir()``. Both must compare ``(st_dev, st_ino)``
-    rather than path strings, because ``Path.resolve()`` preserves the
-    caller's casing on case-insensitive volumes (macOS APFS, Windows NTFS) —
-    so ``/Users/Varun`` and ``/Users/varun`` compare unequal while naming one
-    directory that ``shutil.rmtree`` would happily delete.
-    """
-    try:
-        return os.path.samestat(path.stat(), dir_stat)
-    except (OSError, ValueError):
-        return False
-
-
-def _is_inside(path: Path, directory: Path, dir_stat: os.stat_result | None) -> bool:
-    """True when ``path`` lives under ``directory``.
-
-    Two checks, because a path-string comparison alone is not sound:
-
-    1. Lexical containment (``is_relative_to``) — works for paths that don't
-       exist yet, and is the common case.
-    2. Filesystem identity — walk ``path``'s ancestors and compare
-       ``(st_dev, st_ino)`` against ``directory``'s. This is what catches a
-       spelling of ``directory`` that names the *same* directory without
-       matching character-for-character: a differently-cased spelling on a
-       case-insensitive volume (macOS APFS, Windows NTFS), where
-       ``Path.resolve()`` preserves the caller's casing so
-       ``~/.CONFIG/...`` and ``~/.config/...`` compare unequal while being one
-       directory on disk; or a path reached through a symlinked ancestor.
-       Skipped when either side doesn't exist (nothing to stat) — which is
-       safe, because a directory that doesn't exist cannot be ``rmtree``'d.
-    """
-    if path.is_relative_to(directory):
-        return True
-    if dir_stat is None:
-        return False
-    return any(same_dir(ancestor, dir_stat) for ancestor in path.parents)
 
 
 def config_collides_with_dir(candidate_dir: Path) -> Path | None:
@@ -289,9 +272,9 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     except (OSError, ValueError):
         dir_stat = None
 
-    if _is_inside(physical, candidate_dir, dir_stat):
+    if is_inside(physical, candidate_dir, dir_stat):
         return physical
-    if _is_inside(resolved, candidate_dir, dir_stat):
+    if is_inside(resolved, candidate_dir, dir_stat):
         return resolved
     return None
 
@@ -331,36 +314,180 @@ def _stringify_scalar_array(value: list[object], key: str) -> str | None:
     return ",".join(stringified)
 
 
-def _config_file_is_trusted(config_path: Path) -> bool:
-    """False when ``config_path`` can be rewritten by another local principal.
+def _file_kind(mode: int) -> str:
+    """Human-readable name for a non-regular file's type, for warnings."""
+    for predicate, name in (
+        (stat.S_ISDIR, "directory"),
+        (stat.S_ISFIFO, "named pipe (FIFO)"),
+        (stat.S_ISSOCK, "socket"),
+        (stat.S_ISCHR, "character device"),
+        (stat.S_ISBLK, "block device"),
+        (stat.S_ISLNK, "symbolic link"),
+    ):
+        if predicate(mode):
+            return name
+    return "not a regular file"
 
-    ``config.toml`` is read from a fixed, predictable path and its contents are
-    promoted straight into ``os.environ`` (``PIPECAT_HUB_DATA_DIR``,
-    ``PIPECAT_HUB_EXTRA_REPOS``, the taint lists), so a file another user can
-    write is a persistent, machine-wide injection point into every invocation.
 
-    Two tiers, deliberately not one:
+def _link_owner_is_trusted(config_path: Path, uid: int) -> bool:
+    """False when the config path is a symlink planted by another local user.
 
+    ``fstat`` on the opened file describes the *target*, never the link, so a
+    foreign-owned symlink pointing at a victim-owned file would otherwise pass
+    every check. Symlink mode bits are meaningless (0777 on Linux/macOS), so
+    only ownership is tested — and symlinked config files are otherwise
+    allowed, since pointing the config at a dotfiles checkout is a legitimate
+    setup.
+    """
+    try:
+        lst = os.lstat(config_path)
+    except (OSError, ValueError):
+        return True
+    if not stat.S_ISLNK(lst.st_mode):
+        return True
+    if lst.st_uid in (uid, 0):
+        return True
+    _module_logger.warning(
+        "Ignoring config.toml at %s: it is a symlink owned by uid %d, not the current "
+        "user (uid %d). Another local account could redirect this hub's settings.",
+        redact_home(config_path),
+        lst.st_uid,
+        uid,
+    )
+    return False
+
+
+def _config_parent_is_trusted(config_path: Path, uid: int) -> bool:
+    """False when the directory holding config.toml is another user's to rewrite.
+
+    A per-file mode check cannot see this: write permission on the *directory*
+    is what authorizes unlink-and-replace, so a ``0600`` file in a
+    world-writable directory is still fully controllable by any local
+    principal. World-writable **sticky** directories (``/tmp``) are exempt —
+    the sticky bit is precisely what withdraws that unlink permission.
+    """
+    parent = config_path.parent
+    try:
+        pst = os.stat(parent)
+    except (OSError, ValueError):
+        # Unstattable parent: the open() already succeeded, so don't invent a
+        # refusal from a check we couldn't perform.
+        return True
+
+    if pst.st_uid not in (uid, 0):
+        _module_logger.warning(
+            "Ignoring config.toml at %s: its directory is owned by uid %d, not the "
+            "current user (uid %d). Another local account could replace the file.",
+            redact_home(config_path),
+            pst.st_uid,
+            uid,
+        )
+        return False
+    if pst.st_mode & stat.S_IWOTH and not pst.st_mode & stat.S_ISVTX:
+        _module_logger.warning(
+            "Ignoring config.toml at %s: its directory %s is world-writable without the "
+            "sticky bit (mode %o), so any local account could replace the file. "
+            "Run `chmod 755 %s` and retry.",
+            redact_home(config_path),
+            redact_home(parent),
+            stat.S_IMODE(pst.st_mode),
+            redact_home(parent),
+        )
+        return False
+    if pst.st_mode & stat.S_IWGRP and not pst.st_mode & stat.S_ISVTX:
+        _module_logger.warning(
+            "config.toml's directory %s is group-writable (mode %o); anyone in group %d "
+            "can replace this hub's settings file. Consider `chmod 755 %s`.",
+            redact_home(parent),
+            stat.S_IMODE(pst.st_mode),
+            pst.st_gid,
+            redact_home(parent),
+        )
+    return True
+
+
+def _open_config_fd(config_path: Path) -> int:
+    """Open ``config_path`` read-only, without blocking on a special file.
+
+    ``O_NONBLOCK`` is the load-bearing flag: a plain ``open()`` on a FIFO
+    blocks in the kernel until a writer appears, so a ``config.toml`` that is
+    (accidentally or maliciously) a named pipe would hang *every* invocation
+    of every entry point before argv is dispatched. With ``O_NONBLOCK`` the
+    open returns immediately and :func:`_config_fd_is_trusted` rejects the
+    non-regular file. On a regular file the flag is a no-op.
+
+    Raises ``OSError`` (``FileNotFoundError`` included) for the caller to
+    classify — mirroring the exception surface the previous ``open("rb")``
+    call had.
+    """
+    flags = os.O_RDONLY
+    for flag_name in ("O_NONBLOCK", "O_CLOEXEC", "O_NOCTTY", "O_BINARY"):
+        flags |= getattr(os, flag_name, 0)
+    return os.open(config_path, flags)
+
+
+def _config_fd_is_trusted(fd: int, config_path: Path) -> bool:
+    """False when the opened config file can be controlled by another principal.
+
+    ``config.toml``'s contents are promoted straight into ``os.environ``
+    (``PIPECAT_HUB_DATA_DIR``, ``PIPECAT_HUB_EXTRA_REPOS``, the taint lists),
+    so a file another user can write is a persistent, machine-wide injection
+    point into every invocation.
+
+    Checks, in order:
+
+    * **Refuse** anything that is not a regular file (FIFO, socket, device,
+      directory). Every platform: a config file is a plain file by contract,
+      and the FIFO case would otherwise hang or mis-parse.
     * **Refuse** a file that is world-writable, or not owned by the current
       user (nor by root). Both are unambiguously wrong for a per-user config.
-    * **Allow with a warning** for group-writable. Distributions using
-      user-private groups (RHEL/Fedora's ``umask 002``) create ``0664`` files
-      whose group contains only the owner — refusing those would break a
-      correctly-configured machine, so the operator is told rather than
-      overruled.
+    * **Refuse** a *containing directory* that is world-writable without the
+      sticky bit, or owned by a foreign non-root user: either lets another
+      local principal unlink-and-replace the config file wholesale, which the
+      per-file mode check alone cannot see. ``/tmp``-style world-writable
+      **sticky** directories are exempt — the sticky bit is exactly what stops
+      that unlink.
+    * **Refuse** a symlinked config path whose *link* is owned by a foreign
+      non-root user (checked with ``lstat``, which the file ``fstat`` cannot
+      see through). The symlink itself is honoured otherwise: pointing
+      ``~/.config/pipecat-context-hub/config.toml`` at a dotfiles checkout
+      (GNU stow et al.) is a legitimate, common setup.
+    * **Allow with a warning** for a group-writable file or directory.
+      Distributions using user-private groups (RHEL/Fedora's ``umask 002``)
+      create ``0664`` files whose group contains only the owner — refusing
+      those would break a correctly-configured machine, so the operator is
+      told rather than overruled.
 
-    POSIX only; a no-op returning ``True`` on Windows, whose ACL model these
-    mode bits don't describe.
+    The ownership/mode checks are POSIX-only (Windows' ACL model is not
+    described by these mode bits); the regular-file check is not.
+
+    Takes the *file descriptor*, not the path, so the bytes later handed to
+    ``tomllib`` are the bytes that were validated — closing the TOCTOU window
+    a ``stat(path)``-then-``open(path)`` sequence leaves open.
     """
-    if os.name != "posix":
-        return True
     try:
-        st = config_path.stat()
-    except (OSError, ValueError):
-        # Unreadable/absent: the caller's own open() reports it properly.
+        st = os.fstat(fd)
+    except OSError:
+        # Should not happen on a live fd; the caller's read reports it.
+        return True
+
+    if not stat.S_ISREG(st.st_mode):
+        _module_logger.warning(
+            "Ignoring config.toml at %s: not a regular file (%s); config.toml must be a plain file",
+            redact_home(config_path),
+            _file_kind(st.st_mode),
+        )
+        return False
+
+    if os.name != "posix":
         return True
 
     uid = os.getuid()
+    if not _link_owner_is_trusted(config_path, uid):
+        return False
+    if not _config_parent_is_trusted(config_path, uid):
+        return False
+
     if st.st_uid not in (uid, 0):
         _module_logger.warning(
             "Ignoring config.toml at %s: owned by uid %d, not the current user (uid %d). "
@@ -431,18 +558,34 @@ def load_global_config() -> None:
         # is set. Nothing to load; the warning was already logged once, at
         # import time.
         return
-    if not _config_file_is_trusted(config_path):
-        return
     try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        fd = _open_config_fd(config_path)
     except FileNotFoundError:
         return
-    except (tomllib.TOMLDecodeError, UnicodeError, OSError) as exc:
+    except (OSError, ValueError) as exc:
         _module_logger.warning(
             "Failed to read config.toml at %s: %s", redact_home(config_path), exc
         )
         return
+
+    # `fd` ownership transfers to the file object the moment `os.fdopen`
+    # returns; until then this function must close it on every exit path.
+    fd_owned = True
+    try:
+        if not _config_fd_is_trusted(fd, config_path):
+            return
+        with os.fdopen(fd, "rb") as f:
+            fd_owned = False
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, UnicodeError, OSError, ValueError) as exc:
+        _module_logger.warning(
+            "Failed to read config.toml at %s: %s", redact_home(config_path), exc
+        )
+        return
+    finally:
+        if fd_owned:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
     loaded = 0
     for key, value in data.items():
