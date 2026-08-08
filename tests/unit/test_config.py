@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from unittest.mock import patch
 
+from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import (
+    _DATA_DIR_ENV,
+    _DEFAULT_RERANKER_MODEL,
+    _EXTRA_REPOS_ENV,
+    _RERANKER_MODEL_ENV,
+    _TAINTED_REFS_ENV,
+    _TAINTED_REPOS_ENV,
     ChunkingConfig,
     EmbeddingConfig,
     HubConfig,
@@ -14,13 +22,11 @@ from pipecat_context_hub.shared.config import (
     ServerConfig,
     SourceConfig,
     StorageConfig,
-    _DATA_DIR_ENV,
-    _DEFAULT_RERANKER_MODEL,
-    _EXTRA_REPOS_ENV,
-    _RERANKER_MODEL_ENV,
-    _TAINTED_REFS_ENV,
-    _TAINTED_REPOS_ENV,
 )
+from pipecat_context_hub.shared.markdown import extract_section
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PIPECAT_HUB_VAR_RE = re.compile(r"PIPECAT_HUB_[A-Z_]+")
 
 
 def _round_trip(model_instance):
@@ -421,3 +427,68 @@ class TestHubConfig:
         assert rebuilt.storage.data_dir == Path("/tmp/custom")
         assert rebuilt.storage.sqlite_path == Path("/tmp/custom/metadata.db")
         assert rebuilt.sources.docs_llms_txt_url == "https://example.com/docs.txt"
+
+
+class TestConfigTomlExampleParity:
+    """Parity: config.toml.example's key set must match docs/README.md's
+    Environment Variables table, the same way test_every_click_command_is_bridged
+    (tests/unit/test_plugin.py) catches an unbridged CLI command.
+
+    docs/README.md's Environment Variables table, not .env.example, is the
+    parity partner (see dev plan Architecture Decisions) — .env.example is a
+    curated subset of repo bundles, not the full var registry.
+    """
+
+    def _example_keys(self) -> set[str]:
+        example_text = (_REPO_ROOT / "config.toml.example").read_text(encoding="utf-8")
+        return set(_PIPECAT_HUB_VAR_RE.findall(example_text))
+
+    def _readme_keys(self) -> set[str]:
+        readme_text = (_REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+        section = extract_section(readme_text, "Environment Variables")
+        assert section is not None, (
+            "docs/README.md has no 'Environment Variables' heading — "
+            "extract_section() found nothing to scope the parity check to."
+        )
+        return set(_PIPECAT_HUB_VAR_RE.findall(section))
+
+    def test_config_toml_example_matches_readme_env_var_table(self):
+        example_keys = self._example_keys()
+        readme_keys = self._readme_keys()
+
+        # Neither extraction may vacuously pass by finding nothing — a format
+        # change (e.g. renaming the heading, or de-indenting the example's
+        # `# KEY = value` lines out of match) must fail loudly, not silently
+        # collapse both sides to the empty set and report "equal".
+        assert example_keys, "config.toml.example: no PIPECAT_HUB_* keys found"
+        assert readme_keys, "README Environment Variables section: no PIPECAT_HUB_* keys found"
+
+        if example_keys != readme_keys:
+            only_in_example = example_keys - readme_keys
+            only_in_readme = readme_keys - example_keys
+            raise AssertionError(
+                "config.toml.example and docs/README.md's Environment Variables "
+                "table have drifted apart.\n"
+                f"Only in config.toml.example: {sorted(only_in_example)}\n"
+                f"Only in README table: {sorted(only_in_readme)}"
+            )
+
+        # PIPECAT_HUB_PRUNE and the rest of _INVOCATION_SCOPED_KEYS are
+        # invocation-scoped, not machine config, and must never appear in
+        # either parity source (see dev plan Requirements / Phase 1).
+        internal_vars = {
+            "PIPECAT_HUB_PRUNE",
+            "PIPECAT_HUB_DEBUG_PROBE",
+            "PIPECAT_HUB_CONFIG_FILE",
+            "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK",
+            "PIPECAT_HUB_STABILITY_OUTPUT",
+        }
+        assert internal_vars.isdisjoint(example_keys | readme_keys), (
+            "An invocation-scoped key leaked into config.toml.example or the "
+            "README's Environment Variables table."
+        )
+
+        # Drift alarm: this test's independent copy of the invocation-scoped
+        # set must track shared/env_loading.py's real one, not silently
+        # diverge from it.
+        assert internal_vars == env_loading._INVOCATION_SCOPED_KEYS
