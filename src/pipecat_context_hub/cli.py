@@ -142,6 +142,29 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     shutil.rmtree(data_dir, ignore_errors=True)
 
 
+def _write_serve_debug_probe(logger: logging.Logger) -> None:
+    """Write cwd/env-key evidence to a temp file, opt-in via PIPECAT_HUB_DEBUG_PROBE=1.
+
+    Secondary observable for Phase 0's MCP-cwd verification, for use only if
+    the MCP client's stderr/log surface can't be located. Never fires unless
+    explicitly requested — it is not a substitute for the permanent
+    ``logger.info`` line above, just a fallback in case that line's output
+    isn't reachable. Failures are logged and swallowed; a debug probe must
+    never crash `serve`.
+    """
+    probe_path = Path.home() / ".cache" / "pipecat-context-hub" / "serve-debug.log"
+    try:
+        probe_path.parent.mkdir(parents=True, exist_ok=True)
+        with probe_path.open("a", encoding="utf-8") as f:
+            f.write(
+                f"{datetime.now(UTC).isoformat()} serve cwd={Path.cwd()} "
+                f"env_keys={sorted(k for k in os.environ if k.startswith('PIPECAT_HUB_'))}\n"
+            )
+        logger.info("PIPECAT_HUB_DEBUG_PROBE=1: wrote serve debug probe to %s", probe_path)
+    except OSError:
+        logger.exception("PIPECAT_HUB_DEBUG_PROBE=1: failed to write serve debug probe")
+
+
 @click.group(invoke_without_command=True)
 @click.version_option(package_name="pipecat-ai-context-hub", prog_name="pipecat-context-hub")
 @click.option("--log-level", default="INFO", help="Logging level.")
@@ -248,6 +271,18 @@ def serve(ctx: click.Context) -> None:
     config: HubConfig = ctx.obj["config"]
     logger = logging.getLogger(__name__)
     logger.info("Starting server with transport=%s", config.server.transport)
+    # Permanent diagnostic (not removed after investigation): confirms, at a
+    # glance, what cwd and PIPECAT_HUB_* keys this invocation actually saw —
+    # useful for diagnosing config provenance for a globally-installed MCP
+    # server, whose cwd/env may differ from an operator's interactive shell.
+    # Key names only, never values (PIPECAT_HUB_EXTRA_REPOS can be ~70 repos).
+    logger.info(
+        "serve cwd=%s env_keys=%s",
+        Path.cwd(),
+        sorted(k for k in os.environ if k.startswith("PIPECAT_HUB_")),
+    )
+    if os.environ.get("PIPECAT_HUB_DEBUG_PROBE") == "1":
+        _write_serve_debug_probe(logger)
 
     # Resolve the client-death watch plan now, before the slow index +
     # model startup below. A client that dies during cold-start would
