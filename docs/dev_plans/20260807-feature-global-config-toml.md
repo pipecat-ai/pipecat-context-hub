@@ -1110,11 +1110,11 @@ imported in `services/ingest/github_ingest.py:664`.
 
 ## Progress
 
-- [ ] Phase 0: Verify the MCP-cwd assumption
-- [ ] Phase 1: Shared env-loading module + precedence wiring
-- [ ] Phase 2: `config.toml.example` + parity test
-- [ ] Phase 3: Dashboard script wiring + Docs
-- [ ] Phase 4: Refresh prune safety
+- [x] Phase 0: Verify the MCP-cwd assumption
+- [x] Phase 1: Shared env-loading module + precedence wiring
+- [x] Phase 2: `config.toml.example` + parity test
+- [x] Phase 3: Dashboard script wiring + Docs
+- [x] Phase 4: Refresh prune safety
 
 ## Findings
 
