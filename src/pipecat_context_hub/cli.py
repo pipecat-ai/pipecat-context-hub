@@ -21,7 +21,9 @@ import click
 
 from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
+from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.env_loading import load_cwd_dotenv, load_global_config
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
 from pipecat_context_hub.shared.support_links import bug_report_hint
 
@@ -30,6 +32,12 @@ from pipecat_context_hub.shared.support_links import bug_report_hint
 # lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
 # import cycle); this re-export keeps that suite green and the call sites stable.
 _redact_home = redact_home
+
+# Back-compat alias: the cwd-.env loader now lives in shared/env_loading.py
+# (moved verbatim so every entry point — CLI, dashboard scripts,
+# scripts/smoke_check_removals.py — can share it). Kept as a thin re-export
+# so existing call sites and tests that reference `cli._load_dotenv` still work.
+_load_dotenv = load_cwd_dotenv
 
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
@@ -89,45 +97,6 @@ def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None
             _module_logger.exception("Cross-encoder pre-warm failed; falling back to lazy load")
 
 
-def _load_dotenv() -> None:
-    """Load ``.env`` file from the current directory if it exists.
-
-    Only sets variables that are not already in the environment so that
-    explicit env vars always take precedence.  Supports quoted values
-    and inline comments::
-
-        KEY="value"          # ok
-        KEY='value'          # ok
-        KEY=value            # ok
-        KEY="value" # note   # inline comment stripped
-        KEY=value # note     # inline comment stripped
-    """
-    env_path = Path.cwd() / ".env"
-    if not env_path.is_file():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        if not key:
-            continue
-        value = value.strip()
-        # Quoted value: extract content between matching quotes.
-        if value and value[0] in ('"', "'"):
-            quote = value[0]
-            end = value.find(quote, 1)
-            value = value[1:end] if end != -1 else value[1:]
-        else:
-            # Unquoted: strip inline comments (# preceded by whitespace).
-            idx = value.find(" #")
-            if idx != -1:
-                value = value[:idx].rstrip()
-        if key not in os.environ:
-            os.environ[key] = value
-
-
 def _configure_logging(level: str) -> None:
     """Set up basic logging to stderr (stdout is used by MCP stdio transport)."""
     logging.basicConfig(
@@ -138,7 +107,26 @@ def _configure_logging(level: str) -> None:
 
 
 def _delete_local_index_storage(data_dir: Path) -> None:
-    """Delete the persisted local index directory for a clean rebuild."""
+    """Delete the persisted local index directory for a clean rebuild.
+
+    Defense in depth against a colliding ``PIPECAT_HUB_DATA_DIR`` supplied by
+    a real environment variable or cwd ``.env`` (the narrower case of a
+    colliding value originating in ``config.toml`` itself is handled by
+    ``load_global_config()``'s own skip-and-warn above): if the active
+    config file (per ``resolve_global_config_path()``) both resolves inside
+    ``data_dir`` and actually exists, abort before ``shutil.rmtree`` rather
+    than delete the operator's machine-global config out from under them. A
+    stale/deleted or never-created config path never blocks a real
+    ``--reset-index`` — only an existing file in effect is worth protecting.
+    """
+    resolved_data_dir = data_dir.expanduser().resolve(strict=False)
+    active_config_path = env_loading.resolve_global_config_path().resolve(strict=False)
+    if active_config_path.is_file() and active_config_path.is_relative_to(resolved_data_dir):
+        raise click.ClickException(
+            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
+            f"config.toml ({redact_home(active_config_path)}). Move PIPECAT_HUB_DATA_DIR "
+            "or the config file so they don't collide, then retry --reset-index."
+        )
     shutil.rmtree(data_dir, ignore_errors=True)
 
 
@@ -178,8 +166,14 @@ def main(ctx: click.Context, log_level: str) -> None:
     0 = success, 1 = invalid input, 2 = index missing or empty — build it
     once with `pipecat-context-hub refresh` (first run takes minutes).
     """
-    _load_dotenv()
+    # Loader calls run *after* _configure_logging (deliberately inverting the
+    # prior order): no .env/config.toml-settable key feeds logging setup
+    # (it reads only the --log-level CLI option), so nothing is lost by
+    # moving both later, and malformed-config warnings are emitted through
+    # configured logging instead of Python's last-resort handler.
     _configure_logging(log_level)
+    load_cwd_dotenv()
+    load_global_config()
     ctx.ensure_object(dict)
     config = HubConfig()
     ctx.obj["config"] = config.model_copy(

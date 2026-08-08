@@ -21,90 +21,20 @@ from pipecat_context_hub.cli import (
     main,
 )
 from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
+from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.env_loading import load_cwd_dotenv, load_global_config
 
 
-class TestLoadDotenv:
-    """Tests for the .env file parser."""
+class TestLoadDotenvBackCompatAlias:
+    """`cli._load_dotenv` moved to `shared.env_loading.load_cwd_dotenv`
+    (dev plan Phase 1); parsing behavior itself is covered by
+    tests/unit/test_env_loading.py::TestLoadCwdDotenv against the real
+    home. This just pins that the re-export in cli.py is not a stale copy.
+    """
 
-    def test_basic_unquoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("FOO=bar\n")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("FOO", raising=False)
-        _load_dotenv()
-        assert os.environ["FOO"] == "bar"
-
-    def test_double_quoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text('KEY="hello world"\n')
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
-        _load_dotenv()
-        assert os.environ["KEY"] == "hello world"
-
-    def test_single_quoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("KEY='hello world'\n")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
-        _load_dotenv()
-        assert os.environ["KEY"] == "hello world"
-
-    def test_inline_comment_stripped_unquoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("KEY=value # this is a comment\n")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
-        _load_dotenv()
-        assert os.environ["KEY"] == "value"
-
-    def test_inline_comment_stripped_quoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text('KEY="org/a,org/b" # note\n')
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
-        _load_dotenv()
-        assert os.environ["KEY"] == "org/a,org/b"
-
-    def test_hash_inside_quotes_preserved(self, tmp_path: Path, monkeypatch):
-        """Hash inside quotes is NOT treated as a comment."""
-        (tmp_path / ".env").write_text('KEY="color #fff"\n')
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
-        _load_dotenv()
-        assert os.environ["KEY"] == "color #fff"
-
-    def test_comment_lines_skipped(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("# comment\nKEY=val\n")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
-        _load_dotenv()
-        assert os.environ["KEY"] == "val"
-
-    def test_empty_lines_skipped(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("\n\nKEY=val\n\n")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
-        _load_dotenv()
-        assert os.environ["KEY"] == "val"
-
-    def test_existing_env_not_overwritten(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("KEY=from_file\n")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("KEY", "from_shell")
-        _load_dotenv()
-        assert os.environ["KEY"] == "from_shell"
-
-    def test_no_env_file(self, tmp_path: Path, monkeypatch):
-        """No .env file is fine — no error raised."""
-        monkeypatch.chdir(tmp_path)
-        _load_dotenv()  # should not raise
-
-    def test_repo_slugs_with_inline_comment(self, tmp_path: Path, monkeypatch):
-        """Realistic case: PIPECAT_HUB_EXTRA_REPOS with inline comment."""
-        (tmp_path / ".env").write_text(
-            'PIPECAT_HUB_EXTRA_REPOS="org/repo-a,org/repo-b" # community repos\n'
-        )
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("PIPECAT_HUB_EXTRA_REPOS", raising=False)
-        _load_dotenv()
-        assert os.environ["PIPECAT_HUB_EXTRA_REPOS"] == "org/repo-a,org/repo-b"
+    def test_load_dotenv_is_the_real_loader(self):
+        assert _load_dotenv is load_cwd_dotenv
 
 
 class TestRedactHome:
@@ -836,6 +766,191 @@ class TestRefreshCommand:
 
         assert result.exit_code == 0, result.output
         mock_build_dep_map.assert_called_once()
+
+
+class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
+    """`refresh --reset-index` through the real (unmocked) code path for
+    `_delete_local_index_storage` — config.toml survival + the
+    PIPECAT_HUB_DATA_DIR collision guard (dev plan Phase 1, reset-index
+    survival). Subclasses TestRefreshCommand to reuse its `_make_mocks()`
+    helper and its autouse `_mock_deprecation_map` fixture; every test here
+    deliberately does NOT `@patch` `cli._delete_local_index_storage` —
+    mocking it would make "config file still exists" vacuously true, since
+    nothing would actually be deleted. `test_reset_index_forces_full_rebuild`
+    above does mock it and exercises different behavior (event ordering);
+    that pattern is not copied here.
+    """
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_reset_index_survives_with_real_delete_override_config_path(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """PIPECAT_HUB_CONFIG_FILE override case: config.toml survives a
+        real `shutil.rmtree` of a separate PIPECAT_HUB_DATA_DIR (proving the
+        real deletion path ran, not a mock)."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        config_dir = tmp_path / "config-home"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+
+        data_dir = tmp_path / "data-home"
+        data_dir.mkdir()
+        sentinel_file = data_dir / "sentinel.db"
+        sentinel_file.write_text("not empty")
+
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(config_file))
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 0, result.output
+        # Config file survives and still loads without error afterward.
+        assert config_file.exists()
+        load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "45"
+        # The real data directory was actually removed (shutil.rmtree ran,
+        # not a mock): our sentinel file is gone.
+        assert not sentinel_file.exists()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_reset_index_survives_with_real_delete_default_config_path(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """No-override case: DEFAULT_CONFIG_PATH branch, reached by
+        monkeypatching `env_loading.DEFAULT_CONFIG_PATH` (not `Path.home`)
+        after explicitly clearing the autouse fixture's nonexistent-sentinel
+        default for PIPECAT_HUB_CONFIG_FILE. A precondition assertion runs
+        before any CLI invocation so a missed `delenv` or an inert
+        monkeypatch (module-attribute-lookup-at-call-time contract violated)
+        fails loudly here, rather than letting `--reset-index` silently
+        target the developer's real default index.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        config_dir = tmp_path / "config-home"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+
+        data_dir = tmp_path / "data-home"
+        data_dir.mkdir()
+        sentinel_file = data_dir / "sentinel.db"
+        sentinel_file.write_text("not empty")
+
+        # Clear the autouse fixture's sentinel default so the real
+        # DEFAULT_CONFIG_PATH branch runs, not the sentinel path.
+        monkeypatch.delenv("PIPECAT_HUB_CONFIG_FILE", raising=False)
+        monkeypatch.setattr(env_loading, "DEFAULT_CONFIG_PATH", config_file)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.chdir(tmp_path)
+
+        # Precondition: fails loudly, before any shutil.rmtree can run, if
+        # either the delenv was missed (sentinel still active) or the
+        # DEFAULT_CONFIG_PATH monkeypatch is silently inert.
+        assert env_loading.resolve_global_config_path() == config_file
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 0, result.output
+        assert config_file.exists()
+        assert not sentinel_file.exists()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_reset_index_refuses_colliding_data_dir_before_deletion(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A higher-precedence PIPECAT_HUB_DATA_DIR (real env var here)
+        pointing at/above the active config path must make `--reset-index`
+        abort clearly before any deletion runs, config file still present.
+        This is `_delete_local_index_storage()`'s defense-in-depth guard —
+        distinct from `load_global_config()`'s own collision skip, which
+        only covers a colliding value that originates inside config.toml
+        itself.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        config_dir = tmp_path / "config-home"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(config_file))
+        # Collides: config_dir (which contains config_file) is requested as
+        # the data dir to reset.
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(config_dir))
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code != 0
+        assert config_file.exists()
+        mock_is_cls.assert_not_called()
 
 
 class TestRefreshProvenanceMetadata:
