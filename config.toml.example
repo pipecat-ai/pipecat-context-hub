@@ -12,6 +12,12 @@
 # among the keys below — see docs/README.md for why. See docs/README.md's
 # Environment Variables table for the authoritative descriptions (this
 # file's key set is kept in parity with that table by a test).
+#
+# Permissions: this file's contents are promoted into the process
+# environment, so keep it writable only by you — `chmod 600
+# ~/.config/pipecat-context-hub/config.toml`. A world-writable file, or one
+# owned by another user, is ignored with a warning; a group-writable one is
+# loaded but warned about.
 
 # Index, clones, and metadata location. Consumers of the metadata contract
 # must honour it.

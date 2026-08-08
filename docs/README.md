@@ -336,6 +336,10 @@ layers, first-writer-wins, in this order:
    scalars, e.g. `PIPECAT_HUB_EXTRA_REPOS = ["org/repo-a", "org/repo-b"]`, is
    accepted and coerced to the same comma-separated form as the env-var
    form). See [`config.toml.example`](../config.toml.example).
+   Keep it private — `chmod 600 ~/.config/pipecat-context-hub/config.toml`.
+   Its values go straight into the process environment, so on POSIX systems a
+   world-writable file, or one owned by another user, is ignored with a
+   warning; a group-writable one is still loaded, but warned about.
 
 Anything not set in any layer falls back to `HubConfig`'s field defaults
 (the table above).
@@ -443,7 +447,11 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 
 - **Empty results** — run `uvx pipecat-ai-context-hub refresh` to populate the index
 - **Stale results** — run `uvx pipecat-ai-context-hub refresh --force` to re-ingest from latest upstream
-- **Index corruption** — run `uvx pipecat-ai-context-hub refresh --force --reset-index` to wipe and rebuild
+- **Index corruption** — run `uvx pipecat-ai-context-hub refresh --force --reset-index` to wipe and rebuild.
+  Only the data directory is removed: your machine-global
+  `~/.config/pipecat-context-hub/config.toml` and any project `.env` are
+  preserved, and the reset aborts with an error rather than deleting a
+  `PIPECAT_HUB_DATA_DIR` that happens to contain the active `config.toml`.
 - **`--prune` / `PIPECAT_HUB_PRUNE`** — `refresh` no longer deletes
   previously-indexed data for a repo that isn't configured *for this
   invocation* by default; it only warns

@@ -1,12 +1,12 @@
 # Task: Global config.toml fallback + refresh prune safety for machine-scoped hub installs
 
-**Status**: Not Started
+**Status**: Completed
 **Component**: cli
 **Assigned to**: Claude
 **Priority**: Medium
 **Branch**: feature/global-config-toml
 **Created**: 2026-08-07
-**Completed**: (fill when done)
+**Completed**: 2026-08-09
 **Review Gates**: none
 
 ## Objective

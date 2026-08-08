@@ -36,16 +36,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # import cycle); this re-export keeps that suite green and the call sites stable.
 _redact_home = redact_home
 
-# Back-compat alias: the cwd-.env loader now lives in shared/env_loading.py
-# (moved verbatim so every entry point — CLI, dashboard scripts,
-# scripts/smoke_check_removals.py — can share it). This is a *callable*
-# re-export only, NOT a monkeypatch seam: `main()` bootstraps through
-# `env_loading.load_env_layers()`, so patching `cli._load_dotenv` does not
-# intercept anything the CLI actually calls. Patch
-# `pipecat_context_hub.shared.env_loading.load_cwd_dotenv` instead.
-_load_dotenv = env_loading.load_cwd_dotenv
-
-
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
 # renderer and the producers cannot drift.
@@ -144,6 +134,15 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
     ``/home``). A depth threshold (``len(parts) < 3``) was considered and
     rejected: it would refuse a perfectly reasonable containerised
     ``PIPECAT_HUB_DATA_DIR=/data``.
+
+    Comparison is by *filesystem identity* (``env_loading.same_dir``, i.e.
+    ``(st_dev, st_ino)``), not ``==``, for the same reason
+    ``config_collides_with_dir()`` uses it: ``Path.resolve()`` preserves the
+    caller's casing on case-insensitive volumes, so
+    ``PIPECAT_HUB_DATA_DIR=/Users/Varun`` would pass a string comparison
+    against a real home of ``/Users/varun`` and reach ``shutil.rmtree``. The
+    string comparison is kept as well, since it still catches a
+    not-yet-existing path that cannot be stat'd.
     """
     unsafe: list[Path] = [Path(resolved_data_dir.anchor or resolved_data_dir.root)]
     try:
@@ -154,7 +153,19 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
         unsafe.append(home)
         unsafe.extend(home.parents)
 
-    if any(resolved_data_dir == candidate for candidate in unsafe):
+    try:
+        target_stat: os.stat_result | None = resolved_data_dir.stat()
+    except (OSError, ValueError):
+        target_stat = None
+
+    def _is_unsafe(candidate: Path) -> bool:
+        if resolved_data_dir == candidate:
+            return True
+        if target_stat is None:
+            return False
+        return env_loading.same_dir(candidate, target_stat)
+
+    if any(_is_unsafe(candidate) for candidate in unsafe):
         raise click.ClickException(
             f"Refusing to delete {redact_home(data_dir)}: it is a filesystem root or "
             "home directory, not an index directory. Point PIPECAT_HUB_DATA_DIR at a "
@@ -180,9 +191,19 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     (i.e. every user before this branch) gets no collision hit at all, so a
     ``PIPECAT_HUB_DATA_DIR`` of ``/`` or ``$HOME`` would otherwise reach
     ``shutil.rmtree`` unguarded. Refuse a filesystem root, the home directory
-    itself, and any path shallower than two components below the root.
+    itself, and any ancestor of home — see ``_refuse_unsafe_data_dir()`` for
+    the exact contract (notably: no depth threshold, which was considered and
+    rejected).
+
+    Both guards, and the deletion itself, operate on the *normalized* path, so
+    what was validated is exactly what is removed.
     """
-    resolved_data_dir = data_dir.expanduser().resolve(strict=False)
+    try:
+        resolved_data_dir = data_dir.expanduser().resolve(strict=False)
+    except (ValueError, OSError, RuntimeError):
+        # Same crash-safety contract as env_loading.config_collides_with_dir:
+        # `resolve()` raises RuntimeError for a symlink loop on Python <=3.12.
+        resolved_data_dir = Path(os.path.abspath(data_dir))
     _refuse_unsafe_data_dir(data_dir, resolved_data_dir)
     colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
     if colliding_config_path is not None:
@@ -191,7 +212,7 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             f"config.toml ({redact_home(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
             "or the config file so they don't collide, then retry --reset-index."
         )
-    shutil.rmtree(data_dir, ignore_errors=True)
+    shutil.rmtree(resolved_data_dir, ignore_errors=True)
 
 
 async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> None:

@@ -16,7 +16,6 @@ from click.testing import CliRunner
 from pipecat_context_hub.cli import (
     _PRUNE_ENABLED_VALUES,
     _delete_local_index_storage,
-    _load_dotenv,
     _log_serve_cwd,
     _prewarm_models,
     _print_refresh_summary,
@@ -30,18 +29,7 @@ from pipecat_context_hub.cli import (
 from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
-from pipecat_context_hub.shared.env_loading import load_cwd_dotenv, load_global_config
-
-
-class TestLoadDotenvBackCompatAlias:
-    """`cli._load_dotenv` moved to `shared.env_loading.load_cwd_dotenv`
-    (dev plan Phase 1); parsing behavior itself is covered by
-    tests/unit/test_env_loading.py::TestLoadCwdDotenv against the real
-    home. This just pins that the re-export in cli.py is not a stale copy.
-    """
-
-    def test_load_dotenv_is_the_real_loader(self):
-        assert _load_dotenv is load_cwd_dotenv
+from pipecat_context_hub.shared.env_loading import load_global_config
 
 
 class TestWriteServeDebugProbe:
@@ -2755,6 +2743,71 @@ class TestDataDirSafetyFloor:
         (data_dir / "marker").write_text("x")
         _delete_local_index_storage(data_dir)
         assert not data_dir.exists()
+
+    def test_refuses_differently_cased_home_on_case_insensitive_fs(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Round-2 finding #1: the floor compared with `==`, but
+        `Path.resolve()` preserves the caller's casing on APFS/NTFS, so
+        `PIPECAT_HUB_DATA_DIR=/Users/Varun` slipped past a real home of
+        `/Users/varun` and reached `shutil.rmtree`. Mirrors
+        test_env_loading.py's
+        `test_differently_cased_dir_is_detected_on_case_insensitive_fs`.
+        """
+        self._no_config_file(monkeypatch, tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        if not (tmp_path / "HOME").exists():
+            pytest.skip("case-sensitive filesystem; casing cannot alias a directory here")
+        monkeypatch.setattr(Path, "home", lambda: home)
+        rmtree = MagicMock()
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", rmtree)
+        with pytest.raises(click.ClickException):
+            _delete_local_index_storage(tmp_path / "HOME")
+        rmtree.assert_not_called()
+
+    def test_refuses_home_reached_through_a_symlinked_ancestor(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Same identity gap, reachable on case-sensitive filesystems too:
+        a symlink hop naming home without matching its resolved spelling."""
+        self._no_config_file(monkeypatch, tmp_path)
+        real = tmp_path / "real"
+        real.mkdir()
+        home = real / "home"
+        home.mkdir()
+        alias = tmp_path / "alias"
+        try:
+            alias.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+        # `Path.home()` here reports the symlinked spelling, so its own
+        # `.resolve()` yields `<tmp>/real/home` while the requested data dir
+        # is spelled `<tmp>/alias/home` — one directory, two strings.
+        monkeypatch.setattr(Path, "home", lambda: home)
+        rmtree = MagicMock()
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", rmtree)
+        with pytest.raises(click.ClickException):
+            _delete_local_index_storage(alias / "home")
+        rmtree.assert_not_called()
+
+    def test_deletes_the_path_it_validated(self, monkeypatch, tmp_path: Path) -> None:
+        """Round-2 finding #12: both guards ran against the expanded/resolved
+        path while `rmtree` got the raw one, so a `~`-bearing `data_dir` would
+        have been validated and then not deleted (guard/action drift)."""
+        self._no_config_file(monkeypatch, tmp_path)
+        home = tmp_path / "home"
+        data_dir = home / "hub-data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "marker").write_text("x")
+        # `Path.expanduser()` reads HOME/USERPROFILE, not `Path.home()`, so
+        # both the tilde expansion and the safety floor see the fake home.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        rmtree = MagicMock()
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", rmtree)
+        _delete_local_index_storage(Path("~/hub-data"))
+        assert rmtree.call_args.args[0] == data_dir.resolve(strict=False)
 
 
 class TestServeCwdDiagnosticRedaction:

@@ -46,9 +46,9 @@ def _toml_str(value: object) -> str:
 
 class TestLoadCwdDotenv:
     """Tests for the cwd .env parser — moved verbatim from test_cli.py's
-    TestLoadDotenv (module move, dev plan Phase 1). `cli._load_dotenv` is a
-    thin re-export of this function; see TestLoadDotenvBackCompatAlias in
-    test_cli.py for the alias-identity check.
+    TestLoadDotenv (module move, dev plan Phase 1). This module is the only
+    home for the loader now: `cli._load_dotenv` was a private re-export with
+    no callers and has been removed.
     """
 
     def test_basic_unquoted(self, tmp_path: Path, monkeypatch):
@@ -975,3 +975,185 @@ class TestLoadEnvLayers:
         env_loading.load_env_layers()
 
         assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "7"
+
+
+class TestConfigPathResolutionCrashSafety:
+    """Round-2 finding #2: `Path.resolve(strict=False)` raises `RuntimeError`
+    — not an `OSError` subclass — for a symlink loop on Python <=3.12, so a
+    `PIPECAT_HUB_CONFIG_FILE` pointing into a loop aborted
+    `refresh --reset-index` with an uncaught traceback instead of degrading to
+    "no collision detected". Entry points never crash on a bad config.
+    """
+
+    def test_resolve_runtime_error_is_contained(self, tmp_path: Path, monkeypatch):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("")
+        _use_config_file(monkeypatch, config_file)
+
+        real_resolve = Path.resolve
+
+        def _boom(self, strict=False):
+            raise RuntimeError("Symlink loop from %r" % (self,))
+
+        monkeypatch.setattr(Path, "resolve", _boom)
+        try:
+            assert config_collides_with_dir(tmp_path / "elsewhere") is None
+        finally:
+            monkeypatch.setattr(Path, "resolve", real_resolve)
+
+    def test_symlink_loop_config_path_does_not_raise(self, tmp_path: Path, monkeypatch):
+        """The real-world shape of the same bug, on whichever Python versions
+        actually raise for it."""
+        loop_a = tmp_path / "loop_a"
+        loop_b = tmp_path / "loop_b"
+        try:
+            loop_a.symlink_to(loop_b)
+            loop_b.symlink_to(loop_a)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+        _use_config_file(monkeypatch, loop_a / "config.toml")
+        # Must not raise; a config that can't be resolved can't be protected.
+        assert config_collides_with_dir(tmp_path / "data") is None
+        load_global_config()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits only")
+class TestConfigFileOwnershipGuard:
+    """Round-2 finding #8: `config.toml` sits at a fixed, predictable path and
+    its contents are promoted straight into `os.environ`, so a file another
+    local principal can rewrite is a persistent injection point."""
+
+    def _write(self, tmp_path: Path, monkeypatch, mode: int) -> Path:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')
+        config_file.chmod(mode)
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        return config_file
+
+    def test_world_writable_config_is_ignored(self, tmp_path: Path, monkeypatch, caplog):
+        self._write(tmp_path, monkeypatch, 0o666)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert "world-writable" in caplog.text
+
+    def test_foreign_owner_config_is_ignored(self, tmp_path: Path, monkeypatch, caplog):
+        self._write(tmp_path, monkeypatch, 0o600)
+        real_stat = Path.stat
+
+        class _ForeignStat:
+            def __init__(self, st):
+                self._st = st
+
+            def __getattr__(self, name):
+                return getattr(self._st, name)
+
+            st_uid = os.getuid() + 12345
+
+        def _stat(self, *args, **kwargs):
+            return _ForeignStat(real_stat(self, *args, **kwargs))
+
+        monkeypatch.setattr(Path, "stat", _stat)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert "not the current user" in caplog.text
+
+    def test_group_writable_config_warns_but_still_loads(self, tmp_path: Path, monkeypatch, caplog):
+        """User-private-group distros (`umask 002`) create 0664 files whose
+        group holds only the owner — refusing those would break a correctly
+        configured machine, so warn rather than overrule."""
+        self._write(tmp_path, monkeypatch, 0o664)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "42"
+        assert "group-writable" in caplog.text
+
+    def test_private_config_loads_without_warning(self, tmp_path: Path, monkeypatch, caplog):
+        self._write(tmp_path, monkeypatch, 0o600)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "42"
+        assert "writable" not in caplog.text
+
+
+class TestSkipWarningsAreNotContradictory:
+    """Round-2 finding #11: invocation-scoped keys are deliberately absent
+    from `_KNOWN_KEYS`, so checking typos first emitted "typo?; setting it
+    anyway" immediately followed by "invocation-scoped; skipping" for the
+    same key."""
+
+    def test_invocation_scoped_key_emits_only_the_scoping_warning(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"{PRUNE_ENV_VAR} = true\n")
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv(PRUNE_ENV_VAR, raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert PRUNE_ENV_VAR not in os.environ
+        messages = [r.getMessage() for r in caplog.records]
+        assert len(messages) == 1, messages
+        assert "invocation-scoped" in messages[0]
+        assert "typo" not in messages[0]
+
+
+class TestShadowedExclusionWarningNamesEntries:
+    """Round-2 finding #3: precedence stays first-writer-wins (the plan's
+    Objective states "whole-string override, not a list merge"), so the
+    mitigation for a `.env` clearing a machine-global taint list is a warning
+    that names the slugs that actually lost protection."""
+
+    def test_names_the_lost_slugs(self, tmp_path: Path, monkeypatch, caplog):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_TAINTED_REPOS = "org/bad,org/worse"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "org/bad")
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "org/worse" in caplog.text
+        assert "NOT in effect" in caplog.text
+
+    def test_names_the_lost_slugs_from_an_array_value(self, tmp_path: Path, monkeypatch, caplog):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_TAINTED_REPOS = ["org/bad", "org/worse"]\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "")
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "org/bad" in caplog.text
+        assert "org/worse" in caplog.text
+
+    def test_no_entries_lost_still_warns_generically(self, tmp_path: Path, monkeypatch, caplog):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_TAINTED_REPOS = "org/bad"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "org/bad,org/other")
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "NOT in effect" in caplog.text
+
+
+class TestConfigPathLogsAreHomeRedacted:
+    """Round-2 finding #7: the "Loaded N key(s)" line is exactly what an
+    operator pastes into a bug report, and the default config path carries the
+    OS username."""
+
+    def test_loaded_line_is_redacted(self, tmp_path: Path, monkeypatch, caplog):
+        home = tmp_path / "home"
+        config_dir = home / ".config" / "pipecat-context-hub"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        with caplog.at_level("INFO"):
+            load_global_config()
+        loaded = [r.getMessage() for r in caplog.records if "Loaded" in r.getMessage()]
+        assert loaded, caplog.text
+        assert str(home) not in loaded[0]
+        assert loaded[0].endswith("~/.config/pipecat-context-hub/config.toml")

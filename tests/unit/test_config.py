@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import re
@@ -509,6 +510,42 @@ class TestConfigTomlExampleParity:
             f"Only in config.toml.example: {sorted(example_keys - env_loading._KNOWN_KEYS)}"
         )
 
+    def test_every_env_var_the_code_reads_is_in_the_registry(self):
+        """Code-anchored leg of the parity chain (round-2 finding #6).
+
+        `config.toml.example` <-> README <-> `_KNOWN_KEYS` pins three
+        *documentation* copies of the registry to each other, but nothing
+        pinned any of them to the code that actually reads these vars. A new
+        `PIPECAT_HUB_*` setting added to `shared/config.py` without a doc
+        update produced a silently-unsupported `config.toml` key (the loader
+        would warn "typo?" about a perfectly valid setting) and stayed green
+        through every existing test.
+
+        String *constants* only, via `ast` — a comment mentioning a var (e.g.
+        the loader's own `PIPECAT_HUB_DATADIR` typo example) is prose, not a
+        var the code reads.
+        """
+        allowed = env_loading._KNOWN_KEYS | env_loading._INVOCATION_SCOPED_KEYS
+        found: dict[str, str] = {}
+        src_root = _REPO_ROOT / "src"
+        for path in sorted(src_root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    for match in _PIPECAT_HUB_VAR_RE.findall(node.value):
+                        found.setdefault(match, str(path.relative_to(_REPO_ROOT)))
+
+        # Non-vacuity: the scan must actually be finding var names.
+        assert len(found) >= len(env_loading._KNOWN_KEYS), found
+
+        unregistered = {k: v for k, v in found.items() if k not in allowed}
+        assert not unregistered, (
+            "These PIPECAT_HUB_* vars are read (or named) in src/ but appear in "
+            "neither the documented registry (config.toml.example + docs/README.md + "
+            "_KNOWN_KEYS) nor _INVOCATION_SCOPED_KEYS. Document them, or add them to "
+            f"_INVOCATION_SCOPED_KEYS if they are not machine config:\n{unregistered}"
+        )
+
 
 def _import_script(path: Path, module_name_hint: str):
     """Import a non-package script file via file-path loading.
@@ -547,28 +584,61 @@ class TestDashboardScriptConfigParity:
     behavioral test ... not source-scan alone").
     """
 
-    _SCRIPTS = {
-        "dashboard/scripts/extract_dashboard.py": (
-            _REPO_ROOT / "dashboard" / "scripts" / "extract_dashboard.py",
-            "StorageConfig",
-        ),
-        "dashboard/scripts/extract_embeddings.py": (
-            _REPO_ROOT / "dashboard" / "scripts" / "extract_embeddings.py",
-            "StorageConfig",
-        ),
-        "scripts/smoke_check_removals.py": (
-            _REPO_ROOT / "scripts" / "smoke_check_removals.py",
-            "HubConfig",
-        ),
-    }
+    # Directories holding standalone (non-package) entry points. Every *.py
+    # here is scanned; the registry is *discovered*, not hand-maintained, so a
+    # fourth script added later can't silently escape this contract — the
+    # failure mode `load_env_layers()` was introduced to eliminate (round-2
+    # finding #5). Mirrors test_every_click_command_is_bridged, which derives
+    # its set from `hub_cli.commands` rather than listing commands.
+    _ENTRY_POINT_DIRS = ("dashboard/scripts", "scripts")
+    _CONFIG_CLASSES = ("HubConfig", "StorageConfig")
+
+    # Non-vacuity floor only: these must always be discovered. Never the
+    # source of the set under test.
+    _KNOWN_ENTRY_POINTS = frozenset(
+        {
+            "dashboard/scripts/extract_dashboard.py",
+            "dashboard/scripts/extract_embeddings.py",
+            "scripts/smoke_check_removals.py",
+        }
+    )
+
+    def _discover_entry_points(self) -> dict[str, tuple[Path, str, int]]:
+        """Every standalone script that constructs a config object.
+
+        Returns ``{rel_path: (path, first_constructed_class, offset)}``.
+        """
+        discovered: dict[str, tuple[Path, str, int]] = {}
+        for rel_dir in self._ENTRY_POINT_DIRS:
+            for path in sorted((_REPO_ROOT / rel_dir).glob("*.py")):
+                source = path.read_text(encoding="utf-8")
+                hits = [
+                    (source.find(f"{cls}("), cls)
+                    for cls in self._CONFIG_CLASSES
+                    if f"{cls}(" in source
+                ]
+                if not hits:
+                    continue
+                offset, cls = min(hits)
+                discovered[path.relative_to(_REPO_ROOT).as_posix()] = (path, cls, offset)
+        return discovered
+
+    def test_discovery_finds_the_known_entry_points(self):
+        """Guards the discovery pass itself: a glob that stops matching (a
+        moved directory, a renamed script) must fail loudly rather than
+        vacuously pass over an empty set."""
+        discovered = set(self._discover_entry_points())
+        missing = self._KNOWN_ENTRY_POINTS - discovered
+        assert not missing, (
+            f"config-constructing entry points no longer discovered: {sorted(missing)}. "
+            "Update _ENTRY_POINT_DIRS/_KNOWN_ENTRY_POINTS if they legitimately moved."
+        )
 
     def test_scripts_call_loaders_before_construction(self):
-        for rel_path, (path, config_cls) in self._SCRIPTS.items():
+        for rel_path, (path, config_cls, construct_idx) in self._discover_entry_points().items():
             source = path.read_text(encoding="utf-8")
             bootstrap_idx = source.find("load_env_layers()")
-            construct_idx = source.find(f"{config_cls}()")
             assert bootstrap_idx != -1, f"{rel_path}: no load_env_layers() call found"
-            assert construct_idx != -1, f"{rel_path}: no {config_cls}() construction found"
             assert bootstrap_idx < construct_idx, (
                 f"{rel_path}: expected load_env_layers() before {config_cls}() "
                 f"construction; found at offsets {bootstrap_idx}, {construct_idx}"

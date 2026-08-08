@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import tomllib
 from pathlib import Path
+
+from pipecat_context_hub.shared.paths import redact_home
 
 _module_logger = logging.getLogger(__name__)
 
@@ -170,8 +173,18 @@ def resolve_global_config_path() -> Path | None:
     return DEFAULT_CONFIG_PATH
 
 
-def _same_dir(path: Path, dir_stat: os.stat_result) -> bool:
-    """True when ``path`` is the same on-disk directory as ``dir_stat``."""
+def same_dir(path: Path, dir_stat: os.stat_result) -> bool:
+    """True when ``path`` is the same on-disk directory as ``dir_stat``.
+
+    Public because it is the single filesystem-identity primitive shared by
+    every deletion guard in this project: this module's
+    ``config_collides_with_dir()`` and ``cli.py``'s
+    ``_refuse_unsafe_data_dir()``. Both must compare ``(st_dev, st_ino)``
+    rather than path strings, because ``Path.resolve()`` preserves the
+    caller's casing on case-insensitive volumes (macOS APFS, Windows NTFS) —
+    so ``/Users/Varun`` and ``/Users/varun`` compare unequal while naming one
+    directory that ``shutil.rmtree`` would happily delete.
+    """
     try:
         return os.path.samestat(path.stat(), dir_stat)
     except (OSError, ValueError):
@@ -200,7 +213,7 @@ def _is_inside(path: Path, directory: Path, dir_stat: os.stat_result | None) -> 
         return True
     if dir_stat is None:
         return False
-    return any(_same_dir(ancestor, dir_stat) for ancestor in path.parents)
+    return any(same_dir(ancestor, dir_stat) for ancestor in path.parents)
 
 
 def config_collides_with_dir(candidate_dir: Path) -> Path | None:
@@ -241,9 +254,16 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     # Physical: directory chain dereferenced, final component left intact —
     # this is the path that would actually be unlinked by rmtree(candidate_dir)
     # even when that path is itself a symlink pointing elsewhere.
+    #
+    # RuntimeError is caught alongside ValueError/OSError here (and below):
+    # on Python <=3.12 `Path.resolve(strict=False)` raises RuntimeError — not
+    # an OSError subclass — for a symlink loop. A `PIPECAT_HUB_CONFIG_FILE`
+    # pointing into a loop would otherwise abort `refresh --reset-index` with
+    # an uncaught traceback instead of degrading to "no collision detected",
+    # breaking this project's "entry points never crash on a bad config" rule.
     try:
         physical = lexical.parent.resolve(strict=False) / lexical.name
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
         physical = lexical
 
     # Target: full dereference (original behavior) — kept because it covers
@@ -252,10 +272,16 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     # actual config content, not just a path entry).
     try:
         resolved = config_path.resolve(strict=False)
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
         resolved = lexical
 
-    if not lexical.is_file():
+    try:
+        if not lexical.is_file():
+            return None
+    except (OSError, ValueError):
+        # `is_file()` swallows OSError for most failures, but not every one on
+        # every platform (e.g. ELOOP / ENAMETOOLONG on some libc versions).
+        # An unstattable config path can't be protected; treat as absent.
         return None
 
     try:
@@ -305,6 +331,83 @@ def _stringify_scalar_array(value: list[object], key: str) -> str | None:
     return ",".join(stringified)
 
 
+def _config_file_is_trusted(config_path: Path) -> bool:
+    """False when ``config_path`` can be rewritten by another local principal.
+
+    ``config.toml`` is read from a fixed, predictable path and its contents are
+    promoted straight into ``os.environ`` (``PIPECAT_HUB_DATA_DIR``,
+    ``PIPECAT_HUB_EXTRA_REPOS``, the taint lists), so a file another user can
+    write is a persistent, machine-wide injection point into every invocation.
+
+    Two tiers, deliberately not one:
+
+    * **Refuse** a file that is world-writable, or not owned by the current
+      user (nor by root). Both are unambiguously wrong for a per-user config.
+    * **Allow with a warning** for group-writable. Distributions using
+      user-private groups (RHEL/Fedora's ``umask 002``) create ``0664`` files
+      whose group contains only the owner — refusing those would break a
+      correctly-configured machine, so the operator is told rather than
+      overruled.
+
+    POSIX only; a no-op returning ``True`` on Windows, whose ACL model these
+    mode bits don't describe.
+    """
+    if os.name != "posix":
+        return True
+    try:
+        st = config_path.stat()
+    except (OSError, ValueError):
+        # Unreadable/absent: the caller's own open() reports it properly.
+        return True
+
+    uid = os.getuid()
+    if st.st_uid not in (uid, 0):
+        _module_logger.warning(
+            "Ignoring config.toml at %s: owned by uid %d, not the current user (uid %d). "
+            "Another local account could control this hub's settings.",
+            redact_home(config_path),
+            st.st_uid,
+            uid,
+        )
+        return False
+    if st.st_mode & stat.S_IWOTH:
+        _module_logger.warning(
+            "Ignoring config.toml at %s: it is world-writable (mode %o). "
+            "Run `chmod 600 %s` and retry.",
+            redact_home(config_path),
+            stat.S_IMODE(st.st_mode),
+            redact_home(config_path),
+        )
+        return False
+    if st.st_mode & stat.S_IWGRP:
+        _module_logger.warning(
+            "config.toml at %s is group-writable (mode %o); anyone in group %d can change "
+            "this hub's settings. Consider `chmod 600 %s`.",
+            redact_home(config_path),
+            stat.S_IMODE(st.st_mode),
+            st.st_gid,
+            redact_home(config_path),
+        )
+    return True
+
+
+def _shadowed_exclusion_entries(config_value: object, active_value: str) -> list[str]:
+    """Entries in a config.toml exclusion list that the winning layer drops.
+
+    Best-effort and lenient: this runs on a value that was never coerced (it
+    lost precedence before validation), so a shape the loader wouldn't accept
+    simply yields no named entries rather than an error.
+    """
+    if isinstance(config_value, str):
+        configured = [part.strip() for part in config_value.split(",")]
+    elif isinstance(config_value, list) and all(isinstance(v, str) for v in config_value):
+        configured = [str(v).strip() for v in config_value]
+    else:
+        return []
+    active = {part.strip() for part in active_value.split(",")}
+    return sorted({entry for entry in configured if entry and entry not in active})
+
+
 def _is_homogeneous_scalar_array(value: list[object]) -> bool:
     if not value:
         return True
@@ -328,13 +431,17 @@ def load_global_config() -> None:
         # is set. Nothing to load; the warning was already logged once, at
         # import time.
         return
+    if not _config_file_is_trusted(config_path):
+        return
     try:
         with config_path.open("rb") as f:
             data = tomllib.load(f)
     except FileNotFoundError:
         return
     except (tomllib.TOMLDecodeError, UnicodeError, OSError) as exc:
-        _module_logger.warning("Failed to read config.toml at %s: %s", config_path, exc)
+        _module_logger.warning(
+            "Failed to read config.toml at %s: %s", redact_home(config_path), exc
+        )
         return
 
     loaded = 0
@@ -358,6 +465,16 @@ def load_global_config() -> None:
                     continue
             _module_logger.warning("config.toml key %r is not a PIPECAT_HUB_* var; skipping", key)
             continue
+        # Invocation-scoped first: these keys are deliberately absent from
+        # `_KNOWN_KEYS`, so checking typos first would emit two contradictory
+        # warnings in sequence ("typo?; setting it anyway" immediately
+        # followed by "invocation-scoped; skipping") for the same key.
+        if key in _INVOCATION_SCOPED_KEYS:
+            _module_logger.warning(
+                "config.toml key %r is invocation-scoped, not machine config; skipping",
+                key,
+            )
+            continue
         if key not in _KNOWN_KEYS:
             # Warn, don't skip: an unrecognized key is far more often a typo
             # (`PIPECAT_HUB_DATADIR`) than a genuinely newer setting, but
@@ -367,12 +484,6 @@ def load_global_config() -> None:
                 "(typo?); setting it anyway",
                 key,
             )
-        if key in _INVOCATION_SCOPED_KEYS:
-            _module_logger.warning(
-                "config.toml key %r is invocation-scoped, not machine config; skipping",
-                key,
-            )
-            continue
         if key in os.environ:
             # A real env var or cwd .env already won this key — nothing this
             # config.toml value could do (including a DATA_DIR collision
@@ -384,12 +495,29 @@ def load_global_config() -> None:
             # so a shadowed taint list means a deliberate machine-global
             # exclusion is silently not in effect this run. Say so.
             if key in _EXCLUSION_KEYS:
-                _module_logger.warning(
-                    "config.toml key %r is shadowed by a higher-precedence layer "
-                    "(real env var or cwd .env); the machine-global exclusion list "
-                    "is NOT in effect for this run",
-                    key,
-                )
+                lost = _shadowed_exclusion_entries(value, os.environ[key])
+                if lost:
+                    # Name the entries, not just the key: "your taint list is
+                    # shadowed" is not actionable, "these repos are no longer
+                    # excluded this run" is. This is the mitigation for the
+                    # `.env`-clears-the-taint-list hazard that is compatible
+                    # with the plan's uniform first-writer-wins precedence
+                    # (a union would not be — see dev plan Objective:
+                    # "whole-string override, not a list merge").
+                    _module_logger.warning(
+                        "config.toml key %r is shadowed by a higher-precedence layer "
+                        "(real env var or cwd .env); these machine-global exclusions are "
+                        "NOT in effect for this run: %s",
+                        key,
+                        ", ".join(lost),
+                    )
+                else:
+                    _module_logger.warning(
+                        "config.toml key %r is shadowed by a higher-precedence layer "
+                        "(real env var or cwd .env); the machine-global exclusion list "
+                        "is NOT in effect for this run",
+                        key,
+                    )
             continue
 
         if isinstance(value, list):
@@ -432,7 +560,7 @@ def load_global_config() -> None:
                     "config.toml key %r would relocate the data dir to contain the "
                     "active config file (%s); skipping",
                     key,
-                    colliding_config_path,
+                    redact_home(colliding_config_path),
                 )
                 continue
 
@@ -448,4 +576,4 @@ def load_global_config() -> None:
         loaded += 1
 
     if loaded:
-        _module_logger.info("Loaded %d key(s) from %s", loaded, config_path)
+        _module_logger.info("Loaded %d key(s) from %s", loaded, redact_home(config_path))
