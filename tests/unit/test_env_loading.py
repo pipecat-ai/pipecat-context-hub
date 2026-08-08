@@ -507,7 +507,7 @@ class TestIsolateEnvVarsFixtureBehavior:
         """Return the raw generator behind the pytest fixture wrapper."""
         import tests.conftest as conftest_module
 
-        return conftest_module._isolate_env_vars.__wrapped__(tmp_path)
+        return conftest_module._isolate_env_vars.__wrapped__(tmp_path)  # type: ignore[attr-defined]
 
     def test_pre_existing_var_absent_during_test_then_restored(self, tmp_path: Path):
         os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] = "real-shell-value"
