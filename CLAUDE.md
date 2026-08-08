@@ -31,6 +31,14 @@ Installed alongside `pipecat-ai[cli]`, every command is also reachable as
 Use `refresh --force --reset-index` when the persisted local Chroma index is
 unhealthy and needs a clean rebuild.
 
+`refresh`'s repo-cleanup pass warns instead of deleting by default: a repo
+absent from *this invocation's* config (but possibly configured elsewhere —
+e.g. `config.toml` shadowed by a narrower project `.env`) has its indexed
+records left in place, with a warning naming the repo and record count. Pass
+`--prune`, or set `PIPECAT_HUB_PRUNE=1` (invocation-scoped only — not
+readable from `config.toml`), to actually delete that data. Tainted repos
+(`PIPECAT_HUB_TAINTED_REPOS`) are always cleaned up regardless of `--prune`.
+
 Every MCP tool is also a **one-shot CLI subcommand** (same handlers, JSON on
 stdout, logs on stderr — see `cli_query.py`):
 

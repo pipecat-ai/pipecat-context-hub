@@ -69,6 +69,29 @@ def _warmup_enabled(env: dict[str, str] | None = None) -> bool:
     return source.get("PIPECAT_HUB_WARMUP", "1").strip() not in _WARMUP_DISABLED_VALUES
 
 
+# Values of PIPECAT_HUB_PRUNE that enable refresh's repo-deletion cleanup.
+# Unlike _WARMUP_DISABLED_VALUES above, this defaults to *disabled*: pruning
+# deletes previously-indexed data, so an unrecognized value (typo, unexpected
+# casing) must resolve to False, not True.
+_PRUNE_ENABLED_VALUES = frozenset({"1", "true", "True", "TRUE", "yes", "Yes", "YES"})
+
+
+def _prune_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True when refresh should delete unconfigured-this-run repo data.
+
+    Reads ``env_loading.PRUNE_ENV_VAR`` (``PIPECAT_HUB_PRUNE``) from ``env``
+    (defaults to ``os.environ``). Deliberately not wired through Click's
+    ``envvar=`` for the ``--prune`` option: Click's own boolean parser would
+    reject a garbage value with a UsageError before this function's
+    safe-default handling could apply. Enabled only on an exact match
+    (case-exact, after stripping whitespace) against
+    ``_PRUNE_ENABLED_VALUES``; any other value — including unset, "0", or a
+    typo like "tRuE" — resolves to False (no deletion).
+    """
+    source = env if env is not None else os.environ
+    return source.get(env_loading.PRUNE_ENV_VAR, "").strip() in _PRUNE_ENABLED_VALUES
+
+
 def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None:
     """Eagerly load retrieval models so the first MCP query is warm.
 
@@ -496,9 +519,20 @@ def start(ctx: click.Context) -> None:
     "(e.g. 'v0.0.96'). Source chunks will come from that version instead of HEAD. "
     "Can also be set via PIPECAT_HUB_FRAMEWORK_VERSION env var.",
 )
+@click.option(
+    "--prune",
+    is_flag=True,
+    help="Delete previously-indexed data for repos not configured in this run. "
+    "Without this flag, refresh only warns and leaves those records in place. "
+    "Can also be enabled via PIPECAT_HUB_PRUNE=1.",
+)
 @click.pass_context
 def refresh(
-    ctx: click.Context, force: bool, reset_index: bool, framework_version: str | None
+    ctx: click.Context,
+    force: bool,
+    reset_index: bool,
+    framework_version: str | None,
+    prune: bool,
 ) -> None:
     """Rebuild the index, skipping unchanged sources when possible.
 
@@ -531,11 +565,13 @@ def refresh(
         config = config.model_copy(update={"framework_version": framework_version})
 
     fw_version = config.effective_framework_version
+    prune_enabled = prune or _prune_enabled()
     logger.info(
-        "Starting index refresh (force=%s reset_index=%s framework_version=%s)",
+        "Starting index refresh (force=%s reset_index=%s framework_version=%s prune=%s)",
         force,
         reset_index,
         fw_version,
+        prune_enabled,
     )
     start = time.monotonic()
 
@@ -591,8 +627,13 @@ def refresh(
     # the framework repo was not cloned (unconfigured, tainted, or clone failed).
     framework_checkout: Path | None = None
 
+    # Count of repos left un-pruned this run (not configured here, but not
+    # deleted because --prune/PIPECAT_HUB_PRUNE wasn't set). Read later by
+    # the summary pass.
+    pruned_skipped_count = 0
+
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, framework_checkout
+        nonlocal total_upserted, all_errors, framework_checkout, pruned_skipped_count
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -659,15 +700,38 @@ def refresh(
                 slug = meta_key[len("repo:") : -len(":commit_sha")]
                 if slug not in configured:
                     if slug in tainted_repos:
+                        # Explicit exclusion — always cleaned up, regardless
+                        # of --prune.
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
-                    else:
+                        await index_store.delete_by_repo(slug)
+                        index_store.delete_metadata(meta_key)
+                        if slug == _FRAMEWORK_REPO:
+                            # No framework records left to describe.
+                            index_store.delete_metadata("indexed_framework_version")
+                            index_store.delete_metadata("indexed_framework_commits_ahead")
+                    elif prune_enabled:
                         logger.info("Repo %s no longer configured, cleaning up", slug)
-                    await index_store.delete_by_repo(slug)
-                    index_store.delete_metadata(meta_key)
-                    if slug == _FRAMEWORK_REPO:
-                        # No framework records left to describe.
-                        index_store.delete_metadata("indexed_framework_version")
-                        index_store.delete_metadata("indexed_framework_commits_ahead")
+                        await index_store.delete_by_repo(slug)
+                        index_store.delete_metadata(meta_key)
+                        if slug == _FRAMEWORK_REPO:
+                            # No framework records left to describe.
+                            index_store.delete_metadata("indexed_framework_version")
+                            index_store.delete_metadata("indexed_framework_commits_ahead")
+                    else:
+                        # Implicit absence — not seen from this invocation's
+                        # env layering, but not necessarily unconfigured
+                        # elsewhere. Leave both records and metadata in place
+                        # (deleting metadata here would orphan this repo from
+                        # future cleanup passes, since the loop keys off
+                        # all_meta) so a later --prune can still find and
+                        # remove them.
+                        pruned_skipped_count += 1
+                        logger.warning(
+                            "Repo %s not configured in this run; leaving %d indexed "
+                            "record(s) in place — pass --prune to remove",
+                            slug,
+                            pre_counts.get(slug, 0),
+                        )
 
         framework_slug = _FRAMEWORK_REPO
         for repo_slug in config.sources.effective_repos:
@@ -933,6 +997,7 @@ def refresh(
             len(all_errors),
             duration,
             recovered_repos=sorted(github.recovered_repos),
+            pruned_skipped_count=pruned_skipped_count,
         )
     finally:
         index_store.close()
@@ -989,10 +1054,16 @@ def _print_refresh_summary(
     duration: float,
     *,
     recovered_repos: list[str] | None = None,
+    pruned_skipped_count: int = 0,
 ) -> None:
     """Print a summary table after refresh."""
     if not source_status:
         click.echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
+        if pruned_skipped_count:
+            click.echo(
+                f"Skipped pruning: {pruned_skipped_count} repo(s) not in this run's config "
+                "(use --prune to remove)"
+            )
         return
 
     # Compute column widths
@@ -1052,6 +1123,11 @@ def _print_refresh_summary(
     if recovered_repos:
         click.echo(
             f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
+        )
+    if pruned_skipped_count:
+        click.echo(
+            f"Skipped pruning: {pruned_skipped_count} repo(s) not in this run's config "
+            "(use --prune to remove)"
         )
     click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 

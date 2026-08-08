@@ -443,6 +443,20 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 - **Empty results** — run `uvx pipecat-ai-context-hub refresh` to populate the index
 - **Stale results** — run `uvx pipecat-ai-context-hub refresh --force` to re-ingest from latest upstream
 - **Index corruption** — run `uvx pipecat-ai-context-hub refresh --force --reset-index` to wipe and rebuild
+- **`--prune` / `PIPECAT_HUB_PRUNE`** — `refresh` no longer deletes
+  previously-indexed data for a repo that isn't configured *for this
+  invocation* by default; it only warns
+  (`Repo <slug> not configured in this run; leaving N indexed record(s) in
+  place — pass --prune to remove`) and leaves the records and metadata in
+  place, since the repo may still be configured elsewhere (e.g. in
+  `config.toml` but shadowed by a narrower project `.env`). Pass `--prune`,
+  or set `PIPECAT_HUB_PRUNE=1`, to actually delete that data. This var is
+  invocation-scoped: it is not read from `config.toml` (see [Config
+  precedence](#config-precedence-env-vars-env-and-configtoml) above) and is
+  intentionally excluded from `config.toml.example` and the Environment
+  Variables table above. Tainted repos
+  (`PIPECAT_HUB_TAINTED_REPOS`) are unaffected — they are always cleaned up,
+  with or without `--prune`.
 - **`serve` exits immediately with code 2** — the index is empty or
   unopenable. Run `uvx pipecat-ai-context-hub refresh` (or
   `refresh --force --reset-index` if the error message mentions a failed

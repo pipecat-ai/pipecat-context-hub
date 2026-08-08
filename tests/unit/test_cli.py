@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -12,9 +13,11 @@ import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import (
+    _PRUNE_ENABLED_VALUES,
     _load_dotenv,
     _prewarm_models,
     _print_refresh_summary,
+    _prune_enabled,
     _redact_home,
     _safe_hr,
     _warmup_enabled,
@@ -465,7 +468,7 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
-    def test_removed_repo_cleaned_up(
+    def test_removed_repo_cleaned_up_with_prune(
         self,
         mock_si_cls,
         mock_ref_tainted,
@@ -477,7 +480,11 @@ class TestRefreshCommand:
         tmp_path,
         monkeypatch,
     ):
-        """Repos no longer in effective_repos have their data and SHA cleaned up."""
+        """Repos no longer in effective_repos have their data and SHA
+        cleaned up — opt-in via --prune as of dev plan Phase 4 (see
+        TestPruneSafety for the new no-prune default and TestRefreshCommand
+        equivalents there); this test previously asserted unconditional
+        deletion, which was the exact behavior Phase 4 changed."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -497,7 +504,7 @@ class TestRefreshCommand:
 
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(main, ["refresh"])
+        result = runner.invoke(main, ["refresh", "--prune"])
 
         assert result.exit_code == 0
         # The removed repo should be cleaned up
@@ -1274,6 +1281,827 @@ class TestRefreshProvenanceMetadata:
             deleted.update(batch_call.kwargs.get("delete_keys") or ())
         assert "indexed_framework_version" not in deleted
         assert "indexed_framework_commits_ahead" not in deleted
+
+
+class TestPruneEnabledValues:
+    """`_PRUNE_ENABLED_VALUES` frozenset exactness and `_prune_enabled()`
+    env-var parsing (dev plan docs/dev_plans/20260807-feature-global-config-toml.md,
+    Phase 4). Polarity is inverted from `_warmup_enabled()`: `PIPECAT_HUB_PRUNE`
+    defaults `False` (deletion is opt-in), so an *unrecognized* value must
+    resolve to the safe default, not the enabling one.
+    """
+
+    def test_prune_enabled_values_is_value_exact(self) -> None:
+        assert _PRUNE_ENABLED_VALUES == frozenset(
+            {"1", "true", "True", "TRUE", "yes", "Yes", "YES"}
+        )
+
+    @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "Yes", "YES"])
+    def test_recognized_values_enable(self, value: str, monkeypatch) -> None:
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, value)
+        assert _prune_enabled() is True
+
+    def test_unset_defaults_false(self, monkeypatch) -> None:
+        monkeypatch.delenv(env_loading.PRUNE_ENV_VAR, raising=False)
+        assert _prune_enabled() is False
+
+    def test_falsy_zero_defaults_false(self, monkeypatch) -> None:
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, "0")
+        assert _prune_enabled() is False
+
+    def test_empty_string_defaults_false(self, monkeypatch) -> None:
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, "")
+        assert _prune_enabled() is False
+
+    @pytest.mark.parametrize("value", ["maybe", "2", "tRuE", "YES!", "on", "TrUe"])
+    def test_garbage_and_non_member_case_variants_default_false(
+        self, value: str, monkeypatch
+    ) -> None:
+        """`"tRuE"` is NOT a frozenset member — the frozenset is
+        case/value-exact, not case-insensitive — so an arbitrary case
+        variant must resolve to the safe default like any other garbage
+        value, not `True`."""
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, value)
+        assert _prune_enabled() is False
+
+    def test_whitespace_stripped_before_matching(self, monkeypatch) -> None:
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, " 1 ")
+        assert _prune_enabled() is True
+
+    def test_whitespace_padded_non_member_still_false(self, monkeypatch) -> None:
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, " tRuE ")
+        assert _prune_enabled() is False
+
+
+class TestPruneSafety(TestRefreshCommand):
+    """`refresh` no longer deletes previously-indexed data for a repo that's
+    still configured somewhere, just not visible from the current
+    invocation's env layering (dev plan
+    docs/dev_plans/20260807-feature-global-config-toml.md, Phase 4).
+    Deletion becomes an explicit, opt-in action via `--prune`/
+    `PIPECAT_HUB_PRUNE`, never an automatic side effect of running
+    `refresh` from the "wrong" directory. Tainted-repo cleanup remains
+    unconditional and unaffected. Subclasses `TestRefreshCommand` to reuse
+    `_make_mocks()` and the autouse `_mock_deprecation_map` fixture.
+    """
+
+    _REMOVED_REPO = "old-org/removed-repo"
+
+    def _meta_with_removed_repo(self, sha: str = "abc123") -> dict[str, str]:
+        """Metadata simulating a previously-indexed repo no longer
+        configured this run (not tainted — an accidental-absence case)."""
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        return {
+            "docs:content_hash": content_hash,
+            **_sha_metadata(sha),
+            f"repo:{self._REMOVED_REPO}:commit_sha": "def456",
+        }
+
+    def _framework_excluded_config(self) -> HubConfig:
+        """A `HubConfig` whose `sources.repos` omits the framework repo, so
+        it can be "unconfigured this run" without being tainted — tainting
+        is a different, unconditional-delete code path this phase does not
+        touch, so it can't be used to exercise the framework-metadata
+        survival case."""
+        base = HubConfig()
+        repos = [r for r in base.sources.repos if r != "pipecat-ai/pipecat"]
+        sources = base.sources.model_copy(update={"repos": repos})
+        return base.model_copy(update={"sources": sources})
+
+    # ----- Happy paths -----
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_no_prune_repo_unconfigured_records_and_metadata_survive(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Without --prune, an unconfigured-this-run (non-tainted) repo's
+        indexed records AND its metadata survive — deleting metadata while
+        records survive would orphan the repo from every future cleanup
+        pass, since the loop keys off `all_meta`. A warning is logged and a
+        summary line is emitted."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+            result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert self._REMOVED_REPO not in deleted_repos
+        deleted_meta = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        assert f"repo:{self._REMOVED_REPO}:commit_sha" not in deleted_meta
+        assert self._REMOVED_REPO in caplog.text
+        assert "--prune" in caplog.text
+        assert re.search(r"Skipped pruning.*1", result.output)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_no_prune_framework_repo_unconfigured_provenance_metadata_survives(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Same as above, specifically for the framework repo: without
+        --prune, `indexed_framework_version`/`indexed_framework_commits_ahead`
+        must NOT be deleted alongside the (surviving) framework records."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        custom_config = self._framework_excluded_config()
+        all_meta = {
+            "docs:content_hash": content_hash,
+            **_sha_metadata("abc123", repos=custom_config.sources.repos),
+            "repo:pipecat-ai/pipecat:commit_sha": "def456",
+        }
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        with patch("pipecat_context_hub.cli.HubConfig", return_value=custom_config):
+            runner = CliRunner()
+            result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert "pipecat-ai/pipecat" not in deleted_repos
+        deleted_meta = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        assert "repo:pipecat-ai/pipecat:commit_sha" not in deleted_meta
+        assert "indexed_framework_version" not in deleted_meta
+        assert "indexed_framework_commits_ahead" not in deleted_meta
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_prune_flag_deletes_unconfigured_repo(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """--prune restores today's behavior: the unconfigured repo's
+        records and metadata are deleted."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--prune"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
+        mock_store.delete_metadata.assert_any_call(f"repo:{self._REMOVED_REPO}:commit_sha")
+
+    @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "Yes", "YES"])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_prune_env_var_exact_frozenset_members_delete(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        value,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`PIPECAT_HUB_PRUNE` set to exactly one of the seven
+        `_PRUNE_ENABLED_VALUES` members, alone (no --prune flag), behaves
+        the same as --prune. Not tested here: arbitrary case variants like
+        `"tRuE"` — the frozenset is value-exact, not case-insensitive, and
+        that case belongs with the unhappy-path garbage-value tests below."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, value)
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
+        mock_store.delete_metadata.assert_any_call(f"repo:{self._REMOVED_REPO}:commit_sha")
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_tainted_repo_still_deleted_without_prune(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A tainted repo (explicit exclusion via PIPECAT_HUB_TAINTED_REPOS)
+        is still deleted unconditionally without --prune — this phase must
+        not gate tainted-repo cleanup behind the new flag."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        tainted_slug = _DEFAULT_REPOS[0]
+        all_meta = {**_sha_metadata("abc123"), f"repo:{tainted_slug}:commit_sha": "abc123"}
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", tainted_slug)
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_call(tainted_slug)
+        mock_store.delete_metadata.assert_any_call(f"repo:{tainted_slug}:commit_sha")
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_two_run_sequence_no_prune_then_prune_cleans_up(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A no-prune refresh spares the unconfigured repo's records+metadata;
+        a later refresh --prune successfully deletes them — proving
+        metadata survival doesn't orphan the repo from a later prune (the
+        cleanup loop keys off `all_meta`, so the surviving commit_sha key
+        must still be found on the second run)."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        # In-memory metadata store shared across both runs, mutated by the
+        # mocked delete_metadata/get_all_metadata calls exactly like a real
+        # IndexStore would be.
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(side_effect=lambda: dict(all_meta))
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        def _delete_metadata(key: str) -> None:
+            all_meta.pop(key, None)
+
+        mock_store.delete_metadata = MagicMock(side_effect=_delete_metadata)
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+
+        result_1 = runner.invoke(main, ["refresh"])
+        assert result_1.exit_code == 0, result_1.output
+        assert f"repo:{self._REMOVED_REPO}:commit_sha" in all_meta
+
+        mock_store.delete_by_repo.reset_mock()
+        mock_store.delete_metadata.reset_mock(side_effect=False)
+        mock_store.delete_metadata.side_effect = _delete_metadata
+
+        result_2 = runner.invoke(main, ["refresh", "--prune"])
+        assert result_2.exit_code == 0, result_2.output
+        mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
+        mock_store.delete_metadata.assert_any_call(f"repo:{self._REMOVED_REPO}:commit_sha")
+        assert f"repo:{self._REMOVED_REPO}:commit_sha" not in all_meta
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_prune_flag_with_nothing_to_prune_is_clean_noop(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """--prune with no unconfigured repos this run is a clean no-op: no
+        pruning warning, no "Skipped pruning" summary line."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        # Only currently-configured repos are recorded — nothing to prune.
+        mock_store.get_all_metadata = MagicMock(return_value=_sha_metadata("abc123"))
+        mock_store.get_metadata = MagicMock(
+            side_effect=lambda key: _sha_metadata("abc123").get(key)
+        )
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--prune"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_not_called()
+        assert "Skipped pruning" not in result.output
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_prune_flag_wins_over_prune_env_var_set_falsy(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """--prune passed together with PIPECAT_HUB_PRUNE=0 set: the flag
+        wins (prune = prune_flag or _prune_enabled()) — deletion proceeds."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, "0")
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--prune"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_markbackman_repro_config_toml_ab_project_env_a_only_spares_b(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """The original repro (pipecat-ai/pipecat#5122, comment 5209812757):
+        `config.toml` configures repo A+B; a project-local `.env` configures
+        only repo A (per-key whole-string override, not a list merge —
+        `.env` wins entirely for PIPECAT_HUB_EXTRA_REPOS). `refresh` run
+        from that project directory without --prune must NOT delete repo
+        B's indexed records."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        repo_a = "custom-org/repo-a"
+        repo_b = "custom-org/repo-b"
+
+        config_dir = tmp_path / "config-home"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text(f'PIPECAT_HUB_EXTRA_REPOS = "{repo_a},{repo_b}"\n')
+
+        project_dir = tmp_path / "customer-a"
+        project_dir.mkdir()
+        (project_dir / ".env").write_text(f"PIPECAT_HUB_EXTRA_REPOS={repo_a}\n")
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        all_meta = {
+            "docs:content_hash": content_hash,
+            **_sha_metadata("abc123"),
+            f"repo:{repo_a}:commit_sha": "shaA",
+            f"repo:{repo_b}:commit_sha": "shaB",
+        }
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(config_file))
+        monkeypatch.chdir(project_dir)
+        runner = CliRunner()
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+            result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert repo_b not in deleted_repos
+        deleted_meta = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        assert f"repo:{repo_b}:commit_sha" not in deleted_meta
+        assert repo_b in caplog.text
+
+    # ----- Unhappy / edge paths -----
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_prune_env_var_falsy_zero_records_survive(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """PIPECAT_HUB_PRUNE=0 (falsy) → records survive, same as unset."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, "0")
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert self._REMOVED_REPO not in deleted_repos
+
+    @pytest.mark.parametrize("value", ["maybe", "2", "", "tRuE"])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_prune_env_var_unrecognized_value_still_parses_and_defaults_false(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        value,
+        tmp_path,
+        monkeypatch,
+    ):
+        """An unrecognized/garbage PIPECAT_HUB_PRUNE value (including a
+        non-frozenset case variant like "tRuE") must not make the CLI
+        invocation itself fail — the full CliRunner invocation still parses
+        successfully and _prune_enabled() resolves to False (safe default),
+        records survive. This is the case the no-Click-envvar design and
+        inverted-polarity fix exist to get right: Click's boolean parser
+        must never get a chance to reject garbage before the helper can
+        default safely."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, value)
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert self._REMOVED_REPO not in deleted_repos
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_prune_env_var_whitespace_padded_member_resolves_true(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """PIPECAT_HUB_PRUNE=" 1 " (whitespace-padded, a frozenset member
+        after stripping) resolves True end-to-end: deletion proceeds."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv(env_loading.PRUNE_ENV_VAR, " 1 ")
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_config_toml_prune_is_skip_listed_and_has_no_effect(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A config.toml setting PIPECAT_HUB_PRUNE is skip-listed by the
+        Phase 1 loader (never reaches os.environ) and so has no effect on
+        refresh's prune behavior: records still survive without --prune,
+        even though the global file "asked" for pruning."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        config_dir = tmp_path / "config-home"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('PIPECAT_HUB_PRUNE = "true"\n')
+
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(config_file))
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert env_loading.PRUNE_ENV_VAR not in os.environ
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert self._REMOVED_REPO not in deleted_repos
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    @patch("pipecat_context_hub.cli._delete_local_index_storage")
+    def test_prune_combined_with_reset_index_no_interaction_bug(
+        self,
+        mock_delete_storage,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """--prune combined with --reset-index in the same invocation: both
+        apply independently, no interaction bug. --reset-index clears the
+        whole local index before the cleanup pass would even find anything
+        to prune, so the prune branch is a no-op that still logs cleanly
+        rather than erroring on a missing index."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        # A freshly-reset index has no stale repo metadata left to prune —
+        # only the currently-configured default repos, modelling the real
+        # empty-metadata state a genuine `shutil.rmtree` + reconstruct
+        # would leave (this test's IndexStore is fully mocked, so it can't
+        # observe that directly; the absence of an unconfigured repo in
+        # `all_meta` stands in for it).
+        mock_store.get_all_metadata = MagicMock(return_value=_sha_metadata("abc123"))
+        mock_store.get_metadata = MagicMock(
+            side_effect=lambda key: _sha_metadata("abc123").get(key)
+        )
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--prune", "--reset-index"])
+
+        assert result.exit_code == 0, result.output
+        mock_delete_storage.assert_called_once()
+        # --reset-index forces a full re-ingest, which legitimately deletes
+        # and re-creates records for every currently-configured repo — that
+        # is unrelated to pruning. The assertion that matters here is that
+        # the *cleanup* pass found nothing to prune: no repo outside the
+        # configured default set was deleted, and no prune-skip warning or
+        # summary line was emitted.
+        deleted_repos = {call.args[0] for call in mock_store.delete_by_repo.call_args_list}
+        assert deleted_repos <= set(_DEFAULT_REPOS)
+        assert "Skipped pruning" not in result.output
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_delete_by_repo_error_propagates_during_prune(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """index_store.delete_by_repo raising during a --prune delete: the
+        error propagates and is not swallowed silently, consistent with
+        today's unconditional delete-path error handling for tainted
+        repos."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+        mock_store.delete_by_repo = AsyncMock(side_effect=RuntimeError("boom"))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--prune"])
+
+        assert result.exit_code != 0
+        assert result.exception is not None
+        assert "boom" in str(result.exception)
 
 
 class TestRefreshIncompatibleIndex:
