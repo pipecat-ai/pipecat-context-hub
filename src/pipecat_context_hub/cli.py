@@ -136,10 +136,10 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     a real environment variable or cwd ``.env`` (the narrower case of a
     colliding value originating in ``config.toml`` itself is handled by
     ``load_global_config()``'s own skip-and-warn above): if the active
-    config file (per ``resolve_global_config_path()``) both resolves inside
-    ``data_dir`` and actually exists, abort before ``shutil.rmtree`` rather
-    than delete the operator's machine-global config out from under them. A
-    stale/deleted or never-created config path never blocks a real
+    config file (per ``resolve_global_config_path()``) lives or resolves
+    inside ``data_dir`` and actually exists, abort before ``shutil.rmtree``
+    rather than delete the operator's machine-global config out from under
+    them. A stale/deleted or never-created config path never blocks a real
     ``--reset-index`` — only an existing file in effect is worth protecting.
     """
     resolved_data_dir = data_dir.expanduser().resolve(strict=False)

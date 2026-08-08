@@ -998,6 +998,66 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         assert config_file.exists()
         mock_is_cls.assert_not_called()
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_reset_index_refuses_symlinked_config_inside_data_dir_before_deletion(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The active config path (PIPECAT_HUB_CONFIG_FILE) is a symlink
+        located INSIDE the requested PIPECAT_HUB_DATA_DIR, whose target is a
+        real file OUTSIDE that data dir. Before the Codex-review fix,
+        `config_collides_with_dir` checked only the fully-resolved target
+        (outside the data dir), so this would have been a false negative and
+        `--reset-index` would have rmtree'd the directory containing the
+        operator's only path to their config.toml. Must abort before any
+        deletion runs, with the symlink (and its target) still present.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        data_dir = tmp_path / "data-home"
+        data_dir.mkdir()
+        real_config_dir = tmp_path / "elsewhere"
+        real_config_dir.mkdir()
+        real_config_file = real_config_dir / "real-config.toml"
+        real_config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+
+        symlink_config_path = data_dir / "config.toml"
+        symlink_config_path.symlink_to(real_config_file)
+
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(symlink_config_path))
+        # Collides: data_dir (which contains the config symlink) is requested
+        # as the data dir to reset.
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code != 0
+        assert "Refusing to delete" in result.output
+        assert symlink_config_path.is_symlink()
+        assert real_config_file.exists()
+        mock_is_cls.assert_not_called()
+
 
 class TestRefreshProvenanceMetadata:
     """Refresh stamps the contract version and the indexed pipecat revision."""

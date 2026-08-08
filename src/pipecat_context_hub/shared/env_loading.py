@@ -136,22 +136,58 @@ def resolve_global_config_path() -> Path | None:
 
 
 def config_collides_with_dir(candidate_dir: Path) -> Path | None:
-    """Return the resolved active config path if it lives inside ``candidate_dir``.
+    """Return the active config path if it or its resolved target lives inside ``candidate_dir``.
 
-    Returns ``None`` if there's no collision, the active config path can't be
-    resolved (no home directory), or the config file doesn't exist — a
-    nonexistent or unresolvable config can't be protected from, matching the
-    loader's own missing-file-silent contract. Shared by this module's own
-    ``PIPECAT_HUB_DATA_DIR`` skip below and ``cli.py``'s
-    ``_delete_local_index_storage()`` reset-path guard, so both stay in
-    lockstep on the same predicate.
+    Checks both the lexical/physical location of the config path itself (so a
+    ``candidate_dir`` that would delete a symlink hop pointing *at* the config
+    is caught even though that symlink's own target lives elsewhere) and the
+    config path's fully-resolved target (so a config path living outside
+    ``candidate_dir`` but symlinked to real content *inside* it is also
+    caught). Returns ``None`` if there's no collision on either check, the
+    active config path can't be resolved (no home directory), or the config
+    file doesn't exist — a nonexistent or unresolvable config can't be
+    protected from, matching the loader's own missing-file-silent contract.
+    Shared by this module's own ``PIPECAT_HUB_DATA_DIR`` skip below and
+    ``cli.py``'s ``_delete_local_index_storage()`` reset-path guard, so both
+    stay in lockstep on the same predicate.
+
+    ``candidate_dir`` must already be an absolute, symlink-resolved path
+    (both current call sites pass one) — this function does not normalize
+    it, so an unresolved ``candidate_dir`` (e.g. one reached through a
+    symlinked ancestor, as macOS's ``/var`` -> ``/private/var`` and
+    ``tempfile``-based paths often are) can silently fail to match even a
+    plain, non-symlinked collision.
     """
     config_path = resolve_global_config_path()
     if config_path is None:
         return None
-    active_config_path = config_path.resolve(strict=False)
-    if active_config_path.is_file() and active_config_path.is_relative_to(candidate_dir):
-        return active_config_path
+
+    # Lexical: absolute + '..'/'.'-normalized, zero syscalls, zero symlink deref.
+    lexical = Path(os.path.abspath(config_path))
+
+    # Physical: directory chain dereferenced, final component left intact —
+    # this is the path that would actually be unlinked by rmtree(candidate_dir)
+    # even when that path is itself a symlink pointing elsewhere.
+    try:
+        physical = lexical.parent.resolve(strict=False) / lexical.name
+    except (ValueError, OSError):
+        physical = lexical
+
+    # Target: full dereference (original behavior) — kept because it covers
+    # the mirror-image hazard: config path lives OUTSIDE candidate_dir but is
+    # a symlink whose real content lives INSIDE it (rmtree would destroy the
+    # actual config content, not just a path entry).
+    try:
+        resolved = config_path.resolve(strict=False)
+    except (ValueError, OSError):
+        resolved = lexical
+
+    if not lexical.is_file():
+        return None
+    if physical.is_relative_to(candidate_dir):
+        return physical
+    if resolved.is_relative_to(candidate_dir):
+        return resolved
     return None
 
 
@@ -244,7 +280,15 @@ def load_global_config() -> None:
             continue
 
         if key == _DATA_DIR_ENV_VAR:
-            candidate_dir = Path(coerced).expanduser().resolve(strict=False)
+            try:
+                candidate_dir = Path(coerced).expanduser().resolve(strict=False)
+            except (ValueError, OSError, RuntimeError) as exc:
+                _module_logger.warning(
+                    "config.toml key %r has a value that is not a usable path (%s); skipping",
+                    key,
+                    exc,
+                )
+                continue
             colliding_config_path = config_collides_with_dir(candidate_dir)
             if colliding_config_path is not None:
                 _module_logger.warning(
@@ -255,7 +299,15 @@ def load_global_config() -> None:
                 )
                 continue
 
-        os.environ[key] = coerced
+        try:
+            os.environ[key] = coerced
+        except ValueError as exc:
+            _module_logger.warning(
+                "config.toml key %r could not be set as an environment variable (%s); skipping",
+                key,
+                exc,
+            )
+            continue
         loaded += 1
 
     if loaded:

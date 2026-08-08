@@ -19,6 +19,7 @@ from pipecat_context_hub.shared.config import HubConfig, StorageConfig
 from pipecat_context_hub.shared.env_loading import (
     _INVOCATION_SCOPED_KEYS,
     PRUNE_ENV_VAR,
+    config_collides_with_dir,
     load_cwd_dotenv,
     load_global_config,
     resolve_global_config_path,
@@ -491,6 +492,125 @@ class TestLoadGlobalConfigDataDirCollision:
             load_global_config()
         assert os.environ["PIPECAT_HUB_DATA_DIR"] == str(real_data_dir)
         assert "PIPECAT_HUB_DATA_DIR" not in caplog.text
+
+    def test_symlink_inside_candidate_dir_pointing_outside_is_collision(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The active config path is a symlink located INSIDE candidate_dir,
+        whose target is a real file OUTSIDE candidate_dir. rmtree(candidate_dir)
+        would still unlink the symlink hop itself, destroying the operator's
+        only path to their config — this is the exact false-negative the
+        Codex finding described: checking only the fully-resolved target
+        would miss it because the resolved target lives outside candidate_dir.
+        The `physical` check (lexical path with only the parent dereferenced)
+        is what catches this.
+        """
+        candidate_dir = tmp_path / "candidate-data-dir"
+        candidate_dir.mkdir()
+        real_config_dir = tmp_path / "elsewhere"
+        real_config_dir.mkdir()
+        real_config_file = real_config_dir / "real-config.toml"
+        real_config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+
+        symlink_path = candidate_dir / "config.toml"
+        symlink_path.symlink_to(real_config_file)
+
+        _use_config_file(monkeypatch, symlink_path)
+        collision = config_collides_with_dir(candidate_dir)
+        assert collision is not None
+
+    def test_symlink_outside_candidate_dir_pointing_inside_is_collision(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Mirror-image case: the active config path lives OUTSIDE
+        candidate_dir but is a symlink whose real target lives INSIDE it —
+        rmtree(candidate_dir) would destroy the actual config content even
+        though the symlink path entry itself survives. Proves the
+        pre-existing fully-resolved-target check wasn't lost by the fix.
+        """
+        candidate_dir = tmp_path / "candidate-data-dir"
+        candidate_dir.mkdir()
+        real_config_file = candidate_dir / "real-config.toml"
+        real_config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        symlink_path = outside_dir / "config.toml"
+        symlink_path.symlink_to(real_config_file)
+
+        _use_config_file(monkeypatch, symlink_path)
+        collision = config_collides_with_dir(candidate_dir)
+        assert collision is not None
+
+
+class TestLoadGlobalConfigCrashSafety:
+    """Codex adversarial review findings: a valid-TOML value that fails at
+    the Path/os.environ boundary (embedded NUL, unresolvable `~user` home)
+    must warn and skip that key, not crash `load_global_config()` outright."""
+
+    def test_nul_byte_scalar_value_warns_and_is_skipped_not_raised(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """A basic TOML string containing `\\u0000` is valid TOML — tomllib
+        parses it into a genuine NUL character. Setting that as an
+        environment variable raises `ValueError: embedded null byte`; Guard
+        B must catch it, warn, and skip only that key without raising."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45\\u0000"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()  # should not raise
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" in caplog.text
+
+    def test_nul_byte_scalar_value_does_not_block_other_valid_keys(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """One bad key (NUL byte) must not stop the rest of the file from
+        loading — a second, valid key in the same file is still applied."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            'PIPECAT_HUB_STALE_AFTER_DAYS = "45\\u0000"\nPIPECAT_HUB_WARMUP = false\n'
+        )
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_WARMUP", raising=False)
+        load_global_config()  # should not raise
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert os.environ["PIPECAT_HUB_WARMUP"] == "False"
+
+    def test_nul_byte_data_dir_warns_and_is_skipped_not_raised(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """PIPECAT_HUB_DATA_DIR containing a NUL byte fails inside
+        `Path(coerced)` construction itself (ValueError: embedded null
+        byte) — Guard A must catch it, warn, and skip the key."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_DATA_DIR = "/some/dir\\u0000"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()  # should not raise
+        assert "PIPECAT_HUB_DATA_DIR" not in os.environ
+        assert "PIPECAT_HUB_DATA_DIR" in caplog.text
+
+    def test_unresolvable_user_home_data_dir_warns_and_is_skipped_not_raised(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """`~doesnotexist12345/data` is a `~user`-prefixed path for a
+        nonexistent user; `Path.expanduser()` raises `RuntimeError` when it
+        can't resolve that user's home directory. Guard A must catch it,
+        warn, and skip the key rather than raising out of
+        `load_global_config()`."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_DATA_DIR = "~doesnotexist12345/data"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()  # should not raise
+        assert "PIPECAT_HUB_DATA_DIR" not in os.environ
+        assert "PIPECAT_HUB_DATA_DIR" in caplog.text
 
 
 class TestLoadGlobalConfigLogging:
