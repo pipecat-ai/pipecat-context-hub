@@ -349,7 +349,8 @@ directory. Whether a given MCP client passes a project `cwd` at all, or a
 fixed/empty one, is client-specific and not something this project controls;
 `serve` logs `cwd=... env_keys=...` at startup (`INFO` level) so you can
 confirm which directory — and therefore which `.env`, if any — was in effect
-for a given session.
+for a given session. The path is home-redacted to `~/…`, and only key *names*
+are logged, never values, so the line is safe to paste into a bug report.
 
 Windows: the lookup path is `%USERPROFILE%\.config\pipecat-context-hub\config.toml`
 in the common case, but that's a description of where `Path.home()` usually
@@ -509,6 +510,19 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   etc.) cannot encode. The server falls back to ASCII automatically. To
   opt into the full Unicode output, set `PYTHONIOENCODING=utf-8` before
   invoking `refresh`, or use Windows Terminal (which defaults to UTF-8).
+
+### Can't see which config a `serve` session actually used
+
+`serve` logs `cwd=… env_keys=…` at `INFO` on every boot (home-redacted, key
+names only), which tells you which directory — and therefore which `.env`, if
+any — shadowed `config.toml` for that session. If your MCP client hides the
+server's stderr entirely, set `PIPECAT_HUB_DEBUG_PROBE=1` in the client's
+`env` block: `serve` appends the same evidence to
+`~/.cache/pipecat-context-hub/serve-debug.log` on each boot. This is a
+troubleshooting fallback, not a setting — it is deliberately absent from
+`config.toml.example` and the Environment Variables table, and is ignored when
+set in `config.toml` (a machine-global file must never persistently enable a
+disk-writing probe). Unset it once you've read the file.
 
 ## Contributing
 

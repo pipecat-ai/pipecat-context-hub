@@ -16,6 +16,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -23,9 +24,11 @@ from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
-from pipecat_context_hub.shared.env_loading import load_cwd_dotenv, load_global_config
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
 from pipecat_context_hub.shared.support_links import bug_report_hint
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pipecat_context_hub.services.index.store import IndexStore
 
 # Back-compat alias: tests/unit/test_cli.py imports the underscored name and
 # the banner call sites below reference it. The redaction helper itself now
@@ -35,9 +38,12 @@ _redact_home = redact_home
 
 # Back-compat alias: the cwd-.env loader now lives in shared/env_loading.py
 # (moved verbatim so every entry point — CLI, dashboard scripts,
-# scripts/smoke_check_removals.py — can share it). Kept as a thin re-export
-# so existing call sites and tests that reference `cli._load_dotenv` still work.
-_load_dotenv = load_cwd_dotenv
+# scripts/smoke_check_removals.py — can share it). This is a *callable*
+# re-export only, NOT a monkeypatch seam: `main()` bootstraps through
+# `env_loading.load_env_layers()`, so patching `cli._load_dotenv` does not
+# intercept anything the CLI actually calls. Patch
+# `pipecat_context_hub.shared.env_loading.load_cwd_dotenv` instead.
+_load_dotenv = env_loading.load_cwd_dotenv
 
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
@@ -129,6 +135,33 @@ def _configure_logging(level: str) -> None:
     )
 
 
+def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
+    """Raise unless ``resolved_data_dir`` is a plausible index directory.
+
+    Deliberately a *floor*, not a whitelist: it refuses the three targets
+    whose deletion is never a legitimate ``--reset-index`` — a filesystem
+    root, the home directory itself, and any ancestor of home (``/Users``,
+    ``/home``). A depth threshold (``len(parts) < 3``) was considered and
+    rejected: it would refuse a perfectly reasonable containerised
+    ``PIPECAT_HUB_DATA_DIR=/data``.
+    """
+    unsafe: list[Path] = [Path(resolved_data_dir.anchor or resolved_data_dir.root)]
+    try:
+        home = Path.home().resolve(strict=False)
+    except (RuntimeError, OSError):
+        home = None
+    if home is not None:
+        unsafe.append(home)
+        unsafe.extend(home.parents)
+
+    if any(resolved_data_dir == candidate for candidate in unsafe):
+        raise click.ClickException(
+            f"Refusing to delete {redact_home(data_dir)}: it is a filesystem root or "
+            "home directory, not an index directory. Point PIPECAT_HUB_DATA_DIR at a "
+            "dedicated directory before retrying --reset-index."
+        )
+
+
 def _delete_local_index_storage(data_dir: Path) -> None:
     """Delete the persisted local index directory for a clean rebuild.
 
@@ -141,8 +174,16 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     rather than delete the operator's machine-global config out from under
     them. A stale/deleted or never-created config path never blocks a real
     ``--reset-index`` — only an existing file in effect is worth protecting.
+
+    A second, unconditional floor guards the case the config-collision check
+    structurally cannot: an operator who has never created a ``config.toml``
+    (i.e. every user before this branch) gets no collision hit at all, so a
+    ``PIPECAT_HUB_DATA_DIR`` of ``/`` or ``$HOME`` would otherwise reach
+    ``shutil.rmtree`` unguarded. Refuse a filesystem root, the home directory
+    itself, and any path shallower than two components below the root.
     """
     resolved_data_dir = data_dir.expanduser().resolve(strict=False)
+    _refuse_unsafe_data_dir(data_dir, resolved_data_dir)
     colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
     if colliding_config_path is not None:
         raise click.ClickException(
@@ -151,6 +192,44 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             "or the config file so they don't collide, then retry --reset-index."
         )
     shutil.rmtree(data_dir, ignore_errors=True)
+
+
+async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> None:
+    """Remove every trace of ``slug`` from the index: records + bookkeeping.
+
+    Shared by both deletion branches of ``refresh``'s cleanup pass (tainted
+    repo, and ``--prune``-authorized removal of an unconfigured one) so the
+    sequence — including the framework-repo special case, whose version
+    metadata describes records that no longer exist once the repo is gone —
+    cannot drift between them.
+    """
+    from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+    await index_store.delete_by_repo(slug)
+    index_store.delete_metadata(meta_key)
+    if slug == _FRAMEWORK_REPO:
+        # No framework records left to describe.
+        index_store.delete_metadata("indexed_framework_version")
+        index_store.delete_metadata("indexed_framework_commits_ahead")
+
+
+def _log_serve_cwd(logger: logging.Logger) -> None:
+    """Log the cwd and PIPECAT_HUB_* key names this invocation actually saw.
+
+    Permanent diagnostic (not removed after investigation): confirms, at a
+    glance, what config provenance a globally-installed MCP server had, whose
+    cwd/env may differ from an operator's interactive shell. Key *names* only,
+    never values (``PIPECAT_HUB_EXTRA_REPOS`` can be ~70 repos), and the cwd is
+    home-redacted through the same helper as the startup banner — these stderr
+    lines are exactly what operators paste into the bug-report flow
+    ``shared/support_links.py`` promotes, and an absolute cwd carries the OS
+    username and often a client or project name.
+    """
+    logger.info(
+        "serve cwd=%s env_keys=%s",
+        redact_home(Path.cwd()),
+        sorted(k for k in os.environ if k.startswith("PIPECAT_HUB_")),
+    )
 
 
 def _write_serve_debug_probe(logger: logging.Logger) -> None:
@@ -168,10 +247,13 @@ def _write_serve_debug_probe(logger: logging.Logger) -> None:
         probe_path.parent.mkdir(parents=True, exist_ok=True)
         with probe_path.open("a", encoding="utf-8") as f:
             f.write(
-                f"{datetime.now(UTC).isoformat()} serve cwd={Path.cwd()} "
+                f"{datetime.now(UTC).isoformat()} serve cwd={redact_home(Path.cwd())} "
                 f"env_keys={sorted(k for k in os.environ if k.startswith('PIPECAT_HUB_'))}\n"
             )
-        logger.info("PIPECAT_HUB_DEBUG_PROBE=1: wrote serve debug probe to %s", probe_path)
+        logger.info(
+            "PIPECAT_HUB_DEBUG_PROBE=1: wrote serve debug probe to %s",
+            redact_home(probe_path),
+        )
     except Exception:
         # Path.home() raises RuntimeError (not OSError) when the home
         # directory can't be determined — broadened from except OSError to
@@ -200,8 +282,7 @@ def main(ctx: click.Context, log_level: str) -> None:
     # moving both later, and malformed-config warnings are emitted through
     # configured logging instead of Python's last-resort handler.
     _configure_logging(log_level)
-    load_cwd_dotenv()
-    load_global_config()
+    env_loading.load_env_layers()
     ctx.ensure_object(dict)
     config = HubConfig()
     ctx.obj["config"] = config.model_copy(
@@ -298,11 +379,7 @@ def serve(ctx: click.Context) -> None:
     # useful for diagnosing config provenance for a globally-installed MCP
     # server, whose cwd/env may differ from an operator's interactive shell.
     # Key names only, never values (PIPECAT_HUB_EXTRA_REPOS can be ~70 repos).
-    logger.info(
-        "serve cwd=%s env_keys=%s",
-        Path.cwd(),
-        sorted(k for k in os.environ if k.startswith("PIPECAT_HUB_")),
-    )
+    _log_serve_cwd(logger)
     if os.environ.get("PIPECAT_HUB_DEBUG_PROBE") == "1":
         _write_serve_debug_probe(logger)
 
@@ -635,10 +712,10 @@ def refresh(
     # Count of repos left un-pruned this run (not configured here, but not
     # deleted because --prune/PIPECAT_HUB_PRUNE wasn't set). Read later by
     # the summary pass.
-    pruned_skipped_count = 0
+    unpruned_repo_count = 0
 
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, framework_checkout, pruned_skipped_count
+        nonlocal total_upserted, all_errors, framework_checkout, unpruned_repo_count
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -708,20 +785,10 @@ def refresh(
                         # Explicit exclusion — always cleaned up, regardless
                         # of --prune.
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
-                        await index_store.delete_by_repo(slug)
-                        index_store.delete_metadata(meta_key)
-                        if slug == _FRAMEWORK_REPO:
-                            # No framework records left to describe.
-                            index_store.delete_metadata("indexed_framework_version")
-                            index_store.delete_metadata("indexed_framework_commits_ahead")
+                        await _delete_repo_index_data(index_store, slug, meta_key)
                     elif prune_enabled:
                         logger.info("Repo %s no longer configured, cleaning up", slug)
-                        await index_store.delete_by_repo(slug)
-                        index_store.delete_metadata(meta_key)
-                        if slug == _FRAMEWORK_REPO:
-                            # No framework records left to describe.
-                            index_store.delete_metadata("indexed_framework_version")
-                            index_store.delete_metadata("indexed_framework_commits_ahead")
+                        await _delete_repo_index_data(index_store, slug, meta_key)
                     else:
                         # Implicit absence — not seen from this invocation's
                         # env layering, but not necessarily unconfigured
@@ -730,7 +797,7 @@ def refresh(
                         # future cleanup passes, since the loop keys off
                         # all_meta) so a later --prune can still find and
                         # remove them.
-                        pruned_skipped_count += 1
+                        unpruned_repo_count += 1
                         logger.warning(
                             "Repo %s not configured in this run; leaving %d indexed "
                             "record(s) in place — pass --prune to remove",
@@ -1002,7 +1069,7 @@ def refresh(
             len(all_errors),
             duration,
             recovered_repos=sorted(github.recovered_repos),
-            pruned_skipped_count=pruned_skipped_count,
+            unpruned_repo_count=unpruned_repo_count,
         )
     finally:
         index_store.close()
@@ -1052,11 +1119,11 @@ def _safe_placeholder() -> str:
     return "-"
 
 
-def _echo_prune_skip_notice(pruned_skipped_count: int) -> None:
+def _echo_prune_skip_notice(unpruned_repo_count: int) -> None:
     """Print the 'Skipped pruning' line, shared by both summary branches below."""
-    if pruned_skipped_count:
+    if unpruned_repo_count:
         click.echo(
-            f"Skipped pruning: {pruned_skipped_count} repo(s) not in this run's config "
+            f"Skipped pruning: {unpruned_repo_count} repo(s) not in this run's config "
             "(use --prune to remove)"
         )
 
@@ -1068,12 +1135,15 @@ def _print_refresh_summary(
     duration: float,
     *,
     recovered_repos: list[str] | None = None,
-    pruned_skipped_count: int = 0,
+    unpruned_repo_count: int = 0,
 ) -> None:
     """Print a summary table after refresh."""
     if not source_status:
+        # Notice before the completion line, matching the table branch below —
+        # a warning whose whole point is to be noticed shouldn't sit after the
+        # line that reads as "done".
+        _echo_prune_skip_notice(unpruned_repo_count)
         click.echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
-        _echo_prune_skip_notice(pruned_skipped_count)
         return
 
     # Compute column widths
@@ -1134,7 +1204,7 @@ def _print_refresh_summary(
         click.echo(
             f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
         )
-    _echo_prune_skip_notice(pruned_skipped_count)
+    _echo_prune_skip_notice(unpruned_repo_count)
     click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 
 

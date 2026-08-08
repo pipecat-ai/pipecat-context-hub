@@ -9,12 +9,15 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import (
     _PRUNE_ENABLED_VALUES,
+    _delete_local_index_storage,
     _load_dotenv,
+    _log_serve_cwd,
     _prewarm_models,
     _print_refresh_summary,
     _prune_enabled,
@@ -2698,3 +2701,112 @@ class TestPrewarmModels:
         with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
             _prewarm_models(embed, ce)  # must not raise
         assert any("Cross-encoder pre-warm failed" in r.message for r in caplog.records)
+
+
+class TestDataDirSafetyFloor:
+    """`_delete_local_index_storage()` is the last thing standing between a
+    misconfigured `PIPECAT_HUB_DATA_DIR` and `shutil.rmtree`.
+
+    The config-collision guard structurally cannot cover this: an operator
+    who never created a `config.toml` (every user before this branch) gets no
+    collision hit at all, so `PIPECAT_HUB_DATA_DIR=/` or `=$HOME` used to
+    reach `rmtree` unguarded.
+    """
+
+    def _no_config_file(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(tmp_path / "nonexistent.toml"))
+
+    def test_refuses_filesystem_root(self, monkeypatch, tmp_path: Path) -> None:
+        self._no_config_file(monkeypatch, tmp_path)
+        rmtree = MagicMock()
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", rmtree)
+        with pytest.raises(click.ClickException):
+            _delete_local_index_storage(Path(Path.cwd().anchor))
+        rmtree.assert_not_called()
+
+    def test_refuses_home_directory(self, monkeypatch, tmp_path: Path) -> None:
+        self._no_config_file(monkeypatch, tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        rmtree = MagicMock()
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", rmtree)
+        with pytest.raises(click.ClickException):
+            _delete_local_index_storage(home)
+        rmtree.assert_not_called()
+
+    def test_refuses_ancestor_of_home(self, monkeypatch, tmp_path: Path) -> None:
+        home = tmp_path / "users" / "someone"
+        home.mkdir(parents=True)
+        self._no_config_file(monkeypatch, tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        rmtree = MagicMock()
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", rmtree)
+        with pytest.raises(click.ClickException):
+            _delete_local_index_storage(tmp_path / "users")
+        rmtree.assert_not_called()
+
+    def test_allows_a_real_index_directory(self, monkeypatch, tmp_path: Path) -> None:
+        """The floor must not become a blanket refusal — a normal data dir,
+        including a shallow containerised one like `/data`, still deletes."""
+        self._no_config_file(monkeypatch, tmp_path)
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        (data_dir / "marker").write_text("x")
+        _delete_local_index_storage(data_dir)
+        assert not data_dir.exists()
+
+
+class TestServeCwdDiagnosticRedaction:
+    """The `serve cwd=` line is what operators paste into the bug-report flow
+    `shared/support_links.py` promotes, so it must not carry an absolute home
+    path (OS username, often a client/project name)."""
+
+    def test_serve_cwd_log_is_home_redacted(self, monkeypatch, tmp_path: Path, caplog) -> None:
+        home = tmp_path / "home"
+        project = home / "customer-a"
+        project.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.chdir(project)
+        logger = MagicMock()
+        with patch("pipecat_context_hub.cli.Path.cwd", lambda: project):
+            _log_serve_cwd(logger)
+        logged_cwd = logger.info.call_args[0][1]
+        assert str(home) not in str(logged_cwd)
+        assert str(logged_cwd).startswith("~")
+
+    def test_debug_probe_content_is_home_redacted(self, monkeypatch, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        project = home / "customer-a"
+        project.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.chdir(project)
+        _write_serve_debug_probe(MagicMock())
+        probe = home / ".cache" / "pipecat-context-hub" / "serve-debug.log"
+        content = probe.read_text()
+        assert str(home) not in content
+        assert "cwd=~" in content
+
+
+class TestPruneSkipNoticePosition:
+    """The notice is the whole point of the warn-instead-of-delete change; it
+    must not land *after* the line that reads as 'done' in one branch and
+    before it in the other."""
+
+    def test_notice_precedes_completion_line_in_empty_branch(self, capsys) -> None:
+        _print_refresh_summary({}, 0, 0, 1.0, unpruned_repo_count=2)
+        out = capsys.readouterr().out
+        assert out.index("Skipped pruning") < out.index("Refresh complete")
+
+    def test_notice_precedes_completion_line_in_table_branch(self, capsys) -> None:
+        source_status: dict[str, dict[str, str | int]] = {
+            "pipecat-ai/pipecat": {
+                "status": "updated",
+                "sha": "abcdef12",
+                "existing": 0,
+                "updated": 5,
+            },
+        }
+        _print_refresh_summary(source_status, 5, 0, 1.0, unpruned_repo_count=2)
+        out = capsys.readouterr().out
+        assert out.index("Skipped pruning") < out.index("Refresh complete")

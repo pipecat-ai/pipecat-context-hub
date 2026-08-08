@@ -761,3 +761,217 @@ class TestIsolateEnvVarsFixtureBehavior:
         finally:
             with pytest.raises(StopIteration):
                 next(gen)
+
+
+def _fs_is_case_insensitive(directory: Path) -> bool:
+    """Probe whether `directory`'s volume folds case (macOS APFS, Windows NTFS)."""
+    probe = directory / "casefold_probe"
+    probe.mkdir()
+    return (directory / "CASEFOLD_PROBE").exists()
+
+
+class TestConfigCollidesWithDirIdentity:
+    """`config_collides_with_dir()` is a deletion guard, so it must compare
+    *filesystem identity*, not path strings, and must normalize its own input.
+
+    Regression coverage for two round-1 review findings:
+      #1 a differently-spelled but identical `candidate_dir` (case-folded on a
+         case-insensitive volume, or reached through a symlinked ancestor)
+         escaped the guard, so `refresh --reset-index` would rmtree the
+         directory holding config.toml;
+      #2 the function published an "already absolute + resolved" precondition
+         it did not enforce, so any caller that got it wrong failed *open*.
+    """
+
+    def test_symlinked_alias_to_config_dir_is_detected(self, tmp_path: Path, monkeypatch):
+        """A `candidate_dir` naming the config dir through a symlink is the
+        same directory on disk — string containment misses it, stat identity
+        does not."""
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        config_file = real_dir / "config.toml"
+        config_file.write_text("")
+        alias = tmp_path / "alias"
+        try:
+            alias.symlink_to(real_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+        _use_config_file(monkeypatch, config_file)
+        # Not normalized by the caller either — exercises finding #2's fix at
+        # the same time.
+        assert config_collides_with_dir(alias) is not None
+
+    def test_differently_cased_dir_is_detected_on_case_insensitive_fs(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """macOS/Windows: `Path.resolve()` preserves the caller's spelling, so
+        `~/.CONFIG/...` and `~/.config/...` compare unequal while naming one
+        directory."""
+        config_dir = tmp_path / "cfgdir"
+        config_dir.mkdir()
+        if not _fs_is_case_insensitive(tmp_path):
+            pytest.skip("case-sensitive filesystem; casing cannot alias a directory here")
+        config_file = config_dir / "config.toml"
+        config_file.write_text("")
+        _use_config_file(monkeypatch, config_file)
+        shouted = tmp_path / "CFGDIR"
+        assert config_collides_with_dir(shouted) is not None
+
+    def test_unnormalized_candidate_dir_is_normalized_internally(self, tmp_path: Path, monkeypatch):
+        """A `candidate_dir` carrying `..` segments must still match — the
+        function normalizes rather than trusting its callers."""
+        config_dir = tmp_path / "cfgdir"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text("")
+        _use_config_file(monkeypatch, config_file)
+        roundabout = tmp_path / "cfgdir" / "nested" / ".."
+        assert config_collides_with_dir(roundabout) is not None
+
+    def test_unrelated_dir_still_returns_none(self, tmp_path: Path, monkeypatch):
+        """The identity check must not turn the guard into a blanket refusal."""
+        config_dir = tmp_path / "cfgdir"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text("")
+        _use_config_file(monkeypatch, config_file)
+        other = tmp_path / "somewhere-else"
+        other.mkdir()
+        assert config_collides_with_dir(other) is None
+
+
+class TestResolveGlobalConfigPathExpansion:
+    def test_tilde_override_is_expanded(self, monkeypatch):
+        """`PIPECAT_HUB_CONFIG_FILE=~/foo/config.toml` used to resolve to a
+        literal `~` directory: FileNotFoundError, missing-file-silent branch,
+        no warning, no config."""
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", "~/foo/config.toml")
+        resolved = resolve_global_config_path()
+        assert resolved is not None
+        assert "~" not in resolved.parts
+        assert resolved == Path.home() / "foo" / "config.toml"
+
+
+class TestLoadGlobalConfigDiagnostics:
+    """Warnings must name the thing the operator actually has to fix."""
+
+    def test_unsupported_type_warning_names_the_real_type(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """A bare TOML date is neither scalar nor list — the warning used to
+        claim `(table)`, sending the operator after a syntax error they
+        don't have."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("PIPECAT_HUB_STALE_AFTER_DAYS = 2026-08-08\n")
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert "date" in caplog.text
+        assert "(table)" not in caplog.text
+
+    def test_nested_table_warning_names_the_discarded_keys(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """Writing settings under a `[section]` header is a likely first
+        attempt; naming only the section leaves the operator blind to which
+        of their settings was dropped."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[some_table]\n"
+            'PIPECAT_HUB_DATA_DIR = "/nested/ignored"\n'
+            'PIPECAT_HUB_EXTRA_REPOS = "org/repo"\n'
+        )
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "PIPECAT_HUB_DATA_DIR" not in os.environ
+        assert "PIPECAT_HUB_DATA_DIR" in caplog.text
+        assert "PIPECAT_HUB_EXTRA_REPOS" in caplog.text
+        assert "some_table" in caplog.text
+
+    def test_unknown_key_warns_but_is_still_set(self, tmp_path: Path, monkeypatch, caplog):
+        """A typo'd key used to be indistinguishable from a working one: a
+        success log and a config that silently does nothing. Warn — but still
+        set it, so a config.toml written for a newer hub keeps working."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_DATADIR = "/typo"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_DATADIR", raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert os.environ["PIPECAT_HUB_DATADIR"] == "/typo"
+        assert "PIPECAT_HUB_DATADIR" in caplog.text
+        assert "not a recognized" in caplog.text
+
+    def test_known_key_does_not_warn(self, tmp_path: Path, monkeypatch, caplog):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "not a recognized" not in caplog.text
+
+    def test_shadowed_taint_list_warns(self, tmp_path: Path, monkeypatch, caplog):
+        """Exclusion controls are replaced, not unioned, by a higher layer —
+        an empty `.env` value silently disables a deliberate machine-global
+        exclusion, so say so out loud."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_TAINTED_REPOS = "org/bad"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "")
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert os.environ["PIPECAT_HUB_TAINTED_REPOS"] == ""
+        assert "PIPECAT_HUB_TAINTED_REPOS" in caplog.text
+        assert "NOT in effect" in caplog.text
+
+    def test_shadowed_ordinary_key_does_not_warn(self, tmp_path: Path, monkeypatch, caplog):
+        """Only exclusion controls get the shadowing warning — every other
+        key being outranked is ordinary, expected precedence."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "99"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "7")
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "NOT in effect" not in caplog.text
+
+
+class TestLoadEnvLayers:
+    """The shared bootstrap: one call, both layers, right order."""
+
+    def test_loads_both_layers(self, tmp_path: Path, monkeypatch):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "99"\n')
+        _use_config_file(monkeypatch, config_file)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".env").write_text("PIPECAT_HUB_EXTRA_REPOS=org/from-dotenv\n")
+        monkeypatch.chdir(project_dir)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_EXTRA_REPOS", raising=False)
+
+        env_loading.load_env_layers()
+
+        assert os.environ["PIPECAT_HUB_EXTRA_REPOS"] == "org/from-dotenv"
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "99"
+
+    def test_dotenv_layer_wins_over_config_toml(self, tmp_path: Path, monkeypatch):
+        """Ordering, not just coverage: `.env` must be written first so its
+        value wins first-writer-wins."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "99"\n')
+        _use_config_file(monkeypatch, config_file)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".env").write_text("PIPECAT_HUB_STALE_AFTER_DAYS=7\n")
+        monkeypatch.chdir(project_dir)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+
+        env_loading.load_env_layers()
+
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "7"

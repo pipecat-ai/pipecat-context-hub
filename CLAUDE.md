@@ -75,8 +75,10 @@ just dashboard-serve    # serve dashboard on localhost:8765
 vars > cwd `.env` > `~/.config/pipecat-context-hub/config.toml` (machine-global,
 optional, see `config.toml.example`) > `HubConfig` field defaults. Every entry
 point — `cli.py:main()`, the dashboard scripts, `scripts/smoke_check_removals.py`
-— calls `shared/env_loading.py`'s `load_cwd_dotenv()` then `load_global_config()`
-before constructing config, so they all resolve identically. Full precedence
+— calls `shared/env_loading.py`'s `load_env_layers()` (which runs
+`load_cwd_dotenv()` then `load_global_config()`) before constructing config, so
+they all resolve identically. Don't hand-replicate the two calls in a new entry
+point — a source-parity test (`tests/unit/test_config.py`) fails if you do. Full precedence
 details and the Windows lookup path: `docs/README.md`'s "Config precedence"
 subsection under Environment Variables.
 
@@ -129,6 +131,7 @@ src/pipecat_context_hub/
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
+│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence
 │   ├── interfaces.py         # IndexWriter/Reader, Retriever, Ingester
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision

@@ -498,6 +498,17 @@ class TestConfigTomlExampleParity:
         # diverge from it.
         assert internal_vars == env_loading._INVOCATION_SCOPED_KEYS
 
+        # `load_global_config()` warns about any PIPECAT_HUB_* key outside
+        # `_KNOWN_KEYS` (typo detection). That set is a third copy of the same
+        # registry, so pin it here too — otherwise adding a documented var
+        # would make the loader warn about a perfectly valid setting.
+        assert env_loading._KNOWN_KEYS == example_keys, (
+            "shared/env_loading.py's _KNOWN_KEYS has drifted from the documented "
+            "registry.\n"
+            f"Only in _KNOWN_KEYS: {sorted(env_loading._KNOWN_KEYS - example_keys)}\n"
+            f"Only in config.toml.example: {sorted(example_keys - env_loading._KNOWN_KEYS)}"
+        )
+
 
 def _import_script(path: Path, module_name_hint: str):
     """Import a non-package script file via file-path loading.
@@ -522,8 +533,9 @@ def _import_script(path: Path, module_name_hint: str):
 class TestDashboardScriptConfigParity:
     """Source-level parity: each independent entry point that constructs
     StorageConfig()/HubConfig() outside cli.py:main() must call
-    load_cwd_dotenv() then load_global_config(), in that order, before that
-    construction — the same two calls, same order, cli.py:main() makes (dev
+    ``load_env_layers()`` — the shared bootstrap that performs
+    load_cwd_dotenv() then load_global_config() in that order — before that
+    construction, the same single call cli.py:main() makes (dev
     plan Phase 3). Mirrors test_every_click_command_is_bridged
     (tests/unit/test_plugin.py:87-90): a script that forgets (or reorders)
     the loader calls would silently diverge its resolved config.toml /
@@ -553,17 +565,39 @@ class TestDashboardScriptConfigParity:
     def test_scripts_call_loaders_before_construction(self):
         for rel_path, (path, config_cls) in self._SCRIPTS.items():
             source = path.read_text(encoding="utf-8")
-            cwd_idx = source.find("load_cwd_dotenv()")
-            global_idx = source.find("load_global_config()")
+            bootstrap_idx = source.find("load_env_layers()")
             construct_idx = source.find(f"{config_cls}()")
-            assert cwd_idx != -1, f"{rel_path}: no load_cwd_dotenv() call found"
-            assert global_idx != -1, f"{rel_path}: no load_global_config() call found"
+            assert bootstrap_idx != -1, f"{rel_path}: no load_env_layers() call found"
             assert construct_idx != -1, f"{rel_path}: no {config_cls}() construction found"
-            assert cwd_idx < global_idx < construct_idx, (
-                f"{rel_path}: expected load_cwd_dotenv() before load_global_config() "
-                f"before {config_cls}() construction; found at offsets "
-                f"{cwd_idx}, {global_idx}, {construct_idx}"
+            assert bootstrap_idx < construct_idx, (
+                f"{rel_path}: expected load_env_layers() before {config_cls}() "
+                f"construction; found at offsets {bootstrap_idx}, {construct_idx}"
             )
+            # The ordering contract must live in the shared bootstrap, not be
+            # hand-replicated here — that hand-replication is exactly what
+            # this abstraction removed.
+            assert "load_cwd_dotenv()" not in source, (
+                f"{rel_path}: calls load_cwd_dotenv() directly; use load_env_layers()"
+            )
+            assert "load_global_config()" not in source, (
+                f"{rel_path}: calls load_global_config() directly; use load_env_layers()"
+            )
+
+    def test_cli_main_uses_the_shared_bootstrap(self):
+        """cli.py:main() is the fourth copy the abstraction replaced."""
+        source = (_REPO_ROOT / "src" / "pipecat_context_hub" / "cli.py").read_text(encoding="utf-8")
+        assert "env_loading.load_env_layers()" in source
+
+    def test_load_env_layers_calls_both_loaders_in_order(self):
+        """Behavioural companion to the source scan: the shared bootstrap
+        really does run cwd .env before config.toml."""
+        calls: list[str] = []
+        with (
+            patch.object(env_loading, "load_cwd_dotenv", lambda: calls.append("cwd")),
+            patch.object(env_loading, "load_global_config", lambda: calls.append("global")),
+        ):
+            env_loading.load_env_layers()
+        assert calls == ["cwd", "global"]
 
 
 # (path, module-name hint, resolved-StorageConfig accessor) for each of the

@@ -9,18 +9,18 @@ import numpy as np
 import umap
 
 from pipecat_context_hub.shared.config import StorageConfig
-from pipecat_context_hub.shared.env_loading import load_cwd_dotenv, load_global_config
+from pipecat_context_hub.shared.env_loading import load_env_layers
 
 
 def _bootstrap() -> StorageConfig:
-    """Load cwd .env then global config.toml, then construct StorageConfig.
+    """Load every config layer, then construct StorageConfig.
 
-    Same two calls, same order, as `cli.py:main()`, so this script's resolved
+    Same single bootstrap call as `cli.py:main()`, so this script's resolved
     config (in particular `PIPECAT_HUB_DATA_DIR`) matches refresh/serve
-    instead of only seeing real env vars.
+    instead of only seeing real env vars. The two-call ordering lives inside
+    `load_env_layers()` rather than being hand-replicated per entry point.
     """
-    load_cwd_dotenv()
-    load_global_config()
+    load_env_layers()
     return StorageConfig()
 
 

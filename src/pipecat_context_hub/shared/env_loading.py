@@ -8,8 +8,9 @@ from an earlier loader call) is never overwritten.
 
 Every entry point that constructs ``StorageConfig``/``HubConfig`` — the CLI
 group callback, the dashboard scripts, and ``scripts/smoke_check_removals.py``
-— must call ``load_cwd_dotenv()`` then ``load_global_config()`` (in that
-order) before constructing config, so all of them see the same layering.
+— must call :func:`load_env_layers`, which performs both loader calls in the
+required order, so all of them see the same layering. The individual loaders
+stay public for tests, but no entry point should hand-replicate the ordering.
 """
 
 from __future__ import annotations
@@ -73,6 +74,37 @@ _ENV_PREFIX = "PIPECAT_HUB_"
 _CONFIG_FILE_ENV_VAR = "PIPECAT_HUB_CONFIG_FILE"
 _DATA_DIR_ENV_VAR = "PIPECAT_HUB_DATA_DIR"
 
+# The documented settings registry — every key in `config.toml.example` and
+# docs/README.md's Environment Variables table. Pinned against both by
+# `tests/unit/test_config.py::TestConfigTomlExampleParity`, so this set cannot
+# silently drift from the documented one.
+#
+# Used only to *warn* about an unrecognized key (e.g. a typo'd
+# `PIPECAT_HUB_DATADIR`), never to skip it: warn-and-set keeps a config.toml
+# written for a newer hub version forward-compatible with an older binary.
+_KNOWN_KEYS = frozenset(
+    {
+        "PIPECAT_HUB_DATA_DIR",
+        "PIPECAT_HUB_EXTRA_REPOS",
+        "PIPECAT_HUB_FRAMEWORK_VERSION",
+        "PIPECAT_HUB_IDLE_TIMEOUT_SECS",
+        "PIPECAT_HUB_PARENT_WATCH_INTERVAL",
+        "PIPECAT_HUB_RERANKER_ENABLED",
+        "PIPECAT_HUB_RERANKER_MODEL",
+        "PIPECAT_HUB_STALE_AFTER_DAYS",
+        "PIPECAT_HUB_TAINTED_REFS",
+        "PIPECAT_HUB_TAINTED_REPOS",
+        "PIPECAT_HUB_WARMUP",
+    }
+)
+
+# Exclusion controls: a higher-precedence layer *replaces* these rather than
+# adding to them (first-writer-wins applies uniformly), so a config.toml entry
+# that is shadowed by a real env var or cwd `.env` is worth saying out loud —
+# an operator who deliberately excluded a repo machine-globally should learn
+# that this invocation is not honouring that list.
+_EXCLUSION_KEYS = frozenset({"PIPECAT_HUB_TAINTED_REPOS", "PIPECAT_HUB_TAINTED_REFS"})
+
 # Scalar TOML value types accepted as-is (coerced via str()) or as elements
 # of a homogeneous array.
 _SCALAR_TYPES = (str, int, float, bool)
@@ -131,8 +163,44 @@ def resolve_global_config_path() -> Path | None:
     """
     override = os.environ.get(_CONFIG_FILE_ENV_VAR)
     if override:
-        return Path(override)
+        # expanduser so a `~`-rooted override resolves to a real path instead
+        # of a literal `~` directory that silently takes the missing-file
+        # branch (no warning, no config).
+        return Path(override).expanduser()
     return DEFAULT_CONFIG_PATH
+
+
+def _same_dir(path: Path, dir_stat: os.stat_result) -> bool:
+    """True when ``path`` is the same on-disk directory as ``dir_stat``."""
+    try:
+        return os.path.samestat(path.stat(), dir_stat)
+    except (OSError, ValueError):
+        return False
+
+
+def _is_inside(path: Path, directory: Path, dir_stat: os.stat_result | None) -> bool:
+    """True when ``path`` lives under ``directory``.
+
+    Two checks, because a path-string comparison alone is not sound:
+
+    1. Lexical containment (``is_relative_to``) — works for paths that don't
+       exist yet, and is the common case.
+    2. Filesystem identity — walk ``path``'s ancestors and compare
+       ``(st_dev, st_ino)`` against ``directory``'s. This is what catches a
+       spelling of ``directory`` that names the *same* directory without
+       matching character-for-character: a differently-cased spelling on a
+       case-insensitive volume (macOS APFS, Windows NTFS), where
+       ``Path.resolve()`` preserves the caller's casing so
+       ``~/.CONFIG/...`` and ``~/.config/...`` compare unequal while being one
+       directory on disk; or a path reached through a symlinked ancestor.
+       Skipped when either side doesn't exist (nothing to stat) — which is
+       safe, because a directory that doesn't exist cannot be ``rmtree``'d.
+    """
+    if path.is_relative_to(directory):
+        return True
+    if dir_stat is None:
+        return False
+    return any(_same_dir(ancestor, dir_stat) for ancestor in path.parents)
 
 
 def config_collides_with_dir(candidate_dir: Path) -> Path | None:
@@ -151,16 +219,21 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     ``cli.py``'s ``_delete_local_index_storage()`` reset-path guard, so both
     stay in lockstep on the same predicate.
 
-    ``candidate_dir`` must already be an absolute, symlink-resolved path
-    (both current call sites pass one) — this function does not normalize
-    it, so an unresolved ``candidate_dir`` (e.g. one reached through a
-    symlinked ancestor, as macOS's ``/var`` -> ``/private/var`` and
-    ``tempfile``-based paths often are) can silently fail to match even a
-    plain, non-symlinked collision.
+    ``candidate_dir`` is normalized here (``expanduser`` +
+    ``resolve(strict=False)``) rather than at the call sites: this is a
+    safety-critical predicate that fails *open* (silent non-detection) when
+    handed an unnormalized path, so it must not depend on every caller —
+    present and future — getting that right. Normalization is idempotent, so
+    callers that already normalize are unaffected.
     """
     config_path = resolve_global_config_path()
     if config_path is None:
         return None
+
+    try:
+        candidate_dir = Path(candidate_dir).expanduser().resolve(strict=False)
+    except (ValueError, OSError, RuntimeError):
+        candidate_dir = Path(os.path.abspath(candidate_dir))
 
     # Lexical: absolute + '..'/'.'-normalized, zero syscalls, zero symlink deref.
     lexical = Path(os.path.abspath(config_path))
@@ -184,11 +257,33 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
 
     if not lexical.is_file():
         return None
-    if physical.is_relative_to(candidate_dir):
+
+    try:
+        dir_stat: os.stat_result | None = candidate_dir.stat()
+    except (OSError, ValueError):
+        dir_stat = None
+
+    if _is_inside(physical, candidate_dir, dir_stat):
         return physical
-    if resolved.is_relative_to(candidate_dir):
+    if _is_inside(resolved, candidate_dir, dir_stat):
         return resolved
     return None
+
+
+def load_env_layers() -> None:
+    """Load every config layer below real env vars, in precedence order.
+
+    The single bootstrap entry point: ``load_cwd_dotenv()`` (cwd ``.env``)
+    then ``load_global_config()`` (machine-global ``config.toml``). Every
+    entry point that constructs ``StorageConfig``/``HubConfig`` outside
+    ``cli.py:main()`` — the dashboard scripts, ``scripts/smoke_check_removals.py``
+    — calls this rather than hand-replicating the two-call ordering, so the
+    contract is enforced by the code path instead of by convention.
+
+    The individual loaders remain public for tests that exercise one layer.
+    """
+    load_cwd_dotenv()
+    load_global_config()
 
 
 def _stringify_scalar_array(value: list[object], key: str) -> str | None:
@@ -245,8 +340,33 @@ def load_global_config() -> None:
     loaded = 0
     for key, value in data.items():
         if not key.startswith(_ENV_PREFIX):
+            if isinstance(value, dict):
+                # A TOML *table* header, not a stray scalar. Settings written
+                # under `[some_table]` are dropped wholesale, and naming only
+                # the table would leave the operator with no idea which of
+                # their settings went missing — so name the nested
+                # PIPECAT_HUB_* keys explicitly. This is a likely first-attempt
+                # TOML mistake (section headers are the format's idiom).
+                nested = sorted(k for k in value if k.startswith(_ENV_PREFIX))
+                if nested:
+                    _module_logger.warning(
+                        "config.toml table %r is not read; %s must be top-level "
+                        "key(s), not nested under a section header — skipping",
+                        key,
+                        ", ".join(repr(k) for k in nested),
+                    )
+                    continue
             _module_logger.warning("config.toml key %r is not a PIPECAT_HUB_* var; skipping", key)
             continue
+        if key not in _KNOWN_KEYS:
+            # Warn, don't skip: an unrecognized key is far more often a typo
+            # (`PIPECAT_HUB_DATADIR`) than a genuinely newer setting, but
+            # skipping would break a config.toml written for a newer hub.
+            _module_logger.warning(
+                "config.toml key %r is not a recognized PIPECAT_HUB_* setting "
+                "(typo?); setting it anyway",
+                key,
+            )
         if key in _INVOCATION_SCOPED_KEYS:
             _module_logger.warning(
                 "config.toml key %r is invocation-scoped, not machine config; skipping",
@@ -258,6 +378,18 @@ def load_global_config() -> None:
             # config.toml value could do (including a DATA_DIR collision
             # warning below) is actually going to apply, so don't validate
             # or warn about a value that was never eligible to be used.
+            #
+            # Exception: exclusion controls. Precedence is uniformly
+            # first-writer-wins (a higher layer replaces, it does not union),
+            # so a shadowed taint list means a deliberate machine-global
+            # exclusion is silently not in effect this run. Say so.
+            if key in _EXCLUSION_KEYS:
+                _module_logger.warning(
+                    "config.toml key %r is shadowed by a higher-precedence layer "
+                    "(real env var or cwd .env); the machine-global exclusion list "
+                    "is NOT in effect for this run",
+                    key,
+                )
             continue
 
         if isinstance(value, list):
@@ -273,9 +405,14 @@ def load_global_config() -> None:
         elif isinstance(value, _SCALAR_TYPES):
             coerced = str(value)
         else:
+            # Name the actual type: this branch is reached by every non-scalar,
+            # non-list TOML type, including the native date/time/datetime ones —
+            # reporting "table" for a bare date sends the operator hunting for
+            # a syntax problem they don't have.
             _module_logger.warning(
-                "config.toml key %r has an unsupported value type (table); skipping",
+                "config.toml key %r has an unsupported value type (%s); skipping",
                 key,
+                type(value).__name__,
             )
             continue
 
