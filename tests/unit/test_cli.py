@@ -21,6 +21,7 @@ from pipecat_context_hub.cli import (
     _redact_home,
     _safe_hr,
     _warmup_enabled,
+    _write_serve_debug_probe,
     main,
 )
 from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
@@ -38,6 +39,44 @@ class TestLoadDotenvBackCompatAlias:
 
     def test_load_dotenv_is_the_real_loader(self):
         assert _load_dotenv is load_cwd_dotenv
+
+
+class TestWriteServeDebugProbe:
+    """`_write_serve_debug_probe()` must never crash `serve` on failure —
+    including when `Path.home()` itself raises (RuntimeError, not OSError),
+    a gap the original `except OSError` clause missed."""
+
+    def test_writes_probe_file(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        logger = MagicMock()
+        _write_serve_debug_probe(logger)
+        probe_path = tmp_path / ".cache" / "pipecat-context-hub" / "serve-debug.log"
+        assert probe_path.is_file()
+        logger.info.assert_called_once()
+
+    def test_path_home_runtime_error_is_swallowed(self, monkeypatch):
+        """Path.home() raises RuntimeError (not OSError) when the home
+        directory can't be determined — the probe must log and swallow this,
+        not propagate it and crash serve."""
+
+        def _raise_no_home():
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(Path, "home", _raise_no_home)
+        logger = MagicMock()
+        _write_serve_debug_probe(logger)  # must not raise
+        logger.exception.assert_called_once()
+
+    def test_mkdir_oserror_is_swallowed(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            Path,
+            "mkdir",
+            MagicMock(side_effect=OSError("permission denied")),
+        )
+        logger = MagicMock()
+        _write_serve_debug_probe(logger)  # must not raise
+        logger.exception.assert_called_once()
 
 
 class TestRedactHome:

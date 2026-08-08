@@ -143,11 +143,11 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     ``--reset-index`` — only an existing file in effect is worth protecting.
     """
     resolved_data_dir = data_dir.expanduser().resolve(strict=False)
-    active_config_path = env_loading.resolve_global_config_path().resolve(strict=False)
-    if active_config_path.is_file() and active_config_path.is_relative_to(resolved_data_dir):
+    colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
+    if colliding_config_path is not None:
         raise click.ClickException(
             f"Refusing to delete {redact_home(data_dir)}: it contains the active "
-            f"config.toml ({redact_home(active_config_path)}). Move PIPECAT_HUB_DATA_DIR "
+            f"config.toml ({redact_home(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
             "or the config file so they don't collide, then retry --reset-index."
         )
     shutil.rmtree(data_dir, ignore_errors=True)
@@ -163,8 +163,8 @@ def _write_serve_debug_probe(logger: logging.Logger) -> None:
     isn't reachable. Failures are logged and swallowed; a debug probe must
     never crash `serve`.
     """
-    probe_path = Path.home() / ".cache" / "pipecat-context-hub" / "serve-debug.log"
     try:
+        probe_path = Path.home() / ".cache" / "pipecat-context-hub" / "serve-debug.log"
         probe_path.parent.mkdir(parents=True, exist_ok=True)
         with probe_path.open("a", encoding="utf-8") as f:
             f.write(
@@ -172,7 +172,12 @@ def _write_serve_debug_probe(logger: logging.Logger) -> None:
                 f"env_keys={sorted(k for k in os.environ if k.startswith('PIPECAT_HUB_'))}\n"
             )
         logger.info("PIPECAT_HUB_DEBUG_PROBE=1: wrote serve debug probe to %s", probe_path)
-    except OSError:
+    except Exception:
+        # Path.home() raises RuntimeError (not OSError) when the home
+        # directory can't be determined — broadened from except OSError to
+        # actually cover that case, matching shared/paths.py's redact_home,
+        # which wraps the same call for the same reason. A debug probe must
+        # never crash serve, regardless of which exception it hits.
         logger.exception("PIPECAT_HUB_DEBUG_PROBE=1: failed to write serve debug probe")
 
 
@@ -1047,6 +1052,15 @@ def _safe_placeholder() -> str:
     return "-"
 
 
+def _echo_prune_skip_notice(pruned_skipped_count: int) -> None:
+    """Print the 'Skipped pruning' line, shared by both summary branches below."""
+    if pruned_skipped_count:
+        click.echo(
+            f"Skipped pruning: {pruned_skipped_count} repo(s) not in this run's config "
+            "(use --prune to remove)"
+        )
+
+
 def _print_refresh_summary(
     source_status: dict[str, dict[str, str | int]],
     total_upserted: int,
@@ -1059,11 +1073,7 @@ def _print_refresh_summary(
     """Print a summary table after refresh."""
     if not source_status:
         click.echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
-        if pruned_skipped_count:
-            click.echo(
-                f"Skipped pruning: {pruned_skipped_count} repo(s) not in this run's config "
-                "(use --prune to remove)"
-            )
+        _echo_prune_skip_notice(pruned_skipped_count)
         return
 
     # Compute column widths
@@ -1124,11 +1134,7 @@ def _print_refresh_summary(
         click.echo(
             f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
         )
-    if pruned_skipped_count:
-        click.echo(
-            f"Skipped pruning: {pruned_skipped_count} repo(s) not in this run's config "
-            "(use --prune to remove)"
-        )
+    _echo_prune_skip_notice(pruned_skipped_count)
     click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 
 

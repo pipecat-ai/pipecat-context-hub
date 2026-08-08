@@ -30,6 +30,19 @@ def _use_config_file(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(path))
 
 
+def _toml_str(value: object) -> str:
+    """Escape a value for embedding in a TOML basic (double-quoted) string.
+
+    Needed anywhere a `Path` is interpolated into hand-written config.toml
+    content in these tests: on Windows, path separators are backslashes,
+    which TOML's basic-string grammar treats as escape-sequence introducers
+    (e.g. `\\U...` as an 8-hex-digit unicode escape) — writing a raw
+    WindowsPath into an f-string TOML value produces invalid TOML that
+    `tomllib` fails to parse.
+    """
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
 class TestLoadCwdDotenv:
     """Tests for the cwd .env parser — moved verbatim from test_cli.py's
     TestLoadDotenv (module move, dev plan Phase 1). `cli._load_dotenv` is a
@@ -146,8 +159,47 @@ class TestResolveGlobalConfigPath:
         """
         data_dir = StorageConfig().data_dir
         config_path = env_loading.DEFAULT_CONFIG_PATH
+        # None only when Path.home() failed at import time (test env has a
+        # resolvable home) — narrow for mypy, assert for a clear failure if
+        # that assumption is ever wrong.
+        assert config_path is not None
         assert not config_path.is_relative_to(data_dir)
         assert not data_dir.is_relative_to(config_path.parent)
+
+    def test_unresolvable_home_returns_none_not_override(self, monkeypatch):
+        """No PIPECAT_HUB_CONFIG_FILE override + unresolvable default (module
+        attribute simulated as None, standing in for a real Path.home()
+        RuntimeError at import time — see test_import_survives_unresolvable_home
+        below for the actual import-time crash coverage) resolves to None,
+        not a raised exception."""
+        monkeypatch.delenv("PIPECAT_HUB_CONFIG_FILE", raising=False)
+        monkeypatch.setattr(env_loading, "DEFAULT_CONFIG_PATH", None)
+        assert resolve_global_config_path() is None
+
+    def test_import_survives_unresolvable_home(self, monkeypatch):
+        """Module-level DEFAULT_CONFIG_PATH computation must not crash import
+        when Path.home() raises RuntimeError (e.g. a hardened container with
+        no /etc/passwd entry for the running UID) — reproduces the actual
+        import-time failure mode, not just the module-attribute stand-in
+        above. Every entry point (cli.py's console-script main, the
+        dashboard scripts, scripts/smoke_check_removals.py) imports this
+        module at the top level, so a crash here would take all of them
+        down before argv is even parsed."""
+        import importlib
+        import pathlib
+
+        original_home = pathlib.Path.home
+
+        def _raise_no_home(*args, **kwargs):
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(pathlib.Path, "home", _raise_no_home)
+        try:
+            reloaded = importlib.reload(env_loading)
+            assert reloaded.DEFAULT_CONFIG_PATH is None
+        finally:
+            monkeypatch.setattr(pathlib.Path, "home", original_home)
+            importlib.reload(env_loading)  # restore real DEFAULT_CONFIG_PATH for later tests
 
 
 class TestLoadGlobalConfigBasics:
@@ -322,7 +374,7 @@ class TestLoadGlobalConfigKeyFiltering:
         """
         real_config_file = tmp_path / "config.toml"
         decoy_path = tmp_path / "decoy" / "config.toml"
-        real_config_file.write_text(f'PIPECAT_HUB_CONFIG_FILE = "{decoy_path}"\n')
+        real_config_file.write_text(f'PIPECAT_HUB_CONFIG_FILE = "{_toml_str(decoy_path)}"\n')
         _use_config_file(monkeypatch, real_config_file)
         before = os.environ["PIPECAT_HUB_CONFIG_FILE"]
         with caplog.at_level("WARNING"):
@@ -375,7 +427,7 @@ class TestLoadGlobalConfigDataDirCollision:
         config_dir = tmp_path / "cfg-home"
         config_dir.mkdir()
         config_file = config_dir / "config.toml"
-        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{config_dir}"\n')
+        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{_toml_str(config_dir)}"\n')
         _use_config_file(monkeypatch, config_file)
         monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
         with caplog.at_level("WARNING"):
@@ -388,7 +440,7 @@ class TestLoadGlobalConfigDataDirCollision:
         config_dir.mkdir()
         config_file = config_dir / "config.toml"
         data_dir = tmp_path / "data-home"
-        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{data_dir}"\n')
+        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{_toml_str(data_dir)}"\n')
         _use_config_file(monkeypatch, config_file)
         monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
         load_global_config()
@@ -410,12 +462,35 @@ class TestLoadGlobalConfigDataDirCollision:
         config_dir = tmp_path / "cfg-home"
         config_dir.mkdir()
         config_file = config_dir / "config.toml"
-        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{config_dir}"\n')
+        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{_toml_str(config_dir)}"\n')
         _use_config_file(monkeypatch, config_file)
         monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
-        assert resolve_global_config_path().is_file()
+        resolved_config_path = resolve_global_config_path()
+        assert resolved_config_path is not None
+        assert resolved_config_path.is_file()
         load_global_config()
         assert "PIPECAT_HUB_DATA_DIR" not in os.environ
+
+    def test_colliding_data_dir_no_warning_when_real_env_var_already_wins(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """The collision check must run AFTER the precedence gate: if a real
+        env var already set PIPECAT_HUB_DATA_DIR to something ordinary,
+        config.toml's colliding value was never eligible to be applied, and
+        no misleading 'would relocate the data dir' warning should fire for
+        it — that warning is only meaningful when config.toml's value is
+        actually the one in contention."""
+        config_dir = tmp_path / "cfg-home"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{_toml_str(config_dir)}"\n')
+        _use_config_file(monkeypatch, config_file)
+        real_data_dir = tmp_path / "real-data-dir"
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(real_data_dir))
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert os.environ["PIPECAT_HUB_DATA_DIR"] == str(real_data_dir)
+        assert "PIPECAT_HUB_DATA_DIR" not in caplog.text
 
 
 class TestLoadGlobalConfigLogging:
@@ -490,7 +565,7 @@ class TestLoadGlobalConfigBehavioralRoundTrip:
         config_dir.mkdir()
         config_file = config_dir / "config.toml"
         data_dir = tmp_path / "relocated-data"
-        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{data_dir}"\n')
+        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{_toml_str(data_dir)}"\n')
         _use_config_file(monkeypatch, config_file)
         monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
         load_global_config()

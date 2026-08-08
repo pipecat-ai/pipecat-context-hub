@@ -610,7 +610,12 @@ class TestDashboardScriptDataDirResolution:
     ):
         data_dir = tmp_path / "resolved-data"
         config_file = tmp_path / "config.toml"
-        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{data_dir}"\n', encoding="utf-8")
+        # Escape backslashes for TOML: on Windows, a raw WindowsPath
+        # interpolated into a double-quoted TOML string is invalid TOML
+        # (backslash is an escape-sequence introducer there), which
+        # tomllib would fail to parse in the windows-smoke CI job.
+        escaped_data_dir = str(data_dir).replace("\\", "\\\\")
+        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{escaped_data_dir}"\n', encoding="utf-8")
 
         monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(config_file))
         monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)

@@ -25,7 +25,27 @@ _module_logger = logging.getLogger(__name__)
 # `resolve_global_config_path()` (module-attribute lookup at call time, not a
 # captured default or an aliased import) so `monkeypatch.setattr(env_loading,
 # "DEFAULT_CONFIG_PATH", ...)` is observed by every consumer of that helper.
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pipecat-context-hub" / "config.toml"
+#
+# Computed at import time, but guarded: `Path.home()` raises `RuntimeError`
+# when the home directory can't be determined (e.g. a hardened container
+# running as an arbitrary UID with no matching /etc/passwd entry). Every
+# other `Path.home()` call site in this codebase is lazy (inside a function
+# body); this one can't be, because tests need to monkeypatch it as a plain
+# attribute. A None fallback here means "no default config.toml location
+# available" rather than crashing every entry point that imports this module
+# (cli.py's console-script entry point among them) before argv is even
+# parsed.
+try:
+    DEFAULT_CONFIG_PATH: Path | None = (
+        Path.home() / ".config" / "pipecat-context-hub" / "config.toml"
+    )
+except RuntimeError as _home_exc:
+    _module_logger.warning(
+        "Could not determine home directory (%s); config.toml auto-discovery is "
+        "disabled unless PIPECAT_HUB_CONFIG_FILE is set",
+        _home_exc,
+    )
+    DEFAULT_CONFIG_PATH = None
 
 # Single source of truth for the PIPECAT_HUB_PRUNE literal, referenced (not
 # re-hardcoded) by _INVOCATION_SCOPED_KEYS below and by Phase 4's
@@ -97,19 +117,42 @@ def load_cwd_dotenv() -> None:
             os.environ[key] = value
 
 
-def resolve_global_config_path() -> Path:
+def resolve_global_config_path() -> Path | None:
     """Resolve the machine-global config file path.
 
     Honors ``PIPECAT_HUB_CONFIG_FILE`` if set (a test-hermeticity seam only —
     not a documented operator feature), else falls back to
     ``DEFAULT_CONFIG_PATH``. Reads ``DEFAULT_CONFIG_PATH`` via module-attribute
     lookup so a test-time ``monkeypatch.setattr(env_loading,
-    "DEFAULT_CONFIG_PATH", ...)`` is observed.
+    "DEFAULT_CONFIG_PATH", ...)`` is observed. Returns ``None`` only when no
+    override is set and ``DEFAULT_CONFIG_PATH`` itself is ``None`` (home
+    directory could not be determined at import time) — callers must treat
+    that the same as "no config file available", not an error.
     """
     override = os.environ.get(_CONFIG_FILE_ENV_VAR)
     if override:
         return Path(override)
     return DEFAULT_CONFIG_PATH
+
+
+def config_collides_with_dir(candidate_dir: Path) -> Path | None:
+    """Return the resolved active config path if it lives inside ``candidate_dir``.
+
+    Returns ``None`` if there's no collision, the active config path can't be
+    resolved (no home directory), or the config file doesn't exist — a
+    nonexistent or unresolvable config can't be protected from, matching the
+    loader's own missing-file-silent contract. Shared by this module's own
+    ``PIPECAT_HUB_DATA_DIR`` skip below and ``cli.py``'s
+    ``_delete_local_index_storage()`` reset-path guard, so both stay in
+    lockstep on the same predicate.
+    """
+    config_path = resolve_global_config_path()
+    if config_path is None:
+        return None
+    active_config_path = config_path.resolve(strict=False)
+    if active_config_path.is_file() and active_config_path.is_relative_to(candidate_dir):
+        return active_config_path
+    return None
 
 
 def _stringify_scalar_array(value: list[object], key: str) -> str | None:
@@ -148,6 +191,12 @@ def load_global_config() -> None:
     unreadable files log a warning and never raise.
     """
     config_path = resolve_global_config_path()
+    if config_path is None:
+        # Home directory couldn't be determined at import time (see
+        # DEFAULT_CONFIG_PATH above) and no PIPECAT_HUB_CONFIG_FILE override
+        # is set. Nothing to load; the warning was already logged once, at
+        # import time.
+        return
     try:
         with config_path.open("rb") as f:
             data = tomllib.load(f)
@@ -167,6 +216,12 @@ def load_global_config() -> None:
                 "config.toml key %r is invocation-scoped, not machine config; skipping",
                 key,
             )
+            continue
+        if key in os.environ:
+            # A real env var or cwd .env already won this key — nothing this
+            # config.toml value could do (including a DATA_DIR collision
+            # warning below) is actually going to apply, so don't validate
+            # or warn about a value that was never eligible to be used.
             continue
 
         if isinstance(value, list):
@@ -190,19 +245,18 @@ def load_global_config() -> None:
 
         if key == _DATA_DIR_ENV_VAR:
             candidate_dir = Path(coerced).expanduser().resolve(strict=False)
-            active_config_path = resolve_global_config_path().resolve(strict=False)
-            if active_config_path.is_file() and active_config_path.is_relative_to(candidate_dir):
+            colliding_config_path = config_collides_with_dir(candidate_dir)
+            if colliding_config_path is not None:
                 _module_logger.warning(
                     "config.toml key %r would relocate the data dir to contain the "
                     "active config file (%s); skipping",
                     key,
-                    active_config_path,
+                    colliding_config_path,
                 )
                 continue
 
-        if key not in os.environ:
-            os.environ[key] = coerced
-            loaded += 1
+        os.environ[key] = coerced
+        loaded += 1
 
     if loaded:
         _module_logger.info("Loaded %d key(s) from %s", loaded, config_path)
