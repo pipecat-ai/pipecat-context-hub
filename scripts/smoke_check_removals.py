@@ -62,6 +62,7 @@ from pipecat_context_hub.services.ingest.deprecation_map import (
 )
 from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.env_loading import load_cwd_dotenv, load_global_config
 
 # A removed symbol that is absent from the real active registry — mirrors how the
 # producer (pipecat#4734) only emits removals for subjects no longer in
@@ -87,9 +88,21 @@ _SYNTHETIC_REMOVALS = {
 }
 
 
+def _bootstrap() -> HubConfig:
+    """Load cwd .env then global config.toml, then construct HubConfig.
+
+    Same two calls, same order, as `cli.py:main()`, so this script's resolved
+    config (in particular `PIPECAT_HUB_DATA_DIR`) matches refresh/serve
+    instead of only seeing real env vars.
+    """
+    load_cwd_dotenv()
+    load_global_config()
+    return HubConfig()
+
+
 def _registry_path() -> Path:
     """Resolve the real ``deprecations.json`` in the cloned framework checkout."""
-    data_dir = HubConfig().storage.data_dir
+    data_dir = _bootstrap().storage.data_dir
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", _FRAMEWORK_REPO)
     return data_dir / "repos" / safe_name / REGISTRY_RELATIVE_PATH
 

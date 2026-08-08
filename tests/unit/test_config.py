@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
+import sys
+import uuid
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import (
@@ -492,3 +497,128 @@ class TestConfigTomlExampleParity:
         # set must track shared/env_loading.py's real one, not silently
         # diverge from it.
         assert internal_vars == env_loading._INVOCATION_SCOPED_KEYS
+
+
+def _import_script(path: Path, module_name_hint: str):
+    """Import a non-package script file via file-path loading.
+
+    Neither `dashboard/scripts/` nor `scripts/` is a package, so a normal
+    `import` statement can't reach these files (dev plan Phase 3). A unique
+    module name per call avoids `sys.modules` collisions across the three
+    scripts (and across repeated test invocations in the same session).
+    """
+    unique_name = f"_pch_test_{module_name_hint}_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(unique_name, path)
+    assert spec is not None and spec.loader is not None, f"could not load spec for {path}"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[unique_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(unique_name, None)
+    return module
+
+
+class TestDashboardScriptConfigParity:
+    """Source-level parity: each independent entry point that constructs
+    StorageConfig()/HubConfig() outside cli.py:main() must call
+    load_cwd_dotenv() then load_global_config(), in that order, before that
+    construction — the same two calls, same order, cli.py:main() makes (dev
+    plan Phase 3). Mirrors test_every_click_command_is_bridged
+    (tests/unit/test_plugin.py:87-90): a script that forgets (or reorders)
+    the loader calls would silently diverge its resolved config.toml /
+    PIPECAT_HUB_DATA_DIR from refresh/serve without this test failing.
+
+    This is a *call-order* check only — see TestDashboardScriptDataDirResolution
+    below for the behavioral companion that proves the loaded value is
+    actually used (dev plan Acceptance Criteria: "verified by ... a
+    behavioral test ... not source-scan alone").
+    """
+
+    _SCRIPTS = {
+        "dashboard/scripts/extract_dashboard.py": (
+            _REPO_ROOT / "dashboard" / "scripts" / "extract_dashboard.py",
+            "StorageConfig",
+        ),
+        "dashboard/scripts/extract_embeddings.py": (
+            _REPO_ROOT / "dashboard" / "scripts" / "extract_embeddings.py",
+            "StorageConfig",
+        ),
+        "scripts/smoke_check_removals.py": (
+            _REPO_ROOT / "scripts" / "smoke_check_removals.py",
+            "HubConfig",
+        ),
+    }
+
+    def test_scripts_call_loaders_before_construction(self):
+        for rel_path, (path, config_cls) in self._SCRIPTS.items():
+            source = path.read_text(encoding="utf-8")
+            cwd_idx = source.find("load_cwd_dotenv()")
+            global_idx = source.find("load_global_config()")
+            construct_idx = source.find(f"{config_cls}()")
+            assert cwd_idx != -1, f"{rel_path}: no load_cwd_dotenv() call found"
+            assert global_idx != -1, f"{rel_path}: no load_global_config() call found"
+            assert construct_idx != -1, f"{rel_path}: no {config_cls}() construction found"
+            assert cwd_idx < global_idx < construct_idx, (
+                f"{rel_path}: expected load_cwd_dotenv() before load_global_config() "
+                f"before {config_cls}() construction; found at offsets "
+                f"{cwd_idx}, {global_idx}, {construct_idx}"
+            )
+
+
+# (path, module-name hint, resolved-StorageConfig accessor) for each of the
+# three entry points. smoke_check_removals.py's _bootstrap() returns a
+# HubConfig (it also needs other HubConfig fields elsewhere in the script),
+# so its data_dir is one level deeper than the two dashboard scripts', which
+# bootstrap a bare StorageConfig.
+_BOOTSTRAP_TARGETS = [
+    pytest.param(
+        _REPO_ROOT / "dashboard" / "scripts" / "extract_dashboard.py",
+        "extract_dashboard",
+        lambda cfg: cfg.data_dir,
+        id="extract_dashboard.py",
+    ),
+    pytest.param(
+        _REPO_ROOT / "dashboard" / "scripts" / "extract_embeddings.py",
+        "extract_embeddings",
+        lambda cfg: cfg.data_dir,
+        id="extract_embeddings.py",
+    ),
+    pytest.param(
+        _REPO_ROOT / "scripts" / "smoke_check_removals.py",
+        "smoke_check_removals",
+        lambda cfg: cfg.storage.data_dir,
+        id="smoke_check_removals.py",
+    ),
+]
+
+
+class TestDashboardScriptDataDirResolution:
+    """Behavioral companion to TestDashboardScriptConfigParity: with
+    PIPECAT_HUB_CONFIG_FILE pointed at a tmp_path config.toml setting
+    PIPECAT_HUB_DATA_DIR, each script's _bootstrap() must resolve to that
+    same data_dir — proving the loaded config.toml value is actually
+    *used*, run uniformly against all three entry points (dev plan
+    Acceptance Criteria and Phase 3, found in review: an earlier draft only
+    exercised extract_dashboard.py, leaving the other two covered by the
+    weaker source-level scan alone).
+    """
+
+    @pytest.mark.parametrize("script_path, module_hint, get_data_dir", _BOOTSTRAP_TARGETS)
+    def test_bootstrap_honors_config_toml_data_dir(
+        self, tmp_path, monkeypatch, script_path, module_hint, get_data_dir
+    ):
+        data_dir = tmp_path / "resolved-data"
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{data_dir}"\n', encoding="utf-8")
+
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(config_file))
+        monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
+        # No cwd .env in tmp_path — isolates this test from a real .env a
+        # developer might have in the repo root or their actual cwd.
+        monkeypatch.chdir(tmp_path)
+
+        module = _import_script(script_path, module_hint)
+        resolved = get_data_dir(module._bootstrap())
+
+        assert resolved == data_dir.expanduser().resolve(strict=False)

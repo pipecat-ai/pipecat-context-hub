@@ -9,12 +9,25 @@ import numpy as np
 import umap
 
 from pipecat_context_hub.shared.config import StorageConfig
+from pipecat_context_hub.shared.env_loading import load_cwd_dotenv, load_global_config
+
+
+def _bootstrap() -> StorageConfig:
+    """Load cwd .env then global config.toml, then construct StorageConfig.
+
+    Same two calls, same order, as `cli.py:main()`, so this script's resolved
+    config (in particular `PIPECAT_HUB_DATA_DIR`) matches refresh/serve
+    instead of only seeing real env vars.
+    """
+    load_cwd_dotenv()
+    load_global_config()
+    return StorageConfig()
 
 
 def main() -> None:
     # Route through StorageConfig so PIPECAT_HUB_DATA_DIR is honoured (keeps the
     # dashboard pipeline consistent with refresh/serve and isolated test runs).
-    chroma_path = StorageConfig().chroma_path
+    chroma_path = _bootstrap().chroma_path
     out_path = os.path.join(os.path.dirname(__file__), "..", "public", "embeddings_3d.json")
 
     print("Connecting to ChromaDB...")

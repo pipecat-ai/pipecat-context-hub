@@ -61,6 +61,17 @@ just dashboard-build    # rebuild dashboard data without re-indexing
 just dashboard-serve    # serve dashboard on localhost:8765
 ```
 
+## Config Sourcing
+
+`PIPECAT_HUB_*` settings resolve in three layers, first-writer-wins: real env
+vars > cwd `.env` > `~/.config/pipecat-context-hub/config.toml` (machine-global,
+optional, see `config.toml.example`) > `HubConfig` field defaults. Every entry
+point — `cli.py:main()`, the dashboard scripts, `scripts/smoke_check_removals.py`
+— calls `shared/env_loading.py`'s `load_cwd_dotenv()` then `load_global_config()`
+before constructing config, so they all resolve identically. Full precedence
+details and the Windows lookup path: `docs/README.md`'s "Config precedence"
+subsection under Environment Variables.
+
 ## MCP Tools — Multi-Concept Queries
 
 When calling search tools (`search_docs`, `search_examples`, `search_api`, `get_code_snippet`), use ` + ` or ` & ` to search for multiple concepts at once:
