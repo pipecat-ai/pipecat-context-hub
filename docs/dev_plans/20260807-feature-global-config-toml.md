@@ -83,12 +83,15 @@ explicit `--prune` flag/`PIPECAT_HUB_PRUNE` env var to actually delete — and
   `PIPECAT_HUB_` prefix are honored; any other key is skipped with a
   `logger.warning` naming it (matches the Objective's stated scope, keeps a
   machine-global file from becoming a general environment injector). One
-  exception to "flat string keys": a value that is a homogeneous TOML array
-  of scalars is accepted and coerced to a comma-separated string via
-  `",".join(str(v) for v in value)` — losslessly equivalent to the CSV
-  parsing `shared/config.py:468` already does on the env-var form. This lets
-  `PIPECAT_HUB_EXTRA_REPOS` (the flagship ~70-repo use case) be authored as
-  a native TOML array instead of one long quoted string.
+  exception to "flat string keys": a homogeneous TOML array of scalars is
+  accepted and coerced to a comma-separated string via
+  `",".join(str(v) for v in value)` **only when no stringified element
+  contains a comma**. An array containing a comma is skipped with a warning,
+  because the existing CSV parsing at `shared/config.py:468` has no escaping
+  or quoting syntax and would split that element into multiple values. The
+  comma-free subset is therefore losslessly equivalent to the existing CSV
+  parser, and lets `PIPECAT_HUB_EXTRA_REPOS` (the flagship ~70-repo use case)
+  be authored as a native TOML array instead of one long quoted string.
 - **`PIPECAT_HUB_PRUNE` is invocation-scoped, not machine config, and is
   explicitly excluded from `config.toml`** (decided in review — a global
   file silently re-enabling `refresh`'s deletion behavior defeats Phase 4's
@@ -105,15 +108,24 @@ explicit `--prune` flag/`PIPECAT_HUB_PRUNE` env var to actually delete — and
 - The `config.toml` *lookup path* (`~/.config/pipecat-context-hub/`) is
   fixed and does not follow `PIPECAT_HUB_DATA_DIR` — it lives outside
   `StorageConfig.data_dir` entirely, so this is not a chicken-and-egg case:
-  `PIPECAT_HUB_DATA_DIR` set inside `config.toml` still relocates the
-  storage/index directory for every other purpose once loaded into
-  `os.environ`. **One exception, test-only**: `load_global_config()` also
+  a **non-colliding** `PIPECAT_HUB_DATA_DIR` set inside `config.toml` still
+  relocates the storage/index directory for every other purpose once loaded
+  into `os.environ`; a colliding value is rejected by the guard below.
+  **One exception, test-only**: `load_global_config()` also
   honors `PIPECAT_HUB_CONFIG_FILE`, if set, as the exact file path to read
   instead of the fixed lookup path — this is a test-hermeticity seam
   (decided in review, grilled with the user), not a documented operator
   feature, and is deliberately excluded from `docs/README.md` and
   `config.toml.example` so it isn't mistaken for a supported way to relocate
   the config file.
+- The default directory separation is not sufficient by itself because
+  `PIPECAT_HUB_DATA_DIR` can point storage back into the config location. The
+  loader must normalize a `config.toml`-supplied data directory and skip it
+  with a warning when that directory contains the active config file. The
+  reset path must also use the same active-config-path resolver and refuse to
+  `shutil.rmtree` any data directory that contains that file, regardless of
+  whether the colliding value came from the global file, cwd `.env`, or a real
+  environment variable. Both guards are covered by reset-index tests.
 - A `config.toml.example` ships alongside `.env.example`. Its key set is
   kept from silently drifting apart from `docs/README.md`'s Environment
   Variables table (the full 11-var registry) by a parity test — see
@@ -148,9 +160,11 @@ explicit `--prune` flag/`PIPECAT_HUB_PRUNE` env var to actually delete — and
   delete) that applies to every user regardless of whether `config.toml`
   exists.
 - `config.toml`'s own lookup path must survive `refresh --reset-index`
-  (which `shutil.rmtree`s `StorageConfig.data_dir`) — this is why the file
-  lives outside `data_dir` rather than inside it. Cover with a test, not
-  just directory separation by construction.
+  (which `shutil.rmtree`s `StorageConfig.data_dir`). The default locations
+  are separate, but `PIPECAT_HUB_DATA_DIR` can override that separation, so
+  the loader's collision check and the reset path's defense-in-depth refusal
+  must both be specified and tested, not just directory separation by
+  construction.
 - Every `PIPECAT_HUB_*`-var consumer that builds config independently of
   `cli.main()` (dashboard scripts) must see `config.toml` too — not just
   `serve`/`refresh`.
@@ -256,9 +270,22 @@ sequenceDiagram
     argument) that a reader might wrongly assume apply here.
   - `load_global_config()` — new. Exports a module-level
     `DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pipecat-context-hub" /
-    "config.toml"` constant, then resolves the config file path as
+    "config.toml"` constant and a shared `resolve_global_config_path()` helper
+    that resolves the config file path as
     `os.environ.get("PIPECAT_HUB_CONFIG_FILE")` if set, else
-    `DEFAULT_CONFIG_PATH` — this
+    `DEFAULT_CONFIG_PATH` — **it must read `DEFAULT_CONFIG_PATH` via
+    module-attribute lookup at call time (i.e. `env_loading.DEFAULT_CONFIG_PATH`
+    inside the function body), never a captured default argument or a
+    `from env_loading import DEFAULT_CONFIG_PATH` alias evaluated at import
+    time**, so a test-time `monkeypatch.setattr(env_loading,
+    "DEFAULT_CONFIG_PATH", ...)` is guaranteed to be observed (found in
+    review — a captured default or an aliased import would make such a
+    monkeypatch silently inert). Every path-resolution consumer — the
+    loader's own read, the loader's `PIPECAT_HUB_DATA_DIR` collision guard,
+    and `_delete_local_index_storage()`'s reset-path guard (below) — must
+    call this helper rather than import or compare the raw
+    `DEFAULT_CONFIG_PATH` constant directly, so all three stay
+    monkeypatch-observable and in lockstep. This
     override exists purely for **test hermeticity** (decided in review,
     grilled with the user, see Architecture Decisions): it lets tests point
     the loader at a `tmp_path` file directly, so no test needs to
@@ -268,10 +295,14 @@ sequenceDiagram
     an internal test seam, not a documented operator-facing config
     location — it is deliberately excluded from `docs/README.md` and
     `config.toml.example` to avoid implying it's a supported way to relocate
-    the config file. Reads via `tomllib.load`. Returns silently if the
-    resolved file doesn't exist. On a TOML parse error, `logger.warning`
-    naming the file and the error, then return (do not raise) — matches the
-    Architecture Decision below. For each top-level `key, value` pair: if
+    the config file. Open the resolved path in binary mode and call
+    `tomllib.load` inside a guarded read/parse block. A missing file returns
+    silently; `tomllib.TOMLDecodeError`, `UnicodeError` (including
+    `UnicodeDecodeError`), and `OSError` (including `IsADirectoryError`,
+    permission failures, and other read errors) each produce a
+    `logger.warning` naming the file and error, then return without raising —
+    malformed or unreadable hand-edited files must never crash an entry point.
+    For each top-level `key, value` pair: if
     `key` doesn't start with `PIPECAT_HUB_`, `logger.warning` naming the
     skipped key and continue. Also export a module-level
     `PRUNE_ENV_VAR = "PIPECAT_HUB_PRUNE"` constant from this module — this is
@@ -311,22 +342,33 @@ sequenceDiagram
     `config.toml` from being a second, silent way to set them. This also
     makes the Edge Cases Tested claim that `PIPECAT_HUB_CONFIG_FILE` set in
     `config.toml` "has no meaning" actually true by construction rather than
-    true only by absence of a consumer. If `value` is a homogeneous array of scalars
-    (`str`/`int`/`float`/`bool`), coerce via `",".join(str(v) for v in
-    value)` — this is what makes `PIPECAT_HUB_EXTRA_REPOS` authorable as a
-    native TOML array; an empty array (`[]`) coerces to the empty string
-    `""`, matching the behavior of an explicitly-empty CSV env var. If
-    `value` isn't a plain `str`/`int`/`float`/`bool` or a homogeneous scalar
-    array (i.e. is a table, a mixed-type array, or a nested array),
-    `logger.warning` naming the offending key and continue. Coerce the
+    true only by absence of a consumer. If `value` is a homogeneous array of
+    scalars (`str`/`int`/`float`/`bool`), first stringify its elements and skip
+    the key with a warning if any element contains a comma; otherwise coerce
+    via `",".join(...)` — this makes `PIPECAT_HUB_EXTRA_REPOS` authorable as
+    a native TOML array without claiming unsupported CSV escaping. An empty
+    array (`[]`) coerces to the empty string `""`, matching the behavior of an
+    explicitly-empty CSV env var. If `value` isn't a plain
+    `str`/`int`/`float`/`bool` or a homogeneous, comma-free scalar array (i.e.
+    is a table, a mixed-type array, a nested array, or an array containing a
+    comma), `logger.warning` naming the offending key and continue. Coerce the
     accepted scalar to `str()` (booleans thus become the Python-style
     `"True"`/`"False"` strings — `_WARMUP_DISABLED_VALUES` (`cli.py:50`) is
     a **value-exact** frozenset that already includes the `"False"`
     spelling, and `shared/config.py`'s reranker check separately
     `.strip().lower()`s before comparing, so both consumers correctly treat
     the coerced string as disabled; neither is "case-insensitive" as such —
-    see the test added below). If `key not in os.environ: os.environ[key] =
-    str(value)`.
+    see the test added below). For `PIPECAT_HUB_DATA_DIR`, before writing the
+    accepted string, expand and normalize it with
+    `Path(value).expanduser().resolve(strict=False)` and skip it with a
+    warning if `resolve_global_config_path().resolve(strict=False)` is inside
+    that candidate directory **and refers to an existing file** — a
+    nonexistent resolved config path never triggers this skip, matching the
+    loader's own missing-file-silent contract above (a config file that
+    isn't there can't be "collided with"); this prevents the global file
+    from configuring its own future `refresh --reset-index` deletion target
+    only when there's an actual file in effect to protect. If `key not in
+    os.environ: os.environ[key] = str(value)`.
 - Update `cli.py` to import both functions from `shared/env_loading` (delete
   the old `_load_dotenv` body, keep a thin re-export or update call sites
   directly — whichever keeps `cli.py`'s existing tests passing with minimal
@@ -340,17 +382,45 @@ sequenceDiagram
   `.env`-settable key feeds `_configure_logging` today (it reads only the
   `--log-level` CLI option), so nothing is lost by moving both loader calls
   later.
+- Harden `_delete_local_index_storage()` (`cli.py:140-142`) using
+  `resolve_global_config_path()` and normalized paths to detect when the
+  active config file is inside the requested `data_dir` **and refers to an
+  existing file** — the same existence contract as the loader's
+  `PIPECAT_HUB_DATA_DIR` skip above, so a stale/deleted or never-created
+  `PIPECAT_HUB_CONFIG_FILE`/`DEFAULT_CONFIG_PATH` never blocks a real
+  `--reset-index` to protect a config that isn't even in effect; abort the
+  reset with a clear `click.ClickException` (or equivalent non-zero CLI error)
+  before calling `shutil.rmtree` only when the resolved path exists. This is
+  defense in depth for a colliding value supplied by a real environment
+  variable or cwd `.env`; the
+  `load_global_config()` warning and skip above handles the narrower case of
+  a colliding value originating in `config.toml` itself. **This hardening
+  lands here, in Phase 1, not Phase 4** (moved in review — a phase-by-phase
+  conductor would otherwise commit Phase 1 with a red test, since the
+  collision-abort test below already exercises this guard, and Phase 4's own
+  test command never touches it): it only depends on
+  `resolve_global_config_path()`, which this phase already defines, and has
+  no dependency on anything Phase 4 (`--prune`) introduces.
 - Tests (`tests/unit/test_env_loading.py`): file present/absent, file
   present but empty, real env var wins over `config.toml`, cwd `.env` wins
-  over `config.toml`, `config.toml` fills an unset var, malformed TOML syntax
-  logs a warning and doesn't raise, a non-`PIPECAT_HUB_` key is skipped with
-  a warning and doesn't leak into `os.environ`, a key with a non-scalar
-  value (table, mixed-type array, or nested array) is skipped with a
-  warning and doesn't crash, a homogeneous scalar array (e.g.
+  over `config.toml`, `config.toml` fills an unset var, malformed TOML syntax,
+  invalid UTF-8 (written via `write_bytes()` — `Path.write_text()` cannot
+  produce invalid UTF-8, since it always encodes through Python's own valid
+  str/bytes boundary — with a genuinely invalid byte sequence, e.g. a lone
+  `0x80` byte, placed where `tomllib` will actually attempt to decode it,
+  e.g. inside a key or value token rather than trailing after content
+  `tomllib` could plausibly stop parsing before reaching), and read
+  failures such as a directory supplied as the file
+  path each log a warning and do not raise, a non-`PIPECAT_HUB_` key is
+  skipped with a warning and doesn't leak into `os.environ`, a key with a
+  non-scalar value (table, mixed-type array, or nested array) is skipped with
+  a warning and doesn't crash, a homogeneous scalar array (e.g.
   `PIPECAT_HUB_EXTRA_REPOS = ["a", "b", "c"]`) is coerced to `"a,b,c"` in
   `os.environ`, an empty array (`PIPECAT_HUB_EXTRA_REPOS = []`) is coerced
   to `""`, a homogeneous non-string scalar array (e.g. `[1, 2]`) is coerced
-  to `"1,2"`, `PIPECAT_HUB_PRUNE` set in `config.toml` is skipped with an
+  to `"1,2"`, and an array containing a literal comma (e.g.
+  `["org/repo,a"]`) is skipped with a warning rather than split
+  lossily. `PIPECAT_HUB_PRUNE` set in `config.toml` is skipped with an
   invocation-scoped warning and never reaches `os.environ` (so `refresh`'s
   prune behavior is unaffected by the global file), same for
   `PIPECAT_HUB_DEBUG_PROBE` set in `config.toml` (skipped with an
@@ -358,13 +428,15 @@ sequenceDiagram
   `PIPECAT_HUB_CONFIG_FILE` set in `config.toml` (skipped with an
   invocation-scoped warning, never reaches `os.environ`, and so cannot
   redirect the loader's own lookup path from inside the file it locates), a
-  behavioral round-trip
+  config-supplied `PIPECAT_HUB_DATA_DIR` that contains the active config file
+  is skipped with a collision warning, and a behavioral round-trip
   test that a TOML-native `false`/`true` value produces the intended effect
   through the real consumers (`_warmup_enabled()` is `False` when
   `config.toml` sets `PIPECAT_HUB_WARMUP = false`;
   `HubConfig().reranker.effective_enabled` is `False` when
-  `PIPECAT_HUB_RERANKER_ENABLED = false`) — not just the raw string in
-  `os.environ` — `config.toml` sets `PIPECAT_HUB_DATA_DIR=<tmp>` and
+  `config.toml` sets `PIPECAT_HUB_RERANKER_ENABLED = false`) — not just the
+  raw string in `os.environ` — `config.toml` sets
+  `PIPECAT_HUB_DATA_DIR=<tmp>` and
   `HubConfig().storage.data_dir == <tmp>` after `load_global_config()`, a
   caplog test that `load_global_config()` emits exactly one INFO record
   matching `"Loaded N key(s)"` **when `n > 0` keys were actually written to
@@ -372,36 +444,44 @@ sequenceDiagram
   file has entries but every one is skip-listed (non-`PIPECAT_HUB_`-prefixed,
   invocation-scoped, or non-scalar): that case must emit only warnings, no
   `"Loaded"` line, since the emission condition is "keys written", not "file
-  has entries" (this line is the manual-verification step's sole
-  observable — see Testing Notes), and `config.toml` survives `refresh
-  --reset-index`: with `PIPECAT_HUB_CONFIG_FILE` pointed at a `tmp_path`
-  file, run the full `refresh --reset-index` command through `CliRunner` —
-  **critical, spelled out explicitly to avoid an ambiguous mock-vs-real
-  reading (found in review)**: this test must (a) NOT mock
+  has entries" (this line is the manual-verification step's sole observable
+  — see Testing Notes), and reset-index survival: the first case sets
+  `PIPECAT_HUB_CONFIG_FILE` to a `tmp_path` config file, runs the full
+  `refresh --reset-index` command through `CliRunner`, and **does not** mock
   `_delete_local_index_storage` — mocking it would make "config file still
-  exists" vacuously true, since nothing would actually be deleted; note that
-  the existing `test_reset_index_forces_full_rebuild` in
-  `tests/unit/test_cli.py` *does* mock it, and that pattern must not be
-  copied here — and (b) set `PIPECAT_HUB_DATA_DIR` to a `tmp_path` directory
-  that contains a real file before invoking `refresh --reset-index`, then
-  assert both that the config file still exists and still loads afterward
-  *and* that the `PIPECAT_HUB_DATA_DIR` `tmp_path` directory was actually
-  removed by the run — the removal assertion is what proves the real
-  `shutil.rmtree` deletion path executed rather than a no-op, which the
-  config-file-survival assertion alone cannot distinguish.
-  A companion assertion, run **without** the `PIPECAT_HUB_CONFIG_FILE`
-  override (found in review — the `tmp_path`-only version above never
-  touches the real default lookup path, so on its own it reintroduces
-  "directory separation by construction" rather than testing the actual
-  default path): `load_global_config()` exports a `DEFAULT_CONFIG_PATH`
-  module-level constant (`Path.home() / ".config" / "pipecat-context-hub" /
-  "config.toml"`, the same expression used to resolve the lookup path when
-  `PIPECAT_HUB_CONFIG_FILE` is unset) so the test asserts against that
-  constant rather than a second hardcoded copy of the path literal:
-  `not env_loading.DEFAULT_CONFIG_PATH.is_relative_to(StorageConfig().data_dir)` —
-  so the directory-separation claim is checked against the real default
-  paths (via the one named constant), not only a `tmp_path` stand-in or a
-  duplicated literal.
+  exists" vacuously true, since nothing would actually be deleted; the
+  existing `test_reset_index_forces_full_rebuild` in `tests/unit/test_cli.py`
+  does mock it, and that pattern must not be copied here. This override case
+  sets `PIPECAT_HUB_DATA_DIR` to a `tmp_path` directory containing a real
+  file, then asserts both that the config file still exists and still loads
+  afterward and that the data directory was actually removed, proving the
+  real `shutil.rmtree` path ran. Also test the collision defense through the
+  real reset path: a higher-precedence `PIPECAT_HUB_DATA_DIR` pointing at or
+  above the active config path must make reset abort clearly before deletion,
+  with the config file still present.
+  A second reset case must explicitly `monkeypatch.delenv("PIPECAT_HUB_CONFIG_FILE",
+  raising=False)` to clear the rewritten autouse fixture's nonexistent-sentinel
+  default (below) — not merely "leave it absent", since the fixture sets that
+  sentinel for every test regardless of what the test itself does, and this
+  test needs the real `DEFAULT_CONFIG_PATH` branch to actually run, not the
+  sentinel path — and use the `DEFAULT_CONFIG_PATH` branch. To keep it
+  hermetic, monkeypatch only `env_loading.DEFAULT_CONFIG_PATH` to a `tmp_path`
+  config file (not `Path.home`), put a separate real data directory/file in
+  that config, and **before invoking the CLI, assert as a precondition**
+  that `env_loading.resolve_global_config_path() == <the monkeypatched
+  tmp_path config file>` — this fails the test loudly, before any
+  `shutil.rmtree` can run, if either the `delenv` was missed (sentinel still
+  active) or the `DEFAULT_CONFIG_PATH` monkeypatch is silently inert (e.g.
+  because the contract above — module-attribute lookup at call time — was
+  violated by the implementation); without this precondition, either miss
+  would let this test's `refresh --reset-index` invocation target the
+  developer's real default `~/.pipecat-context-hub` index instead of the
+  `tmp_path` fixture. Only after that precondition passes, run the same full
+  `CliRunner` command, and assert that the config survives while the data
+  directory is removed. This exercises the no-override lookup path; in a
+  separate path-invariant test, before any constant monkeypatching, assert
+  that the real `DEFAULT_CONFIG_PATH` is not relative to
+  `StorageConfig().data_dir`, rather than duplicating the path literal.
 - **Hermeticity — one rewritten autouse fixture does a full env-var +
   config-path reset; still no suite-wide `Path.home` monkeypatch** (decided
   in review, grilled with the user — "single autouse fixture, full reset";
@@ -430,14 +510,29 @@ sequenceDiagram
     `PIPECAT_HUB_*` env-var set present at that point — every key matching
     that prefix, not just ones the test itself will set. Then **delete**
     every `PIPECAT_HUB_*` key from `os.environ` **except** keys in a new
-    named allowlist, `_FIXTURE_PASSTHROUGH_KEYS = frozenset({
-    "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK", "PIPECAT_HUB_STABILITY_OUTPUT"})`
-    — these are the exact two env vars `tests/benchmarks/test_runtime_stability.py`
-    reads (`_ENABLE_ENV`/`_OUTPUT_ENV` at lines 34-35, consumed at lines 56
-    and 113; verified against that file, not guessed — there is no third
-    "history output" var, only these two), allowlisted so that opt-in suite
-    still works when invoked via its documented env-var incantation (lines
-    4-9 of that file) rather than being silently broken by the delete. Then
+    named allowlist,
+    `_FIXTURE_PASSTHROUGH_KEYS = frozenset({
+    "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK",
+    "PIPECAT_HUB_STABILITY_OUTPUT",
+    "PIPECAT_HUB_ENABLE_PERF_BENCHMARK",
+    "PIPECAT_HUB_PERF_OUTPUT",
+    "PIPECAT_HUB_PERF_DATA_DIR",
+    "PIPECAT_HUB_ENABLE_QUALITY_BENCHMARK",
+    "PIPECAT_HUB_BENCHMARK_OUTPUT",
+    "PIPECAT_HUB_PARITY_REFERENCE",
+    })` — these are the complete set of opt-in, output, and data/reference
+    controls read by the four benchmark modules, independently re-verified
+    against each file's actual line numbers, not guessed:
+    `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK`/`PIPECAT_HUB_STABILITY_OUTPUT`
+    (`tests/benchmarks/test_runtime_stability.py:34-35`),
+    `PIPECAT_HUB_ENABLE_PERF_BENCHMARK`/`PIPECAT_HUB_PERF_OUTPUT`/
+    `PIPECAT_HUB_PERF_DATA_DIR` (`tests/benchmarks/test_chromadb_perf.py:52-54`),
+    `PIPECAT_HUB_ENABLE_QUALITY_BENCHMARK`/`PIPECAT_HUB_BENCHMARK_OUTPUT`
+    (`tests/benchmarks/test_retrieval_quality.py:43-44`), and
+    `PIPECAT_HUB_PARITY_REFERENCE` (`tests/benchmarks/test_chromadb_parity.py:55`).
+    Allowlist all of them so each opt-in
+    suite still works when invoked via its documented env-var incantation,
+    rather than being silently broken by the suite-wide delete. Then
     default `PIPECAT_HUB_CONFIG_FILE` to a guaranteed-nonexistent sentinel
     path (e.g. a `tmp_path`-rooted path that is never created, or a fixed
     nonexistent path) unless the test explicitly overrides it, so no test
@@ -454,8 +549,9 @@ sequenceDiagram
 
   This one rewritten fixture: (a) makes real, pre-existing `PIPECAT_HUB_*`
   vars **absent from `os.environ` during every test** (not merely restored
-  afterward), except the two allowlisted benchmark vars, which stay visible
-  so that opt-in suite still works via its env-var gate; (b) makes
+  afterward), except the keys in `_FIXTURE_PASSTHROUGH_KEYS`, which stay
+  visible so every opt-in benchmark suite still works via its env-var gate;
+  (b) makes
   `PIPECAT_HUB_CONFIG_FILE` point at nothing during every test, so no test
   ever falls through to the developer's real `config.toml`; and (c) still
   does the existing broad any-prefix added-key cleanup at teardown, so no
@@ -478,7 +574,18 @@ sequenceDiagram
   in-process via `click.testing.CliRunner` (verified in review; no
   subprocess/`Popen`/`multiprocessing` calls), is opt-in-gated behind
   `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK`, and imports the POSIX-only
-  `resource` module, so it never runs on `windows-latest` regardless.
+  `resource` module, so it never runs on `windows-latest` regardless. **One
+  other benchmark suite is not so unconditionally safe and is worth naming
+  here**: `tests/benchmarks/test_chromadb_perf.py`'s subprocess invocation
+  of `refresh` builds that subprocess's environment via `{**os.environ,
+  ...}` — it is hermetic (i.e. it doesn't fall through to the developer's
+  real `~/.config/pipecat-context-hub/config.toml`) only because copying
+  `os.environ` wholesale also copies the parent test process's
+  fixture-set `PIPECAT_HUB_CONFIG_FILE` sentinel into the child. A future
+  refactor of that subprocess's env construction — building it from scratch
+  instead of copying `os.environ` — would silently lose that protection and
+  must explicitly re-add `PIPECAT_HUB_CONFIG_FILE` to whatever env dict it
+  constructs.
 - Add a test verifying the rewritten `_isolate_env_vars` fixture's "full
   reset" behavior directly, not just its added-key cleanup, in
   `tests/unit/test_env_loading.py`: set a `PIPECAT_HUB_*` env var before the
@@ -492,13 +599,14 @@ sequenceDiagram
   after the test mutates or deletes it and the fixture tears down, that the
   original pre-existing value is restored — proving the fixture restores
   what was already there, not only removing what a test newly added.
-- Add a test, also in `tests/unit/test_env_loading.py`: with
-  `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK` pre-set in the real environment
-  before the fixture runs, assert it is **still present** inside the test
-  body (proving the passthrough allowlist works), while a non-allowlisted
-  `PIPECAT_HUB_*` var set the same way (e.g. `PIPECAT_HUB_STALE_AFTER_DAYS`)
-  is **absent** inside the same test body — pinning the allowlist boundary
-  with one positive and one negative case side by side.
+- Add a test, also in `tests/unit/test_env_loading.py`, that pre-sets every
+  member of `_FIXTURE_PASSTHROUGH_KEYS` in the real environment before the
+  fixture runs and asserts every one is **still present** inside the test
+  body (proving the complete benchmark passthrough allowlist works), while a
+  non-allowlisted `PIPECAT_HUB_*` var set the same way (e.g.
+  `PIPECAT_HUB_STALE_AFTER_DAYS`) is **absent** inside the same test body —
+  pinning the full allowlist boundary rather than only the stability suite's
+  two variables.
 - Emit one `logger.info("Loaded %d key(s) from %s", n, path)` line from
   `load_global_config()` when `n > 0` — this becomes the concrete manual/
   smoke-test observable (see Phase 1 Testing Notes below), replacing the
@@ -576,7 +684,7 @@ sequenceDiagram
   accidentally added to *both* sides (e.g. by a future edit that forgets
   the exclusion decision) would still pass the equality check cleanly,
   silently reversing the invocation-scoped design. The original finding was
-  scoped to `PIPECAT_HUB_PRUNE` alone; extended here to cover all three
+  scoped to `PIPECAT_HUB_PRUNE` alone; extended here to cover all five
   keys Phase 1's loader now skip-lists (see Phase 1).
 - Before landing the `.github/workflows/ci.yml` edit that adds
   `tests/unit/test_config.py` to the `windows-smoke` job's file list,
@@ -685,17 +793,27 @@ sequenceDiagram
 
 ### Phase 4: Refresh prune safety
 
-**Impl files:** `src/pipecat_context_hub/cli.py`, `src/pipecat_context_hub/shared/env_loading.py` (import `PRUNE_ENV_VAR` only — no behavioral change to this module in this phase), `docs/README.md`, `CLAUDE.md`
+**Impl files:** `src/pipecat_context_hub/cli.py`, `src/pipecat_context_hub/shared/env_loading.py` (import `PRUNE_ENV_VAR` only — no behavioral change to this module in this phase, and no dependency on `resolve_global_config_path()`, which Phase 1 already wired into `_delete_local_index_storage()`'s reset-path guard), `docs/README.md`, `CLAUDE.md`
 **Test files:** `tests/unit/test_cli.py`
 **Test command:** `uv run pytest tests/unit/test_cli.py -v -k "Prune or Refresh"`
 **Goal:** `refresh` must never delete previously-indexed data for a repo that's still configured somewhere, just not visible from the current invocation's env layering — deletion becomes an explicit, opt-in action, not an automatic side effect of running `refresh` from the "wrong" directory.
 
+- **Note**: `_delete_local_index_storage()`'s collision guard (detecting when
+  the active config file is inside the requested `data_dir` and aborting
+  before `shutil.rmtree`) already exists as of Phase 1 — this phase does not
+  need to touch it; `--prune` and the reset-path hardening are independent
+  concerns that happen to share a command surface.
 - Add `--prune` (`is_flag=True`) to the `refresh` command (`cli.py:456-472`,
-  alongside `--force`/`--reset-index`/`--framework-version`), with
-  `envvar=env_loading.PRUNE_ENV_VAR` (imported from `shared/env_loading.py`,
-  not the literal string `"PIPECAT_HUB_PRUNE"` re-hardcoded here — Phase 1
-  already defines this constant as the single source of truth; see
-  Architecture Decisions) as its env-var equivalent. **Polarity is inverted from
+  alongside `--force`/`--reset-index`/`--framework-version`), deliberately
+  **without** Click's `envvar=` option. The env-var equivalent is read
+  explicitly by `_prune_enabled()` using `env_loading.PRUNE_ENV_VAR` (imported
+  from `shared/env_loading.py`, not the literal string
+  `"PIPECAT_HUB_PRUNE"` re-hardcoded here — Phase 1 already defines this
+  constant as the single source of truth; see Architecture Decisions).
+  Delegating the env var to Click for an `is_flag=True` option would invoke
+  Click's own boolean parser first (`"tRuE"`/`"on"` can become `True`, while
+  values such as `"maybe"`/`"2"` raise a usage error), so the helper would
+  never get to apply this plan's safe-default handling. **Polarity is inverted from
   `_warmup_enabled()`, so "same 1/0-style parsing" needs its own explicit
   spec, not a direct copy**: `_warmup_enabled()` defaults `True` (disabled
   only on a known falsy value in `_WARMUP_DISABLED_VALUES`), whereas
@@ -803,9 +921,12 @@ sequenceDiagram
 - Tests — unhappy / edge paths: `PIPECAT_HUB_PRUNE=0` (falsy) → records
   survive; `PIPECAT_HUB_PRUNE` set to an unrecognized/garbage value
   (`"maybe"`, `"2"`, `""`, and a non-frozenset case variant like `"tRuE"`)
-  → resolves to `False` (safe default), records survive — this is the case
-  the inverted-polarity fix above exists to get right, since a naive copy
-  of `_warmup_enabled()`'s truthy-by-default logic would silently enable
+  → the full `CliRunner` invocation still parses successfully and
+  `_prune_enabled()` resolves to `False` (safe default), records survive —
+  this is the case the no-Click-`envvar` design and inverted-polarity fix
+  above exist to get right, since Click's boolean parser must not reject
+  garbage before the helper can default safely, and a naive copy of
+  `_warmup_enabled()`'s truthy-by-default logic would silently enable
   deletion on a typo; `PIPECAT_HUB_PRUNE=" 1 "` (whitespace-padded, a
   frozenset member after stripping) → resolves `True`, pinning the
   `.strip()` behavior; a `config.toml` setting
@@ -841,7 +962,7 @@ sequenceDiagram
 - `dashboard/scripts/extract_embeddings.py` — call the shared loaders at startup.
 - `scripts/smoke_check_removals.py` — call the shared loaders at startup (constructs `HubConfig()` directly at line 92; found in review — the plan's original "today, the dashboard scripts" completeness claim omitted it).
 - `tests/unit/test_cli.py` — update/relocate `TestLoadDotenv` per the module move; new prune-safety tests including metadata-survival and falsy-`PRUNE` cases (Phase 4).
-- `tests/conftest.py` — rewrite the existing autouse `_isolate_env_vars` fixture: at setup, snapshot the full `PIPECAT_HUB_*` env-var set and delete it from `os.environ` except for `_FIXTURE_PASSTHROUGH_KEYS` (`PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK`, `PIPECAT_HUB_STABILITY_OUTPUT`), and default `PIPECAT_HUB_CONFIG_FILE` to a nonexistent sentinel path; at teardown, keep the existing any-prefix added-key sweep, then restore the setup-time snapshot. No `Path.home` monkeypatch.
+- `tests/conftest.py` — rewrite the existing autouse `_isolate_env_vars` fixture: at setup, snapshot the full `PIPECAT_HUB_*` env-var set and delete it from `os.environ` except for the complete `_FIXTURE_PASSTHROUGH_KEYS` benchmark allowlist (the controls read by all four opt-in benchmark modules), and default `PIPECAT_HUB_CONFIG_FILE` to a nonexistent sentinel path; at teardown, keep the existing any-prefix added-key sweep, then restore the setup-time snapshot. No `Path.home` monkeypatch.
 - `tests/unit/test_config.py` — new parity test; new dashboard-script-coverage test.
 - `.github/workflows/ci.yml` — add `tests/unit/test_env_loading.py` AND `tests/unit/test_config.py` to the `windows-smoke` job's explicit pytest file list (found in review: the parity/dashboard-coverage tests in `test_config.py` are platform-neutral regex/string logic and should run on Windows too, not just the loader tests).
 - `docs/README.md` — Environment Variables section + `.example` link + Phase 0 finding + concrete Windows path + `--prune` documented alongside `--reset-index` (outside the parity-checked table).
@@ -854,14 +975,14 @@ sequenceDiagram
 
 ### Architecture Decisions
 
-- **`config.toml` lives at `~/.config/pipecat-context-hub/config.toml`, deliberately outside `StorageConfig.data_dir` (`~/.pipecat-context-hub/`).** Review surfaced that `refresh --reset-index` (`cli.py:140-142`, `_delete_local_index_storage`) `shutil.rmtree`s `data_dir` wholesale — placing config inside that directory would mean the documented index-recovery command destroys the operator's hand-authored config. Separating the two directories by construction removes the failure mode entirely rather than requiring `_delete_local_index_storage` to special-case a file it must preserve. This also removes what would otherwise be a `PIPECAT_HUB_DATA_DIR` chicken-and-egg case: since `config.toml`'s own lookup path never depends on `data_dir`, there is no circularity to reason about.
+- **`config.toml` lives at `~/.config/pipecat-context-hub/config.toml`, with the default deliberately outside `StorageConfig.data_dir` (`~/.pipecat-context-hub/`).** Review surfaced that `refresh --reset-index` (`cli.py:140-142`, `_delete_local_index_storage`) `shutil.rmtree`s `data_dir` wholesale — placing config inside that directory would mean the documented index-recovery command destroys the operator's hand-authored config. Default separation avoids the normal case, but it is not a complete invariant because `PIPECAT_HUB_DATA_DIR` can point at or above the config directory. `load_global_config()` therefore warns and skips a global-file collision, and `_delete_local_index_storage()` refuses any active-config collision from any source before deletion. Both use the shared active-path resolver, so there is no `PIPECAT_HUB_DATA_DIR` chicken-and-egg case and no path-source drift.
 - **Only `PIPECAT_HUB_`-prefixed keys are honored from `config.toml`; other keys are skipped with a warning.** A machine-global file is a wider trust boundary than a cwd-local `.env`, and the Objective specifically scopes this feature to `PIPECAT_HUB_*` settings — unprefixed pass-through (e.g. silently setting `HF_HOME`) would be an undocumented, untested widening of that surface.
 - **Parity source is `docs/README.md`'s Environment Variables table, not `.env.example`.** `.env.example` is intentionally curated (repo-bundle copy/paste presets) and documents only 5 of the 11 known `PIPECAT_HUB_*` vars. The README table already lists all 11 with defaults and descriptions (`docs/README.md:302-317`) and is the closest existing thing to a var registry. This decision is stated once here and mirrored in Requirements — a prior draft of this plan stated the parity partner as `.env.example` in Requirements while defining it as the README table in Phase 2, a contradiction caught in review; Requirements above has been corrected to match.
-- **Malformed `config.toml` (bad TOML syntax, non-`PIPECAT_HUB_` keys, non-scalar values) always logs a warning and continues — never raises, never fails silently.** A prior draft of this plan said invalid TOML syntax specifically "returns silently" in the loader spec while its own test list and this Architecture Decision both said "logs and continues" — a contradiction caught in review. The behavior is now singular: every malformed-input case warns and continues. `serve`/`refresh`/dashboard scripts must never crash on a hand-edited global file.
+- **Malformed or unreadable `config.toml` (bad TOML syntax, invalid encoding, filesystem read errors, non-`PIPECAT_HUB_` keys, non-scalar values, and comma-containing arrays) always logs a warning and continues — never raises, never fails silently.** A prior draft of this plan said invalid TOML syntax specifically "returns silently" in the loader spec while its own test list and this Architecture Decision both said "logs and continues" — a contradiction caught in review. The behavior is now singular: the guarded read/parse block catches `tomllib.TOMLDecodeError`, `UnicodeError`, and `OSError` (including `IsADirectoryError`), while per-key validation warns and skips unsupported values. `serve`/`refresh`/dashboard scripts must never crash on a hand-edited global file.
 - **The shared loader lives in `shared/env_loading.py`, called identically from `cli.py:main()`, both dashboard scripts, and `scripts/smoke_check_removals.py`.** Prior to review, only `cli.py` called the (then-CLI-local) loader, so a `config.toml`-only `PIPECAT_HUB_DATA_DIR` would silently diverge the dashboard's data directory from `serve`/`refresh`'s. Moving the loader to `shared/` and calling it from every independent entry point removes that divergence rather than documenting it as a known gap. A second review round found `scripts/smoke_check_removals.py` was a fourth entry point the first pass missed — the fix (Phase 3) is the same: wire it into the same shared calls.
 - **`refresh`'s repo-cleanup deletion is opt-in (`--prune`/`PIPECAT_HUB_PRUNE`), except for explicitly tainted repos.** This is the other half of the `pipecat-ai/pipecat#5122` discussion (markbackman's option 1), landing alongside the config.toml fix (option 3) because they compose: without prune-safety, `config.toml` alone doesn't close the deletion bug, since a project-local `.env`'s `PIPECAT_HUB_EXTRA_REPOS` still wins over `config.toml`'s per-key (whole-string override, not a merge), so the exact repro he gave (`cd customer-a && refresh` → `cd elsewhere && refresh` deletes it) still fires post-config.toml. Tainted-repo cleanup stays unconditional because it's an explicit exclusion the operator already made, not an accidental absence.
 - **`PIPECAT_HUB_PRUNE` is invocation-scoped and cannot be set via `config.toml`, decided in review (grilled with the user).** `config.toml` is a machine-global, persistent file, whereas pruning is meant to be a deliberate, per-run choice — the entire reason Phase 4 exists is to stop deletion from happening silently. If a global `config.toml` could set `PIPECAT_HUB_PRUNE`, an operator setting it once would make deletion the default for every future `refresh`, on any machine sharing that config, indefinitely — reintroducing the exact "silently deletes stuff" failure mode Phase 4 fixes, just with an extra step to turn on. The loader (Phase 1) skip-lists this key with a warning; it is never added to `config.toml.example` or the parity-checked README table (and the parity test explicitly asserts its absence from both, so the exclusion can't silently regress). An operator who wants prune-on-by-default should export a real shell env var instead — this works as of Phase 4, not before. The real distinction from a `config.toml` entry isn't "per-session" (a persistent `~/.zshrc` export is exactly as durable as a `config.toml` line, a residual risk this plan doesn't fully close — see the exported-var caveat below); it's that a shell export sits outside this plan's config surface entirely and is visible via a plain `env` inspection, not silently loaded by a file the operator may not remember exists.
-- **The `PIPECAT_HUB_PRUNE` key name is a single shared constant, not two independently-hardcoded strings.** `shared/env_loading.py` exports `PRUNE_ENV_VAR = "PIPECAT_HUB_PRUNE"` alongside `_INVOCATION_SCOPED_KEYS` (which references the same constant rather than a literal), and `cli.py`'s `--prune`/`PIPECAT_HUB_PRUNE` wiring (`_prune_enabled()` and the `envvar=` on the Click option) imports and uses it — so Phase 1's skip-list and Phase 4's consumer can never drift apart on the literal string.
+- **The `PIPECAT_HUB_PRUNE` key name is a single shared constant, not two independently-hardcoded strings.** `shared/env_loading.py` exports `PRUNE_ENV_VAR = "PIPECAT_HUB_PRUNE"` alongside `_INVOCATION_SCOPED_KEYS` (which references the same constant rather than a literal), and `cli.py`'s `--prune`/`PIPECAT_HUB_PRUNE` wiring imports and uses it in `_prune_enabled()`; the Click option deliberately has no `envvar=` delegation, so Phase 1's skip-list and Phase 4's consumer can never drift apart on the literal string or bypass the safe parser.
 - **`config.toml.example` shows TOML booleans bare (`false`/`true`), not as quoted strings.** An earlier draft showed quoted-string bool examples, citing a "string-coercion contract documented in the Architecture Decisions" — no such contract exists in this section (the scalar-to-`str()` coercion is defined only in Phase 1's loader spec), and the stated rationale (avoiding a warn-skip) doesn't apply to scalar bools, which Phase 1's loader accepts natively. This self-contradiction was caught in review; the example now shows the tested, supported bare form.
 - **Test hermeticity uses a `PIPECAT_HUB_CONFIG_FILE` env-var override inside `load_global_config()`, not a suite-wide `pathlib.Path.home` monkeypatch, decided in review (grilled with the user).** A second review round surfaced a genuine cross-lens conflict: pinning the hermeticity fixture to a shared root `tests/conftest.py` covers all seven `CliRunner`-exercising test files but also redirects `Path.home()` for `tests/integration`/`tests/benchmarks`, where the ONNX backend's HF model-cache fallback (`Path.home()/.cache/huggingface/hub`) and other `Path.home()` consumers (`cli_install.py`, `shared/paths.py`) live — silently breaking offline model resolution for those suites. Pinning it to a new `tests/unit/conftest.py` instead avoids that blast radius but leaves `tests/benchmarks/test_runtime_stability.py` uncovered. Giving `load_global_config()` an explicit override removes the tradeoff rather than picking a side: tests set `PIPECAT_HUB_CONFIG_FILE` to a `tmp_path` file directly, no `Path.home()` monkeypatching is needed anywhere, and no suite outside the ones that actually test the loader is touched. The override is a test-only seam — deliberately undocumented in `docs/README.md`/`config.toml.example` so it isn't mistaken for a supported operator-facing config-relocation mechanism (that role belongs to `PIPECAT_HUB_DATA_DIR`, which is unrelated). Worth stating precisely: "test-only" describes the intent, not an enforced boundary — `PIPECAT_HUB_CONFIG_FILE` is technically reachable outside tests too, via a real shell env var or a project cwd `.env`, exactly like any other `PIPECAT_HUB_*` key. This is not a privilege gain: an operator who can set `PIPECAT_HUB_CONFIG_FILE` in their shell or `.env` could already set every other `PIPECAT_HUB_*` key at higher precedence anyway, so the seam doesn't open any surface that wasn't already open. Noted here so a future reviewer doesn't flag it as an undocumented reachable-in-production behavior — it is reachable, just not a documented or supported way to use it.
 - **The moved loader function is named `load_cwd_dotenv()`, not `load_dotenv()`.** Found in review: an unqualified `load_dotenv` in a shared, importable module risks being mistaken for the well-known `python-dotenv` package's function of the same name — which this project does not depend on and which has materially different semantics (searches upward from cwd by default, accepts a path argument). The original private name (`_load_dotenv`, module-scoped in `cli.py`) avoided this by being non-public; moving it to a shared module without renaming it would have introduced the collision risk.
@@ -912,13 +1033,15 @@ imported in `services/ingest/github_ingest.py:664`.
 ### Edge Cases Tested
 - [ ] `config.toml` absent (today's default behavior, unchanged)
 - [ ] `config.toml` present but empty
-- [ ] `config.toml` present, malformed TOML syntax — logs a warning, doesn't raise
+- [ ] `config.toml` present with malformed TOML syntax, invalid UTF-8, or a
+      read failure (including a directory path) — logs a warning, doesn't raise
 - [ ] `config.toml` sets a non-`PIPECAT_HUB_` key — skipped with a warning, not leaked into `os.environ`
 - [ ] `config.toml` sets a key already set by a real env var — real env var wins
 - [ ] `config.toml` sets a key already set by cwd `.env` — `.env` wins
-- [ ] `config.toml` sets `PIPECAT_HUB_DATA_DIR` — storage dir relocates for `serve`/`refresh`/dashboard scripts alike, independent of `config.toml`'s own (fixed) lookup path
-- [ ] `refresh --reset-index` run with `config.toml` present — file survives (directory separation, verified by test)
-- [ ] default (non-`tmp_path`-overridden) resolved `config.toml` lookup path is not relative to `StorageConfig()`'s default `data_dir` — verified against the real default paths, not just the `tmp_path` override used in the reset-index survival test
+- [ ] `config.toml` sets a non-colliding `PIPECAT_HUB_DATA_DIR` — storage dir relocates for `serve`/`refresh`/dashboard scripts alike, independent of `config.toml`'s own lookup path; a value containing that config file is skipped with a warning
+- [ ] `refresh --reset-index` run with `config.toml` present — file survives for both the `PIPECAT_HUB_CONFIG_FILE` override case and the no-override `DEFAULT_CONFIG_PATH` case, while the real data directory is removed
+- [ ] reset-index refuses a colliding data directory from a higher-precedence env source before deletion
+- [ ] default (non-`tmp_path`-overridden) resolved `config.toml` lookup path is not relative to `StorageConfig()`'s default `data_dir` — verified against the real default paths, not just the `tmp_path` path used for the no-override branch
 - [ ] TOML-native `true`/`false` values produce the correct *behavioral* outcome, not just the right string in `os.environ`
 - [ ] `refresh` without `--prune`, repo unconfigured this run — indexed records survive, warning + summary line emitted
 - [ ] `refresh --prune` (or `PIPECAT_HUB_PRUNE=1`), repo unconfigured this run — indexed records deleted (today's behavior, now opt-in)
@@ -929,9 +1052,10 @@ imported in `services/ingest/github_ingest.py:664`.
 - [ ] `--prune` flag passed together with `PIPECAT_HUB_PRUNE=0` — flag wins, deletion proceeds
 - [ ] `config.toml` sets `PIPECAT_HUB_PRUNE` — skipped by the loader with a warning, has no effect on `refresh`'s prune behavior
 - [ ] no-prune `refresh` then later `--prune` `refresh` — metadata survives the first run and is cleanly deleted by the second, no orphaning
-- [ ] `config.toml` sets `PIPECAT_HUB_EXTRA_REPOS` as a native TOML array — coerced to a CSV string, repos load correctly
+- [ ] `config.toml` sets `PIPECAT_HUB_EXTRA_REPOS` as a comma-free native TOML array — coerced to a CSV string, repos load correctly
 - [ ] `config.toml` sets `PIPECAT_HUB_EXTRA_REPOS` as an empty TOML array (`[]`) — coerced to `""`
 - [ ] `config.toml` sets a non-string homogeneous scalar array (e.g. `[1, 2]`) — coerced to `"1,2"`
+- [ ] `config.toml` sets an array element containing a literal comma (e.g. `["org/repo,a"]`) — skipped with a warning rather than silently split
 - [ ] `config.toml` sets `PIPECAT_HUB_CONFIG_FILE` itself has no meaning — enforced by `_INVOCATION_SCOPED_KEYS` (skipped with a warning, never reaches `os.environ`), not merely true by absence of a consumer; same for `PIPECAT_HUB_DEBUG_PROBE`, `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK`, and `PIPECAT_HUB_STABILITY_OUTPUT` set in `config.toml`
 - [ ] dashboard-coverage: `extract_dashboard.py`, `extract_embeddings.py`, AND `scripts/smoke_check_removals.py` each run with `PIPECAT_HUB_CONFIG_FILE` pointed at a `tmp_path` `config.toml` setting `PIPECAT_HUB_DATA_DIR` — resolved `StorageConfig.data_dir` matches for all three (behavioral, not just source-scan)
 
@@ -941,6 +1065,10 @@ imported in `services/ingest/github_ingest.py:664`.
   `PIPECAT_HUB_*` var not already set by a real env var or cwd `.env` —
   verified by test.
 - `config.toml` is unaffected by `refresh --reset-index` — verified by test.
+- A `PIPECAT_HUB_DATA_DIR` from `config.toml` that would contain the active
+  config file is rejected with a warning, and the reset path refuses the same
+  collision from any higher-precedence source before deletion — verified by
+  test.
 - Non-`PIPECAT_HUB_` keys in `config.toml` are skipped with a warning, never
   written to `os.environ` — verified by test.
 - Absence of `config.toml` is fully backward compatible **at the
@@ -976,7 +1104,7 @@ imported in `services/ingest/github_ingest.py:664`.
 - Tests passing
 - Documentation updated
 
-<!-- reviewed: 2026-08-08 @ 69e1fde37126f0085ed6fb9add9199089b7685ce -->
+<!-- reviewed: 2026-08-08 @ 1cd412a79ece39500419d4b84b2f2a10662fa611 -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
@@ -998,6 +1126,8 @@ imported in `services/ingest/github_ingest.py:664`.
 - **Review round 5 (2026-08-08)**: `/review-plan` re-ran all 5 lenses (fable ×4, haiku codebase-claims) plus Contradiction Pass against the round-4-fixed plan. Reconciliation: raw=16, merged=1, unique=14, related=2, 1 Contradiction finding. `codebase-claims` came back fully clean (46 references verified, zero findings). 1 Critical, 6 Important, 6 Minor. The Critical (reset-index test's mock-vs-real-deletion ambiguity) and all non-contradiction Important/Minor findings were fixed directly. 1 genuine contradiction was grilled with the user: whether the rewritten hermeticity fixture's setup-time PIPECAT_HUB_* delete should exempt the stability-benchmark suite's opt-in/output env vars (architecture wanted an allowlist so that suite still works via env var; spec-and-testing's absence-assertion had no carve-out, which would have silently broken it) — resolved as **allowlist them** via a named `_FIXTURE_PASSTHROUGH_KEYS` frozenset. This round also caught and fixed a real regression in round 4's own fix: the round-4 fixture spec claimed 'snapshot and restore afterward closes the real-env-var leak', which is false — it only closes the leak *across* tests, not *during* a test, which is what the plan's own Context section describes (operator's real ~/.zshrc exports). The fixture is now specified as setup-time-delete (with the passthrough allowlist) plus teardown-time-restore, composed with the existing any-prefix added-key cleanup so unprefixed test vars (FOO/KEY in TestLoadDotenv) don't regress. **Marker is now stale again — re-run `/review-plan` once more before `/conduct` to confirm this revision closes clean.**
 - **Post-round-5 addendum (2026-08-08)**: user pointed out that `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK`/`PIPECAT_HUB_STABILITY_OUTPUT` (round 5's `_FIXTURE_PASSTHROUGH_KEYS`) are pytest-invocation-only dev controls, meaningless outside a live benchmark run against this repo checkout, and asked whether they should also be excluded from `config.toml` rather than only allowlisted at the fixture level — since running the benchmark requires this repo's code anyway, a machine-global config file has no legitimate reason to set them. Confirmed `tests/benchmarks/test_runtime_stability.py` invokes `cli.main()` via `CliRunner`, so `load_global_config()` runs inside that suite and an errant `config.toml` entry could silently affect it, the same class of risk `_INVOCATION_SCOPED_KEYS` already guards PRUNE/DEBUG_PROBE/CONFIG_FILE against. Both vars added to `_INVOCATION_SCOPED_KEYS` (five keys now) and to Phase 2's `_INTERNAL_VARS` in lockstep (the round-5 drift-alarm assertion `_INTERNAL_VARS == env_loading._INVOCATION_SCOPED_KEYS` would otherwise fail immediately). This is orthogonal to, not a replacement for, the fixture-level `_FIXTURE_PASSTHROUGH_KEYS` allowlist: that protects the *real* shell-invocation env var a developer sets to run the suite; this stops `config.toml` from being a second, silent way to set the same vars. **Marker rewritten after this addendum — plan closes clean pending the next `/conduct` run.**
 - (append further findings here as work proceeds)
+- **Adversarial fix pass (2026-08-08)**: applied all six corrections from the prior pass — guarded `PIPECAT_HUB_DATA_DIR`/config-path collisions in both loading and reset deletion; removed Click `envvar=` delegation so garbage `PIPECAT_HUB_PRUNE` values reach the safe parser; expanded malformed-file handling and tests to include decode and I/O failures; expanded the autouse fixture allowlist to every benchmark control variable in the four named benchmark modules; added a no-override `DEFAULT_CONFIG_PATH` reset-survival case; and limited TOML-array coercion to comma-free elements with a regression case.
+- **Review round 6 (2026-08-08)**: `/review-plan` re-ran 4 lenses (architecture, sequencing, spec-and-testing, assumptions) against the Codex-authored fix pass — `codebase-claims` errored (no output after 3 nudges) and is excluded, same precedent as prior rounds. Reconciliation: raw=10, merged=1, unique=8, related=2, 2 Contradiction findings (both self-contained stale-prose items, not genuine open decisions — no grilling needed). `assumptions` independently re-verified all 8 `_FIXTURE_PASSTHROUGH_KEYS` benchmark var names and the Click `envvar=` boolean-parsing behavior claims against live code — all accurate. 3 Important, 5 Minor, all fixed directly: moved `_delete_local_index_storage()`'s collision-guard hardening from Phase 4 into Phase 1 (it only depended on Phase 1's `resolve_global_config_path()`, and the reset-path collision test that exercises it was already specced in Phase 1 — a phase-by-phase conductor would otherwise commit Phase 1 with a red test); pinned `resolve_global_config_path()`'s call-time module-attribute-lookup contract and added a precondition assertion to the no-override reset test, since a missed monkeypatch or an un-cleared fixture sentinel could otherwise point a real `refresh --reset-index` at the developer's actual index rather than just failing a test; gave both collision guards an explicit existing-file-only contract so a nonexistent sentinel path can't trigger a spurious abort or silently block a real reset; plus stale key-count prose, missing benchmark-var citations, an underspecified invalid-UTF-8 test construction, and an unstated perf-benchmark-subprocess hermeticity dependency. **Marker is now stale again — re-run `/review-plan` once more before `/conduct`, or proceed if the user judges this sufficiently converged.**
 
 ## Issues & Solutions
 
