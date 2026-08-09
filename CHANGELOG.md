@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-09
+
 ### Added
 - **Machine-global `config.toml`.** `~/.config/pipecat-context-hub/config.toml`
   (Windows: `%USERPROFILE%\.config\pipecat-context-hub\config.toml`), if
