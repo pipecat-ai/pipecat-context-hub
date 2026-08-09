@@ -144,6 +144,16 @@ class TestResolveGlobalConfigPath:
         monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(override))
         assert resolve_global_config_path() == override
 
+    def test_env_override_surrounding_whitespace_is_stripped(self, tmp_path: Path, monkeypatch):
+        """Round-10 finding #3: the override was `.strip()`'d for the
+        blank-check but used raw afterwards, so ` /path/config.toml` produced a
+        `Path` carrying the leading space. That path never opens, so the
+        explicitly-set override took the *silent* missing-file branch — no
+        config, no warning. Every other `PIPECAT_HUB_*` consumer strips."""
+        override = tmp_path / "custom" / "config.toml"
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", f"  {override}\n")
+        assert resolve_global_config_path() == override
+
     def test_monkeypatched_default_is_observed(self, tmp_path: Path, monkeypatch):
         """DEFAULT_CONFIG_PATH must be read via module-attribute lookup at
         call time — a captured default or an aliased import would make this

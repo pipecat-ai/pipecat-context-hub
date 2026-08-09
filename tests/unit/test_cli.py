@@ -172,9 +172,17 @@ class TestRefreshCommand:
         mock_index_store.delete_by_repo = AsyncMock(return_value=0)
         # A real dict, not the auto-created MagicMock: `refresh` compares
         # per-repo record counts numerically (`pre_counts.get(slug, 0) > 0`
-        # gates the prune-skip warning), and a MagicMock has no ordering
-        # against int.
-        mock_index_store.get_counts_by_repo = MagicMock(return_value={})
+        # gates both the prune-skip warning and the unchanged-SHA shortcut),
+        # and a MagicMock has no ordering against int.
+        #
+        # Populated for every configured repo because an indexed repo is the
+        # baseline these tests assume: as of round-10 finding #2 the
+        # unchanged-SHA skip also requires records to exist, so an empty dict
+        # would mean "SHA matches but the index is empty", forcing a re-ingest
+        # in every test that only meant to say "nothing changed".
+        mock_index_store.get_counts_by_repo = MagicMock(
+            return_value={r: 13 for r in _DEFAULT_REPOS}
+        )
         mock_index_store.get_index_stats = MagicMock(
             return_value={
                 "counts_by_type": {"doc": 100, "code": 200},
@@ -292,6 +300,62 @@ class TestRefreshCommand:
         # Repos should be skipped (matching SHA)
         mock_github.ingest.assert_not_called()
         mock_source.ingest.assert_not_called()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_matching_sha_with_no_indexed_records_re_ingests(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Round-10 finding #2: the unchanged-SHA shortcut trusted the stored
+        ``repo:<slug>:commit_sha`` key as proof that the repo's records are in
+        the index. They can diverge — a repo left unconfigured for a run keeps
+        its SHA key while its records are gone (or were never written), and an
+        interrupted delete can strip records without touching metadata. Taking
+        the shortcut then leaves the repo silently absent from the index until
+        someone runs ``--force``. Skipping now requires records to actually
+        exist.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        meta = _sha_metadata("abc123")
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        # Every configured repo's SHA matches, but one of them has no indexed
+        # records at all.
+        counts = {r: 11 for r in _DEFAULT_REPOS}
+        counts[_DEFAULT_REPOS[0]] = 0
+        mock_store.get_counts_by_repo = MagicMock(return_value=counts)
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+            result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        # Only the record-less repo is re-ingested; the rest still skip.
+        assert mock_github.ingest.call_count == 1
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert deleted_repos == [_DEFAULT_REPOS[0]]
+        assert "no indexed records" in caplog.text
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -1604,7 +1668,11 @@ class TestPruneSafety(TestRefreshCommand):
         """
         mocks = super()._make_mocks()
         mocks[0].get_counts_by_repo = MagicMock(
-            return_value={self._REMOVED_REPO: 7, "pipecat-ai/pipecat": 42}
+            return_value={
+                **{r: 13 for r in _DEFAULT_REPOS},
+                self._REMOVED_REPO: 7,
+                "pipecat-ai/pipecat": 42,
+            }
         )
         return mocks
 

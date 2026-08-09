@@ -231,8 +231,16 @@ def resolve_global_config_path() -> Path | None:
     directory could not be determined at import time) — callers must treat
     that the same as "no config file available", not an error.
     """
-    override = os.environ.get(_CONFIG_FILE_ENV_VAR)
-    if override is not None and not override.strip():
+    raw_override = os.environ.get(_CONFIG_FILE_ENV_VAR)
+    # Stripped once, and used stripped everywhere below. Testing `.strip()` for
+    # blankness but building the `Path` from the raw value made a value with
+    # surrounding whitespace (trivially produced by a `.env` line or a shell
+    # heredoc) resolve to a path that includes the space, which then fails to
+    # open and takes the *silent* missing-file branch — an explicitly-set
+    # override loading nothing, with no warning. Every other `PIPECAT_HUB_*`
+    # consumer in `shared/config.py` strips before use.
+    override = raw_override.strip() if raw_override is not None else None
+    if override is not None and not override:
         # Present but blank (`PIPECAT_HUB_CONFIG_FILE=` in a `.env`, or an
         # exported-but-empty shell var). Distinguished from *unset*: the
         # operator set the override, so falling through to DEFAULT_CONFIG_PATH
@@ -266,7 +274,7 @@ def resolve_global_config_path() -> Path | None:
             _module_logger.warning(
                 "Ignoring %s=%r: not a usable path (%s); no config.toml will be loaded",
                 _CONFIG_FILE_ENV_VAR,
-                override,
+                raw_override,
                 exc,
             )
             return None

@@ -1061,7 +1061,24 @@ def refresh(
                 frozen_sha_repos.add(repo_slug)
                 continue
 
-            if not force and stored_sha == commit_sha and repo_slug not in github.recovered_repos:
+            # The stored SHA is bookkeeping, not proof that the records it
+            # describes are still in the index — the two diverge whenever a
+            # repo's records are removed without its metadata key going with
+            # them. A repo left unconfigured for one invocation keeps its key
+            # (the no-prune default deliberately preserves it so a later
+            # `--prune` can still find the repo), and an interrupted delete can
+            # strip records the same way. Skipping on the SHA alone then left
+            # the repo silently absent from the index — indefinitely, since
+            # every subsequent run took the same shortcut — until someone
+            # thought to run `--force`. So the shortcut requires both halves:
+            # the SHA is unchanged *and* records for it actually exist.
+            indexed_records = pre_counts.get(repo_slug, 0)
+            if (
+                not force
+                and stored_sha == commit_sha
+                and indexed_records > 0
+                and repo_slug not in github.recovered_repos
+            ):
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
                     repo_slug,
@@ -1079,6 +1096,13 @@ def refresh(
                         "Repo %s SHA unchanged but local clone was recovered "
                         "from corrupt state — forcing re-ingest",
                         repo_slug,
+                    )
+                elif not force and stored_sha == commit_sha and indexed_records == 0:
+                    logger.warning(
+                        "Repo %s SHA unchanged (sha=%s…) but no indexed records "
+                        "found — re-ingesting",
+                        repo_slug,
+                        commit_sha[:8],
                     )
                 changed_repos.append(repo_slug)
 

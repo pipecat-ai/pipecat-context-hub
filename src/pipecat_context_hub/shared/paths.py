@@ -237,8 +237,8 @@ def is_inside(path: Path, directory: Path) -> bool:
 
     1. Lexical containment (``is_relative_to``) — works for paths that don't
        exist yet, and is the common case.
-    2. Filesystem identity — walk ``path``'s ancestors and compare
-       ``(st_dev, st_ino)`` against ``directory``'s. This is what catches a
+    2. Filesystem identity — compare ``(st_dev, st_ino)`` of ``path`` *and*
+       each of its ancestors against ``directory``'s. This is what catches a
        spelling of ``directory`` that names the *same* directory without
        matching character-for-character: a differently-cased spelling on a
        case-insensitive volume (macOS APFS, Windows NTFS), where
@@ -247,6 +247,16 @@ def is_inside(path: Path, directory: Path) -> bool:
        directory on disk; or a path reached through a symlinked ancestor.
        Skipped when either side doesn't exist (nothing to stat) — which is
        safe, because a directory that doesn't exist cannot be ``rmtree``'d.
+
+    ``path`` itself is tested before its ancestors because ``path.parents``
+    never yields ``path``, while check 1's ``is_relative_to`` *is* reflexive —
+    so without it the two checks disagreed about the ``path == directory``
+    case, and only for differently-spelled equality. A ``resolution_chain``
+    location that *is* the candidate directory under a case-insensitive-volume
+    alias (or any other same-inode spelling) matched neither check, so
+    ``config_collides_with_dir()`` reported no collision for a location
+    ``rmtree(candidate_dir)`` removes outright. "Inside" here means "destroyed
+    by deleting ``directory``", and the directory itself qualifies.
 
     ``directory`` is stat'd here rather than accepted pre-stat'd from the
     caller. An earlier revision took a ``dir_stat`` cache for callers testing
@@ -261,7 +271,7 @@ def is_inside(path: Path, directory: Path) -> bool:
         dir_stat = directory.stat()
     except (OSError, ValueError):
         return False
-    return any(same_dir(ancestor, dir_stat) for ancestor in path.parents)
+    return any(same_dir(location, dir_stat) for location in (path, *path.parents))
 
 
 def redact_home(path: Path | str) -> str:

@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import pytest
 
 from pipecat_context_hub.shared.paths import (
+    is_inside,
     is_reparse_link,
     redact_home_in_text,
     resolution_chain,
@@ -113,6 +114,44 @@ class TestResolutionChainFollowsWindowsJunctions:
     def test_is_reparse_link_never_raises(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(Path, "is_symlink", lambda self: (_ for _ in ()).throw(OSError("boom")))
         assert is_reparse_link(tmp_path / "nope") is False
+
+
+class TestIsInsideIdentity:
+    """Round-10 finding #1: ``is_inside`` compared ``directory``'s stat against
+    ``path.parents`` only. ``path.parents`` never includes ``path`` itself, so a
+    location that *is* ``directory`` under a different spelling (a
+    case-insensitive-volume alias, or a differently-spelled-but-same-inode
+    entry) failed both checks — the lexical one because the strings differ, the
+    identity one because the only same-inode candidate was never offered to
+    ``same_dir``. ``config_collides_with_dir()`` could therefore miss a config
+    location that ``rmtree(candidate_dir)`` genuinely removes.
+
+    The lexical branch has always treated ``path == directory`` as "inside"
+    (``is_relative_to`` is reflexive), so the identity branch agreeing with it
+    is the invariant being restored, not a widened contract.
+    """
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")
+    def test_path_that_is_the_directory_under_another_spelling(self, tmp_path: Path):
+        real = tmp_path / "data"
+        real.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(real, target_is_directory=True)
+
+        # `alias` names the very same directory as `real`; deleting one deletes
+        # the other's contents. String containment does not see it.
+        assert not real.is_relative_to(alias)
+        assert is_inside(real, alias) is True
+
+    def test_identical_path_is_inside_itself(self, tmp_path: Path):
+        assert is_inside(tmp_path, tmp_path) is True
+
+    def test_sibling_is_not_inside(self, tmp_path: Path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        assert is_inside(a, b) is False
 
 
 class TestRedactHomeInText:
