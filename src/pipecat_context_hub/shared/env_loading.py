@@ -141,7 +141,8 @@ def load_cwd_dotenv() -> None:
         KEY="value" # note   # inline comment stripped
         KEY=value # note     # inline comment stripped
 
-    Never raises. ``Path.cwd()`` is not infallible — it raises
+    Never raises — neither the cwd lookup nor the file read. ``Path.cwd()`` is
+    not infallible — it raises
     ``FileNotFoundError`` when the process's working directory has been
     unlinked (a real case for a long-lived MCP server whose launching project
     directory is deleted or moved), and ``OSError``/``RuntimeError`` on other
@@ -161,7 +162,24 @@ def load_cwd_dotenv() -> None:
             return
     except (OSError, ValueError, RuntimeError):
         return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
+    # The read is guarded for the same reason as the cwd lookup above, and
+    # mirrors `load_global_config()`'s already-guarded read: a `.env` that
+    # exists but is unreadable (PermissionError / ENOENT from a concurrent
+    # delete) or is not valid UTF-8 (UnicodeDecodeError — a file saved as
+    # UTF-16 or latin-1, or a stray binary) must degrade to "no cwd .env",
+    # not abort every entry point before argv is dispatched. `exc` is
+    # redacted alongside the path: OSError's __str__ appends the absolute
+    # filename, which carries the home directory and OS username.
+    try:
+        content = env_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError) as exc:
+        _module_logger.warning(
+            "Failed to read .env at %s: %s; no cwd .env values were applied",
+            redact_home(env_path),
+            redact_home_in_text(str(exc)),
+        )
+        return
+    for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -199,8 +217,9 @@ def load_cwd_dotenv() -> None:
 def resolve_global_config_path() -> Path | None:
     """Resolve the machine-global config file path.
 
-    Honors ``PIPECAT_HUB_CONFIG_FILE`` if set, else falls back to
-    ``DEFAULT_CONFIG_PATH``. That override is invocation-scoped (hence its
+    Honors ``PIPECAT_HUB_CONFIG_FILE`` if set to a non-blank value, else falls
+    back to ``DEFAULT_CONFIG_PATH``. A *blank* override is "load nothing", not
+    "use the default" — see the guard below. That override is invocation-scoped (hence its
     place in ``_INVOCATION_SCOPED_KEYS``, and its deliberate absence from
     ``_KNOWN_KEYS`` / ``config.toml.example`` / the README's Environment
     Variables table), but it is a real operator-visible capability, not merely
@@ -213,6 +232,19 @@ def resolve_global_config_path() -> Path | None:
     that the same as "no config file available", not an error.
     """
     override = os.environ.get(_CONFIG_FILE_ENV_VAR)
+    if override is not None and not override.strip():
+        # Present but blank (`PIPECAT_HUB_CONFIG_FILE=` in a `.env`, or an
+        # exported-but-empty shell var). Distinguished from *unset*: the
+        # operator set the override, so falling through to DEFAULT_CONFIG_PATH
+        # would load the very machine-global file they asked this invocation
+        # not to use. Treated like every other unusable override — warn, load
+        # nothing — matching docs/README.md's documented contract.
+        _module_logger.warning(
+            "Ignoring %s: set but empty; no config.toml will be loaded "
+            "(unset it to use the default location)",
+            _CONFIG_FILE_ENV_VAR,
+        )
+        return None
     if override:
         # expanduser so a `~`-rooted override resolves to a real path instead
         # of a literal `~` directory that silently takes the missing-file

@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import shutil
-import stat
 import sys
 import time
 from datetime import UTC, datetime
@@ -25,7 +24,12 @@ from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
-from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text, same_dir
+from pipecat_context_hub.shared.paths import (
+    is_reparse_link,
+    redact_home,
+    redact_home_in_text,
+    same_dir,
+)
 from pipecat_context_hub.shared.support_links import bug_report_hint
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -191,54 +195,6 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
         )
 
 
-def _is_reparse_link(path: Path) -> bool:
-    """True when ``path`` is a symbolic link *or* a Windows directory junction.
-
-    ``Path.is_symlink()`` is not sufficient on Windows: a directory junction
-    (``mklink /J``) is a reparse point that ``resolve()`` follows exactly like a
-    symlink, but that ``is_symlink()`` reports as ``False`` (its reparse tag is
-    ``IO_REPARSE_TAG_MOUNT_POINT``, not ``…_SYMLINK``). Without this, a junction
-    used as ``PIPECAT_HUB_DATA_DIR`` takes the non-link path in
-    ``_delete_local_index_storage``: ``rmtree`` destroys the junction's *target*
-    through the junction, the target is never recreated, and the junction is
-    left dangling — so ``IndexStore``'s follow-up
-    ``mkdir(parents=True, exist_ok=True)`` raises ``FileExistsError`` and the
-    reset aborts the rebuild it exists to enable. Exactly the failure the
-    symlink repair already handles.
-
-    ``os.path.isjunction`` exists from Python 3.12; on 3.11 (this project's
-    floor) the same test is done directly against the ``lstat`` reparse tag,
-    which is what CPython's own implementation does. Both are absent on POSIX,
-    where the answer is always ``False``.
-
-    Never raises: an unstattable path is simply "not a link", matching the
-    caller's existing crash-safety contract.
-    """
-    try:
-        if path.is_symlink():
-            return True
-    except (ValueError, OSError):
-        return False
-
-    isjunction = getattr(os.path, "isjunction", None)
-    if isjunction is not None:
-        try:
-            return bool(isjunction(path))
-        except (ValueError, OSError):
-            return False
-
-    # Python 3.11 fallback (Windows only — st_reparse_tag does not exist
-    # elsewhere, so this degrades to False on POSIX).
-    mount_point_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
-    if mount_point_tag is None:
-        return False
-    try:
-        reparse_tag = getattr(os.lstat(path), "st_reparse_tag", None)
-    except (ValueError, OSError):
-        return False
-    return bool(reparse_tag == mount_point_tag)
-
-
 def _delete_local_index_storage(data_dir: Path) -> None:
     """Delete the persisted local index directory for a clean rebuild.
 
@@ -267,8 +223,9 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     One post-deletion repair: when ``data_dir`` is itself a symlink to a
     directory — or, on Windows, a directory junction, which ``resolve()``
     follows identically but ``is_symlink()`` does not report (see
-    :func:`_is_reparse_link`) — ``rmtree(resolved_data_dir)`` deletes the link's
-    *target* through the link, leaving the link dangling. ``IndexStore``'s subsequent
+    :func:`~pipecat_context_hub.shared.paths.is_reparse_link`) —
+    ``rmtree(resolved_data_dir)`` deletes the link's *target* through the link,
+    leaving the link dangling. ``IndexStore``'s subsequent
     ``data_dir.mkdir(parents=True, exist_ok=True)`` then raises
     ``FileExistsError`` — ``exist_ok`` only suppresses when the existing path
     ``is_dir()``, which a dangling symlink is not — so the reset would abort
@@ -287,7 +244,7 @@ def _delete_local_index_storage(data_dir: Path) -> None:
         # Same crash-safety contract as env_loading.config_collides_with_dir:
         # `resolve()` raises RuntimeError for a symlink loop on Python <=3.12.
         resolved_data_dir = Path(os.path.abspath(data_dir))
-    data_dir_was_symlink = _is_reparse_link(expanded_data_dir)
+    data_dir_was_symlink = is_reparse_link(expanded_data_dir)
     _refuse_unsafe_data_dir(data_dir, resolved_data_dir)
     colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
     if colliding_config_path is not None:
@@ -375,7 +332,35 @@ def _write_serve_debug_probe() -> None:
     never crash `serve`.
     """
     try:
-        probe_path = Path.home() / ".cache" / "pipecat-context-hub" / "serve-debug.log"
+        home = Path.home()
+        probe_dir = home / ".cache" / "pipecat-context-hub"
+        probe_path = probe_dir / "serve-debug.log"
+        # O_NOFOLLOW below protects the *leaf* only. `mkdir(parents=True)`
+        # follows a symlinked (or, on Windows, junctioned) intermediate
+        # component without complaint, so a `~/.cache` — or
+        # `~/.cache/pipecat-context-hub` — planted as a link by another local
+        # account would have this probe create its directory and append its
+        # diagnostics inside an attacker-chosen tree, with the leaf-level
+        # O_NOFOLLOW reporting success. Refuse any linked component *under*
+        # home instead: home itself is legitimately a link on plenty of setups
+        # (`/home/u` -> `/mnt/…`), and it is the account's own directory, so it
+        # is the trust root here rather than something to check.
+        #
+        # This is a pre-flight check, not an atomic one — a link planted
+        # between the check and the mkdir still wins. That race needs write
+        # access to a directory under the server user's own home, and this is
+        # an opt-in diagnostic with a permanent `logger.info` equivalent, so
+        # closing the common pre-planted case is the proportionate fix.
+        for ancestor in (probe_dir.parent, probe_dir):
+            if is_reparse_link(ancestor):
+                _module_logger.warning(
+                    "PIPECAT_HUB_DEBUG_PROBE=1: skipping debug probe — %s is a symlink or "
+                    "junction, so writing through it could land the probe in a directory "
+                    "chosen by another account. Use the `serve cwd=… env_keys=…` log line "
+                    "instead.",
+                    redact_home(ancestor),
+                )
+                return
         # 0o700, not mkdir's default 0o777&~umask: this directory is created
         # by a *server* process and holds a log only its owner should read or
         # replace. exist_ok=True means an already-present directory keeps its

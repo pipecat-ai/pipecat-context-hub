@@ -543,7 +543,10 @@ Variables table, and is ignored when set *inside* `config.toml` (honouring it
 from within the file it locates would be circular). A `~`-rooted value is
 expanded; a value that isn't a usable path is ignored with a warning and **no**
 config file is loaded — the hub will not quietly fall back to the default
-location when you asked for a specific file.
+location when you asked for a specific file. Setting it to an *empty* value
+(`PIPECAT_HUB_CONFIG_FILE=`) is treated the same way: it disables the lookup
+for that invocation (warning, no config loaded). Unset the variable entirely
+to go back to the default location.
 
 ## Contributing
 

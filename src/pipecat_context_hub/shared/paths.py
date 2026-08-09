@@ -28,6 +28,7 @@ not env-var/config-file loading.
 from __future__ import annotations
 
 import os
+import stat as stat_module
 from collections import deque
 from pathlib import Path
 from typing import Final
@@ -36,6 +37,61 @@ from typing import Final
 # sit above any legitimate layout (the kernel's own ELOOP limit is typically
 # 40 on Linux, 32 on macOS) while still terminating on a cycle.
 _MAX_SYMLINK_HOPS: Final = 64
+
+
+def is_reparse_link(path: Path) -> bool:
+    """True when ``path`` is a symbolic link *or* a Windows directory junction.
+
+    ``Path.is_symlink()`` / ``os.path.islink()`` are not sufficient on Windows:
+    a directory junction (``mklink /J``) is a reparse point the kernel follows
+    exactly like a symlink, but whose reparse tag is
+    ``IO_REPARSE_TAG_MOUNT_POINT``, not ``…_SYMLINK`` — so both link predicates
+    report ``False`` for it. Two guards in this project depend on the
+    distinction:
+
+    * :func:`resolution_chain` — a junctioned component that is not expanded is
+      walked as an ordinary directory, so the location it actually resolves to
+      never enters the chain. A config path can then enter the data directory
+      through one junction and leave through another with both walked endpoints
+      outside it, and ``refresh --reset-index`` deletes or severs the live
+      config path anyway.
+    * ``cli.py``'s ``_delete_local_index_storage`` — ``rmtree`` destroys a
+      junctioned ``PIPECAT_HUB_DATA_DIR``'s *target* through the junction; if
+      the junction is not recognised as a link the target is never recreated,
+      leaving it dangling so ``IndexStore``'s follow-up
+      ``mkdir(parents=True, exist_ok=True)`` raises ``FileExistsError``.
+
+    ``os.path.isjunction`` exists from Python 3.12; on 3.11 (this project's
+    floor) the same test is done directly against the ``lstat`` reparse tag,
+    which is what CPython's own implementation does. Both are absent on POSIX,
+    where the answer is always ``False``.
+
+    Never raises: an unstattable path is simply "not a link", matching the
+    crash-safety contract of every caller.
+    """
+    try:
+        if path.is_symlink():
+            return True
+    except (ValueError, OSError):
+        return False
+
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            return bool(isjunction(path))
+        except (ValueError, OSError):
+            return False
+
+    # Python 3.11 fallback (Windows only — st_reparse_tag does not exist
+    # elsewhere, so this degrades to False on POSIX).
+    mount_point_tag = getattr(stat_module, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    if mount_point_tag is None:
+        return False
+    try:
+        reparse_tag = getattr(os.lstat(path), "st_reparse_tag", None)
+    except (ValueError, OSError):
+        return False
+    return bool(reparse_tag == mount_point_tag)
 
 
 def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[Path]:
@@ -57,7 +113,11 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
     So this walks ``path`` one component at a time, expanding each symlink by a
     single ``readlink`` (never ``realpath``, which would skip exactly the
     intermediates being looked for) and recording every location it stands on.
-    Duplicate locations are recorded once, in first-visit order.
+    Duplicate locations are recorded once, in first-visit order. "Symlink" here
+    means :func:`is_reparse_link`, so a Windows directory junction — which the
+    kernel follows identically but no link predicate reports — is expanded too;
+    ``os.readlink`` reads a junction's target on Windows just as it does a
+    symlink's.
 
     Best-effort by contract: the walk is bounded by ``max_hops`` and swallows
     per-component ``OSError``, so a cycle or an unreadable component truncates
@@ -105,11 +165,12 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
             seen.add(marker)
             visited.append(current)
 
-        try:
-            is_link = os.path.islink(current)
-        except (OSError, ValueError):
-            is_link = False
-        if not is_link:
+        # `is_reparse_link`, not `os.path.islink`: on Windows a directory
+        # junction is followed by the kernel exactly like a symlink but is not
+        # reported by either link predicate, so gating expansion on `islink`
+        # walked the junction as an ordinary directory and never visited what
+        # it resolves to — silently voiding both guards built on this chain.
+        if not is_reparse_link(current):
             resolved = current
             continue
 

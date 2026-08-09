@@ -8,7 +8,11 @@ from urllib.parse import urlparse
 
 import pytest
 
-from pipecat_context_hub.shared.paths import redact_home_in_text, resolution_chain
+from pipecat_context_hub.shared.paths import (
+    is_reparse_link,
+    redact_home_in_text,
+    resolution_chain,
+)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")
@@ -63,6 +67,52 @@ class TestResolutionChainMatchesKernelOrdering:
         monkeypatch.chdir(tmp_path)
         chain = resolution_chain(Path("sub") / "config.toml")
         assert tmp_path / "sub" / "config.toml" in chain
+
+
+class TestResolutionChainFollowsWindowsJunctions:
+    """Round-8 finding #3: the walk gated symlink expansion on
+    ``os.path.islink``, which reports False for a Windows *directory junction*
+    even though the kernel follows it exactly like a symlink. A junctioned
+    component was therefore treated as an ordinary directory and its target
+    never visited — so a config path that enters the data directory through one
+    junction and leaves through another had both walked endpoints outside it,
+    and ``refresh --reset-index`` could delete or sever the live config path.
+
+    Junctions cannot be created on POSIX, so this emulates the *observable*
+    Windows behaviour (as the sibling test in test_cli.py does): a real link
+    that ``islink``/``is_symlink`` report as False and ``os.path.isjunction``
+    reports as True. Simulation of the platform, not a test on it — untested
+    against a real ``mklink /J``.
+    """
+
+    @pytest.mark.skipif(os.name != "posix", reason="needs symlinks to emulate a junction")
+    def test_junction_component_is_expanded(self, tmp_path: Path, monkeypatch):
+        real = tmp_path / "real"
+        real.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (outside / "jn").symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        junction = outside / "jn"
+        # Windows emulation: a junction is invisible to islink/is_symlink...
+        monkeypatch.setattr(os.path, "islink", lambda p: False)
+        monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+        # ...but visible to os.path.isjunction (Python 3.12+).
+        monkeypatch.setattr(os.path, "isjunction", lambda p: str(p) == str(junction), raising=False)
+
+        chain = resolution_chain(junction / "config.toml")
+
+        # The junction entry itself is walked...
+        assert junction in chain
+        # ...and so is the location it actually resolves to.
+        assert real / "config.toml" in chain
+
+    def test_is_reparse_link_never_raises(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(Path, "is_symlink", lambda self: (_ for _ in ()).throw(OSError("boom")))
+        assert is_reparse_link(tmp_path / "nope") is False
 
 
 class TestRedactHomeInText:

@@ -3189,6 +3189,31 @@ class TestDebugProbeSymlinkHardening:
         assert not (cache_dir / "serve-debug.log").exists()
         assert logger.warning.call_count == 1
 
+    def test_symlinked_parent_component_is_refused(self, tmp_path: Path, monkeypatch) -> None:
+        """Round-8 finding #4: O_NOFOLLOW covers only the leaf file, while
+        `mkdir(parents=True)` happily walks a symlinked *intermediate*
+        component — e.g. `~/.cache` planted as a symlink by another local
+        account. The probe would then create its directory and append its
+        diagnostics inside an attacker-chosen tree despite the stated
+        protection.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        try:
+            (home / ".cache").symlink_to(attacker, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        logger = MagicMock()
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _write_serve_debug_probe()  # must not raise
+
+        assert not (attacker / "pipecat-context-hub").exists()
+        assert logger.warning.call_count == 1
+
     @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
     def test_created_probe_file_and_dir_are_owner_only(self, tmp_path: Path, monkeypatch) -> None:
         import stat as stat_module

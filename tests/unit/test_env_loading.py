@@ -1727,6 +1727,60 @@ class TestLoadCwdDotenvNeverCrashesEntryPoints:
         assert "BAD_KEY" in caplog.text
 
 
+class TestLoadCwdDotenvUnreadableFile:
+    """Round-8 finding #1: the docstring promises "Never raises", but the
+    `read_text()` call sat *outside* the try block guarding `Path.cwd()` /
+    `is_file()`. A `.env` that exists but cannot be decoded or cannot be read
+    propagated out of `load_env_layers()` and crashed every entry point before
+    argv was dispatched — the missing sibling of `load_global_config`'s
+    already-guarded read.
+    """
+
+    def test_non_utf8_env_file_warns_and_returns(self, tmp_path: Path, monkeypatch, caplog):
+        (tmp_path / ".env").write_bytes(b"FOO=\xff\xfe\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("FOO", raising=False)
+        with caplog.at_level("WARNING"):
+            load_cwd_dotenv()  # must not raise
+        assert "FOO" not in os.environ
+        assert ".env" in caplog.text
+
+    @pytest.mark.skipif(os.name != "posix", reason="chmod semantics are POSIX-specific")
+    def test_unreadable_env_file_warns_and_returns(self, tmp_path: Path, monkeypatch, caplog):
+        if os.geteuid() == 0:  # pragma: no cover - root ignores file modes
+            pytest.skip("root bypasses file permission bits")
+        env_path = tmp_path / ".env"
+        env_path.write_text("FOO=bar\n")
+        env_path.chmod(0o000)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("FOO", raising=False)
+        try:
+            with caplog.at_level("WARNING"):
+                load_cwd_dotenv()  # must not raise
+        finally:
+            env_path.chmod(0o600)
+        assert "FOO" not in os.environ
+        assert ".env" in caplog.text
+
+
+class TestBlankConfigFileOverrideDisablesLookup:
+    """Round-8 finding #2: `PIPECAT_HUB_CONFIG_FILE=` (present but blank) fell
+    through a truthiness check to DEFAULT_CONFIG_PATH, silently loading the
+    machine-global config the operator's explicit override asked *not* to use.
+    docs/README.md documents an unusable override as loading no config.
+    """
+
+    def test_blank_override_returns_none(self, monkeypatch, caplog):
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", "")
+        with caplog.at_level("WARNING"):
+            assert resolve_global_config_path() is None
+        assert "PIPECAT_HUB_CONFIG_FILE" in caplog.text
+
+    def test_whitespace_only_override_returns_none(self, monkeypatch):
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", "   ")
+        assert resolve_global_config_path() is None
+
+
 class TestDataDirPathWarningIsHomeRedacted:
     """Round-7 finding #2: the `PIPECAT_HUB_DATA_DIR` resolution warning
     interpolated the raw exception, and `Path.resolve()`'s symlink-loop error
