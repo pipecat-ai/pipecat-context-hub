@@ -1279,6 +1279,17 @@ unconditionally.
   long as the gap is named rather than papered over with a plausible inference
   — Phase 0 shipped its instrumentation and recorded its own unverified claims
   as unverified.
+- **A guard proven on one platform can be a no-op on another, without ever
+  crashing.** CI's actual Windows run (not just Windows-shaped test cases run
+  on POSIX) found two more platform gaps after merge-prep: the debug probe's
+  `O_NOFOLLOW` write guard silently skips on Windows (the flag doesn't exist
+  there — a deliberate, documented refusal, not a bug), and the `~user`
+  crash-safety guard in `resolve_global_config_path()`/`PIPECAT_HUB_DATA_DIR`
+  handling has nothing to catch on Windows because `ntpath.expanduser()`
+  never raises for an unresolvable named user — it substitutes a
+  plausible-looking path instead of validating one. Both were test-only
+  assumptions baked in from POSIX-only development, fixed by
+  platform-guarding the tests; production code needed no change.
 
 ### Follow-up Work
 

@@ -36,6 +36,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   run `refresh` on a schedule (cron, CI) and relied on it auto-cleaning
   repos removed from config, add `--prune` to keep that behavior.
 
+### Security
+- **`gitpython` dependency floor bumped to 3.1.58**, fixing five
+  newly-disclosed advisories (GHSA-9rj7-rf2p-w77r, GHSA-4gmw-gg2m-w46p,
+  GHSA-hh9p-6wh2-4mfc, GHSA-wvpp-8hx9-p66j, GHSA-jm78-9fvv-mhgr) on top of
+  the existing GHSA-3f7w-8rr8-f37f floor.
+
 ## [0.5.1] - 2026-08-06
 
 ### Added
