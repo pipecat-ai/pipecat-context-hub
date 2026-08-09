@@ -22,7 +22,12 @@ import stat
 import tomllib
 from pathlib import Path
 
-from pipecat_context_hub.shared.paths import is_inside, redact_home, redact_home_in_text
+from pipecat_context_hub.shared.paths import (
+    is_inside,
+    redact_home,
+    redact_home_in_text,
+    resolution_chain,
+)
 
 _module_logger = logging.getLogger(__name__)
 
@@ -165,9 +170,13 @@ def load_cwd_dotenv() -> None:
 def resolve_global_config_path() -> Path | None:
     """Resolve the machine-global config file path.
 
-    Honors ``PIPECAT_HUB_CONFIG_FILE`` if set (a test-hermeticity seam only —
-    not a documented operator feature), else falls back to
-    ``DEFAULT_CONFIG_PATH``. Reads ``DEFAULT_CONFIG_PATH`` via module-attribute
+    Honors ``PIPECAT_HUB_CONFIG_FILE`` if set, else falls back to
+    ``DEFAULT_CONFIG_PATH``. That override is invocation-scoped (hence its
+    place in ``_INVOCATION_SCOPED_KEYS``, and its deliberate absence from
+    ``_KNOWN_KEYS`` / ``config.toml.example`` / the README's Environment
+    Variables table), but it is a real operator-visible capability, not merely
+    a test seam — it is documented under docs/README.md's Troubleshooting
+    section alongside ``PIPECAT_HUB_DEBUG_PROBE``. Reads ``DEFAULT_CONFIG_PATH`` via module-attribute
     lookup so a test-time ``monkeypatch.setattr(env_loading,
     "DEFAULT_CONFIG_PATH", ...)`` is observed. Returns ``None`` only when no
     override is set and ``DEFAULT_CONFIG_PATH`` itself is ``None`` (home
@@ -204,20 +213,27 @@ def resolve_global_config_path() -> Path | None:
 
 
 def config_collides_with_dir(candidate_dir: Path) -> Path | None:
-    """Return the active config path if it or its resolved target lives inside ``candidate_dir``.
+    """Return a config-path location inside ``candidate_dir``, or ``None``.
 
-    Checks both the lexical/physical location of the config path itself (so a
-    ``candidate_dir`` that would delete a symlink hop pointing *at* the config
-    is caught even though that symlink's own target lives elsewhere) and the
-    config path's fully-resolved target (so a config path living outside
-    ``candidate_dir`` but symlinked to real content *inside* it is also
-    caught). Returns ``None`` if there's no collision on either check, the
-    active config path can't be resolved (no home directory), or the config
-    file doesn't exist — a nonexistent or unresolvable config can't be
-    protected from, matching the loader's own missing-file-silent contract.
-    Shared by this module's own ``PIPECAT_HUB_DATA_DIR`` skip below and
-    ``cli.py``'s ``_delete_local_index_storage()`` reset-path guard, so both
-    stay in lockstep on the same predicate.
+    Checks *every* filesystem location the active config path stands on while
+    it resolves — its lexical form, each intermediate symlink hop, and its
+    fully-resolved target (:func:`shared.paths.resolution_chain`) — because
+    each of those is a directory entry ``rmtree(candidate_dir)`` would delete,
+    and deleting any one of them severs the operator's path to their config.
+    Checking only the two endpoints (as this function once did) misses the
+    middle: a chain that enters ``candidate_dir`` and leaves again has both
+    endpoints outside it while still being destroyed by the delete.
+
+    The fully-resolved target is re-checked explicitly afterwards as a floor,
+    since ``resolution_chain`` is bounded and truncates on a cycle.
+
+    Returns ``None`` if nothing collides, the active config path can't be
+    resolved (no home directory), or the config file doesn't exist — a
+    nonexistent or unresolvable config can't be protected from, matching the
+    loader's own missing-file-silent contract. Shared by this module's own
+    ``PIPECAT_HUB_DATA_DIR`` skip below and ``cli.py``'s
+    ``_delete_local_index_storage()`` reset-path guard, so both stay in
+    lockstep on the same predicate.
 
     ``candidate_dir`` is normalized here (``expanduser`` +
     ``resolve(strict=False)``) rather than at the call sites: this is a
@@ -238,25 +254,17 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     # Lexical: absolute + '..'/'.'-normalized, zero syscalls, zero symlink deref.
     lexical = Path(os.path.abspath(config_path))
 
-    # Physical: directory chain dereferenced, final component left intact —
-    # this is the path that would actually be unlinked by rmtree(candidate_dir)
-    # even when that path is itself a symlink pointing elsewhere.
+    # Target: full dereference — the floor beneath the chain walk, and the
+    # mirror-image hazard in its own right (config path lives OUTSIDE
+    # candidate_dir but is a symlink whose real content lives INSIDE it, so
+    # rmtree destroys the actual config content, not just a path entry).
     #
-    # RuntimeError is caught alongside ValueError/OSError here (and below):
-    # on Python <=3.12 `Path.resolve(strict=False)` raises RuntimeError — not
-    # an OSError subclass — for a symlink loop. A `PIPECAT_HUB_CONFIG_FILE`
-    # pointing into a loop would otherwise abort `refresh --reset-index` with
-    # an uncaught traceback instead of degrading to "no collision detected",
-    # breaking this project's "entry points never crash on a bad config" rule.
-    try:
-        physical = lexical.parent.resolve(strict=False) / lexical.name
-    except (ValueError, OSError, RuntimeError):
-        physical = lexical
-
-    # Target: full dereference (original behavior) — kept because it covers
-    # the mirror-image hazard: config path lives OUTSIDE candidate_dir but is
-    # a symlink whose real content lives INSIDE it (rmtree would destroy the
-    # actual config content, not just a path entry).
+    # RuntimeError is caught alongside ValueError/OSError: on Python <=3.12
+    # `Path.resolve(strict=False)` raises RuntimeError — not an OSError
+    # subclass — for a symlink loop. A `PIPECAT_HUB_CONFIG_FILE` pointing into
+    # a loop would otherwise abort `refresh --reset-index` with an uncaught
+    # traceback instead of degrading to "no collision detected", breaking this
+    # project's "entry points never crash on a bad config" rule.
     try:
         resolved = config_path.resolve(strict=False)
     except (ValueError, OSError, RuntimeError):
@@ -271,14 +279,12 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
         # An unstattable config path can't be protected; treat as absent.
         return None
 
-    try:
-        dir_stat: os.stat_result | None = candidate_dir.stat()
-    except (OSError, ValueError):
-        dir_stat = None
-
-    if is_inside(physical, candidate_dir, dir_stat=dir_stat):
-        return physical
-    if is_inside(resolved, candidate_dir, dir_stat=dir_stat):
+    # Root-first, so the reported collision is the outermost path entry the
+    # delete would take out — the most actionable one to name in the warning.
+    for location in resolution_chain(config_path):
+        if is_inside(location, candidate_dir):
+            return location
+    if is_inside(resolved, candidate_dir):
         return resolved
     return None
 
@@ -334,31 +340,43 @@ def _file_kind(mode: int) -> str:
 
 
 def _link_owner_is_trusted(config_path: Path, uid: int) -> bool:
-    """False when the config path is a symlink planted by another local user.
+    """False when any symlink on the config path was planted by another user.
 
     ``fstat`` on the opened file describes the *target*, never the link, so a
     foreign-owned symlink pointing at a victim-owned file would otherwise pass
     every check. Symlink mode bits are meaningless (0777 on Linux/macOS), so
-    only ownership is tested — and symlinked config files are otherwise
+    only ownership is tested — and symlinked config paths are otherwise
     allowed, since pointing the config at a dotfiles checkout is a legitimate
     setup.
+
+    Every location on the resolution chain is ``lstat``'d, not just the final
+    component: a foreign-owned *directory* symlink partway up the path (say
+    ``~/.config`` itself) redirects the lookup exactly as effectively as a
+    foreign-owned leaf, and every stat after that hop just follows it to a
+    target tree that looks perfectly fine.
     """
-    try:
-        lst = os.lstat(config_path)
-    except (OSError, ValueError):
-        return True
-    if not stat.S_ISLNK(lst.st_mode):
-        return True
-    if lst.st_uid in (uid, 0):
-        return True
-    _module_logger.warning(
-        "Ignoring config.toml at %s: it is a symlink owned by uid %d, not the current "
-        "user (uid %d). Another local account could redirect this hub's settings.",
-        redact_home(config_path),
-        lst.st_uid,
-        uid,
-    )
-    return False
+    for location in resolution_chain(config_path) or [config_path]:
+        try:
+            lst = os.lstat(location)
+        except (OSError, ValueError):
+            # Unstattable component: the open() already succeeded, so don't
+            # invent a refusal from a check that couldn't be performed.
+            continue
+        if not stat.S_ISLNK(lst.st_mode):
+            continue
+        if lst.st_uid in (uid, 0):
+            continue
+        _module_logger.warning(
+            "Ignoring config.toml at %s: path component %s is a symlink owned by uid %d, "
+            "not the current user (uid %d). Another local account could redirect this "
+            "hub's settings.",
+            redact_home(config_path),
+            redact_home(location),
+            lst.st_uid,
+            uid,
+        )
+        return False
+    return True
 
 
 def _config_parent_is_trusted(config_path: Path, uid: int) -> bool:
@@ -370,32 +388,46 @@ def _config_parent_is_trusted(config_path: Path, uid: int) -> bool:
     principal. World-writable **sticky** directories (``/tmp``) are exempt —
     the sticky bit is precisely what withdraws that unlink permission.
 
-    Two directions are checked, because a single-level check on the
-    *unresolved* parent leaves two demonstrated bypasses:
+    The set of directories that must be trusted is "every directory that holds
+    a path entry the lookup depends on". That is not the same as the ancestors
+    of either endpoint, because a symlink hop moves the walk into a different
+    tree: the ancestors of the *lexical* path stop being examined the moment
+    a directory symlink is followed (``stat`` sees through it to a target that
+    may be impeccably permissioned), and the ancestors of the *resolved*
+    target never included the tree the walk came from. Write access on any
+    directory in either tree is enough to substitute a hop and redirect the
+    whole lookup.
 
-    * the config path may be a symlink, so the directory that actually holds
-      the opened inode (``os.path.realpath``'s parent) is a different
-      directory that would otherwise never be examined — enough for a
-      hardlink-replacement attack in a shared directory;
-    * write access on any *ancestor* is enough to substitute a directory
-      symlink higher up the tree and redirect the whole lookup, which every
-      leaf-only check passes.
+    So the check is driven by :func:`shared.paths.resolution_chain`: every
+    location the path stands on while resolving, and every ancestor of each,
+    up to the filesystem root. The resolved parent is appended as a floor,
+    since the chain walk is bounded and truncates on a cycle.
 
-    So: the named parent, then every ancestor of the resolved target up to the
-    filesystem root. The group-writable *warning* (allow, don't refuse) is
-    emitted only for the two directories that directly hold the file — a
-    per-ancestor version would be noise on any machine with a group-writable
-    dir anywhere in ``/``.
+    The group-writable *warning* (allow, don't refuse) is emitted only for the
+    two directories that directly hold the file — the lexical parent and the
+    resolved one. A per-ancestor version would be noise on any machine with a
+    group-writable dir anywhere in ``/``.
     """
     checked: set[str] = set()
-    directories: list[tuple[Path, bool]] = [(config_path.parent, True)]
+    directories: list[tuple[Path, bool]] = []
+
+    lexical_parent = Path(os.path.abspath(config_path)).parent
     real_parent: Path | None
     try:
         real_parent = Path(os.path.realpath(config_path)).parent
     except (OSError, ValueError):
         real_parent = None
+
+    # Warn-worthy holders first, so the dedup set records them with
+    # `warn_group=True` before the ancestor sweep can claim them with False.
+    directories.append((lexical_parent, True))
     if real_parent is not None:
         directories.append((real_parent, True))
+
+    for location in resolution_chain(config_path):
+        directories.extend((ancestor, False) for ancestor in location.parents)
+    if real_parent is not None:
+        directories.append((real_parent, False))
         directories.extend((ancestor, False) for ancestor in real_parent.parents)
 
     for directory, warn_group in directories:
@@ -617,14 +649,18 @@ def load_global_config() -> None:
         )
         return
 
-    # `fd` ownership transfers to the file object the moment `os.fdopen`
-    # returns; until then this function must close it on every exit path.
+    # `fd` ownership transfers to `os.fdopen` on *entry*, not on success:
+    # `io.open` closes the descriptor itself when construction fails. Clearing
+    # the flag beforehand is therefore the correct handoff point — clearing it
+    # after the call returns would leave the `finally` below closing an fd the
+    # interpreter had already closed, which after fd-number reuse closes some
+    # unrelated file. Until that call, this function closes it on every path.
     fd_owned = True
     try:
         if not _config_fd_is_trusted(fd, config_path):
             return
+        fd_owned = False
         with os.fdopen(fd, "rb") as f:
-            fd_owned = False
             data = tomllib.load(f)
     except (tomllib.TOMLDecodeError, UnicodeError, OSError, ValueError) as exc:
         # Same redaction rationale as the open() site above: an OSError raised
@@ -671,15 +707,6 @@ def load_global_config() -> None:
                 key,
             )
             continue
-        if key not in _KNOWN_KEYS:
-            # Warn, don't skip: an unrecognized key is far more often a typo
-            # (`PIPECAT_HUB_DATADIR`) than a genuinely newer setting, but
-            # skipping would break a config.toml written for a newer hub.
-            _module_logger.warning(
-                "config.toml key %r is not a recognized PIPECAT_HUB_* setting "
-                "(typo?); setting it anyway",
-                key,
-            )
         if os.environ.get(key, "").strip():
             # Deliberately *not* `key in os.environ`: a blank/whitespace-only
             # higher-layer value is inert, because every consumer in
@@ -769,6 +796,22 @@ def load_global_config() -> None:
                     redact_home(colliding_config_path),
                 )
                 continue
+
+        if key not in _KNOWN_KEYS:
+            # Warn, don't skip: an unrecognized key is far more often a typo
+            # (`PIPECAT_HUB_DATADIR`) than a genuinely newer setting, but
+            # skipping would break a config.toml written for a newer hub.
+            #
+            # Deliberately the *last* gate before the assignment, for the same
+            # reason `_INVOCATION_SCOPED_KEYS` is checked before `_KNOWN_KEYS`:
+            # "setting it anyway" must not be printed above a shadow / type /
+            # collision warning that then skips the key, which would make the
+            # pair contradict each other.
+            _module_logger.warning(
+                "config.toml key %r is not a recognized PIPECAT_HUB_* setting "
+                "(typo?); setting it anyway",
+                key,
+            )
 
         try:
             os.environ[key] = coerced

@@ -532,6 +532,19 @@ troubleshooting fallback, not a setting — it is deliberately absent from
 set in `config.toml` (a machine-global file must never persistently enable a
 disk-writing probe). Unset it once you've read the file.
 
+### Pointing the hub at a different `config.toml`
+
+`PIPECAT_HUB_CONFIG_FILE=/path/to/config.toml` overrides the lookup path for
+the machine-global config file — useful for testing a config before installing
+it, or for running one invocation against a different profile. Like
+`PIPECAT_HUB_DEBUG_PROBE` above, it is invocation-scoped rather than a setting:
+it is deliberately absent from `config.toml.example` and the Environment
+Variables table, and is ignored when set *inside* `config.toml` (honouring it
+from within the file it locates would be circular). A `~`-rooted value is
+expanded; a value that isn't a usable path is ignored with a warning and **no**
+config file is loaded — the hub will not quietly fall back to the default
+location when you asked for a specific file.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, development workflow,

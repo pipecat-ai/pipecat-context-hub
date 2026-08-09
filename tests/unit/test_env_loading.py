@@ -1467,3 +1467,190 @@ class TestConfigAncestorDirectoriesAreTrusted:
         monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
         load_global_config()
         assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "45"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")
+class TestSymlinkChainIsWalked:
+    """Round-5 findings #1/#2: both guard functions validated only the two
+    *endpoints* of the config path (its lexical form and its fully-resolved
+    target), never the intermediate path entries a multi-hop symlink chain
+    actually traverses. Those intermediates are real, deletable, replaceable
+    filesystem objects — one is a data-loss hole in the deletion guard, the
+    other a confused-deputy redirect through the read-trust gate.
+    """
+
+    def _write_config(self, path: Path) -> None:
+        path.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+        path.chmod(0o600)
+
+    def test_intermediate_symlink_hop_inside_candidate_dir_is_collision(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Finding #1. The config path's directory is a symlink whose target
+        is *itself* a symlink living inside `candidate_dir`, which in turn
+        points back outside it. Both endpoints the guard used to check —
+        the lexical path (`outside/link/config.toml`) and the fully-resolved
+        target (`elsewhere/config.toml`) — land outside `candidate_dir`, so
+        the guard did not fire; yet `rmtree(candidate_dir)` deletes the
+        middle hop and the active config path stops resolving.
+        """
+        candidate_dir = tmp_path / "candidate-data-dir"
+        candidate_dir.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        self._write_config(elsewhere / "config.toml")
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            # candidate_dir/hop -> elsewhere ; outside/link -> candidate_dir/hop
+            (candidate_dir / "hop").symlink_to(elsewhere, target_is_directory=True)
+            (outside / "link").symlink_to(candidate_dir / "hop", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        config_path = outside / "link" / "config.toml"
+        _use_config_file(monkeypatch, config_path)
+        collision = config_collides_with_dir(candidate_dir)
+        assert collision is not None
+
+    def test_world_writable_holder_of_a_symlinked_ancestor_is_refused(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """Finding #2. `holder` is world-writable without the sticky bit, so
+        any local account can replace `holder/link` and redirect the whole
+        lookup. Every directory the old gate stat'd — the lexical parent
+        (`holder/link`, which stat() follows straight through to the
+        well-permissioned target) and the resolved chain (`good/…`) — looks
+        fine, because `holder` itself is never examined.
+        """
+        holder = tmp_path / "holder"
+        holder.mkdir()
+        good = tmp_path / "good"
+        good.mkdir(mode=0o755)
+        self._write_config(good / "config.toml")
+        try:
+            (holder / "link").symlink_to(good, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+        holder.chmod(0o777)
+
+        _use_config_file(monkeypatch, holder / "link" / "config.toml")
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        try:
+            with caplog.at_level("WARNING"):
+                load_global_config()
+        finally:
+            holder.chmod(0o755)
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert "world-writable" in caplog.text
+
+    def test_deeply_symlinked_but_well_permissioned_config_still_loads(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Regression floor for the chain walk: a multi-hop, correctly
+        permissioned dotfiles-style layout must still load."""
+        real_dir = tmp_path / "dotfiles" / "pipecat"
+        real_dir.mkdir(parents=True)
+        self._write_config(real_dir / "hub.toml")
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        home_cfg = tmp_path / "home" / ".config"
+        home_cfg.mkdir(parents=True)
+        try:
+            (stage / "pipecat").symlink_to(real_dir, target_is_directory=True)
+            (home_cfg / "pipecat-context-hub").symlink_to(
+                stage / "pipecat", target_is_directory=True
+            )
+            (real_dir / "config.toml").symlink_to(real_dir / "hub.toml")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        _use_config_file(monkeypatch, home_cfg / "pipecat-context-hub" / "config.toml")
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "45"
+
+    def test_symlink_loop_in_an_ancestor_does_not_hang_or_raise(self, tmp_path: Path, monkeypatch):
+        """The chain walk is hop-bounded: an ELOOP ancestor must degrade to
+        'nothing proven' rather than spinning or raising."""
+        loop_a = tmp_path / "loop-a"
+        loop_b = tmp_path / "loop-b"
+        try:
+            loop_a.symlink_to(loop_b, target_is_directory=True)
+            loop_b.symlink_to(loop_a, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+        _use_config_file(monkeypatch, loop_a / "config.toml")
+        assert config_collides_with_dir(tmp_path / "data") is None
+        load_global_config()  # must not raise
+
+
+class TestUnknownKeyWarningIsNotContradicted:
+    """Round-5 finding #3: the "not a recognized PIPECAT_HUB_* setting (typo?);
+    setting it anyway" warning fired *before* four checks that can still skip
+    the key, producing the same contradictory-warning pair round 3 removed one
+    branch earlier.
+    """
+
+    def test_shadowed_unknown_key_emits_no_typo_warning(self, tmp_path: Path, monkeypatch, caplog):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_DATADIR = "/typo"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_DATADIR", "/from-real-env")
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert os.environ["PIPECAT_HUB_DATADIR"] == "/from-real-env"
+        assert "setting it anyway" not in caplog.text
+
+    def test_skipped_unknown_key_emits_no_typo_warning(self, tmp_path: Path, monkeypatch, caplog):
+        """An unrecognized key whose value the loader then rejects outright
+        must not first be announced as "setting it anyway"."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("PIPECAT_HUB_DATADIR = 1979-05-27\n")
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_DATADIR", raising=False)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "PIPECAT_HUB_DATADIR" not in os.environ
+        assert "setting it anyway" not in caplog.text
+        assert "unsupported value type" in caplog.text
+
+
+class TestConfigFdOwnershipTransfer:
+    """Round-5 finding #4: `fd_owned = False` was set *after* `os.fdopen`
+    returned, but CPython's `io.open` closes the descriptor itself when
+    construction fails — so a raising `fdopen` left the `finally` block
+    closing an fd the interpreter had already closed, which after fd-number
+    reuse closes an unrelated file.
+    """
+
+    def test_fdopen_failure_does_not_close_the_fd_twice(self, tmp_path: Path, monkeypatch, caplog):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+
+        real_close = os.close
+        handed_over: list[int] = []
+        closed_by_loader: list[int] = []
+
+        def fake_fdopen(fd, *args, **kwargs):
+            handed_over.append(fd)
+            real_close(fd)  # exactly what io.open does on construction failure
+            raise OSError("simulated fdopen failure")
+
+        def tracking_close(fd):
+            closed_by_loader.append(fd)
+            return real_close(fd)
+
+        monkeypatch.setattr(os, "fdopen", fake_fdopen)
+        monkeypatch.setattr(os, "close", tracking_close)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+
+        assert handed_over, "fdopen was never reached"
+        assert handed_over[0] not in closed_by_loader, (
+            "loader closed a descriptor whose ownership had already transferred "
+            "to os.fdopen — double close"
+        )

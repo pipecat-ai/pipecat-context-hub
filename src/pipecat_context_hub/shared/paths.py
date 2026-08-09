@@ -17,9 +17,10 @@ Lives in ``shared/`` (not ``cli.py``) because ``cli.py`` imports ``cli_query``;
 importing the helper back from ``cli.py`` would be a cycle. ``shared/`` peers
 import neither CLI module, so the layer stays leaf-level.
 
-:func:`same_dir` and :func:`is_inside` are the general filesystem-identity
-primitives shared by every deletion guard in this project (``env_loading``'s
-``config_collides_with_dir()`` and ``cli.py``'s ``_refuse_unsafe_data_dir()``).
+:func:`same_dir`, :func:`is_inside` and :func:`resolution_chain` are the
+general filesystem-identity primitives shared by every deletion and trust guard
+in this project (``env_loading``'s ``config_collides_with_dir()`` /
+``_config_parent_is_trusted()`` and ``cli.py``'s ``_refuse_unsafe_data_dir()``).
 They live here rather than in ``env_loading`` because they are path predicates,
 not env-var/config-file loading.
 """
@@ -27,20 +28,98 @@ not env-var/config-file loading.
 from __future__ import annotations
 
 import os
+from collections import deque
 from pathlib import Path
 from typing import Final
 
+# Upper bound on symlink hops followed by :func:`resolution_chain`. Chosen to
+# sit above any legitimate layout (the kernel's own ELOOP limit is typically
+# 40 on Linux, 32 on macOS) while still terminating on a cycle.
+_MAX_SYMLINK_HOPS: Final = 64
 
-class _ComputeStat:
-    """Sentinel type for :func:`is_inside`'s optional ``dir_stat`` cache.
 
-    A distinct type is needed because ``None`` already carries a meaning here
-    ("``directory`` could not be stat'd, skip the identity check"). Omitting
-    the argument must mean "stat it for me", not "skip the check".
+def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[Path]:
+    """Every filesystem location visited while resolving ``path``, root-first.
+
+    Neither of the two obvious spellings exposes this. ``os.path.abspath``
+    reports only the *lexical* path; ``os.path.realpath`` reports only the
+    *final* target. A path that reaches its file through a chain of directory
+    symlinks passes through intermediate locations that are neither — and each
+    of those is a real, deletable, replaceable directory entry:
+
+    * a hop deleted by ``rmtree`` makes the path stop resolving, even though
+      both endpoints live outside the deleted tree
+      (``config_collides_with_dir``'s concern);
+    * a hop whose *holding directory* another local account can write is
+      enough to redirect the whole lookup, even though both endpoints sit in
+      well-permissioned directories (``_config_parent_is_trusted``'s concern).
+
+    So this walks ``path`` one component at a time, expanding each symlink by a
+    single ``readlink`` (never ``realpath``, which would skip exactly the
+    intermediates being looked for) and recording every location it stands on.
+    Duplicate locations are recorded once, in first-visit order.
+
+    Best-effort by contract: the walk is bounded by ``max_hops`` and swallows
+    per-component ``OSError``, so a cycle or an unreadable component truncates
+    the list rather than raising. Callers must therefore treat a location's
+    *presence* as evidence and its *absence* as unproven — every consumer here
+    keeps an independent endpoint check as its floor.
     """
+    try:
+        absolute = Path(os.path.abspath(path))
+    except (OSError, ValueError):
+        return []
+    parts = absolute.parts
+    if not parts:
+        return []
 
+    resolved = Path(parts[0])
+    pending = deque(parts[1:])
+    visited: list[Path] = []
+    seen: set[str] = set()
+    hops = 0
 
-_COMPUTE_STAT: Final = _ComputeStat()
+    while pending:
+        name = pending.popleft()
+        if not name or name == os.curdir:
+            continue
+        if name == os.pardir:
+            resolved = resolved.parent
+            continue
+
+        current = resolved / name
+        marker = str(current)
+        if marker not in seen:
+            seen.add(marker)
+            visited.append(current)
+
+        try:
+            is_link = os.path.islink(current)
+        except (OSError, ValueError):
+            is_link = False
+        if not is_link:
+            resolved = current
+            continue
+
+        hops += 1
+        if hops > max_hops:
+            break
+        try:
+            target = Path(os.readlink(current))
+        except (OSError, ValueError, NotImplementedError):
+            resolved = current
+            continue
+        if target.anchor:
+            # Absolute target: restart from *its* anchor, which on Windows may
+            # be a different drive than the one the walk started on.
+            resolved = Path(target.anchor)
+            pending.extendleft(reversed(target.parts[1:]))
+        else:
+            # Relative target: resolves against the link's own directory, which
+            # is `resolved` — deliberately left untouched.
+            pending.extendleft(reversed(target.parts))
+
+    return visited
 
 
 def same_dir(path: Path, other_stat: os.stat_result) -> bool:
@@ -66,12 +145,7 @@ def same_dir(path: Path, other_stat: os.stat_result) -> bool:
         return False
 
 
-def is_inside(
-    path: Path,
-    directory: Path,
-    *,
-    dir_stat: os.stat_result | None | _ComputeStat = _COMPUTE_STAT,
-) -> bool:
+def is_inside(path: Path, directory: Path) -> bool:
     """True when ``path`` lives under ``directory``.
 
     Two checks, because a path-string comparison alone is not sound:
@@ -89,21 +163,18 @@ def is_inside(
        Skipped when either side doesn't exist (nothing to stat) — which is
        safe, because a directory that doesn't exist cannot be ``rmtree``'d.
 
-    ``dir_stat`` is a keyword-only *cache* of ``directory.stat()``, for callers
-    that test several paths against one directory. It is keyword-only, and
-    computed here when omitted, because a caller that passes a stat belonging
-    to some *other* directory silently makes this predicate fail open — and
-    this predicate guards deletions. Omitting it is always correct; passing it
-    is an optimisation the caller must keep consistent with ``directory``.
+    ``directory`` is stat'd here rather than accepted pre-stat'd from the
+    caller. An earlier revision took a ``dir_stat`` cache for callers testing
+    several paths against one directory; it saved a handful of syscalls on a
+    once-per-invocation path and, in exchange, gave this deletion guard a
+    silent fail-open mode whenever a caller's cached stat drifted from the
+    ``directory`` argument beside it. Not a trade worth keeping.
     """
     if path.is_relative_to(directory):
         return True
-    if isinstance(dir_stat, _ComputeStat):
-        try:
-            dir_stat = directory.stat()
-        except (OSError, ValueError):
-            dir_stat = None
-    if dir_stat is None:
+    try:
+        dir_stat = directory.stat()
+    except (OSError, ValueError):
         return False
     return any(same_dir(ancestor, dir_stat) for ancestor in path.parents)
 
