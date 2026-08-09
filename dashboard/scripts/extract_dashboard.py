@@ -8,16 +8,28 @@ from statistics import mean
 import chromadb
 
 from pipecat_context_hub.shared.config import StorageConfig
-
+from pipecat_context_hub.shared.env_loading import load_env_layers
 
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), "..", "public")
 OUTPUT = os.path.join(PUBLIC_DIR, "dashboard_data.json")
 
 
+def _bootstrap() -> StorageConfig:
+    """Load every config layer, then construct StorageConfig.
+
+    Same single bootstrap call as `cli.py:main()`, so this script's resolved
+    config (in particular `PIPECAT_HUB_DATA_DIR`) matches refresh/serve
+    instead of only seeing real env vars. The two-call ordering lives inside
+    `load_env_layers()` rather than being hand-replicated per entry point.
+    """
+    load_env_layers()
+    return StorageConfig()
+
+
 def main() -> None:
     # Route through StorageConfig so PIPECAT_HUB_DATA_DIR is honoured (keeps the
     # dashboard pipeline consistent with refresh/serve and isolated test runs).
-    chroma_path = StorageConfig().chroma_path
+    chroma_path = _bootstrap().chroma_path
     print("Connecting to ChromaDB...")
     client = chromadb.PersistentClient(path=str(chroma_path))
     col = client.get_collection("latest")

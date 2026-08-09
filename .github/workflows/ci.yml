@@ -104,9 +104,13 @@ jobs:
         # included: the ingest layer normalizes logical repo-relative paths to
         # forward slashes via Path.as_posix() (github_ingest.py, taxonomy.py), so
         # stored `path` / `source_url` / taxonomy keys are "/"-separated on every
-        # platform and these tests pass under Windows "\\". tests/integration/ is
-        # still excluded (its serve tests use POSIX-only select() on pipes);
-        # Linux CI runs everything.
+        # platform and these tests pass under Windows "\\". test_config.py is also
+        # included: its `Path("/tmp/...")` literals are only ever compared against
+        # values built the same way (never touch the real filesystem), so they hold
+        # cross-platform, and its config.toml.example/README parity test reads
+        # files by absolute repo-relative path (no POSIX permission bits, no
+        # symlinks). tests/integration/ is still excluded (its serve tests use
+        # POSIX-only select() on pipes); Linux CI runs everything.
         run: >-
           uv run pytest -v
           tests/unit/test_index_store.py
@@ -116,6 +120,8 @@ jobs:
           tests/unit/test_github_ingest.py
           tests/unit/test_cli.py
           tests/unit/test_hub_status.py
+          tests/unit/test_env_loading.py
+          tests/unit/test_config.py
 
   security:
     name: Security

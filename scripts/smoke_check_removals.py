@@ -62,6 +62,7 @@ from pipecat_context_hub.services.ingest.deprecation_map import (
 )
 from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.env_loading import load_env_layers
 
 # A removed symbol that is absent from the real active registry — mirrors how the
 # producer (pipecat#4734) only emits removals for subjects no longer in
@@ -87,9 +88,26 @@ _SYNTHETIC_REMOVALS = {
 }
 
 
-def _registry_path() -> Path:
-    """Resolve the real ``deprecations.json`` in the cloned framework checkout."""
-    data_dir = HubConfig().storage.data_dir
+def _bootstrap() -> HubConfig:
+    """Load every config layer, then construct HubConfig.
+
+    Same single bootstrap call as `cli.py:main()`, so this script's resolved
+    config (in particular `PIPECAT_HUB_DATA_DIR`) matches refresh/serve
+    instead of only seeing real env vars. The two-call ordering lives inside
+    `load_env_layers()` rather than being hand-replicated per entry point.
+    """
+    load_env_layers()
+    return HubConfig()
+
+
+def _registry_path(config: HubConfig) -> Path:
+    """Resolve the real ``deprecations.json`` in the cloned framework checkout.
+
+    Takes the already-bootstrapped config rather than calling ``_bootstrap()``
+    itself: mutating process-wide ``os.environ`` must not be a side effect of
+    asking a leaf helper for a path. ``main()`` owns the bootstrap.
+    """
+    data_dir = config.storage.data_dir
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", _FRAMEWORK_REPO)
     return data_dir / "repos" / safe_name / REGISTRY_RELATIVE_PATH
 
@@ -245,7 +263,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args()
 
-    registry = _registry_path()
+    registry = _registry_path(_bootstrap())
     if not registry.exists():
         print(
             f"Framework registry not found at {registry}.\n"

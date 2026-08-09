@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 # after install — the command, the MCP server name, the data dir, the docs —
 # stays `pipecat-context-hub`; see the scripts alias below.
 name = "pipecat-ai-context-hub"
-version = "0.5.1"
+version = "0.5.2"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"
@@ -31,9 +31,11 @@ dependencies = [
     "tokenizers>=0.15,<1.0",
     "huggingface-hub>=0.20,<2.0",
     "numpy>=1.24,<3.0",
-    # gitpython < 3.1.57: GHSA-3f7w-8rr8-f37f. Floor raised above the fix so a
-    # plain re-lock cannot regress to a vulnerable build.
-    "gitpython>=3.1.57,<4.0",
+    # gitpython < 3.1.58: GHSA-3f7w-8rr8-f37f plus five more (GHSA-9rj7-rf2p-w77r,
+    # GHSA-4gmw-gg2m-w46p, GHSA-hh9p-6wh2-4mfc, GHSA-wvpp-8hx9-p66j,
+    # GHSA-jm78-9fvv-mhgr). Floor raised above the fixes so a plain re-lock
+    # cannot regress to a vulnerable build.
+    "gitpython>=3.1.58,<4.0",
     "click>=8.0,<9.0",
     "tree-sitter>=0.25,<1.0",
     "tree-sitter-typescript>=0.23,<1.0",

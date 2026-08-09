@@ -316,7 +316,56 @@ works immediately; version comparison starts working after the next refresh.
 | `PIPECAT_HUB_WARMUP` | `1` | Pre-warm embedding + cross-encoder at `serve` boot so the first MCP query doesn't pay the cold-start cost (matters most on Windows CPU, where cold loads can take 30-130s). Set to `0` to skip (faster boot, slower first query). |
 
 See [`.env.example`](../.env.example) for curated repo bundles you can copy
-into your `.env`.
+into your `.env`, and [`config.toml.example`](../config.toml.example) for the
+machine-global equivalent described below.
+
+### Config precedence: env vars, `.env`, and `config.toml`
+
+Every entry point (the CLI, the `pipecat context-hub` Typer bridge, `serve`,
+and the dashboard scripts) resolves `PIPECAT_HUB_*` settings from three
+layers, first-writer-wins, in this order:
+
+1. **Real environment variables** — highest precedence, e.g. exported from
+   your shell profile or set in an MCP client's `env` block.
+2. **`.env` in the current working directory** — project-local, loaded on
+   every invocation from `Path.cwd()`.
+3. **`~/.config/pipecat-context-hub/config.toml`** — machine-global, read
+   only if present, for settings that should apply everywhere without being
+   re-exported per shell or duplicated into every project's `.env`. Uses the
+   same `PIPECAT_HUB_*` keys as flat TOML values (a homogeneous array of
+   scalars, e.g. `PIPECAT_HUB_EXTRA_REPOS = ["org/repo-a", "org/repo-b"]`, is
+   accepted and coerced to the same comma-separated form as the env-var
+   form). See [`config.toml.example`](../config.toml.example).
+   Keep it private — `chmod 600 ~/.config/pipecat-context-hub/config.toml`.
+   Its values go straight into the process environment, so on POSIX systems a
+   world-writable file, or one owned by another user, is ignored with a
+   warning; a group-writable one is still loaded, but warned about.
+
+Anything not set in any layer falls back to `HubConfig`'s field defaults
+(the table above).
+
+A project `.env` always outranks `config.toml` — that's true for every
+invocation, not just a normal project-local CLI run. In particular, if an
+MCP client happens to launch `serve` with its working directory set to a
+project checkout that has its own `.env`, that `.env` shadows `config.toml`
+for that session, the same as it would for a direct CLI invocation from that
+directory. Whether a given MCP client passes a project `cwd` at all, or a
+fixed/empty one, is client-specific and not something this project controls;
+`serve` logs `cwd=... env_keys=...` at startup (`INFO` level) so you can
+confirm which directory — and therefore which `.env`, if any — was in effect
+for a given session. The path is home-redacted to `~/…`, and only key *names*
+are logged, never values, so the line is safe to paste into a bug report.
+
+Windows: the lookup path is `%USERPROFILE%\.config\pipecat-context-hub\config.toml`
+in the common case, but that's a description of where `Path.home()` usually
+resolves, not a separate rule — `Path.home()` reads `USERPROFILE`, falls back
+to `HOMEDRIVE`+`HOMEPATH` if that's unset, and roaming or domain-managed
+profiles can relocate the home directory entirely. This deliberately diverges
+from this project's usual Windows convention for the index/repo cache
+(`%LOCALAPPDATA%`) — `config.toml`'s location follows `Path.home() / ".config"`
+on every platform, matching its POSIX/macOS path structure rather than
+Windows convention, so the same relative path (`.config/pipecat-context-hub/config.toml`)
+works everywhere `Path.home()` resolves.
 
 ## MCP Client Configuration
 
@@ -398,7 +447,27 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 
 - **Empty results** — run `uvx pipecat-ai-context-hub refresh` to populate the index
 - **Stale results** — run `uvx pipecat-ai-context-hub refresh --force` to re-ingest from latest upstream
-- **Index corruption** — run `uvx pipecat-ai-context-hub refresh --force --reset-index` to wipe and rebuild
+- **Index corruption** — run `uvx pipecat-ai-context-hub refresh --force --reset-index` to wipe and rebuild.
+  Only the data directory is removed: your machine-global
+  `~/.config/pipecat-context-hub/config.toml` and any project `.env` are
+  preserved, and the reset aborts with an error rather than deleting a
+  `PIPECAT_HUB_DATA_DIR` that happens to contain either one — including the
+  case where a project `.env` sets `PIPECAT_HUB_DATA_DIR=.`, which would
+  otherwise make the working tree holding that `.env` the deletion target.
+- **`--prune` / `PIPECAT_HUB_PRUNE`** — `refresh` no longer deletes
+  previously-indexed data for a repo that isn't configured *for this
+  invocation* by default; it only warns
+  (`Repo <slug> not configured in this run; leaving N indexed record(s) in
+  place — pass --prune to remove`) and leaves the records and metadata in
+  place, since the repo may still be configured elsewhere (e.g. in
+  `config.toml` but shadowed by a narrower project `.env`). Pass `--prune`,
+  or set `PIPECAT_HUB_PRUNE=1`, to actually delete that data. This var is
+  invocation-scoped: it is not read from `config.toml` (see [Config
+  precedence](#config-precedence-env-vars-env-and-configtoml) above) and is
+  intentionally excluded from `config.toml.example` and the Environment
+  Variables table above. Tainted repos
+  (`PIPECAT_HUB_TAINTED_REPOS`) are unaffected — they are always cleaned up,
+  with or without `--prune`.
 - **`serve` exits immediately with code 2** — the index is empty or
   unopenable. Run `uvx pipecat-ai-context-hub refresh` (or
   `refresh --force --reset-index` if the error message mentions a failed
@@ -451,6 +520,35 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   etc.) cannot encode. The server falls back to ASCII automatically. To
   opt into the full Unicode output, set `PYTHONIOENCODING=utf-8` before
   invoking `refresh`, or use Windows Terminal (which defaults to UTF-8).
+
+### Can't see which config a `serve` session actually used
+
+`serve` logs `cwd=… env_keys=…` at `INFO` on every boot (home-redacted, key
+names only), which tells you which directory — and therefore which `.env`, if
+any — shadowed `config.toml` for that session. If your MCP client hides the
+server's stderr entirely, set `PIPECAT_HUB_DEBUG_PROBE=1` in the client's
+`env` block: `serve` appends the same evidence to
+`~/.cache/pipecat-context-hub/serve-debug.log` on each boot. This is a
+troubleshooting fallback, not a setting — it is deliberately absent from
+`config.toml.example` and the Environment Variables table, and is ignored when
+set in `config.toml` (a machine-global file must never persistently enable a
+disk-writing probe). Unset it once you've read the file.
+
+### Pointing the hub at a different `config.toml`
+
+`PIPECAT_HUB_CONFIG_FILE=/path/to/config.toml` overrides the lookup path for
+the machine-global config file — useful for testing a config before installing
+it, or for running one invocation against a different profile. Like
+`PIPECAT_HUB_DEBUG_PROBE` above, it is invocation-scoped rather than a setting:
+it is deliberately absent from `config.toml.example` and the Environment
+Variables table, and is ignored when set *inside* `config.toml` (honouring it
+from within the file it locates would be circular). A `~`-rooted value is
+expanded; a value that isn't a usable path is ignored with a warning and **no**
+config file is loaded — the hub will not quietly fall back to the default
+location when you asked for a specific file. Setting it to an *empty* value
+(`PIPECAT_HUB_CONFIG_FILE=`) is treated the same way: it disables the lookup
+for that invocation (warning, no config loaded). Unset the variable entirely
+to go back to the default location.
 
 ## Contributing
 

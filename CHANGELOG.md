@@ -7,6 +7,41 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-09
+
+### Added
+- **Machine-global `config.toml`.** `~/.config/pipecat-context-hub/config.toml`
+  (Windows: `%USERPROFILE%\.config\pipecat-context-hub\config.toml`), if
+  present, fills any `PIPECAT_HUB_*` var not already set by a real env var
+  or cwd `.env` — real env vars and cwd `.env` still win, matching the
+  existing precedence. See `config.toml.example` and `docs/README.md`'s
+  Environment Variables section for the full var registry and precedence
+  rules. `refresh --reset-index` never deletes a config source: it aborts
+  rather than `rmtree` a data directory containing the active `config.toml`
+  *or* the project's cwd `.env` (so `PIPECAT_HUB_DATA_DIR=.` in a `.env`
+  refuses instead of wiping the working tree).
+
+### Changed
+- **BREAKING (default behavior): `refresh` no longer deletes an
+  unconfigured-this-run repo's indexed records by default.** Previously,
+  any repo present in the index but absent from the current invocation's
+  effective config (`PIPECAT_HUB_EXTRA_REPOS` + framework repo) was deleted
+  automatically — including a repo still configured elsewhere (e.g. via
+  `config.toml` or a different project's `.env`) but merely not visible
+  from *this* run's directory. That's now opt-in: pass `--prune` or set
+  `PIPECAT_HUB_PRUNE=1` to restore the old deletion behavior. Without it,
+  `refresh` logs a warning and leaves the records and metadata in place so
+  a later `--prune` can still find and remove them. Explicitly tainted
+  repos are still deleted unconditionally, regardless of `--prune`. If you
+  run `refresh` on a schedule (cron, CI) and relied on it auto-cleaning
+  repos removed from config, add `--prune` to keep that behavior.
+
+### Security
+- **`gitpython` dependency floor bumped to 3.1.58**, fixing five
+  newly-disclosed advisories (GHSA-9rj7-rf2p-w77r, GHSA-4gmw-gg2m-w46p,
+  GHSA-hh9p-6wh2-4mfc, GHSA-wvpp-8hx9-p66j, GHSA-jm78-9fvv-mhgr) on top of
+  the existing GHSA-3f7w-8rr8-f37f floor.
+
 ## [0.5.1] - 2026-08-06
 
 ### Added

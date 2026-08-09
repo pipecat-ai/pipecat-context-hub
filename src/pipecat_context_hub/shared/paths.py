@@ -1,4 +1,4 @@
-"""Home-path redaction helpers for user-facing log/stderr output.
+"""Path helpers: home redaction for logs, plus filesystem-identity predicates.
 
 Startup telemetry and one-shot CLI error messages are included in the "share
 this with maintainers" guidance, so stripping usernames out of absolute paths
@@ -16,12 +16,262 @@ Two helpers, because the leak has two shapes:
 Lives in ``shared/`` (not ``cli.py``) because ``cli.py`` imports ``cli_query``;
 importing the helper back from ``cli.py`` would be a cycle. ``shared/`` peers
 import neither CLI module, so the layer stays leaf-level.
+
+:func:`same_dir`, :func:`is_inside` and :func:`resolution_chain` are the
+general filesystem-identity primitives shared by every deletion and trust guard
+in this project (``env_loading``'s ``config_collides_with_dir()`` /
+``_config_parent_is_trusted()`` and ``cli.py``'s ``_refuse_unsafe_data_dir()``).
+They live here rather than in ``env_loading`` because they are path predicates,
+not env-var/config-file loading.
 """
 
 from __future__ import annotations
 
 import os
+import stat as stat_module
+from collections import deque
 from pathlib import Path
+from typing import Final
+
+# Upper bound on symlink hops followed by :func:`resolution_chain`. Chosen to
+# sit above any legitimate layout (the kernel's own ELOOP limit is typically
+# 40 on Linux, 32 on macOS) while still terminating on a cycle.
+_MAX_SYMLINK_HOPS: Final = 64
+
+
+def is_reparse_link(path: Path) -> bool:
+    """True when ``path`` is a symbolic link *or* a Windows directory junction.
+
+    ``Path.is_symlink()`` / ``os.path.islink()`` are not sufficient on Windows:
+    a directory junction (``mklink /J``) is a reparse point the kernel follows
+    exactly like a symlink, but whose reparse tag is
+    ``IO_REPARSE_TAG_MOUNT_POINT``, not ``…_SYMLINK`` — so both link predicates
+    report ``False`` for it. Two guards in this project depend on the
+    distinction:
+
+    * :func:`resolution_chain` — a junctioned component that is not expanded is
+      walked as an ordinary directory, so the location it actually resolves to
+      never enters the chain. A config path can then enter the data directory
+      through one junction and leave through another with both walked endpoints
+      outside it, and ``refresh --reset-index`` deletes or severs the live
+      config path anyway.
+    * ``cli.py``'s ``_delete_local_index_storage`` — ``rmtree`` destroys a
+      junctioned ``PIPECAT_HUB_DATA_DIR``'s *target* through the junction; if
+      the junction is not recognised as a link the target is never recreated,
+      leaving it dangling so ``IndexStore``'s follow-up
+      ``mkdir(parents=True, exist_ok=True)`` raises ``FileExistsError``.
+
+    ``os.path.isjunction`` exists from Python 3.12; on 3.11 (this project's
+    floor) the same test is done directly against the ``lstat`` reparse tag,
+    which is what CPython's own implementation does. Both are absent on POSIX,
+    where the answer is always ``False``.
+
+    Never raises: an unstattable path is simply "not a link", matching the
+    crash-safety contract of every caller.
+    """
+    try:
+        if path.is_symlink():
+            return True
+    except (ValueError, OSError):
+        return False
+
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            return bool(isjunction(path))
+        except (ValueError, OSError):
+            return False
+
+    # Python 3.11 fallback (Windows only — st_reparse_tag does not exist
+    # elsewhere, so this degrades to False on POSIX).
+    mount_point_tag = getattr(stat_module, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    if mount_point_tag is None:
+        return False
+    try:
+        reparse_tag = getattr(os.lstat(path), "st_reparse_tag", None)
+    except (ValueError, OSError):
+        return False
+    return bool(reparse_tag == mount_point_tag)
+
+
+def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[Path]:
+    """Every filesystem location visited while resolving ``path``, root-first.
+
+    Neither of the two obvious spellings exposes this. ``os.path.abspath``
+    reports only the *lexical* path; ``os.path.realpath`` reports only the
+    *final* target. A path that reaches its file through a chain of directory
+    symlinks passes through intermediate locations that are neither — and each
+    of those is a real, deletable, replaceable directory entry:
+
+    * a hop deleted by ``rmtree`` makes the path stop resolving, even though
+      both endpoints live outside the deleted tree
+      (``config_collides_with_dir``'s concern);
+    * a hop whose *holding directory* another local account can write is
+      enough to redirect the whole lookup, even though both endpoints sit in
+      well-permissioned directories (``_config_parent_is_trusted``'s concern).
+
+    So this walks ``path`` one component at a time, expanding each symlink by a
+    single ``readlink`` (never ``realpath``, which would skip exactly the
+    intermediates being looked for) and recording every location it stands on.
+    Duplicate locations are recorded once, in first-visit order. "Symlink" here
+    means :func:`is_reparse_link`, so a Windows directory junction — which the
+    kernel follows identically but no link predicate reports — is expanded too;
+    ``os.readlink`` reads a junction's target on Windows just as it does a
+    symlink's.
+
+    Best-effort by contract: the walk is bounded by ``max_hops`` and swallows
+    per-component ``OSError``, so a cycle or an unreadable component truncates
+    the list rather than raising. Callers must therefore treat a location's
+    *presence* as evidence and its *absence* as unproven — every consumer here
+    keeps an independent endpoint check as its floor.
+
+    The seed is absolutised but deliberately **not** normalized. Anything that
+    collapses ``..`` up front (``os.path.abspath``, ``Path.resolve``) does it
+    *lexically*, before a single symlink is expanded — the opposite of what the
+    kernel does. A ``..`` that follows a directory symlink pops out of the
+    link's **target**, not out of the link's own parent, so a pre-normalized
+    seed yields a chain of locations the lookup never visits (and, worse, omits
+    the symlinks it does traverse). The loop below handles ``os.pardir`` itself,
+    at the right point in the walk, which is what makes the result agree with
+    ``os.path.realpath`` on the endpoint.
+    """
+    try:
+        raw = Path(path)
+        absolute = raw if raw.is_absolute() else Path(os.getcwd()) / raw
+    except (OSError, ValueError):
+        # `os.getcwd()` raises when the working directory has been unlinked.
+        return []
+    parts = absolute.parts
+    if not parts:
+        return []
+
+    resolved = Path(parts[0])
+    pending = deque(parts[1:])
+    visited: list[Path] = []
+    seen: set[str] = set()
+    hops = 0
+
+    while pending:
+        name = pending.popleft()
+        if not name or name == os.curdir:
+            continue
+        if name == os.pardir:
+            resolved = resolved.parent
+            continue
+
+        current = resolved / name
+        marker = str(current)
+        if marker not in seen:
+            seen.add(marker)
+            visited.append(current)
+
+        # `is_reparse_link`, not `os.path.islink`: on Windows a directory
+        # junction is followed by the kernel exactly like a symlink but is not
+        # reported by either link predicate, so gating expansion on `islink`
+        # walked the junction as an ordinary directory and never visited what
+        # it resolves to — silently voiding both guards built on this chain.
+        if not is_reparse_link(current):
+            resolved = current
+            continue
+
+        hops += 1
+        if hops > max_hops:
+            break
+        try:
+            target = Path(os.readlink(current))
+        except (OSError, ValueError, NotImplementedError):
+            resolved = current
+            continue
+        if target.is_absolute():
+            # Fully-qualified target: restart from *its* anchor, which on
+            # Windows may be a different drive than the one the walk started on.
+            resolved = Path(target.anchor)
+            pending.extendleft(reversed(target.parts[1:]))
+        elif target.anchor:
+            # Windows-only third case: an anchor that is not a full absolute
+            # path — root-relative (`\foo`, anchor `\`, no drive) or
+            # drive-relative (`C:rel`, anchor `C:`, no root). Testing
+            # `target.anchor` alone treated both as absolute and dropped the
+            # originating drive. Joining against `resolved` is what supplies
+            # the missing half: pathlib takes the drive from the left operand
+            # for a root-relative target, and treats a same-drive
+            # drive-relative target as relative to it.
+            combined = resolved / target
+            resolved = Path(combined.anchor)
+            pending.extendleft(reversed(combined.parts[1:]))
+        else:
+            # Relative target: resolves against the link's own directory, which
+            # is `resolved` — deliberately left untouched.
+            pending.extendleft(reversed(target.parts))
+
+    return visited
+
+
+def same_dir(path: Path, other_stat: os.stat_result) -> bool:
+    """True when ``path`` is the same on-disk directory as ``other_stat``.
+
+    The second parameter is named ``other_stat``, not ``dir_stat``: the
+    relation is symmetric (``samestat`` compares ``(st_dev, st_ino)`` both
+    ways), and callers legitimately pass either side's stat, so a
+    directionality-implying name misdescribes the contract.
+
+    Public because it is the single filesystem-identity primitive shared by
+    every deletion guard in this project: ``env_loading``'s
+    ``config_collides_with_dir()`` and ``cli.py``'s
+    ``_refuse_unsafe_data_dir()``. Both must compare ``(st_dev, st_ino)``
+    rather than path strings, because ``Path.resolve()`` preserves the
+    caller's casing on case-insensitive volumes (macOS APFS, Windows NTFS) —
+    so ``/Users/Varun`` and ``/Users/varun`` compare unequal while naming one
+    directory that ``shutil.rmtree`` would happily delete.
+    """
+    try:
+        return os.path.samestat(path.stat(), other_stat)
+    except (OSError, ValueError):
+        return False
+
+
+def is_inside(path: Path, directory: Path) -> bool:
+    """True when ``path`` lives under ``directory``.
+
+    Two checks, because a path-string comparison alone is not sound:
+
+    1. Lexical containment (``is_relative_to``) — works for paths that don't
+       exist yet, and is the common case.
+    2. Filesystem identity — compare ``(st_dev, st_ino)`` of ``path`` *and*
+       each of its ancestors against ``directory``'s. This is what catches a
+       spelling of ``directory`` that names the *same* directory without
+       matching character-for-character: a differently-cased spelling on a
+       case-insensitive volume (macOS APFS, Windows NTFS), where
+       ``Path.resolve()`` preserves the caller's casing so
+       ``~/.CONFIG/...`` and ``~/.config/...`` compare unequal while being one
+       directory on disk; or a path reached through a symlinked ancestor.
+       Skipped when either side doesn't exist (nothing to stat) — which is
+       safe, because a directory that doesn't exist cannot be ``rmtree``'d.
+
+    ``path`` itself is tested before its ancestors because ``path.parents``
+    never yields ``path``, while check 1's ``is_relative_to`` *is* reflexive —
+    so without it the two checks disagreed about the ``path == directory``
+    case, and only for differently-spelled equality. A ``resolution_chain``
+    location that *is* the candidate directory under a case-insensitive-volume
+    alias (or any other same-inode spelling) matched neither check, so
+    ``config_collides_with_dir()`` reported no collision for a location
+    ``rmtree(candidate_dir)`` removes outright. "Inside" here means "destroyed
+    by deleting ``directory``", and the directory itself qualifies.
+
+    ``directory`` is stat'd here rather than accepted pre-stat'd from the
+    caller. An earlier revision took a ``dir_stat`` cache for callers testing
+    several paths against one directory; it saved a handful of syscalls on a
+    once-per-invocation path and, in exchange, gave this deletion guard a
+    silent fail-open mode whenever a caller's cached stat drifted from the
+    ``directory`` argument beside it. Not a trade worth keeping.
+    """
+    if path.is_relative_to(directory):
+        return True
+    try:
+        dir_stat = directory.stat()
+    except (OSError, ValueError):
+        return False
+    return any(same_dir(location, dir_stat) for location in (path, *path.parents))
 
 
 def redact_home(path: Path | str) -> str:

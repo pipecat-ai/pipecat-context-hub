@@ -1,0 +1,61 @@
+# Example machine-global config for pipecat-context-hub.
+#
+# Copy to ~/.config/pipecat-context-hub/config.toml and uncomment the keys
+# you want. Only PIPECAT_HUB_* keys are honored; any other key is skipped
+# with a warning. Precedence (highest to lowest): real environment
+# variables > cwd .env > this file > HubConfig field defaults — so a
+# project-local .env still overrides anything set here.
+#
+# This file only accepts the machine-global-config subset of PIPECAT_HUB_*
+# vars. The refresh command's prune/deletion opt-in is invocation-scoped
+# (set as a real env var per invocation, not here) and is deliberately not
+# among the keys below — see docs/README.md for why. See docs/README.md's
+# Environment Variables table for the authoritative descriptions (this
+# file's key set is kept in parity with that table by a test).
+#
+# Permissions: this file's contents are promoted into the process
+# environment, so keep it writable only by you — `chmod 600
+# ~/.config/pipecat-context-hub/config.toml`. A world-writable file, or one
+# owned by another user, is ignored with a warning; a group-writable one is
+# loaded but warned about.
+
+# Index, clones, and metadata location. Consumers of the metadata contract
+# must honour it.
+# PIPECAT_HUB_DATA_DIR = "~/.pipecat-context-hub"
+
+# Repo slugs to ingest alongside defaults, as a native TOML array.
+# PIPECAT_HUB_EXTRA_REPOS = ["org/repo-a", "org/repo-b"]
+
+# Pin the framework repo to a specific git tag.
+# PIPECAT_HUB_FRAMEWORK_VERSION = "v0.0.96"
+
+# Repo slugs to skip entirely, as a native TOML array.
+# PIPECAT_HUB_TAINTED_REPOS = ["org/repo-a"]
+
+# "org/repo@ref" entries to skip, as a native TOML array.
+# PIPECAT_HUB_TAINTED_REFS = ["pipecat-ai/pipecat@v0.0.9"]
+
+# Index age (days) after which tool responses carry an index_staleness
+# field with a refresh hint. 0 disables.
+# PIPECAT_HUB_STALE_AFTER_DAYS = 7
+
+# Set to false to disable cross-encoder reranking.
+# PIPECAT_HUB_RERANKER_ENABLED = true
+
+# Swap reranker model. Allowed: cross-encoder/ms-marco-MiniLM-L-6-v2 (default),
+# cross-encoder/ms-marco-MiniLM-L-12-v2, cross-encoder/ms-marco-TinyBERT-L-2-v2.
+# PIPECAT_HUB_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# Idle backstop: exit `serve` if no MCP request arrives for this many
+# seconds. Auto-disabled when serve has reliable client-death detection;
+# set an explicit value (incl. 0) to override the auto-decision.
+# PIPECAT_HUB_IDLE_TIMEOUT_SECS = 1800
+
+# Hidden tuning knob (primarily for tests): poll interval (seconds) for the
+# parent-death watchdog. Floored at 0.1s when non-zero; 0 disables it.
+# PIPECAT_HUB_PARENT_WATCH_INTERVAL = 2.0
+
+# Pre-warm embedding + cross-encoder at `serve` boot so the first MCP query
+# doesn't pay the cold-start cost. Set to false to skip (faster boot,
+# slower first query).
+# PIPECAT_HUB_WARMUP = true

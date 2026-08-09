@@ -31,6 +31,14 @@ Installed alongside `pipecat-ai[cli]`, every command is also reachable as
 Use `refresh --force --reset-index` when the persisted local Chroma index is
 unhealthy and needs a clean rebuild.
 
+`refresh`'s repo-cleanup pass warns instead of deleting by default: a repo
+absent from *this invocation's* config (but possibly configured elsewhere —
+e.g. `config.toml` shadowed by a narrower project `.env`) has its indexed
+records left in place, with a warning naming the repo and record count. Pass
+`--prune`, or set `PIPECAT_HUB_PRUNE=1` (invocation-scoped only — not
+readable from `config.toml`), to actually delete that data. Tainted repos
+(`PIPECAT_HUB_TAINTED_REPOS`) are always cleaned up regardless of `--prune`.
+
 Every MCP tool is also a **one-shot CLI subcommand** (same handlers, JSON on
 stdout, logs on stderr — see `cli_query.py`):
 
@@ -60,6 +68,19 @@ just dashboard-refresh  # refresh index + rebuild all dashboard data
 just dashboard-build    # rebuild dashboard data without re-indexing
 just dashboard-serve    # serve dashboard on localhost:8765
 ```
+
+## Config Sourcing
+
+`PIPECAT_HUB_*` settings resolve in three layers, first-writer-wins: real env
+vars > cwd `.env` > `~/.config/pipecat-context-hub/config.toml` (machine-global,
+optional, see `config.toml.example`) > `HubConfig` field defaults. Every entry
+point — `cli.py:main()`, the dashboard scripts, `scripts/smoke_check_removals.py`
+— calls `shared/env_loading.py`'s `load_env_layers()` (which runs
+`load_cwd_dotenv()` then `load_global_config()`) before constructing config, so
+they all resolve identically. Don't hand-replicate the two calls in a new entry
+point — a source-parity test (`tests/unit/test_config.py`) fails if you do. Full precedence
+details and the Windows lookup path: `docs/README.md`'s "Config precedence"
+subsection under Environment Variables.
 
 ## MCP Tools — Multi-Concept Queries
 
@@ -110,11 +131,12 @@ src/pipecat_context_hub/
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
+│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence
 │   ├── interfaces.py         # IndexWriter/Reader, Retriever, Ingester
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision
 │   ├── model_loading.py      # quiet_model_loading — offline-first HF env defaults (serve + CLI)
-│   ├── paths.py              # redact_home / redact_home_in_text — home-path redaction for logs
+│   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside (filesystem-identity predicates shared by every deletion guard)
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
 │   ├── support_links.py      # RETRIEVAL_QUALITY_ISSUE_URL / BUG_REPORT_ISSUE_URL — single source for MCP + CLI report-hint URLs
 │   └── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval

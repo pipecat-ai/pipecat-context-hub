@@ -16,21 +16,30 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
+from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
-from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+from pipecat_context_hub.shared.paths import (
+    is_reparse_link,
+    redact_home,
+    redact_home_in_text,
+    same_dir,
+)
 from pipecat_context_hub.shared.support_links import bug_report_hint
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pipecat_context_hub.services.index.store import IndexStore
 
 # Back-compat alias: tests/unit/test_cli.py imports the underscored name and
 # the banner call sites below reference it. The redaction helper itself now
 # lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
 # import cycle); this re-export keeps that suite green and the call sites stable.
 _redact_home = redact_home
-
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
@@ -61,6 +70,46 @@ def _warmup_enabled(env: dict[str, str] | None = None) -> bool:
     return source.get("PIPECAT_HUB_WARMUP", "1").strip() not in _WARMUP_DISABLED_VALUES
 
 
+# Env-var values that turn on a *default-off* opt-in — shared by
+# PIPECAT_HUB_PRUNE (refresh's repo-deletion cleanup) and
+# PIPECAT_HUB_DEBUG_PROBE (serve's probe file). Named for the shape rather
+# than for the first consumer, since it now has two.
+#
+# Unlike _WARMUP_DISABLED_VALUES above, membership *enables*: pruning deletes
+# previously-indexed data, so an unrecognized value (typo, unexpected casing)
+# must resolve to False, not True.
+_OPT_IN_ENABLED_VALUES = frozenset({"1", "true", "True", "TRUE", "yes", "Yes", "YES"})
+
+
+def _prune_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True when refresh should delete unconfigured-this-run repo data.
+
+    Reads ``env_loading.PRUNE_ENV_VAR`` (``PIPECAT_HUB_PRUNE``) from ``env``
+    (defaults to ``os.environ``). Deliberately not wired through Click's
+    ``envvar=`` for the ``--prune`` option: Click's own boolean parser would
+    reject a garbage value with a UsageError before this function's
+    safe-default handling could apply. Enabled only on an exact match
+    (case-exact, after stripping whitespace) against
+    ``_OPT_IN_ENABLED_VALUES``; any other value — including unset, "0", or a
+    typo like "tRuE" — resolves to False (no deletion).
+    """
+    source = env if env is not None else os.environ
+    return source.get(env_loading.PRUNE_ENV_VAR, "").strip() in _OPT_IN_ENABLED_VALUES
+
+
+def _debug_probe_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True when `serve` should write the opt-in debug probe file.
+
+    Shares ``_OPT_IN_ENABLED_VALUES`` with :func:`_prune_enabled` rather than
+    testing ``== "1"`` inline: both are default-off opt-ins, and there is no
+    reason for ``PIPECAT_HUB_DEBUG_PROBE=true`` to silently do nothing while
+    ``PIPECAT_HUB_PRUNE=true`` works. Same safe default — an unrecognized
+    value resolves to False.
+    """
+    source = env if env is not None else os.environ
+    return source.get(env_loading.DEBUG_PROBE_ENV_VAR, "").strip() in _OPT_IN_ENABLED_VALUES
+
+
 def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None:
     """Eagerly load retrieval models so the first MCP query is warm.
 
@@ -89,45 +138,6 @@ def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None
             _module_logger.exception("Cross-encoder pre-warm failed; falling back to lazy load")
 
 
-def _load_dotenv() -> None:
-    """Load ``.env`` file from the current directory if it exists.
-
-    Only sets variables that are not already in the environment so that
-    explicit env vars always take precedence.  Supports quoted values
-    and inline comments::
-
-        KEY="value"          # ok
-        KEY='value'          # ok
-        KEY=value            # ok
-        KEY="value" # note   # inline comment stripped
-        KEY=value # note     # inline comment stripped
-    """
-    env_path = Path.cwd() / ".env"
-    if not env_path.is_file():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        if not key:
-            continue
-        value = value.strip()
-        # Quoted value: extract content between matching quotes.
-        if value and value[0] in ('"', "'"):
-            quote = value[0]
-            end = value.find(quote, 1)
-            value = value[1:end] if end != -1 else value[1:]
-        else:
-            # Unquoted: strip inline comments (# preceded by whitespace).
-            idx = value.find(" #")
-            if idx != -1:
-                value = value[:idx].rstrip()
-        if key not in os.environ:
-            os.environ[key] = value
-
-
 def _configure_logging(level: str) -> None:
     """Set up basic logging to stderr (stdout is used by MCP stdio transport)."""
     logging.basicConfig(
@@ -137,9 +147,298 @@ def _configure_logging(level: str) -> None:
     )
 
 
+def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
+    """Raise unless ``resolved_data_dir`` is a plausible index directory.
+
+    Deliberately a *floor*, not a whitelist: it refuses the three targets
+    whose deletion is never a legitimate ``--reset-index`` — a filesystem
+    root, the home directory itself, and any ancestor of home (``/Users``,
+    ``/home``). A depth threshold (``len(parts) < 3``) was considered and
+    rejected: it would refuse a perfectly reasonable containerised
+    ``PIPECAT_HUB_DATA_DIR=/data``.
+
+    Comparison is by *filesystem identity* (``shared.paths.same_dir``, i.e.
+    ``(st_dev, st_ino)``), not ``==``, for the same reason
+    ``config_collides_with_dir()`` uses it: ``Path.resolve()`` preserves the
+    caller's casing on case-insensitive volumes, so
+    ``PIPECAT_HUB_DATA_DIR=/Users/Varun`` would pass a string comparison
+    against a real home of ``/Users/varun`` and reach ``shutil.rmtree``. The
+    string comparison is kept as well, since it still catches a
+    not-yet-existing path that cannot be stat'd.
+    """
+    unsafe: list[Path] = [Path(resolved_data_dir.anchor or resolved_data_dir.root)]
+    try:
+        home = Path.home().resolve(strict=False)
+    except (RuntimeError, OSError):
+        home = None
+    if home is not None:
+        unsafe.append(home)
+        unsafe.extend(home.parents)
+
+    try:
+        target_stat: os.stat_result | None = resolved_data_dir.stat()
+    except (OSError, ValueError):
+        target_stat = None
+
+    def _is_unsafe(candidate: Path) -> bool:
+        if resolved_data_dir == candidate:
+            return True
+        if target_stat is None:
+            return False
+        return same_dir(candidate, target_stat)
+
+    if any(_is_unsafe(candidate) for candidate in unsafe):
+        raise click.ClickException(
+            f"Refusing to delete {redact_home(data_dir)}: it is a filesystem root or "
+            "home directory, not an index directory. Point PIPECAT_HUB_DATA_DIR at a "
+            "dedicated directory before retrying --reset-index."
+        )
+
+
 def _delete_local_index_storage(data_dir: Path) -> None:
-    """Delete the persisted local index directory for a clean rebuild."""
-    shutil.rmtree(data_dir, ignore_errors=True)
+    """Delete the persisted local index directory for a clean rebuild.
+
+    Defense in depth against a colliding ``PIPECAT_HUB_DATA_DIR`` supplied by
+    a real environment variable or cwd ``.env`` (the narrower case of a
+    colliding value originating in ``config.toml`` itself is handled by
+    ``load_global_config()``'s own skip-and-warn above): if the active
+    config file (per ``resolve_global_config_path()``) lives or resolves
+    inside ``data_dir`` and actually exists, abort before ``shutil.rmtree``
+    rather than delete the operator's machine-global config out from under
+    them. A stale/deleted or never-created config path never blocks a real
+    ``--reset-index`` — only an existing file in effect is worth protecting.
+
+    The same protection covers the *project-local* config source, the cwd
+    ``.env`` (``env_loading.dotenv_collides_with_dir``, sharing one predicate
+    with the ``config.toml`` check above). Protecting only ``config.toml`` left
+    the more natural spelling of the same hazard wide open: a project ``.env``
+    saying ``PIPECAT_HUB_DATA_DIR=.`` makes the data dir the working tree that
+    holds that very ``.env``, and the ``config.toml`` check cannot fire because
+    the machine-global file lives elsewhere.
+
+    A second, unconditional floor guards the case the config-collision check
+    structurally cannot: an operator who has never created a ``config.toml``
+    (i.e. every user before this branch) gets no collision hit at all, so a
+    ``PIPECAT_HUB_DATA_DIR`` of ``/`` or ``$HOME`` would otherwise reach
+    ``shutil.rmtree`` unguarded. Refuse a filesystem root, the home directory
+    itself, and any ancestor of home — see ``_refuse_unsafe_data_dir()`` for
+    the exact contract (notably: no depth threshold, which was considered and
+    rejected).
+
+    Both guards, and the deletion itself, operate on the *normalized* path, so
+    what was validated is exactly what is removed.
+
+    One post-deletion repair: when ``data_dir`` is itself a symlink to a
+    directory — or, on Windows, a directory junction, which ``resolve()``
+    follows identically but ``is_symlink()`` does not report (see
+    :func:`~pipecat_context_hub.shared.paths.is_reparse_link`) —
+    ``rmtree(resolved_data_dir)`` deletes the link's *target* through the link,
+    leaving the link dangling. ``IndexStore``'s subsequent
+    ``data_dir.mkdir(parents=True, exist_ok=True)`` then raises
+    ``FileExistsError`` — ``exist_ok`` only suppresses when the existing path
+    ``is_dir()``, which a dangling symlink is not — so the reset would abort
+    the very rebuild it exists to enable. Recreating the resolved directory
+    restores the link. Deliberately scoped to the symlink case: for an
+    ordinary directory the contract is "gone after reset", which
+    ``TestDataDirSafetyFloor`` pins.
+    """
+    try:
+        expanded_data_dir = data_dir.expanduser()
+    except (ValueError, OSError, RuntimeError):
+        expanded_data_dir = data_dir
+    try:
+        resolved_data_dir = expanded_data_dir.resolve(strict=False)
+    except (ValueError, OSError, RuntimeError):
+        # Same crash-safety contract as env_loading.config_collides_with_dir:
+        # `resolve()` raises RuntimeError for a symlink loop on Python <=3.12.
+        resolved_data_dir = Path(os.path.abspath(data_dir))
+    data_dir_was_symlink = is_reparse_link(expanded_data_dir)
+    _refuse_unsafe_data_dir(data_dir, resolved_data_dir)
+    colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
+    if colliding_config_path is not None:
+        raise click.ClickException(
+            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
+            f"config.toml ({redact_home(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
+            "or the config file so they don't collide, then retry --reset-index."
+        )
+    colliding_dotenv_path = env_loading.dotenv_collides_with_dir(resolved_data_dir)
+    if colliding_dotenv_path is not None:
+        raise click.ClickException(
+            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
+            f"project .env ({redact_home(colliding_dotenv_path)}). Point PIPECAT_HUB_DATA_DIR "
+            "at a directory outside your project (or run from elsewhere), then retry "
+            "--reset-index."
+        )
+    shutil.rmtree(resolved_data_dir, ignore_errors=True)
+    if data_dir_was_symlink:
+        # See the docstring: the symlink survives, its target does not. Put
+        # the target back so `PIPECAT_HUB_DATA_DIR=<symlink>` still resolves
+        # to a directory for the rebuild that immediately follows.
+        try:
+            resolved_data_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # Never fatal: the rebuild's own mkdir gets the next attempt, and
+            # a reset that deleted successfully has already done its job.
+            _module_logger.warning(
+                "Could not recreate %s after reset (%s); the symlinked data dir may "
+                "need to be recreated manually",
+                redact_home(resolved_data_dir),
+                exc,
+            )
+
+
+async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> None:
+    """Remove every trace of ``slug`` from the index: records + bookkeeping.
+
+    Shared by both deletion branches of ``refresh``'s cleanup pass (tainted
+    repo, and ``--prune``-authorized removal of an unconfigured one) so the
+    sequence — including the framework-repo special case, whose version
+    metadata describes records that no longer exist once the repo is gone —
+    cannot drift between them.
+    """
+    from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+    await index_store.delete_by_repo(slug)
+    index_store.delete_metadata(meta_key)
+    if slug == _FRAMEWORK_REPO:
+        # No framework records left to describe.
+        index_store.delete_metadata("indexed_framework_version")
+        index_store.delete_metadata("indexed_framework_commits_ahead")
+
+
+def _log_serve_cwd() -> None:
+    """Log the cwd and PIPECAT_HUB_* key names this invocation actually saw.
+
+    Permanent diagnostic (not removed after investigation): confirms, at a
+    glance, what config provenance a globally-installed MCP server had, whose
+    cwd/env may differ from an operator's interactive shell. Key *names* only,
+    never values (``PIPECAT_HUB_EXTRA_REPOS`` can be ~70 repos), and the cwd is
+    home-redacted through the same helper as the startup banner — these stderr
+    lines are exactly what operators paste into the bug-report flow
+    ``shared/support_links.py`` promotes, and an absolute cwd carries the OS
+    username and often a client or project name.
+    """
+    # `Path.cwd()` is not infallible: it raises FileNotFoundError when the
+    # process's working directory has been unlinked (a real case for a
+    # long-lived MCP server whose launching project directory is deleted or
+    # moved), and OSError/RuntimeError on other getcwd failures. This
+    # diagnostic is *mandatory* on every serve boot, so it must be at least as
+    # crash-safe as its opt-in sibling `_write_serve_debug_probe` — which
+    # already wraps the identical call precisely because a diagnostic must
+    # never take down `serve`.
+    try:
+        cwd = redact_home(Path.cwd())
+    except Exception:
+        cwd = "<unavailable>"
+    _module_logger.info(
+        "serve cwd=%s env_keys=%s",
+        cwd,
+        sorted(k for k in os.environ if k.startswith("PIPECAT_HUB_")),
+    )
+
+
+def _write_serve_debug_probe() -> None:
+    """Write cwd/env-key evidence to a temp file, opt-in via PIPECAT_HUB_DEBUG_PROBE=1.
+
+    Secondary observable for Phase 0's MCP-cwd verification, for use only if
+    the MCP client's stderr/log surface can't be located. Never fires unless
+    explicitly requested — it is not a substitute for the permanent
+    ``logger.info`` line above, just a fallback in case that line's output
+    isn't reachable. Failures are logged and swallowed; a debug probe must
+    never crash `serve`.
+    """
+    try:
+        home = Path.home()
+        probe_dir = home / ".cache" / "pipecat-context-hub"
+        probe_path = probe_dir / "serve-debug.log"
+        # O_NOFOLLOW below protects the *leaf* only. `mkdir(parents=True)`
+        # follows a symlinked (or, on Windows, junctioned) intermediate
+        # component without complaint, so a `~/.cache` — or
+        # `~/.cache/pipecat-context-hub` — planted as a link by another local
+        # account would have this probe create its directory and append its
+        # diagnostics inside an attacker-chosen tree, with the leaf-level
+        # O_NOFOLLOW reporting success. Refuse any linked component *under*
+        # home instead: home itself is legitimately a link on plenty of setups
+        # (`/home/u` -> `/mnt/…`), and it is the account's own directory, so it
+        # is the trust root here rather than something to check.
+        #
+        # This is a pre-flight check, not an atomic one — a link planted
+        # between the check and the mkdir still wins. That race needs write
+        # access to a directory under the server user's own home, and this is
+        # an opt-in diagnostic with a permanent `logger.info` equivalent, so
+        # closing the common pre-planted case is the proportionate fix.
+        for ancestor in (probe_dir.parent, probe_dir):
+            if is_reparse_link(ancestor):
+                _module_logger.warning(
+                    "PIPECAT_HUB_DEBUG_PROBE=1: skipping debug probe — %s is a symlink or "
+                    "junction, so writing through it could land the probe in a directory "
+                    "chosen by another account. Use the `serve cwd=… env_keys=…` log line "
+                    "instead.",
+                    redact_home(ancestor),
+                )
+                return
+        # 0o700, not mkdir's default 0o777&~umask: this directory is created
+        # by a *server* process and holds a log only its owner should read or
+        # replace. exist_ok=True means an already-present directory keeps its
+        # mode, which is fine — the point is not to create a world-traversable
+        # one here.
+        probe_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # O_NOFOLLOW + O_CREAT is what makes the append safe: `open("a")`
+        # follows symlinks, so anyone able to write in this directory could
+        # pre-create the log as a symlink and have `serve` append to an
+        # arbitrary file the server user can write. With O_NOFOLLOW the open
+        # fails (ELOOP) instead, and the failure is logged and swallowed like
+        # every other probe failure. 0o600 keeps the created file private.
+        #
+        # Where the flag does not exist (notably Windows), the previous
+        # `getattr(os, "O_NOFOLLOW", 0)` spelling silently OR'd in a no-op and
+        # opened the path anyway — i.e. the one platform without the
+        # protection was the one that skipped it. Refuse instead: this is an
+        # optional diagnostic with a permanent `logger.info` equivalent, so
+        # not writing it costs nothing next to appending into an
+        # attacker-chosen file.
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            _module_logger.warning(
+                "PIPECAT_HUB_DEBUG_PROBE=1: skipping debug probe — this platform has no "
+                "O_NOFOLLOW, so the append at %s could follow a symlink planted by "
+                "another account. Use the `serve cwd=… env_keys=…` log line instead.",
+                redact_home(probe_path),
+            )
+            return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | nofollow
+        fd = os.open(probe_path, flags, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(
+                f"{datetime.now(UTC).isoformat()} serve cwd={redact_home(Path.cwd())} "
+                f"env_keys={sorted(k for k in os.environ if k.startswith('PIPECAT_HUB_'))}\n"
+            )
+        _module_logger.info(
+            "PIPECAT_HUB_DEBUG_PROBE=1: wrote serve debug probe to %s",
+            redact_home(probe_path),
+        )
+    except Exception as exc:
+        # Path.home() raises RuntimeError (not OSError) when the home
+        # directory can't be determined — broadened from except OSError to
+        # actually cover that case, matching shared/paths.py's redact_home,
+        # which wraps the same call for the same reason. A debug probe must
+        # never crash serve, regardless of which exception it hits.
+        #
+        # A redacted single-line warning, not `logger.exception`: the traceback
+        # renders source lines and the exception's own `__str__`, and OSError's
+        # `__str__` appends the absolute filename it failed on — putting the
+        # operator's home directory, and with it the OS username, into exactly
+        # the stderr lines `shared/support_links.py`'s bug-report flow asks
+        # them to paste. The success path above and `_log_serve_cwd` both
+        # already redact; this path was the one hole. The exception type is
+        # named explicitly since the traceback no longer supplies it, and the
+        # message goes through `redact_home_in_text` (not `redact_home`) because
+        # the path is embedded mid-string rather than being the whole argument.
+        _module_logger.warning(
+            "PIPECAT_HUB_DEBUG_PROBE=1: failed to write serve debug probe (%s: %s)",
+            type(exc).__name__,
+            redact_home_in_text(str(exc)),
+        )
 
 
 @click.group(invoke_without_command=True)
@@ -155,8 +454,13 @@ def main(ctx: click.Context, log_level: str) -> None:
     0 = success, 1 = invalid input, 2 = index missing or empty — build it
     once with `pipecat-context-hub refresh` (first run takes minutes).
     """
-    _load_dotenv()
+    # Loader calls run *after* _configure_logging (deliberately inverting the
+    # prior order): no .env/config.toml-settable key feeds logging setup
+    # (it reads only the --log-level CLI option), so nothing is lost by
+    # moving both later, and malformed-config warnings are emitted through
+    # configured logging instead of Python's last-resort handler.
     _configure_logging(log_level)
+    env_loading.load_env_layers()
     ctx.ensure_object(dict)
     config = HubConfig()
     ctx.obj["config"] = config.model_copy(
@@ -248,6 +552,9 @@ def serve(ctx: click.Context) -> None:
     config: HubConfig = ctx.obj["config"]
     logger = logging.getLogger(__name__)
     logger.info("Starting server with transport=%s", config.server.transport)
+    _log_serve_cwd()
+    if _debug_probe_enabled():
+        _write_serve_debug_probe()
 
     # Resolve the client-death watch plan now, before the slow index +
     # model startup below. A client that dies during cold-start would
@@ -467,9 +774,20 @@ def start(ctx: click.Context) -> None:
     "(e.g. 'v0.0.96'). Source chunks will come from that version instead of HEAD. "
     "Can also be set via PIPECAT_HUB_FRAMEWORK_VERSION env var.",
 )
+@click.option(
+    "--prune",
+    is_flag=True,
+    help="Delete previously-indexed data for repos not configured in this run. "
+    "Without this flag, refresh only warns and leaves those records in place. "
+    "Can also be enabled via PIPECAT_HUB_PRUNE=1.",
+)
 @click.pass_context
 def refresh(
-    ctx: click.Context, force: bool, reset_index: bool, framework_version: str | None
+    ctx: click.Context,
+    force: bool,
+    reset_index: bool,
+    framework_version: str | None,
+    prune: bool,
 ) -> None:
     """Rebuild the index, skipping unchanged sources when possible.
 
@@ -502,11 +820,13 @@ def refresh(
         config = config.model_copy(update={"framework_version": framework_version})
 
     fw_version = config.effective_framework_version
+    prune_enabled = prune or _prune_enabled()
     logger.info(
-        "Starting index refresh (force=%s reset_index=%s framework_version=%s)",
+        "Starting index refresh (force=%s reset_index=%s framework_version=%s prune=%s)",
         force,
         reset_index,
         fw_version,
+        prune_enabled,
     )
     start = time.monotonic()
 
@@ -562,8 +882,13 @@ def refresh(
     # the framework repo was not cloned (unconfigured, tainted, or clone failed).
     framework_checkout: Path | None = None
 
+    # Count of repos left un-pruned this run (not configured here, but not
+    # deleted because --prune/PIPECAT_HUB_PRUNE wasn't set). Read later by
+    # the summary pass.
+    unpruned_repo_count = 0
+
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, framework_checkout
+        nonlocal total_upserted, all_errors, framework_checkout, unpruned_repo_count
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -630,15 +955,52 @@ def refresh(
                 slug = meta_key[len("repo:") : -len(":commit_sha")]
                 if slug not in configured:
                     if slug in tainted_repos:
+                        # Explicit exclusion — always cleaned up, regardless
+                        # of --prune.
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
-                    else:
+                        await _delete_repo_index_data(index_store, slug, meta_key)
+                    elif prune_enabled:
                         logger.info("Repo %s no longer configured, cleaning up", slug)
-                    await index_store.delete_by_repo(slug)
-                    index_store.delete_metadata(meta_key)
-                    if slug == _FRAMEWORK_REPO:
-                        # No framework records left to describe.
-                        index_store.delete_metadata("indexed_framework_version")
-                        index_store.delete_metadata("indexed_framework_commits_ahead")
+                        await _delete_repo_index_data(index_store, slug, meta_key)
+                    elif pre_counts.get(slug, 0) > 0:
+                        # Implicit absence — not seen from this invocation's
+                        # env layering, but not necessarily unconfigured
+                        # elsewhere. Leave both records and metadata in place
+                        # (deleting metadata here would orphan this repo from
+                        # future cleanup passes, since the loop keys off
+                        # all_meta) so a later --prune can still find and
+                        # remove them.
+                        #
+                        # Gated on there actually being records: a repo whose
+                        # only remnant is the `repo:*:commit_sha` metadata key
+                        # has no indexed data to protect, so warning "leaving 0
+                        # indexed record(s) in place — pass --prune to remove"
+                        # advertises a destructive flag whose sole effect would
+                        # be dropping a stale key. Nothing is at risk, so say
+                        # nothing.
+                        unpruned_repo_count += 1
+                        logger.warning(
+                            "Repo %s not configured in this run; leaving %d indexed "
+                            "record(s) in place — pass --prune to remove",
+                            slug,
+                            pre_counts.get(slug, 0),
+                        )
+                    else:
+                        # Zero *FTS* records — which is not the same as zero
+                        # records. `get_counts_by_repo()` reads SQLite only, so
+                        # a divergent index (an interrupted delete leaving
+                        # vector-only rows behind) reports 0 here while those
+                        # rows still surface through the hybrid retriever.
+                        # Staying silent entirely left that unexplainable, so
+                        # the trace is kept — at INFO, and without the counter
+                        # or the "Skipped pruning" summary line, because
+                        # nothing is *provably* at risk and the warning above
+                        # would be advertising a destructive flag on a guess.
+                        logger.info(
+                            "Repo %s not configured in this run; no indexed records found "
+                            "(stale bookkeeping only — pass --prune to drop it)",
+                            slug,
+                        )
 
         framework_slug = _FRAMEWORK_REPO
         for repo_slug in config.sources.effective_repos:
@@ -699,7 +1061,24 @@ def refresh(
                 frozen_sha_repos.add(repo_slug)
                 continue
 
-            if not force and stored_sha == commit_sha and repo_slug not in github.recovered_repos:
+            # The stored SHA is bookkeeping, not proof that the records it
+            # describes are still in the index — the two diverge whenever a
+            # repo's records are removed without its metadata key going with
+            # them. A repo left unconfigured for one invocation keeps its key
+            # (the no-prune default deliberately preserves it so a later
+            # `--prune` can still find the repo), and an interrupted delete can
+            # strip records the same way. Skipping on the SHA alone then left
+            # the repo silently absent from the index — indefinitely, since
+            # every subsequent run took the same shortcut — until someone
+            # thought to run `--force`. So the shortcut requires both halves:
+            # the SHA is unchanged *and* records for it actually exist.
+            indexed_records = pre_counts.get(repo_slug, 0)
+            if (
+                not force
+                and stored_sha == commit_sha
+                and indexed_records > 0
+                and repo_slug not in github.recovered_repos
+            ):
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
                     repo_slug,
@@ -717,6 +1096,13 @@ def refresh(
                         "Repo %s SHA unchanged but local clone was recovered "
                         "from corrupt state — forcing re-ingest",
                         repo_slug,
+                    )
+                elif not force and stored_sha == commit_sha and indexed_records == 0:
+                    logger.warning(
+                        "Repo %s SHA unchanged (sha=%s…) but no indexed records "
+                        "found — re-ingesting",
+                        repo_slug,
+                        commit_sha[:8],
                     )
                 changed_repos.append(repo_slug)
 
@@ -904,6 +1290,7 @@ def refresh(
             len(all_errors),
             duration,
             recovered_repos=sorted(github.recovered_repos),
+            unpruned_repo_count=unpruned_repo_count,
         )
     finally:
         index_store.close()
@@ -953,6 +1340,15 @@ def _safe_placeholder() -> str:
     return "-"
 
 
+def _echo_prune_skip_notice(unpruned_repo_count: int) -> None:
+    """Print the 'Skipped pruning' line, shared by both summary branches below."""
+    if unpruned_repo_count:
+        click.echo(
+            f"Skipped pruning: {unpruned_repo_count} repo(s) not in this run's config "
+            "(use --prune to remove)"
+        )
+
+
 def _print_refresh_summary(
     source_status: dict[str, dict[str, str | int]],
     total_upserted: int,
@@ -960,9 +1356,14 @@ def _print_refresh_summary(
     duration: float,
     *,
     recovered_repos: list[str] | None = None,
+    unpruned_repo_count: int = 0,
 ) -> None:
     """Print a summary table after refresh."""
     if not source_status:
+        # Notice before the completion line, matching the table branch below —
+        # a warning whose whole point is to be noticed shouldn't sit after the
+        # line that reads as "done".
+        _echo_prune_skip_notice(unpruned_repo_count)
         click.echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
         return
 
@@ -1024,6 +1425,7 @@ def _print_refresh_summary(
         click.echo(
             f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
         )
+    _echo_prune_skip_notice(unpruned_repo_count)
     click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 
 

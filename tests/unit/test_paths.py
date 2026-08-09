@@ -1,11 +1,157 @@
-"""Unit tests for shared/paths.py home-redaction helpers."""
+"""Unit tests for shared/paths.py home-redaction helpers and path primitives."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
-from pipecat_context_hub.shared.paths import redact_home_in_text
+import pytest
+
+from pipecat_context_hub.shared.paths import (
+    is_inside,
+    is_reparse_link,
+    redact_home_in_text,
+    resolution_chain,
+)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")
+class TestResolutionChainMatchesKernelOrdering:
+    """Round-6 finding #1: the walk seeded itself from ``os.path.abspath``,
+    which collapses ``..`` *lexically* — before any symlink is expanded. The
+    kernel does the opposite: it expands each component in order, so a ``..``
+    that follows a symlink pops out of the link's *target* directory, not out
+    of the link's own parent. Seeding from a pre-normalized path therefore
+    produced a chain describing locations the lookup never visits, silently
+    voiding every guard built on it.
+    """
+
+    def test_pardir_after_symlink_records_the_traversed_link(self, tmp_path: Path):
+        real = tmp_path / "real"
+        (real / "inner").mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (outside / "link").symlink_to(real / "inner", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        chain = resolution_chain(outside / "link" / ".." / "config.toml")
+
+        # The symlink itself is a real directory entry the lookup depends on.
+        assert outside / "link" in chain
+        # `..` applies to the link's *target*, so the walk lands in `real`.
+        assert real / "config.toml" in chain
+        # ...and never in the lexically-collapsed location the kernel skips.
+        assert outside / "config.toml" not in chain
+
+    def test_chain_endpoint_agrees_with_realpath(self, tmp_path: Path):
+        """Differential floor: the last location the walk stands on must be
+        what ``os.path.realpath`` reports for the same input."""
+        real = tmp_path / "real"
+        (real / "inner").mkdir(parents=True)
+        (real / "config.toml").write_text("")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (outside / "link").symlink_to(real / "inner", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        target = outside / "link" / ".." / "config.toml"
+        chain = resolution_chain(target)
+        assert str(chain[-1]) == os.path.realpath(target)
+
+    def test_relative_input_is_absolutised_against_cwd(self, tmp_path: Path, monkeypatch):
+        (tmp_path / "sub").mkdir()
+        monkeypatch.chdir(tmp_path)
+        chain = resolution_chain(Path("sub") / "config.toml")
+        assert tmp_path / "sub" / "config.toml" in chain
+
+
+class TestResolutionChainFollowsWindowsJunctions:
+    """Round-8 finding #3: the walk gated symlink expansion on
+    ``os.path.islink``, which reports False for a Windows *directory junction*
+    even though the kernel follows it exactly like a symlink. A junctioned
+    component was therefore treated as an ordinary directory and its target
+    never visited — so a config path that enters the data directory through one
+    junction and leaves through another had both walked endpoints outside it,
+    and ``refresh --reset-index`` could delete or sever the live config path.
+
+    Junctions cannot be created on POSIX, so this emulates the *observable*
+    Windows behaviour (as the sibling test in test_cli.py does): a real link
+    that ``islink``/``is_symlink`` report as False and ``os.path.isjunction``
+    reports as True. Simulation of the platform, not a test on it — untested
+    against a real ``mklink /J``.
+    """
+
+    @pytest.mark.skipif(os.name != "posix", reason="needs symlinks to emulate a junction")
+    def test_junction_component_is_expanded(self, tmp_path: Path, monkeypatch):
+        real = tmp_path / "real"
+        real.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (outside / "jn").symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        junction = outside / "jn"
+        # Windows emulation: a junction is invisible to islink/is_symlink...
+        monkeypatch.setattr(os.path, "islink", lambda p: False)
+        monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+        # ...but visible to os.path.isjunction (Python 3.12+).
+        monkeypatch.setattr(os.path, "isjunction", lambda p: str(p) == str(junction), raising=False)
+
+        chain = resolution_chain(junction / "config.toml")
+
+        # The junction entry itself is walked...
+        assert junction in chain
+        # ...and so is the location it actually resolves to.
+        assert real / "config.toml" in chain
+
+    def test_is_reparse_link_never_raises(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(Path, "is_symlink", lambda self: (_ for _ in ()).throw(OSError("boom")))
+        assert is_reparse_link(tmp_path / "nope") is False
+
+
+class TestIsInsideIdentity:
+    """Round-10 finding #1: ``is_inside`` compared ``directory``'s stat against
+    ``path.parents`` only. ``path.parents`` never includes ``path`` itself, so a
+    location that *is* ``directory`` under a different spelling (a
+    case-insensitive-volume alias, or a differently-spelled-but-same-inode
+    entry) failed both checks — the lexical one because the strings differ, the
+    identity one because the only same-inode candidate was never offered to
+    ``same_dir``. ``config_collides_with_dir()`` could therefore miss a config
+    location that ``rmtree(candidate_dir)`` genuinely removes.
+
+    The lexical branch has always treated ``path == directory`` as "inside"
+    (``is_relative_to`` is reflexive), so the identity branch agreeing with it
+    is the invariant being restored, not a widened contract.
+    """
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")
+    def test_path_that_is_the_directory_under_another_spelling(self, tmp_path: Path):
+        real = tmp_path / "data"
+        real.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(real, target_is_directory=True)
+
+        # `alias` names the very same directory as `real`; deleting one deletes
+        # the other's contents. String containment does not see it.
+        assert not real.is_relative_to(alias)
+        assert is_inside(real, alias) is True
+
+    def test_identical_path_is_inside_itself(self, tmp_path: Path):
+        assert is_inside(tmp_path, tmp_path) is True
+
+    def test_sibling_is_not_inside(self, tmp_path: Path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        assert is_inside(a, b) is False
 
 
 class TestRedactHomeInText:
