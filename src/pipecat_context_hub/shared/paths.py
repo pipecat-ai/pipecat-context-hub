@@ -28,10 +28,28 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Final
 
 
-def same_dir(path: Path, dir_stat: os.stat_result) -> bool:
-    """True when ``path`` is the same on-disk directory as ``dir_stat``.
+class _ComputeStat:
+    """Sentinel type for :func:`is_inside`'s optional ``dir_stat`` cache.
+
+    A distinct type is needed because ``None`` already carries a meaning here
+    ("``directory`` could not be stat'd, skip the identity check"). Omitting
+    the argument must mean "stat it for me", not "skip the check".
+    """
+
+
+_COMPUTE_STAT: Final = _ComputeStat()
+
+
+def same_dir(path: Path, other_stat: os.stat_result) -> bool:
+    """True when ``path`` is the same on-disk directory as ``other_stat``.
+
+    The second parameter is named ``other_stat``, not ``dir_stat``: the
+    relation is symmetric (``samestat`` compares ``(st_dev, st_ino)`` both
+    ways), and callers legitimately pass either side's stat, so a
+    directionality-implying name misdescribes the contract.
 
     Public because it is the single filesystem-identity primitive shared by
     every deletion guard in this project: ``env_loading``'s
@@ -43,12 +61,17 @@ def same_dir(path: Path, dir_stat: os.stat_result) -> bool:
     directory that ``shutil.rmtree`` would happily delete.
     """
     try:
-        return os.path.samestat(path.stat(), dir_stat)
+        return os.path.samestat(path.stat(), other_stat)
     except (OSError, ValueError):
         return False
 
 
-def is_inside(path: Path, directory: Path, dir_stat: os.stat_result | None) -> bool:
+def is_inside(
+    path: Path,
+    directory: Path,
+    *,
+    dir_stat: os.stat_result | None | _ComputeStat = _COMPUTE_STAT,
+) -> bool:
     """True when ``path`` lives under ``directory``.
 
     Two checks, because a path-string comparison alone is not sound:
@@ -65,9 +88,21 @@ def is_inside(path: Path, directory: Path, dir_stat: os.stat_result | None) -> b
        directory on disk; or a path reached through a symlinked ancestor.
        Skipped when either side doesn't exist (nothing to stat) — which is
        safe, because a directory that doesn't exist cannot be ``rmtree``'d.
+
+    ``dir_stat`` is a keyword-only *cache* of ``directory.stat()``, for callers
+    that test several paths against one directory. It is keyword-only, and
+    computed here when omitted, because a caller that passes a stat belonging
+    to some *other* directory silently makes this predicate fail open — and
+    this predicate guards deletions. Omitting it is always correct; passing it
+    is an optimisation the caller must keep consistent with ``directory``.
     """
     if path.is_relative_to(directory):
         return True
+    if isinstance(dir_stat, _ComputeStat):
+        try:
+            dir_stat = directory.stat()
+        except (OSError, ValueError):
+            dir_stat = None
     if dir_stat is None:
         return False
     return any(same_dir(ancestor, dir_stat) for ancestor in path.parents)

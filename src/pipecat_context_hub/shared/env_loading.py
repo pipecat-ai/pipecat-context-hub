@@ -22,7 +22,7 @@ import stat
 import tomllib
 from pathlib import Path
 
-from pipecat_context_hub.shared.paths import is_inside, redact_home
+from pipecat_context_hub.shared.paths import is_inside, redact_home, redact_home_in_text
 
 _module_logger = logging.getLogger(__name__)
 
@@ -62,6 +62,14 @@ PRUNE_ENV_VAR = "PIPECAT_HUB_PRUNE"
 # serve-time debug-probe gate — the structural sibling of PRUNE_ENV_VAR.
 DEBUG_PROBE_ENV_VAR = "PIPECAT_HUB_DEBUG_PROBE"
 
+_ENV_PREFIX = "PIPECAT_HUB_"
+
+# Declared above the frozensets below (rather than after them) so those sets
+# reference these constants instead of re-hardcoding the same literals — the
+# same single-source-of-truth rule PRUNE_ENV_VAR/DEBUG_PROBE_ENV_VAR follow.
+_CONFIG_FILE_ENV_VAR = "PIPECAT_HUB_CONFIG_FILE"
+_DATA_DIR_ENV_VAR = "PIPECAT_HUB_DATA_DIR"
+
 # Keys that look like PIPECAT_HUB_* but must never be set from config.toml,
 # each for its own one-clause reason (see dev plan Phase 1): PRUNE keeps
 # refresh's deletion behavior an explicit per-run choice; DEBUG_PROBE must
@@ -73,15 +81,11 @@ _INVOCATION_SCOPED_KEYS = frozenset(
     {
         PRUNE_ENV_VAR,
         DEBUG_PROBE_ENV_VAR,
-        "PIPECAT_HUB_CONFIG_FILE",
+        _CONFIG_FILE_ENV_VAR,
         "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK",
         "PIPECAT_HUB_STABILITY_OUTPUT",
     }
 )
-
-_ENV_PREFIX = "PIPECAT_HUB_"
-_CONFIG_FILE_ENV_VAR = "PIPECAT_HUB_CONFIG_FILE"
-_DATA_DIR_ENV_VAR = "PIPECAT_HUB_DATA_DIR"
 
 # The documented settings registry — every key in `config.toml.example` and
 # docs/README.md's Environment Variables table. Pinned against both by
@@ -93,7 +97,7 @@ _DATA_DIR_ENV_VAR = "PIPECAT_HUB_DATA_DIR"
 # written for a newer hub version forward-compatible with an older binary.
 _KNOWN_KEYS = frozenset(
     {
-        "PIPECAT_HUB_DATA_DIR",
+        _DATA_DIR_ENV_VAR,
         "PIPECAT_HUB_EXTRA_REPOS",
         "PIPECAT_HUB_FRAMEWORK_VERSION",
         "PIPECAT_HUB_IDLE_TIMEOUT_SECS",
@@ -272,9 +276,9 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     except (OSError, ValueError):
         dir_stat = None
 
-    if is_inside(physical, candidate_dir, dir_stat):
+    if is_inside(physical, candidate_dir, dir_stat=dir_stat):
         return physical
-    if is_inside(resolved, candidate_dir, dir_stat):
+    if is_inside(resolved, candidate_dir, dir_stat=dir_stat):
         return resolved
     return None
 
@@ -358,20 +362,59 @@ def _link_owner_is_trusted(config_path: Path, uid: int) -> bool:
 
 
 def _config_parent_is_trusted(config_path: Path, uid: int) -> bool:
-    """False when the directory holding config.toml is another user's to rewrite.
+    """False when any directory on config.toml's path is another user's to rewrite.
 
-    A per-file mode check cannot see this: write permission on the *directory*
+    A per-file mode check cannot see this: write permission on a *directory*
     is what authorizes unlink-and-replace, so a ``0600`` file in a
     world-writable directory is still fully controllable by any local
     principal. World-writable **sticky** directories (``/tmp``) are exempt —
     the sticky bit is precisely what withdraws that unlink permission.
+
+    Two directions are checked, because a single-level check on the
+    *unresolved* parent leaves two demonstrated bypasses:
+
+    * the config path may be a symlink, so the directory that actually holds
+      the opened inode (``os.path.realpath``'s parent) is a different
+      directory that would otherwise never be examined — enough for a
+      hardlink-replacement attack in a shared directory;
+    * write access on any *ancestor* is enough to substitute a directory
+      symlink higher up the tree and redirect the whole lookup, which every
+      leaf-only check passes.
+
+    So: the named parent, then every ancestor of the resolved target up to the
+    filesystem root. The group-writable *warning* (allow, don't refuse) is
+    emitted only for the two directories that directly hold the file — a
+    per-ancestor version would be noise on any machine with a group-writable
+    dir anywhere in ``/``.
     """
-    parent = config_path.parent
+    checked: set[str] = set()
+    directories: list[tuple[Path, bool]] = [(config_path.parent, True)]
+    real_parent: Path | None
+    try:
+        real_parent = Path(os.path.realpath(config_path)).parent
+    except (OSError, ValueError):
+        real_parent = None
+    if real_parent is not None:
+        directories.append((real_parent, True))
+        directories.extend((ancestor, False) for ancestor in real_parent.parents)
+
+    for directory, warn_group in directories:
+        marker = str(directory)
+        if marker in checked:
+            continue
+        checked.add(marker)
+        if not _config_dir_is_trusted(config_path, directory, uid, warn_group=warn_group):
+            return False
+    return True
+
+
+def _config_dir_is_trusted(config_path: Path, parent: Path, uid: int, *, warn_group: bool) -> bool:
+    """One directory's leg of :func:`_config_parent_is_trusted`."""
     try:
         pst = os.stat(parent)
     except (OSError, ValueError):
-        # Unstattable parent: the open() already succeeded, so don't invent a
-        # refusal from a check we couldn't perform.
+        # Unstattable directory: the open() already succeeded, so don't invent
+        # a refusal from a check we couldn't perform.
         return True
 
     if pst.st_uid not in (uid, 0):
@@ -394,7 +437,7 @@ def _config_parent_is_trusted(config_path: Path, uid: int) -> bool:
             redact_home(parent),
         )
         return False
-    if pst.st_mode & stat.S_IWGRP and not pst.st_mode & stat.S_ISVTX:
+    if warn_group and pst.st_mode & stat.S_IWGRP and not pst.st_mode & stat.S_ISVTX:
         _module_logger.warning(
             "config.toml's directory %s is group-writable (mode %o); anyone in group %d "
             "can replace this hub's settings file. Consider `chmod 755 %s`.",
@@ -563,8 +606,14 @@ def load_global_config() -> None:
     except FileNotFoundError:
         return
     except (OSError, ValueError) as exc:
+        # `exc` is redacted, not just `config_path`: OSError's own __str__
+        # appends the absolute filename ("[Errno 13] Permission denied:
+        # '/Users/<name>/...'"), which would leak the home directory back into
+        # a log line whose path argument was carefully redacted.
         _module_logger.warning(
-            "Failed to read config.toml at %s: %s", redact_home(config_path), exc
+            "Failed to read config.toml at %s: %s",
+            redact_home(config_path),
+            redact_home_in_text(str(exc)),
         )
         return
 
@@ -578,8 +627,12 @@ def load_global_config() -> None:
             fd_owned = False
             data = tomllib.load(f)
     except (tomllib.TOMLDecodeError, UnicodeError, OSError, ValueError) as exc:
+        # Same redaction rationale as the open() site above: an OSError raised
+        # mid-read still carries the absolute filename in its message.
         _module_logger.warning(
-            "Failed to read config.toml at %s: %s", redact_home(config_path), exc
+            "Failed to read config.toml at %s: %s",
+            redact_home(config_path),
+            redact_home_in_text(str(exc)),
         )
         return
     finally:
@@ -627,7 +680,17 @@ def load_global_config() -> None:
                 "(typo?); setting it anyway",
                 key,
             )
-        if key in os.environ:
+        if os.environ.get(key, "").strip():
+            # Deliberately *not* `key in os.environ`: a blank/whitespace-only
+            # higher-layer value is inert, because every consumer in
+            # `shared/config.py` reads its var as
+            # `os.environ.get(NAME, "").strip()` and falls back to the field
+            # default when that is empty. Treating `PIPECAT_HUB_DATA_DIR=`
+            # as "present" would skip config.toml's value as shadowed while
+            # the shadowing value itself does nothing — so neither layer
+            # applies. Blank therefore means absent here, matching the
+            # consumers.
+            #
             # A real env var or cwd .env already won this key — nothing this
             # config.toml value could do (including a DATA_DIR collision
             # warning below) is actually going to apply, so don't validate

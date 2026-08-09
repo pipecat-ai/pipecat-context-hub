@@ -15,6 +15,7 @@ from click.testing import CliRunner
 
 from pipecat_context_hub.cli import (
     _PRUNE_ENABLED_VALUES,
+    _debug_probe_enabled,
     _delete_local_index_storage,
     _log_serve_cwd,
     _prewarm_models,
@@ -130,6 +131,11 @@ class TestRefreshCommand:
         mock_index_store.get_all_metadata = MagicMock(return_value={})
         mock_index_store.delete_by_content_type = AsyncMock(return_value=0)
         mock_index_store.delete_by_repo = AsyncMock(return_value=0)
+        # A real dict, not the auto-created MagicMock: `refresh` compares
+        # per-repo record counts numerically (`pre_counts.get(slug, 0) > 0`
+        # gates the prune-skip warning), and a MagicMock has no ordering
+        # against int.
+        mock_index_store.get_counts_by_repo = MagicMock(return_value={})
         mock_index_store.get_index_stats = MagicMock(
             return_value={
                 "counts_by_type": {"doc": 100, "code": 200},
@@ -1032,7 +1038,10 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         real_config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
 
         symlink_config_path = data_dir / "config.toml"
-        symlink_config_path.symlink_to(real_config_file)
+        try:
+            symlink_config_path.symlink_to(real_config_file)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
 
         monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(symlink_config_path))
         # Collides: data_dir (which contains the config symlink) is requested
@@ -1436,6 +1445,21 @@ class TestPruneSafety(TestRefreshCommand):
     """
 
     _REMOVED_REPO = "old-org/removed-repo"
+
+    def _make_mocks(self):
+        """As the parent's, but with real indexed-record counts.
+
+        The prune-skip warning is gated on the repo actually having indexed
+        records (round-4 finding #6: warning "leaving 0 indexed record(s) in
+        place — pass --prune to remove" advertises a destructive flag whose
+        only effect would be dropping a stale metadata key). These tests are
+        about repos that *do* have data, so say so.
+        """
+        mocks = super()._make_mocks()
+        mocks[0].get_counts_by_repo = MagicMock(
+            return_value={self._REMOVED_REPO: 7, "pipecat-ai/pipecat": 42}
+        )
+        return mocks
 
     def _meta_with_removed_repo(self, sha: str = "abc123") -> dict[str, str]:
         """Metadata simulating a previously-indexed repo no longer
@@ -1896,6 +1920,9 @@ class TestPruneSafety(TestRefreshCommand):
         }
         mock_store.get_all_metadata = MagicMock(return_value=all_meta)
         mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+        # Repo B has real indexed data — that is the whole point of the
+        # repro, and the prune-skip warning is gated on record count > 0.
+        mock_store.get_counts_by_repo = MagicMock(return_value={repo_a: 11, repo_b: 13})
 
         monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(config_file))
         monkeypatch.chdir(project_dir)
@@ -1909,6 +1936,59 @@ class TestPruneSafety(TestRefreshCommand):
         deleted_meta = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
         assert f"repo:{repo_b}:commit_sha" not in deleted_meta
         assert repo_b in caplog.text
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_unconfigured_repo_with_zero_records_is_not_warned_about(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Round-4 finding #6: the counter/warning fired for any un-configured
+        `repo:*:commit_sha` key regardless of whether that repo had indexed
+        records. With none, the operator was told "leaving 0 indexed
+        record(s) in place — pass --prune to remove", advertising a
+        destructive flag whose only effect would be dropping a stale
+        metadata key. Nothing is at risk, so nothing should be said.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+        # Metadata key present, but no indexed records behind it.
+        mock_store.get_counts_by_repo = MagicMock(return_value={})
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+            result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        # Still not deleted without --prune…
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert self._REMOVED_REPO not in deleted_repos
+        # …but no misleading notice about a flag that would remove nothing.
+        assert self._REMOVED_REPO not in caplog.text
+        assert "Skipped pruning" not in result.output
 
     # ----- Unhappy / edge paths -----
 
@@ -2895,3 +2975,96 @@ class TestPruneSkipNoticePosition:
         _print_refresh_summary(source_status, 5, 0, 1.0, unpruned_repo_count=2)
         out = capsys.readouterr().out
         assert out.index("Skipped pruning") < out.index("Refresh complete")
+
+
+class TestServeCwdDiagnosticIsCrashSafe:
+    """Round-4 finding #4: `_log_serve_cwd` runs unguarded on every `serve`
+    boot, while its *optional* sibling `_write_serve_debug_probe` wraps the
+    identical `Path.cwd()` call in `except Exception` because "a debug probe
+    must never crash serve". `Path.cwd()` raises FileNotFoundError when the
+    process's working directory has been unlinked — so the mandatory
+    diagnostic had the inverted robustness.
+    """
+
+    def test_unlinked_cwd_does_not_crash_serve_diagnostic(self, monkeypatch) -> None:
+        def _raise_no_cwd():
+            raise FileNotFoundError(2, "No such file or directory")
+
+        monkeypatch.setattr("pipecat_context_hub.cli.Path.cwd", _raise_no_cwd)
+        logger = MagicMock()
+        _log_serve_cwd(logger)  # must not raise
+        assert logger.info.call_args[0][1] == "<unavailable>"
+
+    def test_home_runtime_error_does_not_crash_serve_diagnostic(self, monkeypatch) -> None:
+        """`redact_home` swallows this itself today, but the guard must not
+        depend on that — the whole resolution is inside the try."""
+
+        def _raise_no_home():
+            raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(Path, "home", _raise_no_home)
+        logger = MagicMock()
+        _log_serve_cwd(logger)  # must not raise
+        logger.info.assert_called_once()
+
+
+class TestDebugProbeEnabled:
+    """Round-4 finding #11: the probe gate was an inline `== "1"`, stricter
+    than every sibling PIPECAT_HUB_* boolean flag for no stated reason —
+    `PIPECAT_HUB_DEBUG_PROBE=true` silently did nothing while
+    `PIPECAT_HUB_PRUNE=true` worked. Both are default-off opt-ins, so they
+    share `_PRUNE_ENABLED_VALUES`.
+    """
+
+    @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "Yes", "YES"])
+    def test_recognized_values_enable(self, value: str, monkeypatch) -> None:
+        monkeypatch.setenv(env_loading.DEBUG_PROBE_ENV_VAR, value)
+        assert _debug_probe_enabled() is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "tRuE", "maybe", ""])
+    def test_unrecognized_values_stay_disabled(self, value: str, monkeypatch) -> None:
+        monkeypatch.setenv(env_loading.DEBUG_PROBE_ENV_VAR, value)
+        assert _debug_probe_enabled() is False
+
+    def test_unset_defaults_false(self, monkeypatch) -> None:
+        monkeypatch.delenv(env_loading.DEBUG_PROBE_ENV_VAR, raising=False)
+        assert _debug_probe_enabled() is False
+
+
+class TestDebugProbeSymlinkHardening:
+    """Round-4 finding #9: the probe opened its log with `Path.open("a")`,
+    which follows symlinks, after a default-mode `mkdir`. Anyone able to
+    write in the probe directory could pre-create the log as a symlink and
+    have `serve` append to an arbitrary file the server user can write.
+    """
+
+    def test_symlinked_probe_path_is_not_followed(self, tmp_path: Path, monkeypatch) -> None:
+        home = tmp_path / "home"
+        cache_dir = home / ".cache" / "pipecat-context-hub"
+        cache_dir.mkdir(parents=True)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("original\n")
+        probe_path = cache_dir / "serve-debug.log"
+        try:
+            probe_path.symlink_to(victim)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        logger = MagicMock()
+        _write_serve_debug_probe(logger)  # must not raise
+
+        assert victim.read_text() == "original\n"
+        logger.exception.assert_called_once()
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+    def test_created_probe_file_and_dir_are_owner_only(self, tmp_path: Path, monkeypatch) -> None:
+        import stat as stat_module
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        _write_serve_debug_probe(MagicMock())
+        probe_path = home / ".cache" / "pipecat-context-hub" / "serve-debug.log"
+        assert stat_module.S_IMODE(probe_path.stat().st_mode) == 0o600
+        assert stat_module.S_IMODE(probe_path.parent.stat().st_mode) == 0o700

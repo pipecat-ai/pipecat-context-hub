@@ -88,6 +88,19 @@ def _prune_enabled(env: dict[str, str] | None = None) -> bool:
     return source.get(env_loading.PRUNE_ENV_VAR, "").strip() in _PRUNE_ENABLED_VALUES
 
 
+def _debug_probe_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True when `serve` should write the opt-in debug probe file.
+
+    Shares ``_PRUNE_ENABLED_VALUES`` with :func:`_prune_enabled` rather than
+    testing ``== "1"`` inline: both are default-off opt-ins, and there is no
+    reason for ``PIPECAT_HUB_DEBUG_PROBE=true`` to silently do nothing while
+    ``PIPECAT_HUB_PRUNE=true`` works. Same safe default — an unrecognized
+    value resolves to False.
+    """
+    source = env if env is not None else os.environ
+    return source.get(env_loading.DEBUG_PROBE_ENV_VAR, "").strip() in _PRUNE_ENABLED_VALUES
+
+
 def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None:
     """Eagerly load retrieval models so the first MCP query is warm.
 
@@ -280,9 +293,21 @@ def _log_serve_cwd(logger: logging.Logger) -> None:
     ``shared/support_links.py`` promotes, and an absolute cwd carries the OS
     username and often a client or project name.
     """
+    # `Path.cwd()` is not infallible: it raises FileNotFoundError when the
+    # process's working directory has been unlinked (a real case for a
+    # long-lived MCP server whose launching project directory is deleted or
+    # moved), and OSError/RuntimeError on other getcwd failures. This
+    # diagnostic is *mandatory* on every serve boot, so it must be at least as
+    # crash-safe as its opt-in sibling `_write_serve_debug_probe` — which
+    # already wraps the identical call precisely because a diagnostic must
+    # never take down `serve`.
+    try:
+        cwd = redact_home(Path.cwd())
+    except Exception:
+        cwd = "<unavailable>"
     logger.info(
         "serve cwd=%s env_keys=%s",
-        redact_home(Path.cwd()),
+        cwd,
         sorted(k for k in os.environ if k.startswith("PIPECAT_HUB_")),
     )
 
@@ -299,8 +324,21 @@ def _write_serve_debug_probe(logger: logging.Logger) -> None:
     """
     try:
         probe_path = Path.home() / ".cache" / "pipecat-context-hub" / "serve-debug.log"
-        probe_path.parent.mkdir(parents=True, exist_ok=True)
-        with probe_path.open("a", encoding="utf-8") as f:
+        # 0o700, not mkdir's default 0o777&~umask: this directory is created
+        # by a *server* process and holds a log only its owner should read or
+        # replace. exist_ok=True means an already-present directory keeps its
+        # mode, which is fine — the point is not to create a world-traversable
+        # one here.
+        probe_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # O_NOFOLLOW + O_CREAT is what makes the append safe: `open("a")`
+        # follows symlinks, so anyone able to write in this directory could
+        # pre-create the log as a symlink and have `serve` append to an
+        # arbitrary file the server user can write. With O_NOFOLLOW the open
+        # fails (ELOOP) instead, and the failure is logged and swallowed like
+        # every other probe failure. 0o600 keeps the created file private.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(probe_path, flags, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(
                 f"{datetime.now(UTC).isoformat()} serve cwd={redact_home(Path.cwd())} "
                 f"env_keys={sorted(k for k in os.environ if k.startswith('PIPECAT_HUB_'))}\n"
@@ -435,7 +473,7 @@ def serve(ctx: click.Context) -> None:
     # server, whose cwd/env may differ from an operator's interactive shell.
     # Key names only, never values (PIPECAT_HUB_EXTRA_REPOS can be ~70 repos).
     _log_serve_cwd(logger)
-    if os.environ.get(env_loading.DEBUG_PROBE_ENV_VAR) == "1":
+    if _debug_probe_enabled():
         _write_serve_debug_probe(logger)
 
     # Resolve the client-death watch plan now, before the slow index +
@@ -844,7 +882,7 @@ def refresh(
                     elif prune_enabled:
                         logger.info("Repo %s no longer configured, cleaning up", slug)
                         await _delete_repo_index_data(index_store, slug, meta_key)
-                    else:
+                    elif pre_counts.get(slug, 0) > 0:
                         # Implicit absence — not seen from this invocation's
                         # env layering, but not necessarily unconfigured
                         # elsewhere. Leave both records and metadata in place
@@ -852,6 +890,14 @@ def refresh(
                         # future cleanup passes, since the loop keys off
                         # all_meta) so a later --prune can still find and
                         # remove them.
+                        #
+                        # Gated on there actually being records: a repo whose
+                        # only remnant is the `repo:*:commit_sha` metadata key
+                        # has no indexed data to protect, so warning "leaving 0
+                        # indexed record(s) in place — pass --prune to remove"
+                        # advertises a destructive flag whose sole effect would
+                        # be dropping a stale key. Nothing is at risk, so say
+                        # nothing.
                         unpruned_repo_count += 1
                         logger.warning(
                             "Repo %s not configured in this run; leaving %d indexed "

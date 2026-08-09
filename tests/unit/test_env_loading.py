@@ -513,7 +513,10 @@ class TestLoadGlobalConfigDataDirCollision:
         real_config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
 
         symlink_path = candidate_dir / "config.toml"
-        symlink_path.symlink_to(real_config_file)
+        try:
+            symlink_path.symlink_to(real_config_file)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
 
         _use_config_file(monkeypatch, symlink_path)
         collision = config_collides_with_dir(candidate_dir)
@@ -536,7 +539,10 @@ class TestLoadGlobalConfigDataDirCollision:
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
         symlink_path = outside_dir / "config.toml"
-        symlink_path.symlink_to(real_config_file)
+        try:
+            symlink_path.symlink_to(real_config_file)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
 
         _use_config_file(monkeypatch, symlink_path)
         collision = config_collides_with_dir(candidate_dir)
@@ -917,15 +923,21 @@ class TestLoadGlobalConfigDiagnostics:
 
     def test_shadowed_taint_list_warns(self, tmp_path: Path, monkeypatch, caplog):
         """Exclusion controls are replaced, not unioned, by a higher layer —
-        an empty `.env` value silently disables a deliberate machine-global
-        exclusion, so say so out loud."""
+        a narrower `.env` value silently drops a deliberate machine-global
+        exclusion, so say so out loud.
+
+        Uses a non-blank shadowing value: as of round-4 finding #7 a blank
+        higher-layer value no longer shadows at all (it is inert downstream),
+        so config.toml wins outright and there is nothing to warn about — see
+        `TestBlankHigherLayerValueDoesNotShadow`.
+        """
         config_file = tmp_path / "config.toml"
         config_file.write_text('PIPECAT_HUB_TAINTED_REPOS = "org/bad"\n')
         _use_config_file(monkeypatch, config_file)
-        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "")
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "org/unrelated")
         with caplog.at_level("WARNING"):
             load_global_config()
-        assert os.environ["PIPECAT_HUB_TAINTED_REPOS"] == ""
+        assert os.environ["PIPECAT_HUB_TAINTED_REPOS"] == "org/unrelated"
         assert "PIPECAT_HUB_TAINTED_REPOS" in caplog.text
         assert "NOT in effect" in caplog.text
 
@@ -1123,7 +1135,10 @@ class TestShadowedExclusionWarningNamesEntries:
         config_file = tmp_path / "config.toml"
         config_file.write_text('PIPECAT_HUB_TAINTED_REPOS = ["org/bad", "org/worse"]\n')
         _use_config_file(monkeypatch, config_file)
-        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "")
+        # A *non-blank* shadowing value: a blank one no longer shadows at all
+        # (round-4 finding #7 — see TestBlankHigherLayerValueDoesNotShadow),
+        # so it would leave nothing lost to name.
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "org/unrelated")
         with caplog.at_level("WARNING"):
             load_global_config()
         assert "org/bad" in caplog.text
@@ -1159,7 +1174,11 @@ class TestConfigPathLogsAreHomeRedacted:
         loaded = [r.getMessage() for r in caplog.records if "Loaded" in r.getMessage()]
         assert loaded, caplog.text
         assert str(home) not in loaded[0]
-        assert loaded[0].endswith("~/.config/pipecat-context-hub/config.toml")
+        # Built with `Path`, not a "/"-joined literal: `redact_home` preserves
+        # `os.sep`, so on the windows-latest CI leg the redacted suffix is
+        # `~\\.config\\...`. A hard-coded "/" fails there every run.
+        expected_suffix = str(Path("~", ".config", "pipecat-context-hub", "config.toml"))
+        assert loaded[0].endswith(expected_suffix)
 
 
 class TestConfigFileCrashSafety:
@@ -1291,3 +1310,160 @@ class TestConfigFileTrustGate:
         monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
         load_global_config()
         assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "42"
+
+
+class TestBlankHigherLayerValueDoesNotShadow:
+    """Round-4 finding #7: `key in os.environ` treated an empty-string value
+    as "present", so `export PIPECAT_HUB_STALE_AFTER_DAYS=` skipped
+    config.toml's value as shadowed — while the shadowing blank is itself
+    inert, because every consumer in shared/config.py reads its var as
+    `.get(NAME, "").strip()` and falls back to the field default. Net effect
+    before the fix: neither layer applied.
+    """
+
+    def test_blank_real_env_var_lets_config_toml_win(self, tmp_path: Path, monkeypatch):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "")
+        load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "45"
+
+    def test_whitespace_only_real_env_var_lets_config_toml_win(self, tmp_path: Path, monkeypatch):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "   ")
+        load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "45"
+
+    def test_blank_exclusion_list_emits_no_shadow_warning(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """A blank taint list is not a shadow, so warning that machine-global
+        exclusions are "NOT in effect" would be actively wrong — they are."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_TAINTED_REPOS = "org/bad"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "")
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert "NOT in effect" not in caplog.text
+        assert os.environ["PIPECAT_HUB_TAINTED_REPOS"] == "org/bad"
+
+    def test_non_blank_real_env_var_still_wins(self, tmp_path: Path, monkeypatch):
+        """The precedence rule itself is unchanged for real values."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_STALE_AFTER_DAYS", "7")
+        load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "7"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+class TestReadFailureWarningIsHomeRedacted:
+    """Round-4 finding #3: `config_path` was redacted in the read-failure
+    warning, but the interpolated `OSError` was not — and OSError.__str__
+    appends the absolute filename ("[Errno 13] Permission denied: '/Users/…'"),
+    putting the home directory straight back into the log line.
+    """
+
+    def test_permission_error_text_is_redacted(self, tmp_path: Path, monkeypatch, caplog):
+        if os.getuid() == 0:
+            pytest.skip("root bypasses file permission bits")
+        home = tmp_path / "home"
+        config_dir = home / ".config" / "pipecat-context-hub"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "config.toml"
+        config_file.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+        config_file.chmod(0o000)
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        try:
+            with caplog.at_level("WARNING"):
+                load_global_config()
+        finally:
+            config_file.chmod(0o600)
+        assert "Failed to read config.toml" in caplog.text
+        assert str(home) not in caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership/mode bits required")
+class TestConfigAncestorDirectoriesAreTrusted:
+    """Round-4 finding #8: the containing-directory trust check was
+    single-level and ran against the *unresolved* parent, so (a) a symlinked
+    config's real holding directory was never examined, and (b) write access
+    on any ancestor above the parent — enough to substitute a directory
+    symlink and redirect the whole lookup — passed every check.
+    """
+
+    def _write_config(self, path: Path) -> None:
+        path.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "45"\n')
+        path.chmod(0o600)
+
+    def test_world_writable_ancestor_above_the_parent_is_refused(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        ancestor = tmp_path / "ancestor"
+        config_dir = ancestor / "pipecat-context-hub"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "config.toml"
+        self._write_config(config_file)
+        # World-writable, no sticky bit: any local account can swap
+        # `pipecat-context-hub` for a directory of its own.
+        ancestor.chmod(0o777)
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        try:
+            with caplog.at_level("WARNING"):
+                load_global_config()
+        finally:
+            ancestor.chmod(0o755)
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert "world-writable" in caplog.text
+
+    def test_symlinked_configs_real_holding_directory_is_checked(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """The config path's own parent is fine; the directory that actually
+        holds the opened inode is world-writable. Pre-fix, that directory was
+        never examined — `fstat` describes the target, not where it lives.
+        """
+        good_dir = tmp_path / "good"
+        good_dir.mkdir(mode=0o755)
+        shared_dir = tmp_path / "shared"
+        shared_dir.mkdir()
+        real_config = shared_dir / "real-config.toml"
+        self._write_config(real_config)
+        shared_dir.chmod(0o777)
+
+        link = good_dir / "config.toml"
+        try:
+            link.symlink_to(real_config)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        _use_config_file(monkeypatch, link)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        try:
+            with caplog.at_level("WARNING"):
+                load_global_config()
+        finally:
+            shared_dir.chmod(0o755)
+        assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        assert "world-writable" in caplog.text
+
+    def test_ordinary_nested_config_still_loads(self, tmp_path: Path, monkeypatch):
+        """The ancestor walk must not refuse a normal, correctly-permissioned
+        config — it stats every directory up to the filesystem root.
+        """
+        config_dir = tmp_path / "a" / "b" / "pipecat-context-hub"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "config.toml"
+        self._write_config(config_file)
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        load_global_config()
+        assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "45"
