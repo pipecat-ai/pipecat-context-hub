@@ -1680,3 +1680,86 @@ class TestConfigFdOwnershipTransfer:
             "loader closed a descriptor whose ownership had already transferred "
             "to os.fdopen — double close"
         )
+
+
+class TestLoadCwdDotenvNeverCrashesEntryPoints:
+    """Round-7 findings #4/#5: `load_cwd_dotenv` ran `Path.cwd()` and
+    `os.environ[key] = value` unguarded, while every structurally identical
+    call elsewhere in this module (and in cli.py) is wrapped. Since
+    `load_env_layers()` calls this before argv is dispatched in *every* entry
+    point — CLI, dashboard scripts, smoke_check_removals.py — either raise
+    takes the whole process down, violating the module docstring's "entry
+    points never crash on a bad config" contract.
+    """
+
+    def test_unlinked_cwd_does_not_crash(self, monkeypatch):
+        """A deleted working directory makes `Path.cwd()` raise
+        FileNotFoundError — real for a long-lived MCP server whose launching
+        project directory was removed."""
+
+        def _boom() -> Path:
+            raise FileNotFoundError(2, "No such file or directory")
+
+        monkeypatch.setattr(Path, "cwd", staticmethod(_boom))
+        load_cwd_dotenv()  # must not raise
+
+    def test_getcwd_runtime_error_does_not_crash(self, monkeypatch):
+        """Non-OSError getcwd failures degrade the same way."""
+
+        def _boom() -> Path:
+            raise RuntimeError("cannot determine cwd")
+
+        monkeypatch.setattr(Path, "cwd", staticmethod(_boom))
+        load_cwd_dotenv()  # must not raise
+
+    def test_embedded_nul_value_is_skipped_not_fatal(self, tmp_path: Path, monkeypatch, caplog):
+        """`os.environ[k] = v` raises ValueError for an embedded NUL. One bad
+        line must skip, not abort the loader (and with it the process)."""
+        (tmp_path / ".env").write_text("BAD_KEY=a\x00b\nGOOD_KEY=fine\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BAD_KEY", raising=False)
+        monkeypatch.delenv("GOOD_KEY", raising=False)
+        with caplog.at_level("WARNING"):
+            load_cwd_dotenv()  # must not raise
+        assert "BAD_KEY" not in os.environ
+        # The loader keeps going: a later, valid line is still applied.
+        assert os.environ["GOOD_KEY"] == "fine"
+        assert "BAD_KEY" in caplog.text
+
+
+class TestDataDirPathWarningIsHomeRedacted:
+    """Round-7 finding #2: the `PIPECAT_HUB_DATA_DIR` resolution warning
+    interpolated the raw exception, and `Path.resolve()`'s symlink-loop error
+    text embeds the absolute path it was resolving — leaking the home
+    directory (and OS username) into a startup log line, unlike every adjacent
+    already-redacted warning in this module.
+    """
+
+    @pytest.mark.skipif(os.name != "posix", reason="symlink loop setup is POSIX-specific")
+    def test_symlink_loop_data_dir_warning_is_redacted(self, tmp_path: Path, monkeypatch, caplog):
+        home = tmp_path / "home"
+        home.mkdir()
+        loop_a = home / "loop-a"
+        loop_b = home / "loop-b"
+        try:
+            loop_a.symlink_to(loop_b)
+            loop_b.symlink_to(loop_a)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f'PIPECAT_HUB_DATA_DIR = "{_toml_str(loop_a)}"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+
+        with caplog.at_level("WARNING"):
+            load_global_config()
+
+        if "not a usable path" not in caplog.text:
+            # Some Python/libc combinations resolve a loop without raising;
+            # then there is nothing for this guard to redact.
+            pytest.skip("Path.resolve() did not raise on this platform's symlink loop")
+        assert "PIPECAT_HUB_DATA_DIR" not in os.environ
+        assert str(home) not in caplog.text

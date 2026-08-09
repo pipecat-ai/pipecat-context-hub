@@ -1138,24 +1138,164 @@ imported in `services/ingest/github_ingest.py:664`.
 
 ## Issues & Solutions
 
-### Issue 1: [Brief description]
-- **Problem**: [What went wrong]
-- **Solution**: [How it was resolved]
-- **Files affected**: [List files]
+### Issue 1: Phase 0's acceptance criterion could not be satisfied in-environment
+- **Problem**: Phase 0 was specified as a *verification* phase — confirm how
+  Claude Code spawns this server (cwd, inherited env) by reading the running
+  server's stderr. The implementing subagent had no interactive Claude Code
+  session and no network access, so neither the MCP stderr surface nor the
+  `~/.zshrc`-export question could be checked live.
+- **Solution**: Shipped the phase's *instrumentation* (both observables) and
+  recorded the verification itself as still-open rather than inferring an
+  answer: the permanent `serve cwd=… env_keys=…` `logger.info` line plus the
+  opt-in `PIPECAT_HUB_DEBUG_PROBE=1` file probe. The plan's Findings section
+  states explicitly which claims remain unverified and what the operator must
+  do to close them. Nothing downstream was allowed to depend on the unverified
+  claim: the precedence design is correct either way, because `config.toml`
+  sits *below* both real env vars and cwd `.env` regardless of what cwd the
+  client supplies.
+- **Files affected**: `src/pipecat_context_hub/cli.py`, this plan's `## Findings`
+
+### Issue 2: `config.toml` and `refresh --reset-index` can be aimed at each other
+- **Problem**: `PIPECAT_HUB_DATA_DIR` is itself settable from `config.toml`, so
+  a config file could relocate the data directory to *contain itself* — and
+  `--reset-index` `rmtree`s that directory, deleting the operator's machine-global
+  config. Directory separation by default (`~/.config/…` vs `~/.pipecat-context-hub`)
+  does not prevent it, because the override exists precisely to break that
+  separation.
+- **Solution**: Two guards on one shared predicate,
+  `env_loading.config_collides_with_dir()`: the loader skips a colliding
+  `PIPECAT_HUB_DATA_DIR` originating in `config.toml` with a warning, and
+  `_delete_local_index_storage()` aborts the reset with a `ClickException` for a
+  colliding value from *any* layer (real env var, cwd `.env`, or config file).
+  Both are existing-file-only, so a nonexistent config path never blocks a real
+  reset.
+- **Files affected**: `src/pipecat_context_hub/shared/env_loading.py`,
+  `src/pipecat_context_hub/cli.py`, `tests/unit/test_env_loading.py`,
+  `tests/unit/test_cli.py`
+
+### Issue 3: The collision predicate was fail-open for six review rounds
+- **Problem**: Successive review rounds found the collision check kept missing
+  cases: only the two path endpoints were tested (a symlink chain that enters
+  the data directory and leaves again has both endpoints outside it, yet is
+  destroyed by the delete); `resolve()` raises `RuntimeError` — not an
+  `OSError` — for a symlink loop on Python ≤3.12, crashing the guard instead of
+  degrading; the existence gate was applied to the *lexically* collapsed path,
+  which for `<dirlink>/../config.toml` names a location the kernel never
+  visits; and the ownership check `fstat`'d the opened file, which cannot see a
+  foreign-owned symlink pointing at a victim-owned target.
+- **Solution**: A shared `shared/paths.py` `resolution_chain()` walk — every
+  location the path stands on while resolving, not just its endpoints — used by
+  the collision check *and* the config-trust checks, with the fully-resolved
+  target re-tested as an explicit floor (the chain is bounded and truncates on
+  a cycle). Every `resolve()`/`stat()` call site catches
+  `(ValueError, OSError, RuntimeError)` and degrades rather than raising.
+  Round 7's independent fuzzers (1443+374 path shapes; a `rmtree`-oracle
+  fuzzer over 300 real trees) found zero fail-open or false-positive cases.
+- **Files affected**: `src/pipecat_context_hub/shared/paths.py`,
+  `src/pipecat_context_hub/shared/env_loading.py`,
+  `src/pipecat_context_hub/cli.py`, `tests/unit/test_paths.py`
+
+### Issue 4: Test hermeticity vs. the operator's own shell environment
+- **Problem**: The existing `_isolate_env_vars` autouse fixture only cleaned up
+  keys *added* during a test. The operator's real `~/.zshrc` exports
+  (`PIPECAT_HUB_EXTRA_REPOS`, `PIPECAT_HUB_STALE_AFTER_DAYS`) were therefore
+  present *during* every test on their machine, and every test would otherwise
+  fall through to their real `~/.config/pipecat-context-hub/config.toml`. The
+  obvious fix — a suite-wide `Path.home` monkeypatch — would have redirected
+  HF model-cache resolution in `tests/integration`/`tests/benchmarks`.
+- **Solution**: Rewrote the one existing fixture to delete every `PIPECAT_HUB_*`
+  key at *setup* (restoring the snapshot at teardown), with a named
+  `_FIXTURE_PASSTHROUGH_KEYS` allowlist for the eight opt-in benchmark controls,
+  and default `PIPECAT_HUB_CONFIG_FILE` to a guaranteed-nonexistent sentinel.
+  Controlling the config *location* by env var instead of `Path.home()` removed
+  the tradeoff entirely — no suite-wide `Path.home` monkeypatch is needed.
+- **Files affected**: `tests/conftest.py`
 
 ## Final Results
 
-[Fill this section when the work is complete]
-
 ### Summary
-[Brief summary of what was accomplished]
+
+Both halves of `pipecat-ai/pipecat#5122` landed together, as one branch.
+`PIPECAT_HUB_*` settings now resolve through three layers — real env vars >
+cwd `.env` > `~/.config/pipecat-context-hub/config.toml` > `HubConfig` field
+defaults — via a single shared `shared/env_loading.py` module that every entry
+point calls through `load_env_layers()` (CLI group callback, both dashboard
+scripts, `scripts/smoke_check_removals.py`), enforced by a test that fails if
+any of them hand-replicates the ordering. Separately, `refresh`'s repo-cleanup
+pass no longer deletes an unconfigured-*this-invocation* repo's indexed records
+by default: it warns and names the repo and record count, and deletes only
+under `--prune` / `PIPECAT_HUB_PRUNE=1`. Tainted repos remain cleaned up
+unconditionally.
 
 ### Outcomes
-- Outcome 1
-- Outcome 2
+
+- `shared/env_loading.py` (new) — `load_cwd_dotenv()` (moved from `cli.py`),
+  `load_global_config()`, `load_env_layers()`, `resolve_global_config_path()`,
+  `config_collides_with_dir()`. No new runtime dependency (`tomllib` is stdlib
+  at the 3.11 floor).
+- `config.toml` accepts the same flat `PIPECAT_HUB_*` names as env vars, plus
+  homogeneous comma-free scalar arrays (so the ~70-repo `EXTRA_REPOS` list is
+  authorable as a native TOML array). Five keys are invocation-scoped and
+  refused from the file, `PIPECAT_HUB_PRUNE` foremost — a machine-global file
+  must never silently re-enable `refresh`'s deletion behavior.
+- `refresh` prune safety, covering markbackman's exact repro (a project `.env`
+  with a narrower `EXTRA_REPOS` than `config.toml`) as a test, not just the
+  unit-level warn/delete branch.
+- `config.toml.example` ships alongside `.env.example`, pinned against
+  `docs/README.md`'s 11-var Environment Variables table by a parity test that
+  cannot vacuously pass on an empty extracted set.
+- Malformed, unreadable, or untrusted config files never crash an entry point:
+  every failure mode warns and returns. Untrusted here includes a non-regular
+  file (a FIFO would otherwise hang every invocation before argv dispatch), a
+  foreign-owned or world-writable file, a foreign-owned or world-writable
+  non-sticky directory anywhere on the resolution chain, and a foreign-owned
+  symlink hop.
+- Seven review-gauntlet rounds (Codex adversarial + deep-review lenses +
+  security-review), converging from 16 findings in round 1 to 9 Minor and no
+  Critical/Important in round 7.
 
 ### Learnings
-- [Any insights or lessons learned during implementation]
+
+- **A safety predicate that fails open needs a fuzzer, not more test cases.**
+  Five consecutive rounds each found a *new* symlink shape the endpoint-based
+  collision check missed; the shape that finally settled it was a
+  ground-truth `rmtree`-oracle fuzzer that compares the predicate against what
+  deletion actually destroys. Hand-written cases kept confirming the cases
+  already thought of.
+- **Normalize inside the predicate, not at the call sites.** The collision
+  check silently non-detects when handed an unnormalized path, so requiring
+  every present and future caller to normalize first is a latent fail-open.
+  Normalization is idempotent, so pulling it inside costs nothing.
+- **`resolve()` raises `RuntimeError`, not `OSError`, for a symlink loop on
+  Python ≤3.12.** An `except OSError` around path resolution reads as complete
+  and is not. This bit three separate call sites in this branch.
+- **"Blank means absent" has to be one rule, not one per key class.** Round 4
+  established that a blank higher-layer value is inert (every consumer reads
+  `.get(NAME, "").strip()`) so it should not shadow `config.toml`; round 7
+  re-raised it for list-valued keys. The behavior was kept uniform and the
+  reasoning written into the code, because splitting the rule by key class
+  makes the precedence unexplainable without also being more correct.
+- **A verification phase can fail to verify and still be worth shipping**, as
+  long as the gap is named rather than papered over with a plausible inference
+  — Phase 0 shipped its instrumentation and recorded its own unverified claims
+  as unverified.
 
 ### Follow-up Work
-- [Any related work identified for future plans]
+
+- **Close Phase 0's open verification.** The operator still needs to observe a
+  real Claude Code-spawned `serve` and record (a) its cwd and (b) whether the
+  `~/.zshrc` `PIPECAT_HUB_*` exports reach the subprocess at all. Both
+  observables are now permanently in place (`serve cwd=… env_keys=…`, and the
+  `PIPECAT_HUB_DEBUG_PROBE=1` file probe).
+- **Re-check the deletion repro against the source thread.** GitHub comment
+  5209812757 could not be re-fetched (no network in the implementing
+  environment), so the Context section's repro is still a carried-forward
+  paraphrase.
+- **Migrate the operator's `~/.zshrc` exports into `config.toml`.** The feature
+  exists to retire that workaround; until the exports are removed they
+  outrank the file by design and the file's effect is unobservable.
+- **Windows junction handling is untested on Windows.** `_is_reparse_link()`
+  (round 7) is exercised only by a POSIX emulation of the junction's observable
+  behavior — `is_symlink()` False, `os.path.isjunction()` True — never against
+  a real `mklink /J`. The CI windows-smoke leg does not cover a junctioned
+  `PIPECAT_HUB_DATA_DIR`.

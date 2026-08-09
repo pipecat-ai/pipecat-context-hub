@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import sys
 import time
 from datetime import UTC, datetime
@@ -190,6 +191,54 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
         )
 
 
+def _is_reparse_link(path: Path) -> bool:
+    """True when ``path`` is a symbolic link *or* a Windows directory junction.
+
+    ``Path.is_symlink()`` is not sufficient on Windows: a directory junction
+    (``mklink /J``) is a reparse point that ``resolve()`` follows exactly like a
+    symlink, but that ``is_symlink()`` reports as ``False`` (its reparse tag is
+    ``IO_REPARSE_TAG_MOUNT_POINT``, not ``…_SYMLINK``). Without this, a junction
+    used as ``PIPECAT_HUB_DATA_DIR`` takes the non-link path in
+    ``_delete_local_index_storage``: ``rmtree`` destroys the junction's *target*
+    through the junction, the target is never recreated, and the junction is
+    left dangling — so ``IndexStore``'s follow-up
+    ``mkdir(parents=True, exist_ok=True)`` raises ``FileExistsError`` and the
+    reset aborts the rebuild it exists to enable. Exactly the failure the
+    symlink repair already handles.
+
+    ``os.path.isjunction`` exists from Python 3.12; on 3.11 (this project's
+    floor) the same test is done directly against the ``lstat`` reparse tag,
+    which is what CPython's own implementation does. Both are absent on POSIX,
+    where the answer is always ``False``.
+
+    Never raises: an unstattable path is simply "not a link", matching the
+    caller's existing crash-safety contract.
+    """
+    try:
+        if path.is_symlink():
+            return True
+    except (ValueError, OSError):
+        return False
+
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            return bool(isjunction(path))
+        except (ValueError, OSError):
+            return False
+
+    # Python 3.11 fallback (Windows only — st_reparse_tag does not exist
+    # elsewhere, so this degrades to False on POSIX).
+    mount_point_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    if mount_point_tag is None:
+        return False
+    try:
+        reparse_tag = getattr(os.lstat(path), "st_reparse_tag", None)
+    except (ValueError, OSError):
+        return False
+    return bool(reparse_tag == mount_point_tag)
+
+
 def _delete_local_index_storage(data_dir: Path) -> None:
     """Delete the persisted local index directory for a clean rebuild.
 
@@ -216,8 +265,10 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     what was validated is exactly what is removed.
 
     One post-deletion repair: when ``data_dir`` is itself a symlink to a
-    directory, ``rmtree(resolved_data_dir)`` deletes the link's *target*
-    through the link, leaving the link dangling. ``IndexStore``'s subsequent
+    directory — or, on Windows, a directory junction, which ``resolve()``
+    follows identically but ``is_symlink()`` does not report (see
+    :func:`_is_reparse_link`) — ``rmtree(resolved_data_dir)`` deletes the link's
+    *target* through the link, leaving the link dangling. ``IndexStore``'s subsequent
     ``data_dir.mkdir(parents=True, exist_ok=True)`` then raises
     ``FileExistsError`` — ``exist_ok`` only suppresses when the existing path
     ``is_dir()``, which a dangling symlink is not — so the reset would abort
@@ -236,10 +287,7 @@ def _delete_local_index_storage(data_dir: Path) -> None:
         # Same crash-safety contract as env_loading.config_collides_with_dir:
         # `resolve()` raises RuntimeError for a symlink loop on Python <=3.12.
         resolved_data_dir = Path(os.path.abspath(data_dir))
-    try:
-        data_dir_was_symlink = expanded_data_dir.is_symlink()
-    except (ValueError, OSError):
-        data_dir_was_symlink = False
+    data_dir_was_symlink = _is_reparse_link(expanded_data_dir)
     _refuse_unsafe_data_dir(data_dir, resolved_data_dir)
     colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
     if colliding_config_path is not None:
@@ -285,7 +333,7 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
         index_store.delete_metadata("indexed_framework_commits_ahead")
 
 
-def _log_serve_cwd(logger: logging.Logger) -> None:
+def _log_serve_cwd() -> None:
     """Log the cwd and PIPECAT_HUB_* key names this invocation actually saw.
 
     Permanent diagnostic (not removed after investigation): confirms, at a
@@ -309,14 +357,14 @@ def _log_serve_cwd(logger: logging.Logger) -> None:
         cwd = redact_home(Path.cwd())
     except Exception:
         cwd = "<unavailable>"
-    logger.info(
+    _module_logger.info(
         "serve cwd=%s env_keys=%s",
         cwd,
         sorted(k for k in os.environ if k.startswith("PIPECAT_HUB_")),
     )
 
 
-def _write_serve_debug_probe(logger: logging.Logger) -> None:
+def _write_serve_debug_probe() -> None:
     """Write cwd/env-key evidence to a temp file, opt-in via PIPECAT_HUB_DEBUG_PROBE=1.
 
     Secondary observable for Phase 0's MCP-cwd verification, for use only if
@@ -350,7 +398,7 @@ def _write_serve_debug_probe(logger: logging.Logger) -> None:
         # attacker-chosen file.
         nofollow = getattr(os, "O_NOFOLLOW", None)
         if nofollow is None:
-            logger.warning(
+            _module_logger.warning(
                 "PIPECAT_HUB_DEBUG_PROBE=1: skipping debug probe — this platform has no "
                 "O_NOFOLLOW, so the append at %s could follow a symlink planted by "
                 "another account. Use the `serve cwd=… env_keys=…` log line instead.",
@@ -364,7 +412,7 @@ def _write_serve_debug_probe(logger: logging.Logger) -> None:
                 f"{datetime.now(UTC).isoformat()} serve cwd={redact_home(Path.cwd())} "
                 f"env_keys={sorted(k for k in os.environ if k.startswith('PIPECAT_HUB_'))}\n"
             )
-        logger.info(
+        _module_logger.info(
             "PIPECAT_HUB_DEBUG_PROBE=1: wrote serve debug probe to %s",
             redact_home(probe_path),
         )
@@ -374,7 +422,7 @@ def _write_serve_debug_probe(logger: logging.Logger) -> None:
         # actually cover that case, matching shared/paths.py's redact_home,
         # which wraps the same call for the same reason. A debug probe must
         # never crash serve, regardless of which exception it hits.
-        logger.exception("PIPECAT_HUB_DEBUG_PROBE=1: failed to write serve debug probe")
+        _module_logger.exception("PIPECAT_HUB_DEBUG_PROBE=1: failed to write serve debug probe")
 
 
 @click.group(invoke_without_command=True)
@@ -488,14 +536,9 @@ def serve(ctx: click.Context) -> None:
     config: HubConfig = ctx.obj["config"]
     logger = logging.getLogger(__name__)
     logger.info("Starting server with transport=%s", config.server.transport)
-    # Permanent diagnostic (not removed after investigation): confirms, at a
-    # glance, what cwd and PIPECAT_HUB_* keys this invocation actually saw —
-    # useful for diagnosing config provenance for a globally-installed MCP
-    # server, whose cwd/env may differ from an operator's interactive shell.
-    # Key names only, never values (PIPECAT_HUB_EXTRA_REPOS can be ~70 repos).
-    _log_serve_cwd(logger)
+    _log_serve_cwd()
     if _debug_probe_enabled():
-        _write_serve_debug_probe(logger)
+        _write_serve_debug_probe()
 
     # Resolve the client-death watch plan now, before the slow index +
     # model startup below. A client that dies during cold-start would

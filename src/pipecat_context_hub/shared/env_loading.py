@@ -140,9 +140,26 @@ def load_cwd_dotenv() -> None:
         KEY=value            # ok
         KEY="value" # note   # inline comment stripped
         KEY=value # note     # inline comment stripped
+
+    Never raises. ``Path.cwd()`` is not infallible — it raises
+    ``FileNotFoundError`` when the process's working directory has been
+    unlinked (a real case for a long-lived MCP server whose launching project
+    directory is deleted or moved), and ``OSError``/``RuntimeError`` on other
+    ``getcwd`` failures. Since this runs from ``load_env_layers()`` before argv
+    is dispatched, in every entry point (CLI, dashboard scripts,
+    ``smoke_check_removals.py``), an uncaught raise here would take down the
+    whole process before it could report anything useful — violating this
+    module's "entry points never crash on a bad config" contract. No cwd means
+    no cwd ``.env``, which is exactly the "file absent" case handled below.
+    The same call is guarded for the same reason in ``cli.py``'s
+    ``_log_serve_cwd`` / ``_write_serve_debug_probe`` and in
+    ``shared/paths.py``'s ``resolution_chain``.
     """
-    env_path = Path.cwd() / ".env"
-    if not env_path.is_file():
+    try:
+        env_path = Path.cwd() / ".env"
+        if not env_path.is_file():
+            return
+    except (OSError, ValueError, RuntimeError):
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -164,7 +181,19 @@ def load_cwd_dotenv() -> None:
             if idx != -1:
                 value = value[:idx].rstrip()
         if key not in os.environ:
-            os.environ[key] = value
+            try:
+                os.environ[key] = value
+            except ValueError as exc:
+                # Same guard as `load_global_config()`'s assignment: putenv
+                # rejects an embedded NUL or `=` in the key/value with
+                # ValueError. A hand-edited `.env` carrying one must skip that
+                # line, not abort the whole loader (and with it every entry
+                # point) before argv is dispatched.
+                _module_logger.warning(
+                    ".env key %r could not be set as an environment variable (%s); skipping",
+                    key,
+                    exc,
+                )
 
 
 def resolve_global_config_path() -> Path | None:
@@ -216,16 +245,24 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     """Return a config-path location inside ``candidate_dir``, or ``None``.
 
     Checks *every* filesystem location the active config path stands on while
-    it resolves — its lexical form, each intermediate symlink hop, and its
-    fully-resolved target (:func:`shared.paths.resolution_chain`) — because
-    each of those is a directory entry ``rmtree(candidate_dir)`` would delete,
-    and deleting any one of them severs the operator's path to their config.
-    Checking only the two endpoints (as this function once did) misses the
-    middle: a chain that enters ``candidate_dir`` and leaves again has both
-    endpoints outside it while still being destroyed by the delete.
+    it resolves — the path as given plus each intermediate symlink hop, via
+    :func:`shared.paths.resolution_chain` — because each of those is a
+    directory entry ``rmtree(candidate_dir)`` would delete, and deleting any
+    one of them severs the operator's path to their config. Checking only the
+    two endpoints (as this function once did) misses the middle: a chain that
+    enters ``candidate_dir`` and leaves again has both endpoints outside it
+    while still being destroyed by the delete.
 
     The fully-resolved target is re-checked explicitly afterwards as a floor,
     since ``resolution_chain`` is bounded and truncates on a cycle.
+
+    The path's *lexical* form (``abspath``: absolute and ``..``-collapsed, with
+    no symlink dereference) is deliberately **not** among the checked
+    locations. It is computed only as the fallback spelling for ``resolved``
+    when full resolution fails. Collapsing ``..`` lexically names a location
+    the kernel never visits — for ``<dirlink>/../config.toml`` the lexical form
+    is a sibling of the *link*, not of its target — so testing it against
+    ``candidate_dir`` would both miss real collisions and invent phantom ones.
 
     Returns ``None`` if nothing collides, the active config path can't be
     resolved (no home directory), or the config file doesn't exist — a
@@ -743,6 +780,26 @@ def load_global_config() -> None:
             # applies. Blank therefore means absent here, matching the
             # consumers.
             #
+            # This applies uniformly, list-valued keys included
+            # (`PIPECAT_HUB_EXTRA_REPOS`, `PIPECAT_HUB_TAINTED_REPOS`/`_REFS`),
+            # and that is deliberate rather than an oversight for that key
+            # class: those consumers read
+            # `_split_csv_env(os.environ.get(NAME, ""))`, so a blank yields the
+            # empty list — bit-for-bit the same result as the key being unset.
+            # A blank list key is therefore inert in exactly the same sense as
+            # a blank scalar, and the "neither layer applies" outcome above is
+            # the same one. The cost is real but is the lesser one: an operator
+            # writing `PIPECAT_HUB_EXTRA_REPOS=` in a project `.env` to narrow
+            # an inherited machine-global list to empty does not get that (the
+            # `config.toml` list still wins); the remedy is to omit the repo
+            # list rather than blank it, or to taint the unwanted entries.
+            # Making blank shadow *only* for list keys was considered and
+            # rejected: it splits one precedence rule into two by key class,
+            # and the intent argument ("an explicit blank is a deliberate
+            # override") is exactly as true for `PIPECAT_HUB_STALE_AFTER_DAYS=`,
+            # where the uniform rule was already settled the other way and is
+            # pinned by `TestBlankHigherLayerValueDoesNotShadow`.
+            #
             # A real env var or cwd .env already won this key — nothing this
             # config.toml value could do (including a DATA_DIR collision
             # warning below) is actually going to apply, so don't validate
@@ -806,10 +863,16 @@ def load_global_config() -> None:
             try:
                 candidate_dir = Path(coerced).expanduser().resolve(strict=False)
             except (ValueError, OSError, RuntimeError) as exc:
+                # `exc` is redacted for the same reason the read-failure
+                # warnings above are: `Path.resolve()`'s OSError/RuntimeError
+                # text embeds the absolute path it was resolving (symlink loop,
+                # ELOOP, ENAMETOOLONG), which puts the operator's home
+                # directory — and OS username — straight into a startup log
+                # line operators are asked to paste into bug reports.
                 _module_logger.warning(
                     "config.toml key %r has a value that is not a usable path (%s); skipping",
                     key,
-                    exc,
+                    redact_home_in_text(str(exc)),
                 )
                 continue
             colliding_config_path = config_collides_with_dir(candidate_dir)

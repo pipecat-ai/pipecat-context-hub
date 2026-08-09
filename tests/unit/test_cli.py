@@ -13,6 +13,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from pipecat_context_hub import cli as cli_module
 from pipecat_context_hub.cli import (
     _OPT_IN_ENABLED_VALUES,
     _debug_probe_enabled,
@@ -41,7 +42,8 @@ class TestWriteServeDebugProbe:
     def test_writes_probe_file(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         logger = MagicMock()
-        _write_serve_debug_probe(logger)
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _write_serve_debug_probe()
         probe_path = tmp_path / ".cache" / "pipecat-context-hub" / "serve-debug.log"
         assert probe_path.is_file()
         logger.info.assert_called_once()
@@ -56,7 +58,8 @@ class TestWriteServeDebugProbe:
 
         monkeypatch.setattr(Path, "home", _raise_no_home)
         logger = MagicMock()
-        _write_serve_debug_probe(logger)  # must not raise
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _write_serve_debug_probe()  # must not raise
         logger.exception.assert_called_once()
 
     def test_mkdir_oserror_is_swallowed(self, tmp_path: Path, monkeypatch):
@@ -67,7 +70,8 @@ class TestWriteServeDebugProbe:
             MagicMock(side_effect=OSError("permission denied")),
         )
         logger = MagicMock()
-        _write_serve_debug_probe(logger)  # must not raise
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _write_serve_debug_probe()  # must not raise
         logger.exception.assert_called_once()
 
 
@@ -2928,6 +2932,58 @@ class TestDataDirSafetyFloor:
         # The exact call IndexStore makes next must not raise.
         link.mkdir(parents=True, exist_ok=True)
 
+    def test_windows_junction_data_dir_stays_resolvable_after_reset(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Round-7 finding #1: on Windows a *directory junction* is followed by
+        `resolve()` exactly like a symlink, but `Path.is_symlink()` reports it
+        as False (its reparse tag is IO_REPARSE_TAG_MOUNT_POINT, not the
+        symlink one). The repair above was gated on `is_symlink()` alone, so a
+        junctioned `PIPECAT_HUB_DATA_DIR` had its target deleted through the
+        junction and never recreated — leaving the configured path dangling and
+        `IndexStore`'s follow-up mkdir raising FileExistsError.
+
+        Junctions cannot be created on POSIX, so this emulates the *observable*
+        Windows behavior: a real link whose `is_symlink()` answers False and
+        whose `os.path.isjunction()` answers True. That is a simulation of the
+        platform, not a test on it — untested against a real `mklink /J`.
+        """
+        self._no_config_file(monkeypatch, tmp_path)
+        real = tmp_path / "real-data"
+        real.mkdir()
+        (real / "marker").write_text("x")
+        link = tmp_path / "hub-data"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        # Windows emulation: junctions are not reported by is_symlink()...
+        monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+        # ...they are reported by os.path.isjunction (Python 3.12+).
+        monkeypatch.setattr(os.path, "isjunction", lambda p: str(p) == str(link), raising=False)
+
+        _delete_local_index_storage(link)
+
+        # Still a real reset: the index contents are gone...
+        assert not os.path.exists(str(real / "marker"))
+        # ...but the junction's target is put back, so the configured path
+        # still resolves to a directory for the rebuild that follows.
+        assert os.path.isdir(str(real))
+        assert os.path.isdir(str(link))
+
+    def test_plain_directory_data_dir_is_not_recreated(self, monkeypatch, tmp_path: Path) -> None:
+        """Control for the two link cases above: for an ordinary directory the
+        contract is "gone after reset", so the repair must not fire."""
+        self._no_config_file(monkeypatch, tmp_path)
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        (data_dir / "marker").write_text("x")
+
+        _delete_local_index_storage(data_dir)
+
+        assert not data_dir.exists()
+
     def test_refuses_home_reached_through_a_symlinked_ancestor(
         self, monkeypatch, tmp_path: Path
     ) -> None:
@@ -2984,8 +3040,9 @@ class TestServeCwdDiagnosticRedaction:
         monkeypatch.setattr(Path, "home", lambda: home)
         monkeypatch.chdir(project)
         logger = MagicMock()
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
         with patch("pipecat_context_hub.cli.Path.cwd", lambda: project):
-            _log_serve_cwd(logger)
+            _log_serve_cwd()
         logged_cwd = logger.info.call_args[0][1]
         assert str(home) not in str(logged_cwd)
         assert str(logged_cwd).startswith("~")
@@ -2996,7 +3053,7 @@ class TestServeCwdDiagnosticRedaction:
         project.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: home)
         monkeypatch.chdir(project)
-        _write_serve_debug_probe(MagicMock())
+        _write_serve_debug_probe()
         probe = home / ".cache" / "pipecat-context-hub" / "serve-debug.log"
         content = probe.read_text()
         assert str(home) not in content
@@ -3042,7 +3099,8 @@ class TestServeCwdDiagnosticIsCrashSafe:
 
         monkeypatch.setattr("pipecat_context_hub.cli.Path.cwd", _raise_no_cwd)
         logger = MagicMock()
-        _log_serve_cwd(logger)  # must not raise
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _log_serve_cwd()  # must not raise
         assert logger.info.call_args[0][1] == "<unavailable>"
 
     def test_home_runtime_error_does_not_crash_serve_diagnostic(self, monkeypatch) -> None:
@@ -3054,7 +3112,8 @@ class TestServeCwdDiagnosticIsCrashSafe:
 
         monkeypatch.setattr(Path, "home", _raise_no_home)
         logger = MagicMock()
-        _log_serve_cwd(logger)  # must not raise
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _log_serve_cwd()  # must not raise
         logger.info.assert_called_once()
 
 
@@ -3102,7 +3161,8 @@ class TestDebugProbeSymlinkHardening:
 
         monkeypatch.setattr(Path, "home", lambda: home)
         logger = MagicMock()
-        _write_serve_debug_probe(logger)  # must not raise
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _write_serve_debug_probe()  # must not raise
 
         assert victim.read_text() == "original\n"
         logger.exception.assert_called_once()
@@ -3123,7 +3183,8 @@ class TestDebugProbeSymlinkHardening:
         monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
 
         logger = MagicMock()
-        _write_serve_debug_probe(logger)
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _write_serve_debug_probe()
 
         assert not (cache_dir / "serve-debug.log").exists()
         assert logger.warning.call_count == 1
@@ -3135,7 +3196,7 @@ class TestDebugProbeSymlinkHardening:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: home)
-        _write_serve_debug_probe(MagicMock())
+        _write_serve_debug_probe()
         probe_path = home / ".cache" / "pipecat-context-hub" / "serve-debug.log"
         assert stat_module.S_IMODE(probe_path.stat().st_mode) == 0o600
         assert stat_module.S_IMODE(probe_path.parent.stat().st_mode) == 0o700
