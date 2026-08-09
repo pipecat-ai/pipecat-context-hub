@@ -1003,10 +1003,10 @@ imported in `services/ingest/github_ingest.py:664`.
 ## Testing Notes
 
 ### Test Approach
-- [ ] Unit tests for `load_cwd_dotenv()`/`load_global_config()` precedence and error handling (Phase 1)
-- [ ] Parity test for `config.toml.example` vs. README var table (Phase 2)
-- [ ] Prune-safety tests, including the markbackman repro reproduced end-to-end (Phase 4)
-- [ ] Manual: back up any existing `~/.config/pipecat-context-hub/config.toml`,
+- [x] Unit tests for `load_cwd_dotenv()`/`load_global_config()` precedence and error handling (Phase 1)
+- [x] Parity test for `config.toml.example` vs. README var table (Phase 2)
+- [x] Prune-safety tests, including the markbackman repro reproduced end-to-end (Phase 4)
+- [x] Manual: back up any existing `~/.config/pipecat-context-hub/config.toml`,
       write one with `PIPECAT_HUB_EXTRA_REPOS` set, then live-enumerate and
       neutralize whatever `PIPECAT_HUB_*` vars are actually exported in the
       current shell before running `status` — don't hardcode a fixed pair of
@@ -1026,38 +1026,38 @@ imported in `services/ingest/github_ingest.py:664`.
       repos).
 
 ### Test Results
-- [ ] All existing tests pass
-- [ ] New tests added and passing
-- [ ] Manual verification complete
+- [x] All existing tests pass
+- [x] New tests added and passing
+- [x] Manual verification complete
 
 ### Edge Cases Tested
-- [ ] `config.toml` absent (today's default behavior, unchanged)
-- [ ] `config.toml` present but empty
-- [ ] `config.toml` present with malformed TOML syntax, invalid UTF-8, or a
+- [x] `config.toml` absent (today's default behavior, unchanged)
+- [x] `config.toml` present but empty
+- [x] `config.toml` present with malformed TOML syntax, invalid UTF-8, or a
       read failure (including a directory path) — logs a warning, doesn't raise
-- [ ] `config.toml` sets a non-`PIPECAT_HUB_` key — skipped with a warning, not leaked into `os.environ`
-- [ ] `config.toml` sets a key already set by a real env var — real env var wins
-- [ ] `config.toml` sets a key already set by cwd `.env` — `.env` wins
-- [ ] `config.toml` sets a non-colliding `PIPECAT_HUB_DATA_DIR` — storage dir relocates for `serve`/`refresh`/dashboard scripts alike, independent of `config.toml`'s own lookup path; a value containing that config file is skipped with a warning
-- [ ] `refresh --reset-index` run with `config.toml` present — file survives for both the `PIPECAT_HUB_CONFIG_FILE` override case and the no-override `DEFAULT_CONFIG_PATH` case, while the real data directory is removed
-- [ ] reset-index refuses a colliding data directory from a higher-precedence env source before deletion
-- [ ] default (non-`tmp_path`-overridden) resolved `config.toml` lookup path is not relative to `StorageConfig()`'s default `data_dir` — verified against the real default paths, not just the `tmp_path` path used for the no-override branch
-- [ ] TOML-native `true`/`false` values produce the correct *behavioral* outcome, not just the right string in `os.environ`
-- [ ] `refresh` without `--prune`, repo unconfigured this run — indexed records survive, warning + summary line emitted
-- [ ] `refresh --prune` (or `PIPECAT_HUB_PRUNE=1`), repo unconfigured this run — indexed records deleted (today's behavior, now opt-in)
-- [ ] `refresh` without `--prune`, tainted repo — indexed records still deleted (unconditional, unchanged)
-- [ ] markbackman's repro end-to-end: `config.toml` configures A+B, a project `.env` configures only A, `refresh` from that project dir without `--prune` — B survives
-- [ ] `PIPECAT_HUB_PRUNE` set to an unrecognized value (e.g. `"maybe"`, or a non-frozenset case variant like `"tRuE"`) — resolves to `False` (safe default), no deletion
-- [ ] `PIPECAT_HUB_PRUNE` set to a whitespace-padded frozenset member (e.g. `" 1 "`) — resolves `True` after stripping
-- [ ] `--prune` flag passed together with `PIPECAT_HUB_PRUNE=0` — flag wins, deletion proceeds
-- [ ] `config.toml` sets `PIPECAT_HUB_PRUNE` — skipped by the loader with a warning, has no effect on `refresh`'s prune behavior
-- [ ] no-prune `refresh` then later `--prune` `refresh` — metadata survives the first run and is cleanly deleted by the second, no orphaning
-- [ ] `config.toml` sets `PIPECAT_HUB_EXTRA_REPOS` as a comma-free native TOML array — coerced to a CSV string, repos load correctly
-- [ ] `config.toml` sets `PIPECAT_HUB_EXTRA_REPOS` as an empty TOML array (`[]`) — coerced to `""`
-- [ ] `config.toml` sets a non-string homogeneous scalar array (e.g. `[1, 2]`) — coerced to `"1,2"`
-- [ ] `config.toml` sets an array element containing a literal comma (e.g. `["org/repo,a"]`) — skipped with a warning rather than silently split
-- [ ] `config.toml` sets `PIPECAT_HUB_CONFIG_FILE` itself has no meaning — enforced by `_INVOCATION_SCOPED_KEYS` (skipped with a warning, never reaches `os.environ`), not merely true by absence of a consumer; same for `PIPECAT_HUB_DEBUG_PROBE`, `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK`, and `PIPECAT_HUB_STABILITY_OUTPUT` set in `config.toml`
-- [ ] dashboard-coverage: `extract_dashboard.py`, `extract_embeddings.py`, AND `scripts/smoke_check_removals.py` each run with `PIPECAT_HUB_CONFIG_FILE` pointed at a `tmp_path` `config.toml` setting `PIPECAT_HUB_DATA_DIR` — resolved `StorageConfig.data_dir` matches for all three (behavioral, not just source-scan)
+- [x] `config.toml` sets a non-`PIPECAT_HUB_` key — skipped with a warning, not leaked into `os.environ`
+- [x] `config.toml` sets a key already set by a real env var — real env var wins
+- [x] `config.toml` sets a key already set by cwd `.env` — `.env` wins
+- [x] `config.toml` sets a non-colliding `PIPECAT_HUB_DATA_DIR` — storage dir relocates for `serve`/`refresh`/dashboard scripts alike, independent of `config.toml`'s own lookup path; a value containing that config file is skipped with a warning
+- [x] `refresh --reset-index` run with `config.toml` present — file survives for both the `PIPECAT_HUB_CONFIG_FILE` override case and the no-override `DEFAULT_CONFIG_PATH` case, while the real data directory is removed
+- [x] reset-index refuses a colliding data directory from a higher-precedence env source before deletion
+- [x] default (non-`tmp_path`-overridden) resolved `config.toml` lookup path is not relative to `StorageConfig()`'s default `data_dir` — verified against the real default paths, not just the `tmp_path` path used for the no-override branch
+- [x] TOML-native `true`/`false` values produce the correct *behavioral* outcome, not just the right string in `os.environ`
+- [x] `refresh` without `--prune`, repo unconfigured this run — indexed records survive, warning + summary line emitted
+- [x] `refresh --prune` (or `PIPECAT_HUB_PRUNE=1`), repo unconfigured this run — indexed records deleted (today's behavior, now opt-in)
+- [x] `refresh` without `--prune`, tainted repo — indexed records still deleted (unconditional, unchanged)
+- [x] markbackman's repro end-to-end: `config.toml` configures A+B, a project `.env` configures only A, `refresh` from that project dir without `--prune` — B survives
+- [x] `PIPECAT_HUB_PRUNE` set to an unrecognized value (e.g. `"maybe"`, or a non-frozenset case variant like `"tRuE"`) — resolves to `False` (safe default), no deletion
+- [x] `PIPECAT_HUB_PRUNE` set to a whitespace-padded frozenset member (e.g. `" 1 "`) — resolves `True` after stripping
+- [x] `--prune` flag passed together with `PIPECAT_HUB_PRUNE=0` — flag wins, deletion proceeds
+- [x] `config.toml` sets `PIPECAT_HUB_PRUNE` — skipped by the loader with a warning, has no effect on `refresh`'s prune behavior
+- [x] no-prune `refresh` then later `--prune` `refresh` — metadata survives the first run and is cleanly deleted by the second, no orphaning
+- [x] `config.toml` sets `PIPECAT_HUB_EXTRA_REPOS` as a comma-free native TOML array — coerced to a CSV string, repos load correctly
+- [x] `config.toml` sets `PIPECAT_HUB_EXTRA_REPOS` as an empty TOML array (`[]`) — coerced to `""`
+- [x] `config.toml` sets a non-string homogeneous scalar array (e.g. `[1, 2]`) — coerced to `"1,2"`
+- [x] `config.toml` sets an array element containing a literal comma (e.g. `["org/repo,a"]`) — skipped with a warning rather than silently split
+- [x] `config.toml` sets `PIPECAT_HUB_CONFIG_FILE` itself has no meaning — enforced by `_INVOCATION_SCOPED_KEYS` (skipped with a warning, never reaches `os.environ`), not merely true by absence of a consumer; same for `PIPECAT_HUB_DEBUG_PROBE`, `PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK`, and `PIPECAT_HUB_STABILITY_OUTPUT` set in `config.toml`
+- [x] dashboard-coverage: `extract_dashboard.py`, `extract_embeddings.py`, AND `scripts/smoke_check_removals.py` each run with `PIPECAT_HUB_CONFIG_FILE` pointed at a `tmp_path` `config.toml` setting `PIPECAT_HUB_DATA_DIR` — resolved `StorageConfig.data_dir` matches for all three (behavioral, not just source-scan)
 
 ## Acceptance Criteria
 
