@@ -64,10 +64,22 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
     the list rather than raising. Callers must therefore treat a location's
     *presence* as evidence and its *absence* as unproven — every consumer here
     keeps an independent endpoint check as its floor.
+
+    The seed is absolutised but deliberately **not** normalized. Anything that
+    collapses ``..`` up front (``os.path.abspath``, ``Path.resolve``) does it
+    *lexically*, before a single symlink is expanded — the opposite of what the
+    kernel does. A ``..`` that follows a directory symlink pops out of the
+    link's **target**, not out of the link's own parent, so a pre-normalized
+    seed yields a chain of locations the lookup never visits (and, worse, omits
+    the symlinks it does traverse). The loop below handles ``os.pardir`` itself,
+    at the right point in the walk, which is what makes the result agree with
+    ``os.path.realpath`` on the endpoint.
     """
     try:
-        absolute = Path(os.path.abspath(path))
+        raw = Path(path)
+        absolute = raw if raw.is_absolute() else Path(os.getcwd()) / raw
     except (OSError, ValueError):
+        # `os.getcwd()` raises when the working directory has been unlinked.
         return []
     parts = absolute.parts
     if not parts:
@@ -109,11 +121,23 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
         except (OSError, ValueError, NotImplementedError):
             resolved = current
             continue
-        if target.anchor:
-            # Absolute target: restart from *its* anchor, which on Windows may
-            # be a different drive than the one the walk started on.
+        if target.is_absolute():
+            # Fully-qualified target: restart from *its* anchor, which on
+            # Windows may be a different drive than the one the walk started on.
             resolved = Path(target.anchor)
             pending.extendleft(reversed(target.parts[1:]))
+        elif target.anchor:
+            # Windows-only third case: an anchor that is not a full absolute
+            # path — root-relative (`\foo`, anchor `\`, no drive) or
+            # drive-relative (`C:rel`, anchor `C:`, no root). Testing
+            # `target.anchor` alone treated both as absolute and dropped the
+            # originating drive. Joining against `resolved` is what supplies
+            # the missing half: pathlib takes the drive from the left operand
+            # for a root-relative target, and treats a same-drive
+            # drive-relative target as relative to it.
+            combined = resolved / target
+            resolved = Path(combined.anchor)
+            pending.extendleft(reversed(combined.parts[1:]))
         else:
             # Relative target: resolves against the link's own directory, which
             # is `resolved` — deliberately left untouched.

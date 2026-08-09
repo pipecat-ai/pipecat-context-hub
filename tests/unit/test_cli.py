@@ -14,7 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import (
-    _PRUNE_ENABLED_VALUES,
+    _OPT_IN_ENABLED_VALUES,
     _debug_probe_enabled,
     _delete_local_index_storage,
     _log_serve_cwd,
@@ -1383,7 +1383,7 @@ class TestRefreshProvenanceMetadata:
 
 
 class TestPruneEnabledValues:
-    """`_PRUNE_ENABLED_VALUES` frozenset exactness and `_prune_enabled()`
+    """`_OPT_IN_ENABLED_VALUES` frozenset exactness and `_prune_enabled()`
     env-var parsing (dev plan docs/dev_plans/20260807-feature-global-config-toml.md,
     Phase 4). Polarity is inverted from `_warmup_enabled()`: `PIPECAT_HUB_PRUNE`
     defaults `False` (deletion is opt-in), so an *unrecognized* value must
@@ -1391,7 +1391,7 @@ class TestPruneEnabledValues:
     """
 
     def test_prune_enabled_values_is_value_exact(self) -> None:
-        assert _PRUNE_ENABLED_VALUES == frozenset(
+        assert _OPT_IN_ENABLED_VALUES == frozenset(
             {"1", "true", "True", "TRUE", "yes", "Yes", "YES"}
         )
 
@@ -1654,7 +1654,7 @@ class TestPruneSafety(TestRefreshCommand):
         monkeypatch,
     ):
         """`PIPECAT_HUB_PRUNE` set to exactly one of the seven
-        `_PRUNE_ENABLED_VALUES` members, alone (no --prune flag), behaves
+        `_OPT_IN_ENABLED_VALUES` members, alone (no --prune flag), behaves
         the same as --prune. Not tested here: arbitrary case variants like
         `"tRuE"` — the frozenset is value-exact, not case-insensitive, and
         that case belongs with the unhappy-path garbage-value tests below."""
@@ -1988,6 +1988,56 @@ class TestPruneSafety(TestRefreshCommand):
         assert self._REMOVED_REPO not in deleted_repos
         # …but no misleading notice about a flag that would remove nothing.
         assert self._REMOVED_REPO not in caplog.text
+        assert "Skipped pruning" not in result.output
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_unconfigured_repo_with_zero_records_still_leaves_a_trace(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Round-6 finding #3. The zero-record case above was suppressed
+        *entirely*, but `get_counts_by_repo()` reads SQLite/FTS only. On a
+        divergent index — an interrupted delete leaving vector-only records —
+        the count is 0 while records still surface through the hybrid
+        retriever, and the operator saw nothing at all to explain them. The
+        WARNING and the "Skipped pruning" line stay suppressed (nothing is
+        provably at risk); an INFO line restores the diagnostic.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+        mock_store.get_counts_by_repo = MagicMock(return_value={})
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        with caplog.at_level("INFO", logger="pipecat_context_hub.cli"):
+            result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        info_text = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "INFO")
+        assert self._REMOVED_REPO in info_text
         assert "Skipped pruning" not in result.output
 
     # ----- Unhappy / edge paths -----
@@ -3013,7 +3063,7 @@ class TestDebugProbeEnabled:
     than every sibling PIPECAT_HUB_* boolean flag for no stated reason —
     `PIPECAT_HUB_DEBUG_PROBE=true` silently did nothing while
     `PIPECAT_HUB_PRUNE=true` worked. Both are default-off opt-ins, so they
-    share `_PRUNE_ENABLED_VALUES`.
+    share `_OPT_IN_ENABLED_VALUES`.
     """
 
     @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "Yes", "YES"])
@@ -3056,6 +3106,27 @@ class TestDebugProbeSymlinkHardening:
 
         assert victim.read_text() == "original\n"
         logger.exception.assert_called_once()
+
+    def test_probe_is_skipped_when_platform_lacks_o_nofollow(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Round-6 finding #2. `getattr(os, "O_NOFOLLOW", 0)` degraded to a
+        no-op flag on platforms without it (notably Windows), so the very
+        symlink the flag exists to refuse would be followed and appended to.
+        Absent the protection, the probe — an optional diagnostic — must not
+        run at all.
+        """
+        home = tmp_path / "home"
+        cache_dir = home / ".cache" / "pipecat-context-hub"
+        cache_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+
+        logger = MagicMock()
+        _write_serve_debug_probe(logger)
+
+        assert not (cache_dir / "serve-debug.log").exists()
+        assert logger.warning.call_count == 1
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
     def test_created_probe_file_and_dir_are_owner_only(self, tmp_path: Path, monkeypatch) -> None:

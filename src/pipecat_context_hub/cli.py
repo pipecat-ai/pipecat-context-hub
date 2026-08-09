@@ -65,11 +65,15 @@ def _warmup_enabled(env: dict[str, str] | None = None) -> bool:
     return source.get("PIPECAT_HUB_WARMUP", "1").strip() not in _WARMUP_DISABLED_VALUES
 
 
-# Values of PIPECAT_HUB_PRUNE that enable refresh's repo-deletion cleanup.
-# Unlike _WARMUP_DISABLED_VALUES above, this defaults to *disabled*: pruning
-# deletes previously-indexed data, so an unrecognized value (typo, unexpected
-# casing) must resolve to False, not True.
-_PRUNE_ENABLED_VALUES = frozenset({"1", "true", "True", "TRUE", "yes", "Yes", "YES"})
+# Env-var values that turn on a *default-off* opt-in — shared by
+# PIPECAT_HUB_PRUNE (refresh's repo-deletion cleanup) and
+# PIPECAT_HUB_DEBUG_PROBE (serve's probe file). Named for the shape rather
+# than for the first consumer, since it now has two.
+#
+# Unlike _WARMUP_DISABLED_VALUES above, membership *enables*: pruning deletes
+# previously-indexed data, so an unrecognized value (typo, unexpected casing)
+# must resolve to False, not True.
+_OPT_IN_ENABLED_VALUES = frozenset({"1", "true", "True", "TRUE", "yes", "Yes", "YES"})
 
 
 def _prune_enabled(env: dict[str, str] | None = None) -> bool:
@@ -81,24 +85,24 @@ def _prune_enabled(env: dict[str, str] | None = None) -> bool:
     reject a garbage value with a UsageError before this function's
     safe-default handling could apply. Enabled only on an exact match
     (case-exact, after stripping whitespace) against
-    ``_PRUNE_ENABLED_VALUES``; any other value — including unset, "0", or a
+    ``_OPT_IN_ENABLED_VALUES``; any other value — including unset, "0", or a
     typo like "tRuE" — resolves to False (no deletion).
     """
     source = env if env is not None else os.environ
-    return source.get(env_loading.PRUNE_ENV_VAR, "").strip() in _PRUNE_ENABLED_VALUES
+    return source.get(env_loading.PRUNE_ENV_VAR, "").strip() in _OPT_IN_ENABLED_VALUES
 
 
 def _debug_probe_enabled(env: dict[str, str] | None = None) -> bool:
     """Return True when `serve` should write the opt-in debug probe file.
 
-    Shares ``_PRUNE_ENABLED_VALUES`` with :func:`_prune_enabled` rather than
+    Shares ``_OPT_IN_ENABLED_VALUES`` with :func:`_prune_enabled` rather than
     testing ``== "1"`` inline: both are default-off opt-ins, and there is no
     reason for ``PIPECAT_HUB_DEBUG_PROBE=true`` to silently do nothing while
     ``PIPECAT_HUB_PRUNE=true`` works. Same safe default — an unrecognized
     value resolves to False.
     """
     source = env if env is not None else os.environ
-    return source.get(env_loading.DEBUG_PROBE_ENV_VAR, "").strip() in _PRUNE_ENABLED_VALUES
+    return source.get(env_loading.DEBUG_PROBE_ENV_VAR, "").strip() in _OPT_IN_ENABLED_VALUES
 
 
 def _prewarm_models(embedding_svc: object, cross_encoder: object | None) -> None:
@@ -336,7 +340,24 @@ def _write_serve_debug_probe(logger: logging.Logger) -> None:
         # arbitrary file the server user can write. With O_NOFOLLOW the open
         # fails (ELOOP) instead, and the failure is logged and swallowed like
         # every other probe failure. 0o600 keeps the created file private.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        #
+        # Where the flag does not exist (notably Windows), the previous
+        # `getattr(os, "O_NOFOLLOW", 0)` spelling silently OR'd in a no-op and
+        # opened the path anyway — i.e. the one platform without the
+        # protection was the one that skipped it. Refuse instead: this is an
+        # optional diagnostic with a permanent `logger.info` equivalent, so
+        # not writing it costs nothing next to appending into an
+        # attacker-chosen file.
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            logger.warning(
+                "PIPECAT_HUB_DEBUG_PROBE=1: skipping debug probe — this platform has no "
+                "O_NOFOLLOW, so the append at %s could follow a symlink planted by "
+                "another account. Use the `serve cwd=… env_keys=…` log line instead.",
+                redact_home(probe_path),
+            )
+            return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | nofollow
         fd = os.open(probe_path, flags, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(
@@ -904,6 +925,22 @@ def refresh(
                             "record(s) in place — pass --prune to remove",
                             slug,
                             pre_counts.get(slug, 0),
+                        )
+                    else:
+                        # Zero *FTS* records — which is not the same as zero
+                        # records. `get_counts_by_repo()` reads SQLite only, so
+                        # a divergent index (an interrupted delete leaving
+                        # vector-only rows behind) reports 0 here while those
+                        # rows still surface through the hybrid retriever.
+                        # Staying silent entirely left that unexplainable, so
+                        # the trace is kept — at INFO, and without the counter
+                        # or the "Skipped pruning" summary line, because
+                        # nothing is *provably* at risk and the warning above
+                        # would be advertising a destructive flag on a guess.
+                        logger.info(
+                            "Repo %s not configured in this run; no indexed records found "
+                            "(stale bookkeeping only — pass --prune to drop it)",
+                            slug,
                         )
 
         framework_slug = _FRAMEWORK_REPO

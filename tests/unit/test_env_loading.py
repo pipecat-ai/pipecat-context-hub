@@ -24,6 +24,7 @@ from pipecat_context_hub.shared.env_loading import (
     load_global_config,
     resolve_global_config_path,
 )
+from pipecat_context_hub.shared.paths import is_inside
 
 
 def _use_config_file(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -1584,6 +1585,31 @@ class TestSymlinkChainIsWalked:
         _use_config_file(monkeypatch, loop_a / "config.toml")
         assert config_collides_with_dir(tmp_path / "data") is None
         load_global_config()  # must not raise
+
+    def test_pardir_after_symlink_into_data_dir_is_a_collision(self, tmp_path: Path, monkeypatch):
+        """Round-6 finding #1, end-to-end. `outside/link` is a directory
+        symlink into the data dir, and the configured path walks back out of
+        it with `..` — which the kernel applies to the *target*, landing the
+        config squarely inside the data dir. The guard used to seed its walk
+        from `os.path.abspath`, collapsing the `..` before the symlink was
+        ever expanded, so it decided the config lived at
+        `outside/config.toml` (nonexistent) and reported no collision — and
+        `refresh --reset-index` deleted the operator's live config.
+        """
+        data_dir = tmp_path / "data"
+        (data_dir / "inner").mkdir(parents=True)
+        self._write_config(data_dir / "config.toml")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (outside / "link").symlink_to(data_dir / "inner", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        _use_config_file(monkeypatch, outside / "link" / ".." / "config.toml")
+        collision = config_collides_with_dir(data_dir)
+        assert collision is not None
+        assert is_inside(collision, data_dir)
 
 
 class TestUnknownKeyWarningIsNotContradicted:

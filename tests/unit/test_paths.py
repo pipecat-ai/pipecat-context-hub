@@ -1,11 +1,68 @@
-"""Unit tests for shared/paths.py home-redaction helpers."""
+"""Unit tests for shared/paths.py home-redaction helpers and path primitives."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
-from pipecat_context_hub.shared.paths import redact_home_in_text
+import pytest
+
+from pipecat_context_hub.shared.paths import redact_home_in_text, resolution_chain
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")
+class TestResolutionChainMatchesKernelOrdering:
+    """Round-6 finding #1: the walk seeded itself from ``os.path.abspath``,
+    which collapses ``..`` *lexically* — before any symlink is expanded. The
+    kernel does the opposite: it expands each component in order, so a ``..``
+    that follows a symlink pops out of the link's *target* directory, not out
+    of the link's own parent. Seeding from a pre-normalized path therefore
+    produced a chain describing locations the lookup never visits, silently
+    voiding every guard built on it.
+    """
+
+    def test_pardir_after_symlink_records_the_traversed_link(self, tmp_path: Path):
+        real = tmp_path / "real"
+        (real / "inner").mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (outside / "link").symlink_to(real / "inner", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        chain = resolution_chain(outside / "link" / ".." / "config.toml")
+
+        # The symlink itself is a real directory entry the lookup depends on.
+        assert outside / "link" in chain
+        # `..` applies to the link's *target*, so the walk lands in `real`.
+        assert real / "config.toml" in chain
+        # ...and never in the lexically-collapsed location the kernel skips.
+        assert outside / "config.toml" not in chain
+
+    def test_chain_endpoint_agrees_with_realpath(self, tmp_path: Path):
+        """Differential floor: the last location the walk stands on must be
+        what ``os.path.realpath`` reports for the same input."""
+        real = tmp_path / "real"
+        (real / "inner").mkdir(parents=True)
+        (real / "config.toml").write_text("")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        try:
+            (outside / "link").symlink_to(real / "inner", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        target = outside / "link" / ".." / "config.toml"
+        chain = resolution_chain(target)
+        assert str(chain[-1]) == os.path.realpath(target)
+
+    def test_relative_input_is_absolutised_against_cwd(self, tmp_path: Path, monkeypatch):
+        (tmp_path / "sub").mkdir()
+        monkeypatch.chdir(tmp_path)
+        chain = resolution_chain(Path("sub") / "config.toml")
+        assert tmp_path / "sub" / "config.toml" in chain
 
 
 class TestRedactHomeInText:

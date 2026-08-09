@@ -251,7 +251,9 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     except (ValueError, OSError, RuntimeError):
         candidate_dir = Path(os.path.abspath(candidate_dir))
 
-    # Lexical: absolute + '..'/'.'-normalized, zero syscalls, zero symlink deref.
+    # Lexical: absolute + '..'/'.'-normalized, zero syscalls, zero symlink
+    # deref. Kept only as the fallback spelling when full resolution fails —
+    # never as an existence test (see the `is_file()` gate below).
     lexical = Path(os.path.abspath(config_path))
 
     # Target: full dereference — the floor beneath the chain walk, and the
@@ -270,8 +272,14 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     except (ValueError, OSError, RuntimeError):
         resolved = lexical
 
+    # Existence is tested on the path *as the kernel resolves it*, not on its
+    # lexically-collapsed spelling. `os.path.abspath` folds `..` away before
+    # any symlink is expanded, so for a path like `<dirlink>/../config.toml`
+    # the lexical form names a location that need not exist at all — and this
+    # gate would short-circuit the whole deletion guard to "no collision" for a
+    # config file that is genuinely inside `candidate_dir`.
     try:
-        if not lexical.is_file():
+        if not config_path.is_file():
             return None
     except (OSError, ValueError):
         # `is_file()` swallows OSError for most failures, but not every one on
@@ -354,8 +362,25 @@ def _link_owner_is_trusted(config_path: Path, uid: int) -> bool:
     ``~/.config`` itself) redirects the lookup exactly as effectively as a
     foreign-owned leaf, and every stat after that hop just follows it to a
     target tree that looks perfectly fine.
+
+    ``config_path`` itself is appended as an independent floor rather than
+    relied on being the chain's last element. The chain is best-effort by
+    contract — bounded, and truncating on any per-component ``OSError`` — so a
+    truncated or (as round 6 found) mis-seeded walk could otherwise silently
+    drop the single most attackable component, the leaf the loader actually
+    opened, and this guard would report "trusted" having examined none of it.
+    Re-``lstat``ing one path is not worth making that failure mode possible.
     """
-    for location in resolution_chain(config_path) or [config_path]:
+    chain = resolution_chain(config_path)
+    seen: set[str] = set()
+    locations: list[Path] = []
+    for candidate in [*chain, config_path]:
+        marker = str(candidate)
+        if marker not in seen:
+            seen.add(marker)
+            locations.append(candidate)
+
+    for location in locations:
         try:
             lst = os.lstat(location)
         except (OSError, ValueError):
