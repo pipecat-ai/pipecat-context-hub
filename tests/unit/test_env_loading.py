@@ -10,6 +10,7 @@ rewritten `_isolate_env_vars` autouse fixture in tests/conftest.py.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -619,6 +620,13 @@ class TestLoadGlobalConfigCrashSafety:
         assert "PIPECAT_HUB_DATA_DIR" not in os.environ
         assert "PIPECAT_HUB_DATA_DIR" in caplog.text
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="`~user` resolution is POSIX-only: ntpath.expanduser() has no "
+        "pwd-style user lookup, so it string-substitutes a plausible-looking "
+        "path for any `~user` prefix instead of raising RuntimeError for an "
+        "unknown one — there is nothing for Guard A to catch on this platform.",
+    )
     def test_unresolvable_user_home_data_dir_warns_and_is_skipped_not_raised(
         self, tmp_path: Path, monkeypatch, caplog
     ):
@@ -1278,6 +1286,14 @@ class TestConfigFileCrashSafety:
         assert redact_home(fifo) in caplog.text
         assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="`~user` resolution is POSIX-only: ntpath.expanduser() has no "
+        "pwd-style user lookup, so it string-substitutes a plausible-looking "
+        "path for any `~user` prefix instead of raising RuntimeError for an "
+        "unknown one — resolve_global_config_path() has nothing to catch on "
+        "this platform, so it cannot return None here.",
+    )
     def test_unknown_user_override_does_not_crash(self, monkeypatch, caplog):
         """Round-3 finding #3: `Path.expanduser()` raises RuntimeError for a
         user it can't resolve, so `PIPECAT_HUB_CONFIG_FILE=~nosuchuser/...`
@@ -1299,7 +1315,12 @@ class TestConfigFileCrashSafety:
         _use_config_file(monkeypatch, config_dir)
         with caplog.at_level("WARNING"):
             load_global_config()
-        assert str(config_dir) in caplog.text
+        # Redaction-aware for the same reason as the FIFO case above: the
+        # loader logs a home-redacted path, and tmp_path can live under home
+        # (it does on GitHub's hosted Windows runners, where TEMP resolves
+        # under the user profile) — asserting the raw `str(config_dir)` then
+        # never matches the redacted log line.
+        assert redact_home(config_dir) in caplog.text
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership/mode semantics")

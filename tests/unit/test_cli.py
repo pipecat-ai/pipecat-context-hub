@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -39,6 +40,13 @@ class TestWriteServeDebugProbe:
     including when `Path.home()` itself raises (RuntimeError, not OSError),
     a gap the original `except OSError` clause missed."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the probe write is O_NOFOLLOW-gated (see cli.py's "
+        "_write_serve_debug_probe) and os.O_NOFOLLOW does not exist on "
+        "Windows, so the function deliberately skips writing there — see "
+        "test_probe_skipped_without_o_nofollow_on_windows for that path.",
+    )
     def test_writes_probe_file(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         logger = MagicMock()
@@ -47,6 +55,21 @@ class TestWriteServeDebugProbe:
         probe_path = tmp_path / ".cache" / "pipecat-context-hub" / "serve-debug.log"
         assert probe_path.is_file()
         logger.info.assert_called_once()
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="pins the deliberate Windows-only skip path (no O_NOFOLLOW); "
+        "see test_writes_probe_file for the POSIX behavior this platform "
+        "doesn't share.",
+    )
+    def test_probe_skipped_without_o_nofollow_on_windows(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        logger = MagicMock()
+        monkeypatch.setattr(cli_module, "_module_logger", logger)
+        _write_serve_debug_probe()  # must not raise
+        probe_path = tmp_path / ".cache" / "pipecat-context-hub" / "serve-debug.log"
+        assert not probe_path.exists()
+        logger.warning.assert_called_once()
 
     def test_path_home_runtime_error_is_swallowed(self, monkeypatch):
         """Path.home() raises RuntimeError (not OSError) when the home
@@ -3258,6 +3281,12 @@ class TestServeCwdDiagnosticRedaction:
         assert str(home) not in str(logged_cwd)
         assert str(logged_cwd).startswith("~")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the probe write is O_NOFOLLOW-gated and os.O_NOFOLLOW does "
+        "not exist on Windows, so no probe file is ever written there — see "
+        "TestWriteServeDebugProbe.test_probe_skipped_without_o_nofollow_on_windows.",
+    )
     def test_debug_probe_content_is_home_redacted(self, monkeypatch, tmp_path: Path) -> None:
         home = tmp_path / "home"
         project = home / "customer-a"
