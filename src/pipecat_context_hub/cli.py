@@ -208,6 +208,14 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     them. A stale/deleted or never-created config path never blocks a real
     ``--reset-index`` — only an existing file in effect is worth protecting.
 
+    The same protection covers the *project-local* config source, the cwd
+    ``.env`` (``env_loading.dotenv_collides_with_dir``, sharing one predicate
+    with the ``config.toml`` check above). Protecting only ``config.toml`` left
+    the more natural spelling of the same hazard wide open: a project ``.env``
+    saying ``PIPECAT_HUB_DATA_DIR=.`` makes the data dir the working tree that
+    holds that very ``.env``, and the ``config.toml`` check cannot fire because
+    the machine-global file lives elsewhere.
+
     A second, unconditional floor guards the case the config-collision check
     structurally cannot: an operator who has never created a ``config.toml``
     (i.e. every user before this branch) gets no collision hit at all, so a
@@ -252,6 +260,14 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             f"Refusing to delete {redact_home(data_dir)}: it contains the active "
             f"config.toml ({redact_home(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
             "or the config file so they don't collide, then retry --reset-index."
+        )
+    colliding_dotenv_path = env_loading.dotenv_collides_with_dir(resolved_data_dir)
+    if colliding_dotenv_path is not None:
+        raise click.ClickException(
+            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
+            f"project .env ({redact_home(colliding_dotenv_path)}). Point PIPECAT_HUB_DATA_DIR "
+            "at a directory outside your project (or run from elsewhere), then retry "
+            "--reset-index."
         )
     shutil.rmtree(resolved_data_dir, ignore_errors=True)
     if data_dir_was_symlink:
@@ -401,13 +417,28 @@ def _write_serve_debug_probe() -> None:
             "PIPECAT_HUB_DEBUG_PROBE=1: wrote serve debug probe to %s",
             redact_home(probe_path),
         )
-    except Exception:
+    except Exception as exc:
         # Path.home() raises RuntimeError (not OSError) when the home
         # directory can't be determined — broadened from except OSError to
         # actually cover that case, matching shared/paths.py's redact_home,
         # which wraps the same call for the same reason. A debug probe must
         # never crash serve, regardless of which exception it hits.
-        _module_logger.exception("PIPECAT_HUB_DEBUG_PROBE=1: failed to write serve debug probe")
+        #
+        # A redacted single-line warning, not `logger.exception`: the traceback
+        # renders source lines and the exception's own `__str__`, and OSError's
+        # `__str__` appends the absolute filename it failed on — putting the
+        # operator's home directory, and with it the OS username, into exactly
+        # the stderr lines `shared/support_links.py`'s bug-report flow asks
+        # them to paste. The success path above and `_log_serve_cwd` both
+        # already redact; this path was the one hole. The exception type is
+        # named explicitly since the traceback no longer supplies it, and the
+        # message goes through `redact_home_in_text` (not `redact_home`) because
+        # the path is embedded mid-string rather than being the whole argument.
+        _module_logger.warning(
+            "PIPECAT_HUB_DEBUG_PROBE=1: failed to write serve debug probe (%s: %s)",
+            type(exc).__name__,
+            redact_home_in_text(str(exc)),
+        )
 
 
 @click.group(invoke_without_command=True)

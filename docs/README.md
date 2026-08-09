@@ -451,7 +451,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   Only the data directory is removed: your machine-global
   `~/.config/pipecat-context-hub/config.toml` and any project `.env` are
   preserved, and the reset aborts with an error rather than deleting a
-  `PIPECAT_HUB_DATA_DIR` that happens to contain the active `config.toml`.
+  `PIPECAT_HUB_DATA_DIR` that happens to contain either one — including the
+  case where a project `.env` sets `PIPECAT_HUB_DATA_DIR=.`, which would
+  otherwise make the working tree holding that `.env` the deletion target.
 - **`--prune` / `PIPECAT_HUB_PRUNE`** — `refresh` no longer deletes
   previously-indexed data for a repo that isn't configured *for this
   invocation* by default; it only warns

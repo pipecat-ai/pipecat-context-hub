@@ -738,3 +738,109 @@ class TestDashboardScriptDataDirResolution:
         resolved = _bootstrapped_data_dir(module._bootstrap())
 
         assert resolved == data_dir.expanduser().resolve(strict=False)
+
+
+def _discover_benchmark_env_reads() -> dict[str, set[str]]:
+    """Every ``PIPECAT_HUB_*`` var the benchmark modules read from the real env.
+
+    Returns ``{rel_path: {env_var_value, ...}}``. Discovery, not a hand-kept
+    list: the module-level ``_NAME = "PIPECAT_HUB_…"`` constants are resolved,
+    then only those actually *read* (``os.environ.get(_NAME)`` /
+    ``os.getenv(_NAME)`` / ``os.environ[_NAME]`` / ``_NAME in os.environ``)
+    count. The read/write distinction is load-bearing: ``test_chromadb_perf``'s
+    ``_HUB_DATA_DIR_ENV`` is *written* into a subprocess env and must NOT be
+    passed through the isolation fixture.
+    """
+    reads: dict[str, set[str]] = {}
+    for path in sorted((_REPO_ROOT / "tests" / "benchmarks").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        constants: dict[str, str] = {}
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            value = node.value
+            if (
+                isinstance(target, ast.Name)
+                and isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+                and value.value.startswith("PIPECAT_HUB_")
+            ):
+                constants[target.id] = value.value
+
+        found: set[str] = set()
+
+        def _record(node: ast.AST, _constants=constants, _found=found) -> None:
+            if isinstance(node, ast.Name) and node.id in _constants:
+                _found.add(_constants[node.id])
+
+        for expr in ast.walk(tree):
+            # os.environ.get(_NAME, ...) / os.getenv(_NAME, ...)
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+                if expr.func.attr in {"get", "getenv"} and expr.args:
+                    _record(expr.args[0])
+            # os.environ[_NAME]
+            elif isinstance(expr, ast.Subscript):
+                _record(expr.slice)
+            # _NAME in os.environ
+            elif isinstance(expr, ast.Compare) and any(
+                isinstance(op, ast.In | ast.NotIn) for op in expr.ops
+            ):
+                _record(expr.left)
+
+        if found:
+            reads[path.relative_to(_REPO_ROOT).as_posix()] = found
+    return reads
+
+
+class TestBenchmarkEnvPassthroughParity:
+    """Round-9 finding #5: `tests/conftest.py`'s `_FIXTURE_PASSTHROUGH_KEYS`
+    was a hand-maintained third copy of a set that already exists as module
+    constants across the four benchmark modules, with nothing linking them —
+    unlike every other registry on this branch (`_KNOWN_KEYS`, the entry-point
+    discovery above), which is parity-pinned or discovery-driven precisely to
+    prevent this drift class.
+
+    Both drift directions are silent and both are wrong:
+
+    * a benchmark gaining a new opt-in var that nobody adds here has it wiped
+      by the fixture's setup-time `PIPECAT_HUB_*` sweep, so the developer's
+      explicit `FOO=1 pytest …` produces a *skip* that looks like a pass;
+    * an allowlist entry no benchmark reads any more leaves a real shell
+      export visible during unrelated tests, which is the leak the setup-time
+      sweep exists to close.
+
+    So this asserts set equality, discovery-side, with a non-vacuity floor.
+    """
+
+    _KNOWN_BENCHMARK_MODULES = frozenset(
+        {
+            "tests/benchmarks/test_runtime_stability.py",
+            "tests/benchmarks/test_chromadb_perf.py",
+            "tests/benchmarks/test_retrieval_quality.py",
+            "tests/benchmarks/test_chromadb_parity.py",
+        }
+    )
+
+    def test_discovery_finds_the_known_benchmark_modules(self):
+        """Guards the discovery pass itself — a moved directory or a renamed
+        module must fail loudly rather than vacuously pass over an empty set."""
+        discovered = set(_discover_benchmark_env_reads())
+        missing = self._KNOWN_BENCHMARK_MODULES - discovered
+        assert not missing, (
+            f"benchmark modules no longer discovered: {sorted(missing)}. "
+            "Update the glob or _KNOWN_BENCHMARK_MODULES if they legitimately moved."
+        )
+
+    def test_every_read_benchmark_env_var_is_passed_through(self):
+        from tests.conftest import _FIXTURE_PASSTHROUGH_KEYS
+
+        read_vars = set().union(*_discover_benchmark_env_reads().values())
+        assert read_vars == set(_FIXTURE_PASSTHROUGH_KEYS), (
+            "tests/conftest.py's _FIXTURE_PASSTHROUGH_KEYS has drifted from the "
+            "PIPECAT_HUB_* vars the benchmark modules actually read.\n"
+            f"  read but not allowlisted (would be wiped -> silent skip): "
+            f"{sorted(read_vars - set(_FIXTURE_PASSTHROUGH_KEYS))}\n"
+            f"  allowlisted but never read (stale -> leaks into unrelated tests): "
+            f"{sorted(set(_FIXTURE_PASSTHROUGH_KEYS) - read_vars)}"
+        )

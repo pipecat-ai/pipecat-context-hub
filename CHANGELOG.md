@@ -14,7 +14,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   or cwd `.env` — real env vars and cwd `.env` still win, matching the
   existing precedence. See `config.toml.example` and `docs/README.md`'s
   Environment Variables section for the full var registry and precedence
-  rules. `refresh --reset-index` never deletes the config file.
+  rules. `refresh --reset-index` never deletes a config source: it aborts
+  rather than `rmtree` a data directory containing the active `config.toml`
+  *or* the project's cwd `.env` (so `PIPECAT_HUB_DATA_DIR=.` in a `.env`
+  refuses instead of wiping the working tree).
 
 ### Changed
 - **BREAKING (default behavior): `refresh` no longer deletes an

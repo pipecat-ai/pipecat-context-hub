@@ -60,7 +60,7 @@ class TestWriteServeDebugProbe:
         logger = MagicMock()
         monkeypatch.setattr(cli_module, "_module_logger", logger)
         _write_serve_debug_probe()  # must not raise
-        logger.exception.assert_called_once()
+        logger.warning.assert_called_once()
 
     def test_mkdir_oserror_is_swallowed(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -72,7 +72,42 @@ class TestWriteServeDebugProbe:
         logger = MagicMock()
         monkeypatch.setattr(cli_module, "_module_logger", logger)
         _write_serve_debug_probe()  # must not raise
-        logger.exception.assert_called_once()
+        logger.warning.assert_called_once()
+
+    def test_failure_log_does_not_leak_the_unredacted_home_path(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """Round-9 finding #3: the failure path used `logger.exception`, whose
+        traceback carried the absolute `~/.cache/pipecat-context-hub/…` path —
+        bypassing the redaction the success path and `_log_serve_cwd` both
+        apply, in exactly the stderr lines operators are asked to paste into
+        bug reports. The failure must be reported without the raw home path
+        (and therefore without the OS username) anywhere in the record.
+        """
+        home = tmp_path / "home-dir"
+        (home / ".cache" / "pipecat-context-hub").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        # OSError's __str__ appends the filename it failed on — the same shape
+        # of leak the traceback had, so this also pins the message redaction.
+        monkeypatch.setattr(
+            os,
+            "open",
+            MagicMock(
+                side_effect=OSError(
+                    13,
+                    "Permission denied",
+                    str(home / ".cache" / "pipecat-context-hub" / "serve-debug.log"),
+                )
+            ),
+        )
+        with caplog.at_level("WARNING"):
+            _write_serve_debug_probe()  # must not raise
+        assert caplog.records, "the failure must still be reported"
+        rendered = "\n".join(
+            r.getMessage() + ("\n" + str(r.exc_info) if r.exc_info else "") for r in caplog.records
+        )
+        assert str(home) not in rendered
+        assert "~" in rendered
 
 
 class TestRedactHome:
@@ -1060,6 +1095,114 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         assert "Refusing to delete" in result.output
         assert symlink_config_path.is_symlink()
         assert real_config_file.exists()
+        mock_is_cls.assert_not_called()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_reset_index_refuses_data_dir_containing_active_dotenv(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The project `.env` is a config source too, and `--reset-index` must
+        not delete it either. Exact Codex round-9 scenario: a project `.env`
+        sets `PIPECAT_HUB_DATA_DIR=.`, so the data dir *is* the cwd holding
+        that `.env` — and, before this guard, `shutil.rmtree` took out the
+        whole project tree along with the config file that pointed at it.
+        `config_collides_with_dir` never fired here because the machine-global
+        `config.toml` lives elsewhere entirely.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        dotenv_path = project_dir / ".env"
+        dotenv_path.write_text("PIPECAT_HUB_DATA_DIR=.\n")
+        sentinel_file = project_dir / "bot.py"
+        sentinel_file.write_text("# the operator's actual work")
+
+        monkeypatch.chdir(project_dir)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code != 0
+        assert "Refusing to delete" in result.output
+        assert dotenv_path.exists()
+        assert sentinel_file.exists()
+        mock_is_cls.assert_not_called()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_reset_index_refuses_symlinked_dotenv_inside_data_dir(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The `.env` guard gets the same resolution-chain treatment the
+        `config.toml` guard does: a cwd `.env` that is a symlink *into* the
+        data dir has both walked endpoints outside it (the link lives in the
+        project, its target lives elsewhere) yet is destroyed by the delete.
+        A resolved-target-only check would be a false negative here.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        data_dir = tmp_path / "data-home"
+        data_dir.mkdir()
+        real_dotenv = data_dir / "shared.env"
+        real_dotenv.write_text("PIPECAT_HUB_STALE_AFTER_DAYS=45\n")
+
+        dotenv_link = project_dir / ".env"
+        try:
+            dotenv_link.symlink_to(real_dotenv)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.chdir(project_dir)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code != 0
+        assert "Refusing to delete" in result.output
+        assert real_dotenv.exists()
         mock_is_cls.assert_not_called()
 
 
@@ -3165,7 +3308,10 @@ class TestDebugProbeSymlinkHardening:
         _write_serve_debug_probe()  # must not raise
 
         assert victim.read_text() == "original\n"
-        logger.exception.assert_called_once()
+        # ELOOP arrives as an OSError through the probe's swallow-and-log
+        # failure path, which reports a redacted warning rather than a
+        # traceback (round-9 finding #3).
+        logger.warning.assert_called_once()
 
     def test_probe_is_skipped_when_platform_lacks_o_nofollow(
         self, tmp_path: Path, monkeypatch

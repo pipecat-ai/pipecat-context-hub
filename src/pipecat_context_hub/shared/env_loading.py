@@ -273,10 +273,18 @@ def resolve_global_config_path() -> Path | None:
     return DEFAULT_CONFIG_PATH
 
 
-def config_collides_with_dir(candidate_dir: Path) -> Path | None:
-    """Return a config-path location inside ``candidate_dir``, or ``None``.
+def _config_source_collides_with_dir(source_path: Path, candidate_dir: Path) -> Path | None:
+    """Return a location of ``source_path`` inside ``candidate_dir``, or ``None``.
 
-    Checks *every* filesystem location the active config path stands on while
+    The shared body behind :func:`config_collides_with_dir` (machine-global
+    ``config.toml``) and :func:`dotenv_collides_with_dir` (project-local cwd
+    ``.env``). Both config *sources* are equally real and equally destroyed by
+    ``rmtree(candidate_dir)``, so they get one predicate rather than two
+    hand-kept-in-sync ones — the same reason ``load_global_config()``'s own
+    ``PIPECAT_HUB_DATA_DIR`` skip and ``cli.py``'s reset-path guard already
+    share a single function.
+
+    Checks *every* filesystem location ``source_path`` stands on while
     it resolves — the path as given plus each intermediate symlink hop, via
     :func:`shared.paths.resolution_chain` — because each of those is a
     directory entry ``rmtree(candidate_dir)`` would delete, and deleting any
@@ -296,13 +304,9 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     is a sibling of the *link*, not of its target — so testing it against
     ``candidate_dir`` would both miss real collisions and invent phantom ones.
 
-    Returns ``None`` if nothing collides, the active config path can't be
-    resolved (no home directory), or the config file doesn't exist — a
-    nonexistent or unresolvable config can't be protected from, matching the
-    loader's own missing-file-silent contract. Shared by this module's own
-    ``PIPECAT_HUB_DATA_DIR`` skip below and ``cli.py``'s
-    ``_delete_local_index_storage()`` reset-path guard, so both stay in
-    lockstep on the same predicate.
+    Returns ``None`` if nothing collides or the file doesn't exist — a
+    nonexistent or unresolvable config source can't be protected from, matching
+    the loader's own missing-file-silent contract.
 
     ``candidate_dir`` is normalized here (``expanduser`` +
     ``resolve(strict=False)``) rather than at the call sites: this is a
@@ -311,9 +315,7 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     present and future — getting that right. Normalization is idempotent, so
     callers that already normalize are unaffected.
     """
-    config_path = resolve_global_config_path()
-    if config_path is None:
-        return None
+    config_path = source_path
 
     try:
         candidate_dir = Path(candidate_dir).expanduser().resolve(strict=False)
@@ -364,6 +366,54 @@ def config_collides_with_dir(candidate_dir: Path) -> Path | None:
     if is_inside(resolved, candidate_dir):
         return resolved
     return None
+
+
+def config_collides_with_dir(candidate_dir: Path) -> Path | None:
+    """Return an active-``config.toml`` location inside ``candidate_dir``, or ``None``.
+
+    See :func:`_config_source_collides_with_dir` for the predicate. Returns
+    ``None`` additionally when the active config path can't be resolved at all
+    (no home directory). Shared by this module's own ``PIPECAT_HUB_DATA_DIR``
+    skip below and ``cli.py``'s ``_delete_local_index_storage()`` reset-path
+    guard, so both stay in lockstep on the same predicate.
+    """
+    config_path = resolve_global_config_path()
+    if config_path is None:
+        return None
+    return _config_source_collides_with_dir(config_path, candidate_dir)
+
+
+def dotenv_collides_with_dir(candidate_dir: Path) -> Path | None:
+    """Return the active cwd ``.env``'s location inside ``candidate_dir``, or ``None``.
+
+    The project-local sibling of :func:`config_collides_with_dir`. ``.env`` is a
+    first-class config layer here (see :func:`load_cwd_dotenv`), so
+    ``refresh --reset-index`` owes it the same deletion protection the
+    machine-global ``config.toml`` already had. Without this, the single most
+    natural way to write the hazard — a project ``.env`` containing
+    ``PIPECAT_HUB_DATA_DIR=.`` — put the *whole working tree*, config file
+    included, under ``shutil.rmtree``, and the ``config.toml`` guard never
+    fired because the machine-global file was somewhere else entirely.
+
+    The ``.env`` location is ``Path.cwd() / ".env"``, exactly as
+    :func:`load_cwd_dotenv` computes it, so the file protected here is the
+    file that was actually read. ``Path.cwd()`` is guarded for the same reason
+    it is there: an unlinked working directory raises, and no cwd means no cwd
+    ``.env`` — the "file absent" case, not an error.
+
+    Deliberately *not* extended to refusing any data dir that merely contains
+    the working directory when no ``.env`` is present: that is a policy change
+    (an operator who ``cd``s into their own data dir before running
+    ``--reset-index`` is indistinguishable from the hazard case), and the
+    documented guarantee this restores is config preservation. The
+    catastrophic-scope floors — filesystem root, home, ancestors of home —
+    remain ``cli.py``'s ``_refuse_unsafe_data_dir()``'s job.
+    """
+    try:
+        dotenv_path = Path.cwd() / ".env"
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return _config_source_collides_with_dir(dotenv_path, candidate_dir)
 
 
 def load_env_layers() -> None:
@@ -687,19 +737,25 @@ def _config_fd_is_trusted(fd: int, config_path: Path) -> bool:
     return True
 
 
-def _shadowed_exclusion_entries(config_value: object, active_value: str) -> list[str]:
+def _shadowed_exclusion_entries(config_value: object, active_value: str) -> list[str] | None:
     """Entries in a config.toml exclusion list that the winning layer drops.
 
     Best-effort and lenient: this runs on a value that was never coerced (it
     lost precedence before validation), so a shape the loader wouldn't accept
-    simply yields no named entries rather than an error.
+    yields ``None`` rather than an error.
+
+    ``None`` (unreadable shape — nothing can be said about what survived) is
+    distinct from ``[]`` (read fine, and the winning layer's list covers every
+    configured entry, so nothing was lost). Collapsing the two into one empty
+    list made the caller warn that machine-global exclusions were "NOT in
+    effect" in the superset case, where they demonstrably all are.
     """
     if isinstance(config_value, str):
         configured = [part.strip() for part in config_value.split(",")]
     elif isinstance(config_value, list) and all(isinstance(v, str) for v in config_value):
         configured = [str(v).strip() for v in config_value]
     else:
-        return []
+        return None
     active = {part.strip() for part in active_value.split(",")}
     return sorted({entry for entry in configured if entry and entry not in active})
 
@@ -858,11 +914,32 @@ def load_global_config() -> None:
                         key,
                         ", ".join(lost),
                     )
-                else:
+                elif lost is None:
+                    # The shadowed value's shape isn't one this loader reads
+                    # (it lost precedence before coercion, so it was never
+                    # validated). Nothing can be said about which exclusions
+                    # survived, so keep the conservative wording.
                     _module_logger.warning(
                         "config.toml key %r is shadowed by a higher-precedence layer "
                         "(real env var or cwd .env); the machine-global exclusion list "
                         "is NOT in effect for this run",
+                        key,
+                    )
+                else:
+                    # Read fine, and every configured entry is also in the
+                    # winning layer's list — the superset case. "NOT in effect"
+                    # here would be simply false: each excluded repo is still
+                    # excluded. Same reasoning as the blank-higher-layer case
+                    # above, which likewise refuses to claim a loss that didn't
+                    # happen (`test_blank_exclusion_list_emits_no_shadow_warning`).
+                    # Still warned rather than silent: the operator's
+                    # machine-global list is genuinely not the one in force, and
+                    # editing it this run would have no effect.
+                    _module_logger.warning(
+                        "config.toml key %r is shadowed by a higher-precedence layer "
+                        "(real env var or cwd .env), but every exclusion it names is "
+                        "still covered by that layer; edits to the machine-global list "
+                        "will not apply this run",
                         key,
                     )
             continue

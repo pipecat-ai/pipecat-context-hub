@@ -24,7 +24,7 @@ from pipecat_context_hub.shared.env_loading import (
     load_global_config,
     resolve_global_config_path,
 )
-from pipecat_context_hub.shared.paths import is_inside
+from pipecat_context_hub.shared.paths import is_inside, redact_home
 
 
 def _use_config_file(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -267,7 +267,12 @@ class TestLoadGlobalConfigErrors:
         with caplog.at_level("WARNING"):
             load_global_config()  # should not raise
         assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
-        assert str(config_file) in caplog.text
+        # `redact_home`, not `str`: the loader home-redacts every path it logs,
+        # and `tmp_path` lives under `Path.home()` on some platforms (notably
+        # the Windows CI leg, where TEMP is `%USERPROFILE%\AppData\Local\Temp`),
+        # so the raw absolute path is simply not what the log line contains
+        # there. `redact_home` is a no-op off-home, so this matches on both.
+        assert redact_home(config_file) in caplog.text
 
     def test_invalid_utf8_warns_and_does_not_raise(self, tmp_path: Path, monkeypatch, caplog):
         config_file = tmp_path / "config.toml"
@@ -281,7 +286,8 @@ class TestLoadGlobalConfigErrors:
         with caplog.at_level("WARNING"):
             load_global_config()  # should not raise
         assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
-        assert str(config_file) in caplog.text
+        # Redaction-aware for the same reason as the sibling case above.
+        assert redact_home(config_file) in caplog.text
 
     def test_read_failure_directory_as_path_warns_and_does_not_raise(
         self, tmp_path: Path, monkeypatch, caplog
@@ -291,7 +297,8 @@ class TestLoadGlobalConfigErrors:
         _use_config_file(monkeypatch, config_dir_as_file)
         with caplog.at_level("WARNING"):
             load_global_config()  # should not raise
-        assert str(config_dir_as_file) in caplog.text
+        # Redaction-aware for the same reason as the sibling cases above.
+        assert redact_home(config_dir_as_file) in caplog.text
 
 
 class TestLoadGlobalConfigKeyFiltering:
@@ -634,7 +641,11 @@ class TestLoadGlobalConfigLogging:
         loaded_records = [r for r in caplog.records if "Loaded" in r.getMessage()]
         assert len(loaded_records) == 1
         assert "Loaded 2 key(s)" in loaded_records[0].getMessage()
-        assert str(config_file) in loaded_records[0].getMessage()
+        # Same redaction-aware form as the warning-path assertions above: the
+        # "Loaded N key(s) from …" line is redacted too (pinned by
+        # TestLoadedLineRedaction), so a raw `str(config_file)` match fails
+        # wherever tmp_path sits under home.
+        assert redact_home(config_file) in loaded_records[0].getMessage()
 
     def test_no_loaded_line_when_file_empty(self, tmp_path: Path, monkeypatch, caplog):
         config_file = tmp_path / "config.toml"
@@ -1145,11 +1156,38 @@ class TestShadowedExclusionWarningNamesEntries:
         assert "org/bad" in caplog.text
         assert "org/worse" in caplog.text
 
-    def test_no_entries_lost_still_warns_generically(self, tmp_path: Path, monkeypatch, caplog):
+    def test_superset_shadow_does_not_claim_exclusions_are_lost(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """Round-9 finding #4: the winning layer's taint list is a *superset*
+        of config.toml's, so every machine-global exclusion is still in
+        effect — `_shadowed_exclusion_entries()` returns nothing lost. The
+        generic "NOT in effect for this run" wording was factually wrong here,
+        in exactly the way `test_blank_exclusion_list_emits_no_shadow_warning`
+        already rejects it for the analogous nothing-was-lost case.
+        """
         config_file = tmp_path / "config.toml"
         config_file.write_text('PIPECAT_HUB_TAINTED_REPOS = "org/bad"\n')
         _use_config_file(monkeypatch, config_file)
         monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "org/bad,org/other")
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        # Still reported — the key really is shadowed and that is worth saying.
+        assert "PIPECAT_HUB_TAINTED_REPOS" in caplog.text
+        assert "NOT in effect" not in caplog.text
+        assert "still covered" in caplog.text
+
+    def test_unparseable_shadowed_exclusion_list_warns_generically(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """The genuinely-unknown case keeps the conservative wording: the
+        shadowed value's shape isn't one this loader can read (an int here), so
+        nothing can be said about which exclusions survived.
+        """
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("PIPECAT_HUB_TAINTED_REPOS = 42\n")
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "org/other")
         with caplog.at_level("WARNING"):
             load_global_config()
         assert "NOT in effect" in caplog.text
@@ -1224,7 +1262,10 @@ class TestConfigFileCrashSafety:
 
         assert finished, "load_global_config() blocked on a FIFO config path"
         assert not error, error
-        assert str(fifo) in caplog.text
+        # Redaction-aware for the same reason as TestLoadGlobalConfigErrors'
+        # cases: the loader logs home-redacted paths, and tmp_path can live
+        # under home.
+        assert redact_home(fifo) in caplog.text
         assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
 
     def test_unknown_user_override_does_not_crash(self, monkeypatch, caplog):
