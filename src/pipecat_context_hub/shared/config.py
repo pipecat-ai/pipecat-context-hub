@@ -495,8 +495,9 @@ class HubConfig(BaseModel):
     framework_version: str | None = Field(
         default=None,
         description="Pin the framework repo (pipecat-ai/pipecat) to a specific git tag "
-        "(e.g. 'v0.0.96'). When set, source chunks come from that tag instead of HEAD. "
-        "Set via --framework-version CLI flag or PIPECAT_HUB_FRAMEWORK_VERSION env var.",
+        "(e.g. 'v0.0.96'), or 'latest' to track its newest release tag. When set, "
+        "source chunks come from that tag instead of HEAD. Set via "
+        "--framework-version CLI flag or PIPECAT_HUB_FRAMEWORK_VERSION env var.",
     )
 
     @computed_field  # type: ignore[prop-decorator]

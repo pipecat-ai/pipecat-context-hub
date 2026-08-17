@@ -771,8 +771,9 @@ def start(ctx: click.Context) -> None:
     "--framework-version",
     default=None,
     help="Pin the framework repo (pipecat-ai/pipecat) to a specific git tag "
-    "(e.g. 'v0.0.96'). Source chunks will come from that version instead of HEAD. "
-    "Can also be set via PIPECAT_HUB_FRAMEWORK_VERSION env var.",
+    "(e.g. 'v0.0.96'), or 'latest' for its newest release tag. Source chunks "
+    "will come from that version instead of HEAD. Can also be set via "
+    "PIPECAT_HUB_FRAMEWORK_VERSION env var.",
 )
 @click.option(
     "--prune",

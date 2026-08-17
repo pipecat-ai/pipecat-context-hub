@@ -7,6 +7,27 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`--framework-version latest`.** `refresh` accepts `latest` (case-insensitive)
+  wherever a framework tag is expected — CLI flag or
+  `PIPECAT_HUB_FRAMEWORK_VERSION` — and resolves it to the highest release tag on
+  `pipecat-ai/pipecat`. Without a pin, refresh still indexes the default branch
+  (`main`); `latest` is the way to index a released version without hard-coding a
+  tag that goes stale. It re-resolves on every run, so setting it in an MCP
+  client's `env` block tracks releases as they ship and a plain incremental
+  `refresh` picks up a new release without `--force`. Resolution is version-aware
+  rather than lexicographic (`v1.10.0` beats `v1.7.0`), skips prereleases unless
+  the repo has nothing else, and ignores tags that do not parse as versions. The
+  pin is still framework-only, and `framework_version` index metadata records
+  `latest` verbatim — `indexed_framework_version` continues to report the concrete
+  tag the index was built from.
+
+### Fixed
+- **Version-ordered tag hint on an unresolvable `--framework-version`.** The
+  "available tags (latest 5)" list in the error sorted tag names as strings, so it
+  would have ranked `v1.7.0` above `v1.10.0` and omitted the newest release from
+  the hint once pipecat reaches a double-digit minor.
+
 ## [0.5.2] - 2026-08-09
 
 ### Added

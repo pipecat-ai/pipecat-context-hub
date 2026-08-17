@@ -168,6 +168,102 @@ class TestResolveTag:
         sha = GitHubRepoIngester._resolve_tag(git_repo, "v0.0.50")
         assert sha == expected_sha
 
+    def test_missing_tag_hint_is_version_ordered(self, tmp_path: Path):
+        """The 'available tags' hint ranks by version, not string order.
+
+        v1.7.0 sorts above v1.10.0 lexicographically, so a name-keyed sort would
+        omit the newest release from the hint.
+        """
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v0.0.99", "v1.7.0", "v1.10.0"])
+        git_repo = GitRepo(str(repo_dir))
+
+        with pytest.raises(ValueError, match=r"\['v1.10.0', 'v1.7.0', 'v0.0.99'\]"):
+            GitHubRepoIngester._resolve_tag(git_repo, "v999.0.0")
+
+
+class TestResolveLatest:
+    """Tests for the 'latest' sentinel and GitHubRepoIngester._latest_version_tag."""
+
+    def test_picks_highest_version_not_lexicographic(self, tmp_path: Path):
+        """v1.10.0 beats v1.7.0 — string ordering would pick the wrong one."""
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v0.0.99", "v1.7.0", "v1.10.0"])
+        git_repo = GitRepo(str(repo_dir))
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.10.0"
+
+    def test_sentinel_is_case_insensitive(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.7.0"])
+        git_repo = GitRepo(str(repo_dir))
+        expected_sha = git_repo.head.commit.hexsha
+
+        for sentinel in ["latest", "LATEST", " Latest "]:
+            assert GitHubRepoIngester._resolve_tag(git_repo, sentinel) == expected_sha
+
+    def test_prerelease_skipped_when_final_exists(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.9.0", "v2.0.0-rc1"])
+        git_repo = GitRepo(str(repo_dir))
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.9.0"
+
+    def test_prerelease_used_when_only_option(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v2.0.0-rc1", "v2.0.0-rc2"])
+        git_repo = GitRepo(str(repo_dir))
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "v2.0.0-rc2"
+
+    def test_unparseable_tags_ignored(self, tmp_path: Path):
+        """Junk refs never outrank a real release."""
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["nightly", "v1.2.0", "archive-2024"])
+        git_repo = GitRepo(str(repo_dir))
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.2.0"
+
+    def test_no_version_tags_raises(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["nightly"])
+        git_repo = GitRepo(str(repo_dir))
+
+        with pytest.raises(ValueError, match="no version-like tags"):
+            GitHubRepoIngester._latest_version_tag(git_repo)
+
+    def test_no_tags_at_all_raises(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, [])
+        git_repo = GitRepo(str(repo_dir))
+
+        with pytest.raises(ValueError, match="no version-like tags"):
+            GitHubRepoIngester._resolve_tag(git_repo, "latest")
+
 
 # ---------------------------------------------------------------------------
 # clone_or_fetch with tag parameter
@@ -275,6 +371,33 @@ class TestCloneOrFetchWithTag:
         # No tag — should get HEAD
         repo_path, head_sha = ingester.clone_or_fetch(repo_slug, tag=None)
         assert (repo_path / "main.py").read_text() == "print('v2')\n"
+
+    def test_clone_or_fetch_with_latest_resolves_newest_release(self, tmp_path: Path):
+        """`tag="latest"` lands on the newest release tag, not on HEAD."""
+        from git import Repo as GitRepo
+
+        repo_slug = "test-org/test-repo"
+        source_dir, clone_dir = _create_remote_and_clone_with_tags(
+            tmp_path, repo_slug, {"main.py": "print('v1.7')\n"}, ["v1.7.0"],
+        )
+        # A newer release, then an untagged commit past it.
+        source_repo = GitRepo(str(source_dir))
+        (source_dir / "main.py").write_text("print('v1.10')\n")
+        source_repo.index.add(["main.py"])
+        source_repo.index.commit("v1.10 release")
+        source_repo.git.update_ref("refs/tags/v1.10.0", "HEAD")
+        (source_dir / "main.py").write_text("print('unreleased')\n")
+        source_repo.index.add(["main.py"])
+        source_repo.index.commit("post-release work")
+        branch = source_repo.active_branch.name
+        source_repo.git.push("origin", branch, "--tags")
+
+        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+
+        repo_path, sha = ingester.clone_or_fetch(repo_slug, tag="latest")
+        assert (repo_path / "main.py").read_text() == "print('v1.10')\n"
+        assert GitRepo(str(repo_path)).head.commit.hexsha == sha
 
     def test_invalid_tag_raises_on_fetch(self, tmp_path: Path):
         repo_slug = "test-org/test-repo"

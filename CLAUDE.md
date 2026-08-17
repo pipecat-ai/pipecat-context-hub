@@ -20,6 +20,7 @@ uv run pipecat-context-hub refresh                  # incremental rebuild
 uv run pipecat-context-hub refresh --force          # full re-ingest
 uv run pipecat-context-hub refresh --force --reset-index  # recover unhealthy local Chroma state
 uv run pipecat-context-hub refresh --framework-version v0.0.96  # index framework at a specific tag
+uv run pipecat-context-hub refresh --framework-version latest   # ...or at its newest release tag
 uv run pipecat-context-hub serve                    # start MCP server (`start` is an alias)
 uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
 ```

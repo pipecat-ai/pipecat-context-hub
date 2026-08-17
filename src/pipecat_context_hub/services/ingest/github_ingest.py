@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from git import Repo as GitRepo
 from git.exc import BadObject, GitCommandError, InvalidGitRepositoryError, NoSuchPathError
+from packaging.version import InvalidVersion, Version
 
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
@@ -95,6 +96,26 @@ _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 _REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 # Validation for git tag names (e.g. "v0.0.96", "0.0.96").
 _TAG_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+
+# Sentinel accepted wherever a framework tag is expected, meaning "newest
+# release tag". Note this shadows a tag literally named "latest"; no pipecat-ai
+# repo publishes one, and an escape syntax would cost more than it buys.
+_LATEST_SENTINEL = "latest"
+_ZERO_VERSION = Version("0")
+
+
+def _version_sort_key(tag: str) -> tuple[int, Version, str]:
+    """Order version-like tags above unparseable ones, newest last.
+
+    The leading flag keeps junk tags (``nightly``, ``archive``) below every real
+    release rather than interleaved with them by string comparison. Sorting on
+    the tag name alone is wrong the moment a double-digit minor lands: ``v1.7.0``
+    sorts above ``v1.10.0`` lexicographically.
+    """
+    try:
+        return (1, Version(tag.lstrip("v")), tag)
+    except InvalidVersion:
+        return (0, _ZERO_VERSION, tag)
 
 
 def _is_valid_clone(repo_path: Path) -> bool:
@@ -1279,12 +1300,43 @@ class GitHubRepoIngester:
         return repo_path, commit_sha
 
     @staticmethod
+    def _latest_version_tag(git_repo: GitRepo) -> str:
+        """Return the highest release tag present in *git_repo*.
+
+        Prefers final releases, falling back to prereleases only when the repo
+        has nothing else. ``pipecat`` publishes no prerelease tags today, so the
+        filter guards against a future ``v2.0.0-rc1`` outranking ``v1.9.0``
+        rather than fixing an observed case.
+
+        Raises ``ValueError`` when no tag parses as a version — a bare clone with
+        no tags, or a repo that names its refs something else entirely.
+        """
+        parsed: list[tuple[Version, str]] = []
+        for tag_ref in git_repo.tags:
+            name = str(tag_ref)
+            try:
+                parsed.append((Version(name.lstrip("v")), name))
+            except InvalidVersion:
+                continue
+        if not parsed:
+            raise ValueError("Cannot resolve 'latest': repository has no version-like tags")
+        finals = [entry for entry in parsed if not entry[0].is_prerelease]
+        return max(finals or parsed)[1]
+
+    @staticmethod
     def _resolve_tag(git_repo: GitRepo, tag: str) -> str:
         """Resolve a git tag name to a commit SHA.
 
-        Handles both lightweight and annotated tags. Raises ``ValueError``
-        if the tag does not exist or has an invalid format.
+        Handles both lightweight and annotated tags, and the ``latest`` sentinel
+        (newest release tag). Raises ``ValueError`` if the tag does not exist or
+        has an invalid format.
         """
+        # Resolve the sentinel before validation: `latest` matches _TAG_RE, so
+        # falling through would fail as a missing tag rather than as itself.
+        if tag.strip().lower() == _LATEST_SENTINEL:
+            tag = GitHubRepoIngester._latest_version_tag(git_repo)
+            logger.info("Resolved framework version '%s' to tag %s", _LATEST_SENTINEL, tag)
+
         if not _TAG_RE.fullmatch(tag):
             raise ValueError(f"Invalid tag format: {tag!r}")
         # Normalise: accept both "v0.0.96" and "0.0.96"
@@ -1302,10 +1354,9 @@ class GitHubRepoIngester:
             except (ValueError, IndexError, BadObject, GitCommandError):
                 continue
 
+        newest = sorted((str(t) for t in git_repo.tags), key=_version_sort_key, reverse=True)[:5]
         raise ValueError(
-            f"Tag '{tag}' not found in repository. "
-            f"Available tags (latest 5): "
-            f"{[str(t) for t in sorted(git_repo.tags, key=lambda t: t.name, reverse=True)[:5]]}"
+            f"Tag '{tag}' not found in repository. Available tags (latest 5): {newest}"
         )
 
     def checkout_commit(self, repo_path: Path, commit_sha: str) -> None:
