@@ -149,12 +149,25 @@ def is_model_cached(model_name: str) -> bool:
     ``model.safetensors`` but never the ONNX export — a false positive that
     enables the reranker and then fails on the first query under
     ``HF_HUB_OFFLINE=1``.
+
+    Probes at the same revision ``_download`` pins the model to. A pinned
+    download resolves an explicit SHA, which populates ``blobs/`` and
+    ``snapshots/<sha>/`` but never writes ``refs/main`` — there is no branch
+    name involved, so there is no ref to record. ``try_to_load_from_cache``
+    defaults to ``revision="main"``, which resolves nothing against a
+    SHA-only snapshot and reports a false negative: the reranker looks
+    uncached (and stays disabled) even immediately after a successful
+    ``refresh`` populated it. Passing the same pin the download used makes
+    the two paths agree by construction. Unpinned custom models pass
+    ``revision=None``, which ``try_to_load_from_cache`` treats the same as
+    omitting the argument, so this is a no-op for them.
     """
     repo_id = resolve_repo_id(model_name)
+    revision = _PINNED_REVISIONS.get(repo_id)
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        return isinstance(try_to_load_from_cache(repo_id, ONNX_WEIGHTS), str)
+        return isinstance(try_to_load_from_cache(repo_id, ONNX_WEIGHTS, revision=revision), str)
     except ImportError:
         logger.debug("huggingface_hub unavailable, falling back to cache-dir probe")
     except Exception:

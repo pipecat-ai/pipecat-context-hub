@@ -90,17 +90,15 @@ class TestIsModelCached:
         with patch(
             "pipecat_context_hub.services.onnx_backend.resolve_hf_cache_dir",
             return_value=tmp_path,
-        ):
-            with patch.dict("sys.modules", {"huggingface_hub": None}):
-                assert is_model_cached(repo) is True
+        ), patch.dict("sys.modules", {"huggingface_hub": None}):
+            assert is_model_cached(repo) is True
 
     def test_missing_cache_dir_reports_not_cached(self, tmp_path: Path):
         with patch(
             "pipecat_context_hub.services.onnx_backend.resolve_hf_cache_dir",
             return_value=tmp_path / "does-not-exist",
-        ):
-            with patch.dict("sys.modules", {"huggingface_hub": None}):
-                assert is_model_cached("cross-encoder/ms-marco-MiniLM-L-6-v2") is False
+        ), patch.dict("sys.modules", {"huggingface_hub": None}):
+            assert is_model_cached("cross-encoder/ms-marco-MiniLM-L-6-v2") is False
 
     def test_probe_target_is_the_onnx_export(self):
         assert ONNX_WEIGHTS == "onnx/model.onnx"
@@ -115,6 +113,48 @@ class TestIsModelCached:
             assert CrossEncoderReranker.is_model_cached("some/model") is True
             probe.assert_called_once_with("some/model")
 
+    def test_pinned_revision_snapshot_without_refs_main_reports_cached(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Regression for #115.
+
+        ``_download`` fetches shipped models at a pinned SHA, which populates
+        ``blobs/`` and ``snapshots/<sha>/`` but never writes ``refs/main`` —
+        there is no branch name involved, so there is no ref to record.
+        ``try_to_load_from_cache`` defaults to ``revision="main"``, which
+        cannot resolve against a SHA-only snapshot. Before the fix, this
+        reported ``False`` — reranking permanently disabled — even
+        immediately after a successful ``refresh`` populated the cache.
+        """
+        from pipecat_context_hub.services.onnx_backend import _PINNED_REVISIONS
+
+        repo = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        revision = _PINNED_REVISIONS[repo]
+        snapshot = (
+            tmp_path / f"models--{repo.replace('/', '--')}" / "snapshots" / revision / ONNX_WEIGHTS
+        )
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text("{}", encoding="utf-8")
+        # No refs/ directory is created — matches a real pinned download.
+        assert not (tmp_path / f"models--{repo.replace('/', '--')}" / "refs").exists()
+
+        monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+        assert is_model_cached(repo) is True
+
+    def test_unpinned_model_probe_still_checks_main(self, tmp_path: Path, monkeypatch):
+        """A user-supplied model has no pin; the probe must still resolve
+        ``main`` for it exactly as before."""
+        repo = "some-org/custom-model"
+        snapshot = tmp_path / f"models--{repo.replace('/', '--')}" / "snapshots" / "deadbeef"
+        (snapshot / "onnx").mkdir(parents=True)
+        (snapshot / ONNX_WEIGHTS).write_text("{}", encoding="utf-8")
+        refs = tmp_path / f"models--{repo.replace('/', '--')}" / "refs"
+        refs.mkdir(parents=True)
+        (refs / "main").write_text("deadbeef", encoding="utf-8")
+
+        monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+        assert is_model_cached(repo) is True
+
 
 class TestRevisionPinning:
     """Shipped models resolve to immutable commits, not a moving branch.
@@ -126,11 +166,11 @@ class TestRevisionPinning:
     """
 
     def test_every_shipped_model_is_pinned(self):
+        from pipecat_context_hub.services.onnx_backend import _PINNED_REVISIONS
         from pipecat_context_hub.shared.config import (
             _ALLOWED_RERANKER_MODELS,
             EmbeddingConfig,
         )
-        from pipecat_context_hub.services.onnx_backend import _PINNED_REVISIONS
 
         expected = {resolve_repo_id(EmbeddingConfig().model_name)} | {
             resolve_repo_id(model) for model in _ALLOWED_RERANKER_MODELS
