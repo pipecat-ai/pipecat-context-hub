@@ -77,6 +77,18 @@ _CROSS_ENCODER_MAX_SEQ = 512
 _BATCH_SIZE = 32
 
 
+def _pinned_revision(repo_id: str) -> str | None:
+    """Return the immutable revision ``repo_id`` is pinned to, or ``None``.
+
+    The single source both ``_download`` (the fetch path) and
+    ``is_model_cached`` (the cache probe) resolve through, so the two can
+    never disagree on which revision a repo id means — the exact drift that
+    caused #115 (the probe checked ``revision="main"`` while the download
+    fetched a pinned SHA).
+    """
+    return _PINNED_REVISIONS.get(repo_id)
+
+
 def _download(repo_id: str, filename: str) -> str:
     """Fetch a repo file, pinned to an immutable revision where one is known.
 
@@ -87,7 +99,7 @@ def _download(repo_id: str, filename: str) -> str:
     """
     from huggingface_hub import hf_hub_download
 
-    revision = _PINNED_REVISIONS.get(repo_id)
+    revision = _pinned_revision(repo_id)
     if revision is None:
         # nosec B615 - no pin exists for a caller-supplied custom model; the
         # repo id comes from local config, not from untrusted input.
@@ -163,7 +175,7 @@ def is_model_cached(model_name: str) -> bool:
     omitting the argument, so this is a no-op for them.
     """
     repo_id = resolve_repo_id(model_name)
-    revision = _PINNED_REVISIONS.get(repo_id)
+    revision = _pinned_revision(repo_id)
     try:
         from huggingface_hub import try_to_load_from_cache
 
