@@ -26,6 +26,7 @@ from typing import cast
 from packaging.version import InvalidVersion, Version
 
 from pipecat_context_hub.shared.types import DeprecationStatus
+from pipecat_context_hub.shared.versioning import strip_v_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +314,7 @@ def _as_version(value: str | None) -> Version | None:
     if not value:
         return None
     try:
-        return Version(str(value).lstrip("v"))
+        return Version(strip_v_prefix(str(value)))
     except InvalidVersion:
         return None
 

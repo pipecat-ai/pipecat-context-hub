@@ -1535,7 +1535,60 @@ class TestRefreshProvenanceMetadata:
         assert "indexed_framework_version" not in written
         deleted = {call.args[0] for call in store.delete_metadata.call_args_list}
         assert "indexed_framework_version" not in deleted
-        assert "indexed_framework_commits_ahead" not in deleted
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_latest_pin_normalized_and_stamped_from_resolved_tag(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`--framework-version` with mixed case/whitespace ('  LATEST  ') is
+        persisted as the canonical 'latest' sentinel, and once the framework
+        repo is cloned, `indexed_framework_version` is stamped from the tag
+        `resolve_tag_name` resolved — not from a `git describe`-derived value —
+        with `indexed_framework_commits_ahead` fixed at "0".
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_github.resolve_tag_name = MagicMock(return_value="v1.10.0")
+
+        monkeypatch.chdir(tmp_path)
+        # `describe_framework_checkout` must NOT be consulted for the stamp
+        # when a `latest`-resolved tag is available; give it a distinct value
+        # so a regression back to `git describe` would be caught.
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("9.9.9", 42),
+        ):
+            result = CliRunner().invoke(main, ["refresh", "--framework-version", "  LATEST  "])
+
+        assert result.exit_code == 0, result.output
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+
+        assert written["framework_version"] == "latest"
+        assert written["indexed_framework_version"] == "1.10.0"
+        assert written["indexed_framework_commits_ahead"] == "0"
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")

@@ -12,11 +12,18 @@ def resolve_framework_version(index_store: Any) -> str | None:
     """The indexed pipecat version, the default ``version`` for ``check_deprecation``.
 
     Shared by the MCP server and the one-shot CLI so both resolve the default the
-    same way. Returns ``None`` when no index is open or the version is unset.
+    same way. Prefers ``indexed_framework_version`` (the revision the index was
+    actually built from) over ``framework_version`` (the operator's pin, which may
+    be the unresolved ``latest`` sentinel rather than a concrete version). Returns
+    ``None`` when no index is open or neither value is set.
     """
     if index_store is None:
         return None
-    version = index_store.get_all_metadata().get("framework_version")
+    metadata = index_store.get_all_metadata()
+    indexed = metadata.get("indexed_framework_version")
+    if indexed is not None:
+        return str(indexed)
+    version = metadata.get("framework_version")
     return version if version is None else str(version)
 
 

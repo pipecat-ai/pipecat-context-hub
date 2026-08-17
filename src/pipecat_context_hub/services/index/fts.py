@@ -27,7 +27,11 @@ logger = logging.getLogger(__name__)
 # is backwards compatible and does not warrant a bump. Written on refresh, so
 # an index built before the contract was published simply lacks it — consumers
 # treat an absent value as "pre-contract", not as an error.
-METADATA_CONTRACT_VERSION = 1
+#
+# v2: `framework_version` can now hold the literal sentinel "latest" in
+# addition to a concrete tag — a value consumers doing their own version
+# comparison need to special-case.
+METADATA_CONTRACT_VERSION = 2
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS chunks (

@@ -11,7 +11,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
-
 # ---------------------------------------------------------------------------
 # Core indexing types
 # ---------------------------------------------------------------------------
@@ -277,7 +276,7 @@ class GetDocInput(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _require_doc_id_or_path(self) -> "GetDocInput":
+    def _require_doc_id_or_path(self) -> GetDocInput:
         has_doc_id = self.doc_id is not None and self.doc_id.strip()
         has_path = self.path is not None and self.path.strip()
         if not has_doc_id and not has_path:
@@ -343,7 +342,7 @@ class SearchExamplesInput(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
 
     @model_validator(mode="after")
-    def _version_filter_requires_version(self) -> "SearchExamplesInput":
+    def _version_filter_requires_version(self) -> SearchExamplesInput:
         if self.version_filter and not self.pipecat_version:
             raise ValueError("version_filter requires pipecat_version to be set.")
         return self
@@ -550,7 +549,10 @@ class HubStatusOutput(BaseModel):
     index_path: str = Field(default="", description="Path to the index data directory.")
     framework_version: str | None = Field(
         default=None,
-        description="Pinned framework version tag (e.g. 'v0.0.96') if set, else None (HEAD).",
+        description=(
+            "Pinned framework version tag (e.g. 'v0.0.96'), the literal sentinel "
+            "'latest', or None (HEAD)."
+        ),
     )
     indexed_framework_version: str | None = Field(
         default=None,
@@ -655,7 +657,7 @@ class SearchApiInput(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
 
     @model_validator(mode="after")
-    def _version_filter_requires_version(self) -> "SearchApiInput":
+    def _version_filter_requires_version(self) -> SearchApiInput:
         if self.version_filter and not self.pipecat_version:
             raise ValueError("version_filter requires pipecat_version to be set.")
         return self

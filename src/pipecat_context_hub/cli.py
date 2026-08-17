@@ -31,6 +31,7 @@ from pipecat_context_hub.shared.paths import (
     same_dir,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
+from pipecat_context_hub.shared.versioning import strip_v_prefix
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
@@ -807,6 +808,7 @@ def refresh(
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
     from pipecat_context_hub.services.ingest.github_ingest import (
         _FRAMEWORK_REPO,
+        _LATEST_SENTINEL,
         GitHubRepoIngester,
         describe_framework_checkout,
         repo_ref_is_tainted,
@@ -883,13 +885,21 @@ def refresh(
     # the framework repo was not cloned (unconfigured, tainted, or clone failed).
     framework_checkout: Path | None = None
 
+    # The tag `resolve_tag_name` picked for the framework repo when pinned to
+    # the `latest` sentinel, captured during the clone loop so the metadata
+    # pass below can stamp the concrete tag instead of re-deriving one via
+    # `git describe` (which can disagree when multiple tags point at the same
+    # commit). None when unpinned, pinned to a concrete tag, or not cloned.
+    resolved_framework_tag: str | None = None
+
     # Count of repos left un-pruned this run (not configured here, but not
     # deleted because --prune/PIPECAT_HUB_PRUNE wasn't set). Read later by
     # the summary pass.
     unpruned_repo_count = 0
 
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, framework_checkout, unpruned_repo_count
+        nonlocal total_upserted, all_errors, framework_checkout
+        nonlocal unpruned_repo_count, resolved_framework_tag
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -1014,6 +1024,14 @@ def refresh(
                 )
                 repo_shas[repo_slug] = commit_sha
                 prefetched[repo_slug] = (repo_path, commit_sha)
+                if (
+                    repo_slug == framework_slug
+                    and repo_tag
+                    and repo_tag.strip().lower() == _LATEST_SENTINEL
+                ):
+                    resolved_framework_tag = await asyncio.to_thread(
+                        github.resolve_tag_name, repo_path, repo_tag
+                    )
             except Exception as exc:
                 all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
                 source_status[repo_slug] = {
@@ -1260,8 +1278,14 @@ def refresh(
         metadata_to_set["content_type_counts"] = json.dumps(stats["counts_by_type"])
 
         # Persist pinned framework version (or clear it) for get_hub_status.
+        # Normalize the `latest` sentinel's case/whitespace so a pin like
+        # " Latest " is recorded as the canonical "latest", matching what
+        # `indexed_framework_version` below and `_LATEST_SENTINEL` compare
+        # against.
         if fw_version:
-            metadata_to_set["framework_version"] = fw_version
+            metadata_to_set["framework_version"] = (
+                _LATEST_SENTINEL if fw_version.strip().lower() == _LATEST_SENTINEL else fw_version
+            )
         else:
             metadata_to_delete.append("framework_version")
 
@@ -1273,10 +1297,20 @@ def refresh(
         # not cloned this run, so a transient clone failure keeps the last
         # known-good stamp rather than erasing it.
         if framework_checkout is not None:
-            indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
-            if indexed_version is not None and commits_ahead is not None:
-                metadata_to_set["indexed_framework_version"] = indexed_version
-                metadata_to_set["indexed_framework_commits_ahead"] = str(commits_ahead)
+            if resolved_framework_tag is not None:
+                # A `latest`-pinned refresh already knows the exact tag it
+                # resolved to (`resolve_tag_name`, reusing `_latest_version_tag`'s
+                # algorithm) — trust that over `git describe`, which can pick a
+                # different tag when multiple point at the same commit.
+                metadata_to_set["indexed_framework_version"] = strip_v_prefix(
+                    resolved_framework_tag
+                )
+                metadata_to_set["indexed_framework_commits_ahead"] = "0"
+            else:
+                indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
+                if indexed_version is not None and commits_ahead is not None:
+                    metadata_to_set["indexed_framework_version"] = indexed_version
+                    metadata_to_set["indexed_framework_commits_ahead"] = str(commits_ahead)
 
         metadata_to_set["last_refresh_at"] = now
         if all_errors:

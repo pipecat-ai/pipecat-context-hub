@@ -22,6 +22,7 @@ from packaging.version import InvalidVersion, Version
 
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
+from pipecat_context_hub.shared.versioning import strip_v_prefix
 
 if TYPE_CHECKING:
     from pipecat_context_hub.shared.interfaces import IndexWriter
@@ -98,10 +99,30 @@ _REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._
 _TAG_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 # Sentinel accepted wherever a framework tag is expected, meaning "newest
-# release tag". Note this shadows a tag literally named "latest"; no pipecat-ai
-# repo publishes one, and an escape syntax would cost more than it buys.
+# release tag". Note this shadows any tag matching "latest" case-insensitively
+# after trimming whitespace (e.g. "Latest", " LATEST "); no pipecat-ai repo
+# publishes one, and an escape syntax would cost more than it buys.
 _LATEST_SENTINEL = "latest"
 _ZERO_VERSION = Version("0")
+
+
+def _parse_tag_version(tag: str) -> Version:
+    """Parse *tag* as a version after stripping exactly one leading 'v'.
+
+    ``Version()`` performs its own PEP 440 normalisation that tolerates a
+    leading 'v' — so ``strip_v_prefix("vv1.0.0")`` yields ``"v1.0.0"``, which
+    ``Version()`` then happily accepts as ``1.0.0``, silently undoing the
+    single-strip guarantee. Rejecting any leading 'v'/'V' left after our own
+    strip closes that gap: a tag needs a real prefix mismatch (``"vv1.0.0"``)
+    to be excluded, not just an unlucky double-normalisation.
+
+    Raises ``InvalidVersion`` — same contract as ``Version()`` itself — so
+    every existing ``except InvalidVersion`` call site needs no changes.
+    """
+    stripped = strip_v_prefix(tag)
+    if stripped[:1] in ("v", "V"):
+        raise InvalidVersion(f"Invalid version: {tag!r}")
+    return Version(stripped)
 
 
 def _version_sort_key(tag: str) -> tuple[int, Version, str]:
@@ -113,7 +134,7 @@ def _version_sort_key(tag: str) -> tuple[int, Version, str]:
     sorts above ``v1.10.0`` lexicographically.
     """
     try:
-        return (1, Version(tag.lstrip("v")), tag)
+        return (1, _parse_tag_version(tag), tag)
     except InvalidVersion:
         return (0, _ZERO_VERSION, tag)
 
@@ -809,7 +830,7 @@ def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None
     # keeps tags that themselves contain hyphens (e.g. v1.0.0-rc1) intact.
     try:
         tag, commits_ahead, _sha = described.rsplit("-", 2)
-        return tag.lstrip("v"), int(commits_ahead)
+        return strip_v_prefix(tag), int(commits_ahead)
     except ValueError:
         logger.debug("Unexpected `git describe --long` output: %r", described)
         return None, None
@@ -1314,14 +1335,36 @@ class GitHubRepoIngester:
         parsed: list[tuple[Version, str]] = []
         for tag_ref in git_repo.tags:
             name = str(tag_ref)
+            if not _TAG_RE.fullmatch(name):
+                # Excludes tags with PEP 440 local-version segments (e.g.
+                # "v1.10.0+cu121") from candidacy, since _TAG_RE forbids "+".
+                continue
             try:
-                parsed.append((Version(name.lstrip("v")), name))
+                parsed.append((_parse_tag_version(name), name))
             except InvalidVersion:
                 continue
         if not parsed:
             raise ValueError("Cannot resolve 'latest': repository has no version-like tags")
         finals = [entry for entry in parsed if not entry[0].is_prerelease]
         return max(finals or parsed)[1]
+
+    def resolve_tag_name(self, repo_path: Path, tag: str) -> str:
+        """Return the concrete tag ``tag`` resolves to, without touching the network.
+
+        ``clone_or_fetch`` resolves ``tag`` (including the ``latest`` sentinel) down to
+        a commit SHA internally and discards the tag name it picked. Callers that need
+        the resolved tag *string* — e.g. to stamp ``indexed_framework_version`` metadata
+        — call this immediately after ``clone_or_fetch`` against the same already-fetched
+        clone, so it reuses the identical resolution algorithm (``_latest_version_tag``)
+        instead of re-deriving an answer a different way (``git describe``), which can
+        disagree when multiple tags point at the same commit.
+
+        Non-sentinel tags are returned unchanged.
+        """
+        if tag.strip().lower() != _LATEST_SENTINEL:
+            return tag
+        git_repo = GitRepo(str(repo_path))
+        return self._latest_version_tag(git_repo)
 
     @staticmethod
     def _resolve_tag(git_repo: GitRepo, tag: str) -> str:

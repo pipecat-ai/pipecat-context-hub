@@ -17,11 +17,10 @@ import pytest
 
 from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
 from pipecat_context_hub.shared.config import (
+    _FRAMEWORK_VERSION_ENV,
     HubConfig,
     StorageConfig,
-    _FRAMEWORK_VERSION_ENV,
 )
-
 
 # ---------------------------------------------------------------------------
 # Config tests
@@ -264,6 +263,62 @@ class TestResolveLatest:
         with pytest.raises(ValueError, match="no version-like tags"):
             GitHubRepoIngester._resolve_tag(git_repo, "latest")
 
+    def test_local_version_segment_tag_skipped_not_raised(self, tmp_path: Path):
+        """A tag with a PEP 440 local-version segment (e.g. '+cu121') must be
+        skipped as a candidate, not crash the whole resolution with
+        'Invalid tag format' — a normal release tag should still win.
+        """
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.9.0", "v1.10.0+cu121"])
+        git_repo = GitRepo(str(repo_dir))
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.9.0"
+
+    def test_double_v_prefix_does_not_outrank_single_v(self, tmp_path: Path):
+        """Reproduces the previously-reported bug: 'vv1.0.0' must not be
+        treated as equal to (or beating) 'v1.0.0' — only one leading 'v' is
+        ever stripped, so 'vv1.0.0' fails to parse as a version and is
+        excluded from candidacy entirely.
+        """
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.0.0", "vv1.0.0"])
+        git_repo = GitRepo(str(repo_dir))
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.0.0"
+
+
+class TestResolveTagName:
+    """Tests for GitHubRepoIngester.resolve_tag_name."""
+
+    def test_concrete_tag_returned_unchanged_without_touching_git(self, tmp_path: Path):
+        """A non-'latest' tag is returned as-is; the repo_path need not even
+        point at a valid git repo, since resolve_tag_name must never call
+        into git for a concrete tag.
+        """
+        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+
+        result = ingester.resolve_tag_name(tmp_path / "not-a-git-repo", "v0.0.96")
+        assert result == "v0.0.96"
+
+    def test_latest_resolves_to_same_tag_as_latest_version_tag(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v0.0.99", "v1.7.0", "v1.10.0"])
+        git_repo = GitRepo(str(repo_dir))
+        expected = GitHubRepoIngester._latest_version_tag(git_repo)
+
+        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+
+        assert ingester.resolve_tag_name(repo_dir, "latest") == expected
+
 
 # ---------------------------------------------------------------------------
 # clone_or_fetch with tag parameter
@@ -330,7 +385,10 @@ class TestCloneOrFetchWithTag:
 
         repo_slug = "test-org/test-repo"
         source_dir, clone_dir = _create_remote_and_clone_with_tags(
-            tmp_path, repo_slug, {"main.py": "print('v1')\n"}, ["v0.0.96"],
+            tmp_path,
+            repo_slug,
+            {"main.py": "print('v1')\n"},
+            ["v0.0.96"],
         )
         # Add a second commit at HEAD (beyond the tag)
         source_repo = GitRepo(str(source_dir))
@@ -355,7 +413,10 @@ class TestCloneOrFetchWithTag:
 
         repo_slug = "test-org/test-repo"
         source_dir, clone_dir = _create_remote_and_clone_with_tags(
-            tmp_path, repo_slug, {"main.py": "print('v1')\n"}, ["v0.0.96"],
+            tmp_path,
+            repo_slug,
+            {"main.py": "print('v1')\n"},
+            ["v0.0.96"],
         )
         # Add a second commit
         source_repo = GitRepo(str(source_dir))
@@ -378,7 +439,10 @@ class TestCloneOrFetchWithTag:
 
         repo_slug = "test-org/test-repo"
         source_dir, clone_dir = _create_remote_and_clone_with_tags(
-            tmp_path, repo_slug, {"main.py": "print('v1.7')\n"}, ["v1.7.0"],
+            tmp_path,
+            repo_slug,
+            {"main.py": "print('v1.7')\n"},
+            ["v1.7.0"],
         )
         # A newer release, then an untagged commit past it.
         source_repo = GitRepo(str(source_dir))
@@ -402,7 +466,10 @@ class TestCloneOrFetchWithTag:
     def test_invalid_tag_raises_on_fetch(self, tmp_path: Path):
         repo_slug = "test-org/test-repo"
         _create_remote_and_clone_with_tags(
-            tmp_path, repo_slug, {"main.py": "x = 1\n"}, ["v0.0.96"],
+            tmp_path,
+            repo_slug,
+            {"main.py": "x = 1\n"},
+            ["v0.0.96"],
         )
 
         config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
