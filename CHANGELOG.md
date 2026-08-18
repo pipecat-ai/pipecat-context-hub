@@ -98,6 +98,20 @@ This project uses [Semantic Versioning](https://semver.org/).
   ref that was deleted or pruned upstream after being marked tainted previously
   fell through the taint check as if it were clean; it's now treated as
   tainted, matching the function's other failure branches.
+- **A stale exact-provenance stamp could survive a refresh that couldn't derive
+  a new one.** When a refresh replaced the framework repo's records but the
+  resulting checkout was branch-shaped (not a release), `indexed_framework_version`
+  and `indexed_framework_commits_ahead` were left holding the previous run's
+  stamp instead of being cleared, so a stale exact version kept describing
+  records it no longer matched.
+- **`IndexStore` write/delete methods now re-raise FTS-layer failures** —
+  `upsert`, `delete_by_content_type`, `delete_by_repo`, and `delete_by_source`
+  previously swallowed a SQLite FTS5-side error, leaving the vector and FTS
+  indexes silently diverged. `refresh`'s call sites handle the re-raise per
+  context: the pre-ingest per-repo delete records an error and skips that
+  repo, while cleanup-style deletes (post-error purge, tainted-ref cleanup,
+  docs cleanup, unconfigured-repo removal) log the failure and continue on a
+  best-effort basis rather than aborting an otherwise-successful refresh.
 
 ## [0.5.2] - 2026-08-09
 
