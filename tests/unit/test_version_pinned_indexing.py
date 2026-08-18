@@ -292,9 +292,25 @@ class TestResolveLatest:
 
         assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.0.0"
 
-    def test_equal_normalized_versions_on_different_commits_are_rejected(
-        self, tmp_path: Path
-    ):
+    def test_uppercase_v_prefix_tag_can_win_latest(self, tmp_path: Path):
+        """An uppercase-``V`` release is a real release.
+
+        The parse used to strip lowercase ``v`` only while rejecting any leading
+        ``v``/``V`` that survived, so ``V2.0.0`` was classed unparseable and a
+        repo whose newest release used that spelling silently resolved ``latest``
+        to an older ``v1.x``. Both ``Version()`` and the tag-input regex accept
+        it, so the strip is case-insensitive too.
+        """
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.9.0", "V2.0.0"])
+        git_repo = GitRepo(str(repo_dir))
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "V2.0.0"
+
+    def test_equal_normalized_versions_on_different_commits_are_rejected(self, tmp_path: Path):
         """Aliases such as ``v1.0.0``/``1.0.0`` cannot choose arbitrarily."""
         from git import Repo as GitRepo
 

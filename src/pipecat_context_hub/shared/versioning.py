@@ -46,19 +46,28 @@ def canonicalize_framework_pin(pin: str) -> str:
 
 
 def parse_release_version(tag: str) -> Version:
-    """Parse *tag* as a version after stripping exactly one leading 'v'.
+    """Parse *tag* as a release version after stripping exactly one leading 'v' or 'V'.
 
     ``Version()`` performs its own PEP 440 normalisation that tolerates a
-    leading 'v' — so ``strip_v_prefix("vv1.0.0")`` yields ``"v1.0.0"``, which
-    ``Version()`` then happily accepts as ``1.0.0``, silently undoing the
-    single-strip guarantee. Rejecting any leading 'v'/'V' left after our own
-    strip closes that gap: a tag needs a real prefix mismatch (``"vv1.0.0"``)
-    to be excluded, not just an unlucky double-normalisation.
+    leading 'v' — so a naive single strip of ``"vv1.0.0"`` yields ``"v1.0.0"``,
+    which ``Version()`` then happily accepts as ``1.0.0``, silently undoing the
+    single-prefix guarantee. Rejecting any leading 'v'/'V' left after the strip
+    closes that gap: a tag needs a real prefix mismatch (``"vv1.0.0"``,
+    ``"vV1.0.0"``, ``"Vv1.0.0"``, ``"VV1.0.0"``) to be excluded, not just an
+    unlucky double-normalisation.
+
+    The strip and the guard are deliberately both case-insensitive. An
+    asymmetric pair — lowercase strip, either-case guard — rejects the
+    well-formed ``"V1.2.0"`` as unparseable, which would silently drop a repo's
+    newest release out of ``latest`` candidacy. Note this is *not* the same
+    widening as making :func:`strip_v_prefix` case-insensitive: that helper is
+    used for display normalisation, where strip precision is the point, and it
+    stays lowercase-only.
 
     Raises ``InvalidVersion`` — same contract as ``Version()`` itself — so
     every existing ``except InvalidVersion`` call site needs no changes.
     """
-    stripped = strip_v_prefix(tag)
+    stripped = tag[1:] if tag[:1] in ("v", "V") else tag
     if stripped[:1] in ("v", "V"):
         raise InvalidVersion(f"Invalid version: {tag!r}")
     return Version(stripped)

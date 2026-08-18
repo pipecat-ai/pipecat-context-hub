@@ -59,11 +59,19 @@ class TestParseReleaseVersion:
     def test_parses_bare_version(self):
         assert parse_release_version("1.10.0") == Version("1.10.0")
 
-    def test_rejects_doubled_prefix(self):
-        """`Version()` alone would normalise "v1.0.0" (what strip_v_prefix leaves
-        behind) straight back to 1.0.0, erasing the single-strip guarantee."""
+    def test_parses_uppercase_v_prefix(self):
+        """The strip is case-insensitive, so a repo whose newest release is
+        tagged `V2.0.0` is not silently dropped from `latest` candidacy."""
+        assert parse_release_version("V2.0.0") == Version("2.0.0")
+
+    @pytest.mark.parametrize("value", ["vv1.0.0", "vV1.0.0", "Vv1.0.0", "VV1.0.0"])
+    def test_rejects_doubled_prefix_in_any_casing(self, value: str):
+        """`Version()` alone would normalise "v1.0.0" (what a single strip leaves
+        behind) straight back to 1.0.0, erasing the single-prefix guarantee. The
+        guard is symmetric with the strip, so no casing sneaks a second prefix
+        through."""
         with pytest.raises(InvalidVersion):
-            parse_release_version("vv1.0.0")
+            parse_release_version(value)
 
     @pytest.mark.parametrize("value", ["", "nightly", "some-feature-tag", "main"])
     def test_rejects_non_versions(self, value: str):
