@@ -296,10 +296,27 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     sequence — including the framework-repo special case, whose version
     metadata describes records that no longer exist once the repo is gone —
     cannot drift between them.
+
+    Best-effort: ``IndexStore.delete_by_repo`` can now raise on an FTS-layer
+    failure (round-5 gauntlet fix). This is a cleanup pass, not core
+    ingestion, so a failure here is logged and swallowed rather than crashing
+    the whole refresh — matching the existing best-effort treatment of the
+    other two cleanup-style ``delete_by_repo`` call sites (post-ingest-error
+    purge, tainted-ref removal in ``_run_refresh``). The repo's stale data
+    may persist for another run; that is strictly better than aborting an
+    otherwise-successful refresh over cleanup of an already-unwanted repo.
     """
     from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
-    await index_store.delete_by_repo(slug)
+    try:
+        await index_store.delete_by_repo(slug)
+    except Exception:
+        _module_logger.exception(
+            "Failed to delete index data for %s during cleanup; its stale "
+            "records may persist until a future refresh retries the cleanup",
+            slug,
+        )
+        return
     index_store.delete_metadata(meta_key)
     if slug == _FRAMEWORK_REPO:
         # No framework records left to describe.
@@ -938,23 +955,38 @@ def refresh(
                     "updated": _MISSING_SENTINEL,
                 }
             else:
-                await index_store.delete_by_content_type("doc")
-                docs_result = await crawler.ingest(prefetched_text=raw_text)
-                total_upserted += docs_result.records_upserted
-                all_errors.extend(docs_result.errors)
-                logger.info(
-                    "Docs crawl: upserted=%d errors=%d",
-                    docs_result.records_upserted,
-                    len(docs_result.errors),
-                )
-                if not docs_result.errors:
-                    index_store.set_metadata("docs:content_hash", content_hash)
-                source_status[docs_key] = {
-                    "status": "error" if docs_result.errors else "updated",
-                    "sha": _MISSING_SENTINEL,
-                    "existing": pre_counts.get(docs_key, 0),
-                    "updated": docs_result.records_upserted,
-                }
+                try:
+                    await index_store.delete_by_content_type("doc")
+                except Exception as exc:
+                    # IndexStore.delete_by_content_type can now raise on an
+                    # FTS-layer failure (round-5 gauntlet fix). Record it the
+                    # same way every other ingest-step failure in this
+                    # function is recorded, rather than letting it crash the
+                    # whole refresh.
+                    all_errors.append(f"Failed to delete stale docs records: {exc}")
+                    source_status[docs_key] = {
+                        "status": "error",
+                        "sha": _MISSING_SENTINEL,
+                        "existing": pre_counts.get(docs_key, 0),
+                        "updated": _MISSING_SENTINEL,
+                    }
+                else:
+                    docs_result = await crawler.ingest(prefetched_text=raw_text)
+                    total_upserted += docs_result.records_upserted
+                    all_errors.extend(docs_result.errors)
+                    logger.info(
+                        "Docs crawl: upserted=%d errors=%d",
+                        docs_result.records_upserted,
+                        len(docs_result.errors),
+                    )
+                    if not docs_result.errors:
+                        index_store.set_metadata("docs:content_hash", content_hash)
+                    source_status[docs_key] = {
+                        "status": "error" if docs_result.errors else "updated",
+                        "sha": _MISSING_SENTINEL,
+                        "existing": pre_counts.get(docs_key, 0),
+                        "updated": docs_result.records_upserted,
+                    }
         await crawler.close()
 
         # ----- 2. Repos (code + source) -----

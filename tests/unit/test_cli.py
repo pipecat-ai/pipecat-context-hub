@@ -1401,6 +1401,60 @@ class TestRefreshFtsFaultInjection:
             written.update(batch_call.args[0])
         assert int(written["last_refresh_error_count"]) >= 1
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_fts_delete_by_content_type_failure_during_docs_delete_is_handled(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`IndexStore.delete_by_content_type` now re-raises an FTS-side
+        failure too. The docs-ingest branch (the stale-docs delete before
+        re-crawling) must catch it: the refresh completes without an
+        uncaught exception, docs re-ingest is skipped this run, and the
+        error is recorded and reflected in the persisted
+        `last_refresh_error_count` — mirroring the pre-ingest-delete
+        handling above, for the one other previously-unguarded call site
+        the round-5 verifier's blast-radius sweep found.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        mock_store.delete_by_content_type = AsyncMock(
+            side_effect=RuntimeError("FTS delete_by_content_type failed; indexes may have diverged")
+        )
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        # No uncaught exception propagated out of the CLI invocation.
+        assert result.exit_code == 0, result.output
+        mock_crawler.ingest.assert_not_called()
+        assert "error" in result.output.lower()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert int(written["last_refresh_error_count"]) >= 1
+
 
 class TestRefreshProvenanceMetadata:
     """Refresh stamps the contract version and the indexed pipecat revision."""
@@ -3433,10 +3487,22 @@ class TestPruneSafety(TestRefreshCommand):
         tmp_path,
         monkeypatch,
     ):
-        """index_store.delete_by_repo raising during a --prune delete: the
-        error propagates and is not swallowed silently, consistent with
-        today's unconditional delete-path error handling for tainted
-        repos."""
+        """index_store.delete_by_repo raising during a --prune delete used to
+        propagate and crash the whole refresh. Round 5's verifier flagged
+        that as a real blast-radius gap once `IndexStore.delete_by_repo`
+        started re-raising FTS-layer failures instead of swallowing them
+        (Finding #2): `_delete_repo_index_data` — the cleanup-pass helper
+        shared by both the tainted-repo and `--prune` deletion branches — now
+        catches the failure and logs it, consistent with the other two
+        best-effort cleanup-style `delete_by_repo` call sites (post-ingest-
+        error purge, tainted-ref removal). This is a cleanup pass, not core
+        ingestion: leaving a stale, already-unwanted repo's data in place for
+        another run is strictly better than aborting an otherwise-successful
+        refresh over it. The repo's metadata key is deliberately left in
+        place on failure too (not deleted), so a future cleanup pass can
+        still find and retry it — see `_delete_repo_index_data`'s docstring
+        and the existing "orphan from future cleanup passes" comment above
+        this loop."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -3453,9 +3519,12 @@ class TestPruneSafety(TestRefreshCommand):
         runner = CliRunner()
         result = runner.invoke(main, ["refresh", "--prune"])
 
-        assert result.exit_code != 0
-        assert result.exception is not None
-        assert "boom" in str(result.exception)
+        # No uncaught exception propagates out of the CLI invocation.
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        # The metadata key survives the failed delete, so a later cleanup
+        # pass can still discover and retry this repo.
+        mock_store.delete_metadata.assert_not_called()
 
 
 class TestRefreshIncompatibleIndex:
