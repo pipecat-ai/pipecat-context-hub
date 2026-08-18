@@ -7,6 +7,17 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Reranker permanently disabled after a successful `refresh`.** `is_model_cached`
+  probed the HF cache at `revision="main"` while `_download` fetches shipped
+  models at a pinned commit SHA — a pinned download populates
+  `snapshots/<sha>/` but never writes `refs/main`, so the probe always missed
+  it and reported `reranker_disabled_reason: "not_cached"` even with a
+  complete on-disk model. Re-running `refresh` could not fix it, since the
+  SHA was already cached and no name-based resolve occurred to write the
+  missing ref. The probe now checks the same pinned revision the download
+  used. (#115)
+
 ## [0.5.2] - 2026-08-09
 
 ### Added

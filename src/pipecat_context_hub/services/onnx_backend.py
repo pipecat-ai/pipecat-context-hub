@@ -77,6 +77,18 @@ _CROSS_ENCODER_MAX_SEQ = 512
 _BATCH_SIZE = 32
 
 
+def _pinned_revision(repo_id: str) -> str | None:
+    """Return the immutable revision ``repo_id`` is pinned to, or ``None``.
+
+    The single source both ``_download`` (the fetch path) and
+    ``is_model_cached`` (the cache probe) resolve through, so the two can
+    never disagree on which revision a repo id means — the exact drift that
+    caused #115 (the probe checked ``revision="main"`` while the download
+    fetched a pinned SHA).
+    """
+    return _PINNED_REVISIONS.get(repo_id)
+
+
 def _download(repo_id: str, filename: str) -> str:
     """Fetch a repo file, pinned to an immutable revision where one is known.
 
@@ -87,7 +99,7 @@ def _download(repo_id: str, filename: str) -> str:
     """
     from huggingface_hub import hf_hub_download
 
-    revision = _PINNED_REVISIONS.get(repo_id)
+    revision = _pinned_revision(repo_id)
     if revision is None:
         # nosec B615 - no pin exists for a caller-supplied custom model; the
         # repo id comes from local config, not from untrusted input.
@@ -149,12 +161,25 @@ def is_model_cached(model_name: str) -> bool:
     ``model.safetensors`` but never the ONNX export — a false positive that
     enables the reranker and then fails on the first query under
     ``HF_HUB_OFFLINE=1``.
+
+    Probes at the same revision ``_download`` pins the model to. A pinned
+    download resolves an explicit SHA, which populates ``blobs/`` and
+    ``snapshots/<sha>/`` but never writes ``refs/main`` — there is no branch
+    name involved, so there is no ref to record. ``try_to_load_from_cache``
+    defaults to ``revision="main"``, which resolves nothing against a
+    SHA-only snapshot and reports a false negative: the reranker looks
+    uncached (and stays disabled) even immediately after a successful
+    ``refresh`` populated it. Passing the same pin the download used makes
+    the two paths agree by construction. Unpinned custom models pass
+    ``revision=None``, which ``try_to_load_from_cache`` treats the same as
+    omitting the argument, so this is a no-op for them.
     """
     repo_id = resolve_repo_id(model_name)
+    revision = _pinned_revision(repo_id)
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        return isinstance(try_to_load_from_cache(repo_id, ONNX_WEIGHTS), str)
+        return isinstance(try_to_load_from_cache(repo_id, ONNX_WEIGHTS, revision=revision), str)
     except ImportError:
         logger.debug("huggingface_hub unavailable, falling back to cache-dir probe")
     except Exception:
