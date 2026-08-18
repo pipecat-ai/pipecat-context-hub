@@ -1488,6 +1488,7 @@ class GitHubRepoIngester:
     def _resolve_latest_tag(self, git_repo: GitRepo) -> tuple[str, str]:
         """Select latest and verify its local commit still matches origin."""
         tag = self._latest_version_tag(git_repo)
+        logger.info("Resolved framework version '%s' to tag %s", LATEST_SENTINEL, tag)
         commit_sha = self._resolve_tag(git_repo, tag)
         origin_sha = self._origin_tag_commit(git_repo, tag)
         if origin_sha is None:
@@ -1501,18 +1502,15 @@ class GitHubRepoIngester:
 
     @staticmethod
     def _resolve_tag(git_repo: GitRepo, tag: str) -> str:
-        """Resolve a git tag name to a commit SHA.
+        """Resolve a literal git tag name to a commit SHA.
 
-        Handles both lightweight and annotated tags, and the ``latest`` sentinel
-        (newest release tag). Raises ``ValueError`` if the tag does not exist or
-        has an invalid format.
+        Handles both lightweight and annotated tags. Does **not** resolve the
+        ``latest`` sentinel — every production caller resolves it via
+        ``_resolve_latest_tag``/``_latest_version_tag`` first, so a caller
+        passing the literal string ``"latest"`` here gets the same
+        not-found error as any other nonexistent tag. Raises ``ValueError``
+        if the tag does not exist or has an invalid format.
         """
-        # Resolve the sentinel before validation: `latest` matches _TAG_INPUT_RE, so
-        # falling through would fail as a missing tag rather than as itself.
-        if is_latest_sentinel(tag):
-            tag = GitHubRepoIngester._latest_version_tag(git_repo)
-            logger.info("Resolved framework version '%s' to tag %s", LATEST_SENTINEL, tag)
-
         if not _TAG_INPUT_RE.fullmatch(tag):
             raise ValueError(f"Invalid tag format: {tag!r}")
         # Normalise: accept both "v0.0.96" and "0.0.96"

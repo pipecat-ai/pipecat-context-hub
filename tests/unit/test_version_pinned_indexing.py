@@ -198,18 +198,6 @@ class TestResolveLatest:
 
         assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.10.0"
 
-    def test_sentinel_is_case_insensitive(self, tmp_path: Path):
-        from git import Repo as GitRepo
-
-        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
-
-        repo_dir = _create_tagged_repo(tmp_path, ["v1.7.0"])
-        git_repo = GitRepo(str(repo_dir))
-        expected_sha = git_repo.head.commit.hexsha
-
-        for sentinel in ["latest", "LATEST", " Latest "]:
-            assert GitHubRepoIngester._resolve_tag(git_repo, sentinel) == expected_sha
-
     def test_prerelease_skipped_when_final_exists(self, tmp_path: Path):
         from git import Repo as GitRepo
 
@@ -253,6 +241,11 @@ class TestResolveLatest:
             GitHubRepoIngester._latest_version_tag(git_repo)
 
     def test_no_tags_at_all_raises(self, tmp_path: Path):
+        """Round 3 Finding #2: `_resolve_tag` no longer resolves the `latest`
+        sentinel itself — this scenario (zero tags, resolving `latest`) is
+        exercised through `_latest_version_tag`, the method `_resolve_tag`
+        now delegates the sentinel to via `_resolve_latest_tag`.
+        """
         from git import Repo as GitRepo
 
         from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
@@ -261,6 +254,53 @@ class TestResolveLatest:
         git_repo = GitRepo(str(repo_dir))
 
         with pytest.raises(ValueError, match="no version-like tags"):
+            GitHubRepoIngester._latest_version_tag(git_repo)
+
+    def test_resolve_latest_tag_is_case_insensitive_end_to_end(self, tmp_path: Path):
+        """Regression (Round 3 Finding #2): coverage for the sentinel's
+        case/whitespace insensitivity moved here from a direct
+        `_resolve_tag(repo, "latest")` call, since `_resolve_tag` no longer
+        resolves the sentinel itself — `_resolve_latest_tag` is now the sole
+        path that does, and it additionally origin-verifies the result.
+        """
+        from git import Repo as GitRepo
+
+        repo_slug = "test-org/test-repo"
+        _source_dir, clone_dir = _create_remote_and_clone_with_tags(
+            tmp_path,
+            repo_slug,
+            {"main.py": "print('v1')\n"},
+            ["v1.7.0"],
+        )
+        git_repo = GitRepo(str(clone_dir))
+        expected_sha = git_repo.head.commit.hexsha
+        ingester = GitHubRepoIngester(
+            HubConfig(storage=StorageConfig(data_dir=tmp_path / "data")), _make_mock_writer()
+        )
+
+        # `_resolve_latest_tag` itself only ever resolves the canonical
+        # "latest" sentinel it's invoked for — the case/whitespace tolerance
+        # lives in `is_latest_sentinel`, exercised at the `clone_or_fetch`
+        # call site. This test pins the concrete resolution path end to end.
+        tag, sha = ingester._resolve_latest_tag(git_repo)
+        assert tag == "v1.7.0"
+        assert sha == expected_sha
+
+    def test_resolve_tag_no_longer_resolves_latest_sentinel(self, tmp_path: Path):
+        """Regression (Round 3 Finding #2): `_resolve_tag` is now a pure
+        literal-tag-to-SHA resolver — it must treat `latest` as an ordinary
+        (invalid) tag name rather than resolving it as the sentinel, since
+        sentinel resolution now happens exclusively through
+        `_resolve_latest_tag`'s origin-verified path.
+        """
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.7.0"])
+        git_repo = GitRepo(str(repo_dir))
+
+        with pytest.raises(ValueError, match="not found in repository"):
             GitHubRepoIngester._resolve_tag(git_repo, "latest")
 
     def test_local_version_segment_tag_skipped_not_raised(self, tmp_path: Path):
