@@ -1058,7 +1058,13 @@ def refresh(
                         "Indexed ref for %s is also tainted; removing local records",
                         repo_slug,
                     )
-                    await index_store.delete_by_repo(repo_slug)
+                    try:
+                        await index_store.delete_by_repo(repo_slug)
+                    except Exception:
+                        logger.exception(
+                            "Failed to purge records for tainted ref %s during cleanup",
+                            repo_slug,
+                        )
                     index_store.delete_metadata(stored_sha_key)
                     if repo_slug == framework_slug:
                         # Framework records are gone, so any recorded provenance
@@ -1147,7 +1153,19 @@ def refresh(
                 }
                 continue
 
-            await index_store.delete_by_repo(repo_slug)
+            try:
+                await index_store.delete_by_repo(repo_slug)
+            except Exception as exc:
+                msg = f"Failed to delete stale records for {repo_slug}: {exc}"
+                all_errors.append(msg)
+                logger.error(msg)
+                source_status[repo_slug] = {
+                    "status": "error",
+                    "sha": commit_sha[:8],
+                    "existing": pre_counts.get(repo_slug, 0),
+                    "updated": _MISSING_SENTINEL,
+                }
+                continue
             logger.info("Deleted stale records for %s", repo_slug)
 
             repo_has_errors = False
@@ -1200,13 +1218,20 @@ def refresh(
             # correctly withholds itself on `repo_has_errors`, independent of
             # this record-level cleanup.
             if repo_has_errors:
-                await index_store.delete_by_repo(repo_slug)
-                logger.warning(
-                    "Ingest for %s failed partway through; purged "
-                    "partial records — a retry (refresh) is required to "
-                    "fully re-index it",
-                    repo_slug,
-                )
+                try:
+                    await index_store.delete_by_repo(repo_slug)
+                except Exception:
+                    logger.exception(
+                        "Failed to purge partial records for %s after ingest errors",
+                        repo_slug,
+                    )
+                else:
+                    logger.warning(
+                        "Ingest for %s failed partway through; purged "
+                        "partial records — a retry (refresh) is required to "
+                        "fully re-index it",
+                        repo_slug,
+                    )
 
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",

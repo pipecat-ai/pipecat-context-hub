@@ -1305,6 +1305,103 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         mock_is_cls.assert_not_called()
 
 
+class TestRefreshFtsFaultInjection:
+    """`IndexStore`'s FTS-side exceptions are no longer swallowed (Round 5
+    Finding #2): `upsert`/`delete_by_repo`/`delete_by_content_type`/
+    `delete_by_source` now re-raise after logging. `refresh` must not crash
+    when that happens — the three previously-unguarded `delete_by_repo` call
+    sites need to catch and handle it.
+
+    The store-level `upsert` fault-injection regression test (proving
+    `IndexWriter.upsert` failures now surface as `IngestResult.errors`
+    instead of a silently-swallowed vector/FTS divergence) lives in
+    `test_github_ingest.py::TestGitHubRepoIngester::
+    test_ingest_upsert_failure_is_reported_as_error`, using the real
+    `IndexStore` with its FTS index fault-injected — that is the seam where
+    the `store.py` fix (Part A) and the pre-existing `github_ingest.py`
+    error handling (Part B, unchanged) actually meet. Once
+    `IngestResult.errors` is non-empty, `refresh`'s per-repo
+    `repo_has_errors`/purge/`ingested_repos` handling is pre-existing Round 4
+    logic (see `TestRefreshRecordReplacementGate::
+    test_partial_error_ingest_purges_records_not_just_metadata`) and is not
+    re-tested here.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_deprecation_map(self):
+        """Avoid touching the registry/filesystem during refresh tests."""
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_registry",
+            return_value=MagicMock(entries={}, save=MagicMock()),
+        ):
+            yield
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_fts_delete_by_repo_failure_during_pre_ingest_delete_is_handled(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`IndexStore.delete_by_repo` now re-raises an FTS-side failure. The
+        pre-ingest delete inside the `changed_repos` loop must catch it: the
+        refresh completes without an uncaught exception, the failing repo is
+        skipped for the rest of that iteration (never reaches `github.ingest`
+        for it), is recorded as errored, and the error is reflected in the
+        persisted `last_refresh_error_count`.
+        """
+        target_repo = "pipecat-ai/pipecat-flows"
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        async def _delete_by_repo_side_effect(repo):
+            if repo == target_repo:
+                raise RuntimeError("FTS delete_by_repo failed; indexes may have diverged")
+            return 0
+
+        mock_store.delete_by_repo = AsyncMock(side_effect=_delete_by_repo_side_effect)
+
+        ingested_repo_calls: list[str] = []
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            ingested_repo_calls.extend(repos)
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        # No uncaught exception propagated out of the CLI invocation.
+        assert result.exit_code == 0, result.output
+        assert target_repo not in ingested_repo_calls
+        assert target_repo in result.output
+        assert "error" in result.output.lower()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert int(written["last_refresh_error_count"]) >= 1
+
+
 class TestRefreshProvenanceMetadata:
     """Refresh stamps the contract version and the indexed pipecat revision."""
 

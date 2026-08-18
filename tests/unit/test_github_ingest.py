@@ -819,6 +819,50 @@ class TestGitHubRepoIngester:
         assert "network error" in result.errors[0]
         assert result.records_upserted == 0
 
+    async def test_ingest_upsert_failure_is_reported_as_error(self, tmp_path: Path):
+        """Regression (Round 5 Finding #2): a real `IndexStore` whose FTS
+        index fails during `upsert` now re-raises (Part A) instead of
+        swallowing the exception and silently returning only the vector
+        count. `_ingest_repo`'s existing `except Exception as exc:` around
+        `self._writer.upsert(records)` (Part B, unchanged) must catch that
+        and report it via `IngestResult.errors`, leaving `records_upserted`
+        at 0 rather than the vector-only count a swallowed exception would
+        have produced.
+
+        Uses the real `IndexStore` (not `_make_mock_writer`) with only its
+        underlying FTS index's `upsert` faulted, so this exercises the actual
+        `store.py` fix rather than a mocked-away substitute.
+        """
+        from pipecat_context_hub.services.index.store import IndexStore
+
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {"examples/bot1/main.py": "def run():\n    pass\n"},
+        )
+
+        config = self._make_config(tmp_path)
+        store = IndexStore(config.storage)
+        store._fts.upsert = MagicMock(side_effect=RuntimeError("FTS upsert failed (disk full)"))
+        try:
+            ingester = GitHubRepoIngester(config, store)
+
+            from git import Repo as GitRepo
+
+            git_repo = GitRepo(str(repo_dir))
+            commit_sha = git_repo.head.commit.hexsha
+
+            with patch.object(
+                ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
+            ):
+                result = await ingester.ingest()
+
+            assert result.records_upserted == 0
+            assert len(result.errors) == 1
+            assert "FTS upsert failed" in result.errors[0]
+        finally:
+            store.close()
+
     async def test_ingest_src_layout_repo(self, tmp_path: Path):
         """Repo with only src/ dir (no examples/) is indexed via root fallback."""
         repo_dir = _create_fake_repo(

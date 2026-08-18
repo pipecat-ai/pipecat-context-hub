@@ -81,7 +81,7 @@ class IndexStore:
             fts_count = self._fts.upsert(records)
         except Exception:
             logger.exception("FTS upsert failed; vector index may have diverged")
-            fts_count = 0
+            raise
         if vector_count != fts_count:
             logger.warning("Index divergence: vector=%d fts=%d records", vector_count, fts_count)
         return vector_count
@@ -93,7 +93,7 @@ class IndexStore:
             fts_count = self._fts.delete_by_content_type(content_type)
         except Exception:
             logger.exception("FTS delete_by_content_type failed; indexes may have diverged")
-            fts_count = 0
+            raise
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (content_type=%s): vector=%d fts=%d",
@@ -110,7 +110,7 @@ class IndexStore:
             fts_count = self._fts.delete_by_repo(repo)
         except Exception:
             logger.exception("FTS delete_by_repo failed; indexes may have diverged")
-            fts_count = 0
+            raise
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (repo=%s): vector=%d fts=%d",
@@ -127,7 +127,7 @@ class IndexStore:
             fts_count = self._fts.delete_by_source(source_url)
         except Exception:
             logger.exception("FTS delete_by_source failed; indexes may have diverged")
-            fts_count = 0
+            raise
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (source_url=%s): vector=%d fts=%d",
