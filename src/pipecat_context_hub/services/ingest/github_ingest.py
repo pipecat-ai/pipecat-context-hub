@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from git import Repo as GitRepo
+from git import TagReference
 from git.exc import BadObject, GitCommandError, InvalidGitRepositoryError, NoSuchPathError
 from packaging.version import InvalidVersion, Version
 
@@ -100,8 +101,11 @@ _BOUNDARY_RE = re.compile(
 
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 _REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
-# Validation for git tag names (e.g. "v0.0.96", "0.0.96").
-_TAG_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+# Tag names this tool accepts as operator input and can hand back to git
+# (e.g. "v0.0.96", "0.0.96"). It also bounds `latest` candidacy, since a
+# selected tag is re-resolved through this same validation — see
+# `_is_latest_candidate`.
+_TAG_INPUT_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 _ZERO_VERSION = Version("0")
 
@@ -144,6 +148,27 @@ def _version_sort_key(tag: str) -> tuple[int, Version, str]:
         return (1, parse_release_version(tag), tag)
     except InvalidVersion:
         return (0, _ZERO_VERSION, tag)
+
+
+def _is_latest_candidate(name: str) -> bool:
+    """A tag eligible to be selected as ``latest``.
+
+    Two independent requirements, both necessary: it must parse as a release
+    version (ordering), and it must be re-resolvable through ``_resolve_tag``
+    (``_TAG_INPUT_RE``) — selecting a tag we cannot then resolve turns a filter
+    into a crash. PEP 440 local-version segments (``v1.10.0+cu121``) are excluded
+    by the second rule, and that exclusion is load-bearing rather than
+    incidental: such a version sorts *above* the bare release it decorates, so
+    without it a build-tagged ref would win ``latest`` and then be rejected by
+    ``_resolve_tag``, failing every refresh.
+    """
+    if not _TAG_INPUT_RE.fullmatch(name):
+        return False
+    try:
+        parse_release_version(name)
+    except InvalidVersion:
+        return False
+    return True
 
 
 def _is_valid_clone(repo_path: Path) -> bool:
@@ -1063,16 +1088,19 @@ class GitHubRepoIngester:
         # Extract pipecat version: framework repo uses git tag,
         # other repos extract per-example-directory from dependency files.
         is_framework = repo_slug == _FRAMEWORK_REPO
+        # Derived into its own name rather than rebound onto the parameter, so
+        # `framework_version` stays immutable and readable as the caller's input.
+        chunk_version: str | None = None
         if is_framework:
             if framework_version is not None:
                 # A caller-provided tag is an exact release identity. Normalize
                 # only the conventional prefix; unlike git-describe this must
                 # not turn a release checkout into its nearest reachable floor.
-                framework_version = strip_v_prefix(framework_version.strip())
+                chunk_version = strip_v_prefix(framework_version.strip())
             else:
-                framework_version = _get_framework_version(repo_path)
-            if framework_version:
-                logger.debug("Framework version from git tag: %s", framework_version)
+                chunk_version = _get_framework_version(repo_path)
+            if chunk_version:
+                logger.debug("Framework version from git tag: %s", chunk_version)
 
         is_root_fallback = repo_path in example_dirs
 
@@ -1090,7 +1118,7 @@ class GitHubRepoIngester:
 
             # Version extraction: framework uses git tag, others walk-up.
             if is_framework:
-                ex_version = framework_version
+                ex_version = chunk_version
             else:
                 ex_version = _extract_pipecat_version(ex_dir, repo_path)
 
@@ -1369,37 +1397,41 @@ class GitHubRepoIngester:
         Raises ``ValueError`` when no tag parses as a version — a bare clone with
         no tags, or a repo that names its refs something else entirely.
         """
-        by_version: dict[Version, list[tuple[str, str]]] = {}
+        # Select from tag *names* only — no `.commit` access, so this pass
+        # cannot raise. Validation is deferred to the selected version alone
+        # (below): one dangling ref or one historical ambiguous alias pair used
+        # to abort `latest` resolution for the whole repo, even when neither tag
+        # was remotely the newest.
+        by_version: dict[Version, list[tuple[str, TagReference]]] = {}
         for tag_ref in git_repo.tags:
             name = str(tag_ref)
-            if not _TAG_RE.fullmatch(name):
-                # Excludes tags with PEP 440 local-version segments (e.g.
-                # "v1.10.0+cu121") from candidacy, since _TAG_RE forbids "+".
+            if not _is_latest_candidate(name):
                 continue
+            by_version.setdefault(parse_release_version(name), []).append((name, tag_ref))
+
+        if not by_version:
+            raise ValueError("Cannot resolve 'latest': repository has no version-like tags")
+
+        finals = [version for version in by_version if not version.is_prerelease]
+        selected = max(finals or list(by_version))
+
+        # Only now resolve commits, and only for the tag actually being
+        # returned. Both failures stay fatal — `_resolve_latest_tag` is
+        # fail-closed by design — but they are now scoped to the answer, not to
+        # an unrelated tag nobody asked for.
+        aliases = by_version[selected]
+        commit_shas: set[str] = set()
+        for name, tag_ref in aliases:
             try:
-                version = parse_release_version(name)
-            except InvalidVersion:
-                continue
-            try:
-                commit_sha = tag_ref.commit.hexsha
+                commit_shas.add(tag_ref.commit.hexsha.lower())
             except (AttributeError, BadObject, GitCommandError, ValueError) as exc:
                 raise ValueError(f"Cannot resolve version-like tag {name!r}") from exc
-            by_version.setdefault(version, []).append((name, commit_sha))
-
-        parsed: list[tuple[Version, str]] = []
-        for version, aliases in by_version.items():
-            commit_shas = {commit_sha.lower() for _name, commit_sha in aliases}
-            if len(commit_shas) > 1:
-                names = sorted(name for name, _commit_sha in aliases)
-                raise ValueError(
-                    f"Ambiguous version aliases for {version}: {names} resolve to different commits"
-                )
-            parsed.append((version, _canonical_version_tag([name for name, _ in aliases])))
-
-        if not parsed:
-            raise ValueError("Cannot resolve 'latest': repository has no version-like tags")
-        finals = [entry for entry in parsed if not entry[0].is_prerelease]
-        return max(finals or parsed)[1]
+        if len(commit_shas) > 1:
+            names = sorted(name for name, _tag_ref in aliases)
+            raise ValueError(
+                f"Ambiguous version aliases for {selected}: {names} resolve to different commits"
+            )
+        return _canonical_version_tag([name for name, _tag_ref in aliases])
 
     @staticmethod
     def _fetch_origin_tags(git_repo: GitRepo) -> None:
@@ -1456,13 +1488,13 @@ class GitHubRepoIngester:
         (newest release tag). Raises ``ValueError`` if the tag does not exist or
         has an invalid format.
         """
-        # Resolve the sentinel before validation: `latest` matches _TAG_RE, so
+        # Resolve the sentinel before validation: `latest` matches _TAG_INPUT_RE, so
         # falling through would fail as a missing tag rather than as itself.
         if is_latest_sentinel(tag):
             tag = GitHubRepoIngester._latest_version_tag(git_repo)
             logger.info("Resolved framework version '%s' to tag %s", LATEST_SENTINEL, tag)
 
-        if not _TAG_RE.fullmatch(tag):
+        if not _TAG_INPUT_RE.fullmatch(tag):
             raise ValueError(f"Invalid tag format: {tag!r}")
         # Normalise: accept both "v0.0.96" and "0.0.96"
         candidates = [tag]

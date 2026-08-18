@@ -310,6 +310,56 @@ class TestResolveLatest:
 
         assert GitHubRepoIngester._latest_version_tag(git_repo) == "V2.0.0"
 
+    def test_unresolvable_older_tag_does_not_abort_resolution(self, tmp_path: Path):
+        """Validation is scoped to the selected tag.
+
+        Resolving every version-like tag up front meant one unresolvable ref
+        anywhere in the repo aborted `latest` for the whole repository, even
+        when that tag was nowhere near the newest.
+        """
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.10.0"])
+        git_repo = GitRepo(str(repo_dir))
+        # An old release tag pointing at a blob: `.commit` on it raises.
+        blob_sha = git_repo.git.hash_object("-w", str(repo_dir / "README.md"))
+        git_repo.git.update_ref("refs/tags/v1.0.0", blob_sha)
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.10.0"
+
+    def test_unresolvable_selected_tag_still_raises(self, tmp_path: Path):
+        """The selected tag is still validated — fail-closed is the point; the
+        bug was failing on a tag nobody asked for."""
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.0.0"])
+        git_repo = GitRepo(str(repo_dir))
+        blob_sha = git_repo.git.hash_object("-w", str(repo_dir / "README.md"))
+        git_repo.git.update_ref("refs/tags/v1.10.0", blob_sha)
+
+        with pytest.raises(ValueError, match="Cannot resolve version-like tag 'v1.10.0'"):
+            GitHubRepoIngester._latest_version_tag(git_repo)
+
+    def test_ambiguous_older_alias_pair_does_not_abort_resolution(self, tmp_path: Path):
+        """An ambiguous alias pair on a *historical* version is not a reason to
+        refuse to name the newest release."""
+        from git import Repo as GitRepo
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.0.0"])
+        git_repo = GitRepo(str(repo_dir))
+        (repo_dir / "README.md").write_text("# Changed\n")
+        git_repo.index.add(["README.md"])
+        git_repo.index.commit("second commit")
+        # 1.0.0 and v1.0.0 now disagree, but 1.10.0 is what `latest` selects.
+        git_repo.git.update_ref("refs/tags/1.0.0", "HEAD")
+        git_repo.git.update_ref("refs/tags/v1.10.0", "HEAD")
+
+        assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.10.0"
+
     def test_equal_normalized_versions_on_different_commits_are_rejected(self, tmp_path: Path):
         """Aliases such as ``v1.0.0``/``1.0.0`` cannot choose arbitrarily."""
         from git import Repo as GitRepo
