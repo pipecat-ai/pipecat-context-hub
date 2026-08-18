@@ -1619,7 +1619,7 @@ class TestRefreshProvenanceMetadata:
         ]
         # Already normalised to a release version by `exact_release_version`, so
         # the chunk pin and the metadata stamp are literally the same value.
-        assert framework_calls[0].kwargs["framework_version"] == "1.10.0"
+        assert framework_calls[0].kwargs["framework_checkout_version"] == "1.10.0"
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -1691,7 +1691,7 @@ class TestRefreshProvenanceMetadata:
             if call.kwargs.get("repos") == ["pipecat-ai/pipecat"]
         ]
         # None routes _ingest_repo to its existing unpinned version extraction.
-        assert framework_calls[0].kwargs["framework_version"] is None
+        assert framework_calls[0].kwargs["framework_checkout_version"] is None
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")

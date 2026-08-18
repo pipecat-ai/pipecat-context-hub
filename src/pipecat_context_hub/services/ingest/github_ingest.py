@@ -997,7 +997,7 @@ class GitHubRepoIngester:
         self,
         repos: list[str] | None = None,
         prefetched: dict[str, tuple[Path, str]] | None = None,
-        framework_version: str | None = None,
+        framework_checkout_version: str | None = None,
     ) -> IngestResult:
         """Clone (or fetch) repos and ingest their examples.
 
@@ -1006,10 +1006,11 @@ class GitHubRepoIngester:
                 configured repos from ``effective_repos``.
             prefetched: Optional mapping of ``{repo_slug: (repo_path, commit_sha)}``
                 from prior ``clone_or_fetch`` calls, avoiding redundant fetches.
-            framework_version: The concrete, already-normalized version for a
-                pinned framework checkout (e.g. from ``exact_release_version``).
-                When omitted, the framework version is derived with git-describe
-                floor semantics for an unpinned default-branch refresh.
+            framework_checkout_version: The concrete, already-normalized version
+                for a pinned framework checkout (e.g. from
+                ``exact_release_version``). When omitted, the framework version
+                is derived with git-describe floor semantics for an unpinned
+                default-branch refresh.
         """
         start = time.monotonic()
         all_errors: list[str] = []
@@ -1021,7 +1022,7 @@ class GitHubRepoIngester:
             result = await self._ingest_repo(
                 repo_slug,
                 prefetched=prefetched.get(repo_slug),
-                framework_version=framework_version,
+                framework_checkout_version=framework_checkout_version,
             )
             total_upserted += result.records_upserted
             all_errors.extend(result.errors)
@@ -1039,7 +1040,7 @@ class GitHubRepoIngester:
         self,
         repo_slug: str,
         prefetched: tuple[Path, str] | None = None,
-        framework_version: str | None = None,
+        framework_checkout_version: str | None = None,
     ) -> IngestResult:
         """Clone/fetch a single repo and ingest its example directories.
 
@@ -1047,8 +1048,8 @@ class GitHubRepoIngester:
             repo_slug: GitHub repo slug (e.g. ``pipecat-ai/pipecat``).
             prefetched: Optional ``(repo_path, commit_sha)`` from a prior
                 ``clone_or_fetch`` call, avoiding a redundant fetch.
-            framework_version: Concrete, already-normalized version supplied
-                for a pinned framework checkout (e.g. from
+            framework_checkout_version: Concrete, already-normalized version
+                supplied for a pinned framework checkout (e.g. from
                 ``exact_release_version``). ``None`` preserves git-describe
                 floor semantics for unpinned default-branch refreshes.
         """
@@ -1100,15 +1101,16 @@ class GitHubRepoIngester:
         # other repos extract per-example-directory from dependency files.
         is_framework = repo_slug == _FRAMEWORK_REPO
         # Derived into its own name rather than rebound onto the parameter, so
-        # `framework_version` stays immutable and readable as the caller's input.
+        # `framework_checkout_version` stays immutable and readable as the
+        # caller's input.
         chunk_version: str | None = None
         if is_framework:
-            if framework_version is not None:
+            if framework_checkout_version is not None:
                 # A caller-provided tag is an exact release identity, already
                 # normalized by the caller (e.g. `exact_release_version`).
                 # Unlike git-describe this must not turn a release checkout
                 # into its nearest reachable floor.
-                chunk_version = framework_version.strip()
+                chunk_version = framework_checkout_version.strip()
             else:
                 chunk_version = _get_framework_version(repo_path)
             if chunk_version:
@@ -1233,7 +1235,7 @@ class GitHubRepoIngester:
 
             # Version for root-level files: use repo-root extraction.
             root_version = (
-                framework_version
+                framework_checkout_version
                 if is_framework
                 else _extract_pipecat_version(repo_path, repo_path)
             )
@@ -1408,6 +1410,12 @@ class GitHubRepoIngester:
 
         Raises ``ValueError`` when no tag parses as a version — a bare clone with
         no tags, or a repo that names its refs something else entirely.
+
+        PEP 440-equal tag aliases (e.g. ``v1.10`` and ``v1.10.0``, which both
+        parse to ``Version("1.10")``) are treated as aliases of *one* release,
+        not silently collapsed: they are grouped under the same ``by_version``
+        key deliberately, and the ambiguous-commit check below still fires if
+        the aliases disagree on which commit that release actually is.
         """
         # Select from tag *names* only — no `.commit` access, so this pass
         # cannot raise. Validation is deferred to the selected version alone
@@ -1464,7 +1472,16 @@ class GitHubRepoIngester:
 
     @staticmethod
     def _origin_tag_commit(git_repo: GitRepo, tag: str) -> str | None:
-        """Return origin's commit for *tag*, preferring an annotated peel."""
+        """Return origin's commit for *tag*, preferring an annotated peel.
+
+        Residual limitation: this parses whichever of the peeled/direct lines
+        ``git ls-remote`` happens to emit for *tag*, falling back to the direct
+        SHA only when no peeled line is present. It does not independently
+        verify that the peeled and direct SHAs (when both are present)
+        actually describe the same tag object versus a same-named but
+        differently-typed ref collision — that class of ambiguity is assumed
+        away by trusting ``ls-remote``'s own pairing of ref name to SHA.
+        """
         direct_ref = f"refs/tags/{tag}"
         peeled_ref = f"{direct_ref}^{{}}"
         try:

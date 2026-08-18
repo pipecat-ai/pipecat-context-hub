@@ -732,7 +732,7 @@ class TestGitHubRepoIngester:
             result = await ingester.ingest(
                 repos=[_FRAMEWORK_REPO],
                 prefetched={_FRAMEWORK_REPO: (repo_dir, commit_sha)},
-                framework_version=exact_release_version(selected_tag),
+                framework_checkout_version=exact_release_version(selected_tag),
             )
 
         assert result.errors == []

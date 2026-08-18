@@ -883,6 +883,13 @@ def refresh(
     # pass below can record which pipecat revision the index reflects. None when
     # the framework repo was not cloned (unconfigured, tainted, or clone failed).
     framework_checkout: Path | None = None
+    # True only once the framework checkout's records are known-coherent with
+    # the index (error-free ingest, per the `ingested_repos` gate) — a
+    # separate bool from `framework_checkout` being non-None so a type
+    # checker can't mistake "we have a path" for "that path's provenance is
+    # safe to stamp"; the two conditions differ exactly in the partial-ingest
+    # case this gate exists to guard against.
+    framework_provenance_ready = False
 
     # The tag of the commit actually checked out for a pinned framework
     # refresh, as returned (and origin-verified) by `clone_or_fetch` itself —
@@ -898,7 +905,7 @@ def refresh(
     unpruned_repo_count = 0
 
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, framework_checkout
+        nonlocal total_upserted, all_errors, framework_checkout, framework_provenance_ready
         nonlocal unpruned_repo_count, checked_out_framework_tag
 
         # Snapshot per-repo chunk counts before any changes.
@@ -1150,7 +1157,7 @@ def refresh(
             code_result = await github.ingest(
                 repos=[repo_slug],
                 prefetched=prefetched,
-                framework_version=(
+                framework_checkout_version=(
                     exact_release_version(checked_out_framework_tag)
                     if repo_slug == framework_slug
                     else None
@@ -1212,6 +1219,7 @@ def refresh(
             and framework_slug not in frozen_sha_repos
             and (framework_slug not in changed_repos or framework_slug in ingested_repos)
         ):
+            framework_provenance_ready = True
             framework_checkout = prefetched[framework_slug][0]
 
         # Store SHAs: unchanged repos (handles first-run) + successfully ingested repos.
@@ -1246,7 +1254,7 @@ def refresh(
         # contain a new checkout whose records were never swapped in (tainted
         # ref, or a failed checkout); publishing its registry would then pair a
         # new deprecation map with old indexed framework records.
-        if framework_checkout is not None:
+        if framework_provenance_ready:
             fw_path, fw_sha = prefetched[framework_slug]
             registry_path = fw_path / REGISTRY_RELATIVE_PATH
             dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)
@@ -1306,7 +1314,7 @@ def refresh(
         # project builds against. Left untouched when the framework repo was
         # not cloned this run, so a transient clone failure keeps the last
         # known-good stamp rather than erasing it.
-        if framework_checkout is not None:
+        if framework_provenance_ready:
             # A pinned refresh already knows the verified tag its commit was
             # resolved from (returned by `clone_or_fetch`) — trust that over
             # `git describe`, which can pick a different tag when multiple point
@@ -1321,6 +1329,7 @@ def refresh(
                 metadata_to_set["indexed_framework_version"] = exact_version
                 metadata_to_set["indexed_framework_commits_ahead"] = "0"
             else:
+                assert framework_checkout is not None
                 indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
                 if indexed_version is not None and commits_ahead is not None:
                     metadata_to_set["indexed_framework_version"] = indexed_version
