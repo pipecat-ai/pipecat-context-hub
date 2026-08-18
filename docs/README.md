@@ -303,6 +303,18 @@ reports `1.6.0` with `indexed_framework_commits_ahead: 55`. Compare versions wit
 that slack in mind, or every developer working from a source checkout gets a
 spurious mismatch.
 
+`indexed_framework_commits_ahead` is `0` **if and only if**
+`indexed_framework_version` is a parseable release the checkout sits exactly on.
+A pin that is not a release — a branch-shaped or feature tag — is recorded under
+`framework_version` but falls back to the same git-describe floor as an unpinned
+refresh, so the pair never claims exactness for a value that is not a version.
+
+`check_deprecation` uses `indexed_framework_version` as its default `version`
+only when `indexed_framework_commits_ahead` is `0`. For a floor — a default-branch
+refresh, or an index built before this contract — it evaluates symbols at their
+intrinsic registry status instead, rather than answering as though the index were
+the older release the floor names.
+
 ### Compatibility
 
 `metadata_contract_version` is bumped only when the table's shape or a documented

@@ -22,6 +22,17 @@ This project uses [Semantic Versioning](https://semver.org/).
   `latest` verbatim — `indexed_framework_version` continues to report the concrete
   tag the index was built from.
 
+### Changed
+- **`check_deprecation` no longer answers at a floor version.** Its default
+  `version` (used when the caller passes none) is now `indexed_framework_version`
+  only when `indexed_framework_commits_ahead` is `0` — i.e. when the index sits
+  exactly on that release. For a floor — an unpinned default-branch refresh, or
+  an index built before the provenance keys existed — it evaluates symbols at
+  their intrinsic registry status instead. Previously an index built 80 commits
+  past `v1.5.0` answered as if it were `1.5.0`, reporting symbols deprecated in
+  `1.6.0` as "current". Existing indexes get the new behaviour without a
+  re-index; pass `version` explicitly to pin the evaluation yourself.
+
 ### Fixed
 - **Deprecation map and framework provenance stranded a revision behind after a
   partial framework ingest.** `refresh` rebuilt `deprecation_map.json` and
@@ -33,6 +44,34 @@ This project uses [Semantic Versioning](https://semver.org/).
   actually decides which revision the index describes. A framework repo whose
   checkout failed never reaches the delete, so its map and stamp are still
   preserved.
+- **`latest` skipped an uppercase-`V` release tag.** The release-tag parse
+  stripped a lowercase `v` but rejected any leading `v` *or* `V` left behind, so
+  a well-formed `V2.0.0` was classed unparseable — a repo whose newest release
+  used that spelling silently resolved `latest` to an older `v1.x`, and such tags
+  sorted as junk in the "available tags" error hint. The strip is now symmetric
+  with the guard; a genuinely doubled prefix (`vv`/`vV`/`Vv`/`VV`) is still
+  rejected.
+- **One bad tag anywhere in the repo aborted `latest`.** Resolution validated
+  every version-like tag in the repository — resolving each one's commit and
+  checking every version group for ambiguous aliases — before selecting
+  anything, so a single unresolvable ref or one historical ambiguous alias pair
+  failed the whole resolution even when neither tag was remotely the newest.
+  Validation now applies to the selected tag only; it still fails closed on that
+  one.
+- **A non-release `--framework-version` pin was stamped as an exact version.**
+  A branch-shaped or feature tag (which git and the tool's tag validation both
+  accept) was written verbatim to `indexed_framework_version` with
+  `indexed_framework_commits_ahead: "0"`, publishing a non-version against a
+  contract that promises one and breaking downstream version comparisons —
+  including `check_deprecation`, which silently degraded. Such a pin now falls
+  back to git-describe floor semantics for both the metadata stamp and the
+  per-chunk version pin.
+- **`latest` could be stamped with a tag the indexed commit is not at.** The
+  resolved tag was recovered by re-running the resolution against the clone
+  *after* the checkout, without the origin verification the first resolution
+  performed — so a concurrent refresh landing a newer tag in between could name
+  a release the indexed commit does not correspond to. The verified tag is now
+  returned by the clone itself.
 - **Version-ordered tag hint on an unresolvable `--framework-version`.** The
   "available tags (latest 5)" list in the error sorted tag names as strings, so it
   would have ranked `v1.7.0` above `v1.10.0` and omitted the newest release from
