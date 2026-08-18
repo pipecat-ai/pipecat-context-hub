@@ -1233,11 +1233,14 @@ class GitHubRepoIngester:
                 )
             root_taxonomy = taxonomy_lookup.get(".")
 
-            # Version for root-level files: use repo-root extraction.
+            # Version for root-level files: use repo-root extraction. For the
+            # framework repo, reuse the already-derived `chunk_version` (which
+            # falls back to `_get_framework_version(repo_path)` when
+            # `framework_checkout_version` is None) rather than
+            # `framework_checkout_version` directly, so a None checkout
+            # version doesn't leave root-level framework files unversioned.
             root_version = (
-                framework_checkout_version
-                if is_framework
-                else _extract_pipecat_version(repo_path, repo_path)
+                chunk_version if is_framework else _extract_pipecat_version(repo_path, repo_path)
             )
 
             root_files = _iter_root_level_code_files(repo_path)

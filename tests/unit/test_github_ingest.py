@@ -1353,6 +1353,63 @@ class TestRootLevelFileCapture:
             "root-level file missing capability_tags"
         )
 
+    async def test_framework_root_files_use_chunk_version_fallback(self, tmp_path: Path):
+        """Regression (Round 4 Finding #3): for the framework repo's Layout-B
+        root-file fallback, when ``framework_checkout_version`` is None,
+        ``root_version`` must fall back through ``chunk_version`` (which uses
+        ``_get_framework_version``/git-describe) rather than staying None.
+
+        Before the fix, ``root_version`` used ``framework_checkout_version``
+        directly, so root-level framework files ended up with no
+        ``pipecat_version_pin`` metadata whenever the checkout wasn't
+        explicitly pinned (the common unpinned-refresh case).
+        """
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "pipecat-ai_pipecat",
+            {
+                "setup.py": "pass\n",
+                # A subdirectory example is required so the Layout-B
+                # root-file-capture branch (is_layout_b and
+                # has_subdir_examples) actually triggers — without it,
+                # setup.py is instead picked up by the unrelated
+                # is_root_fallback path, which already uses chunk_version.
+                "processors/video.py": "def process(): pass\n",
+            },
+        )
+
+        config = self._make_config(tmp_path, repos=["pipecat-ai/pipecat"])
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with (
+            patch.object(
+                ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
+            ),
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("0.0.99", 3),
+            ),
+        ):
+            # framework_checkout_version omitted (None) — the unpinned
+            # default-branch refresh case.
+            result = await ingester.ingest(repos=["pipecat-ai/pipecat"])
+
+        assert result.records_upserted > 0
+        assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        by_path = {r.path: r for r in records}
+
+        root_rec = by_path["setup.py"]
+        assert root_rec.metadata.get("pipecat_version_pin") is not None, (
+            "root-level framework file should fall back to chunk_version "
+            "(git-describe) when framework_checkout_version is None"
+        )
+
     async def test_root_files_not_captured_for_examples_layout(self, tmp_path: Path):
         """Layout A repos (with examples/ dir) do NOT capture root-level files."""
         repo_dir = _create_fake_repo(
