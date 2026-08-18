@@ -1124,12 +1124,6 @@ def refresh(
         # Delete and re-ingest each changed repo atomically to minimise
         # the window where a repo's index is empty (crash-safety).
         ingested_repos: set[str] = set()
-        # Repos whose indexed records were *replaced* this run — populated at the
-        # delete, not at the end of a clean ingest. Distinct from
-        # `ingested_repos` (error-free ingest) because the two diverge exactly in
-        # the partial-failure case, and it is record replacement, not ingest
-        # cleanliness, that decides which revision the index now describes.
-        replaced_repos: set[str] = set()
         for repo_slug in changed_repos:
             repo_path, commit_sha = prefetched[repo_slug]
             try:
@@ -1147,7 +1141,6 @@ def refresh(
                 continue
 
             await index_store.delete_by_repo(repo_slug)
-            replaced_repos.add(repo_slug)
             logger.info("Deleted stale records for %s", repo_slug)
 
             repo_has_errors = False
@@ -1201,12 +1194,14 @@ def refresh(
             if not repo_has_errors:
                 ingested_repos.add(repo_slug)
 
-        # Gated on record *replacement*, not on error-free ingest. Once
-        # `delete_by_repo` has run, the index holds the new checkout's records —
-        # whole or partial — so both the deprecation map and the provenance
-        # stamp must follow it. A framework repo whose `checkout_commit` failed
-        # never reached the delete, so its records still describe the old
-        # revision and are left alone.
+        # Gated on error-free ingest (`ingested_repos`), not merely on record
+        # *replacement*. `delete_by_repo` running is not enough on its own: a
+        # framework ingest that errors out (e.g. `records_upserted=0` after the
+        # delete) leaves the index in a state that does not correspond to any
+        # coherent revision, so neither the deprecation map nor the provenance
+        # stamp should follow it. A framework repo whose `checkout_commit`
+        # failed never reached the delete, so its records still describe the
+        # old revision and are left alone either way.
         #
         # Also excludes a tainted framework repo: `prefetched` is populated as
         # soon as the clone succeeds, before the taint check, but a tainted ref
@@ -1215,7 +1210,7 @@ def refresh(
         if (
             framework_slug in prefetched
             and framework_slug not in frozen_sha_repos
-            and (framework_slug not in changed_repos or framework_slug in replaced_repos)
+            and (framework_slug not in changed_repos or framework_slug in ingested_repos)
         ):
             framework_checkout = prefetched[framework_slug][0]
 
