@@ -2757,6 +2757,74 @@ class TestRefreshRecordReplacementGate:
                 f"expected rebuilt={expected_rebuilt} but got {rebuilt}"
             )
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_corrupt_registry_preserves_existing_map_and_records_error(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Round-8 gauntlet Finding #2 regression.
+
+        A registry that is *present but unreadable/corrupt* must not be
+        published as an empty deprecation map — that would silently
+        overwrite (and hide) a previously-good map. It must be distinguished
+        from the legitimate "registry doesn't exist yet" case (covered by
+        ``test_tainted_framework_does_not_rebuild_deprecation_map`` and
+        friends, which still publish an empty map safely for that case).
+
+        Deliberately does not mock ``build_deprecation_map_from_registry``,
+        same rationale as the rest of this class: the assertion is on the
+        deprecation map's on-disk *content*.
+        """
+        import logging
+
+        mock_store, _mock_github, framework_checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        from pipecat_context_hub.services.ingest.deprecation_map import REGISTRY_RELATIVE_PATH
+
+        registry_path = framework_checkout / REGISTRY_RELATIVE_PATH
+        registry_path.write_text("not json", encoding="utf-8")
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.6.0", 0),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert dep_map_path.read_bytes() == prior_bytes, (
+            "a corrupt/unreadable registry must never overwrite the "
+            "previously published deprecation map with an empty one"
+        )
+
+        written = self._written(mock_store)
+        assert int(written["last_refresh_error_count"]) >= 1
+        assert "deprecation registry" in caplog.text.lower()
+        assert "unreadable" in caplog.text.lower()
+
 
 class TestPruneEnabledValues:
     """`_OPT_IN_ENABLED_VALUES` frozenset exactness and `_prune_enabled()`

@@ -164,6 +164,17 @@ class DeprecationMap:
             return cls()
 
 
+class DeprecationRegistryError(Exception):
+    """Raised when the deprecation registry is present but unreadable/corrupt.
+
+    Distinguishes this case from a *legitimate* missing registry (older
+    pipecat versions predate it, ``FileNotFoundError``), which returns an
+    empty :class:`DeprecationMap` instead of raising. Callers must not treat
+    an empty map returned in response to this exception as authoritative —
+    the previously published map should be preserved.
+    """
+
+
 def build_deprecation_map_from_registry(
     registry_path: Path,
     commit_sha: str = "",
@@ -181,8 +192,15 @@ def build_deprecation_map_from_registry(
         commit_sha: Current pipecat commit SHA, for staleness detection.
 
     Returns:
-        A :class:`DeprecationMap`. Empty if the registry is missing or unreadable
-        (older pipecat versions predate the registry).
+        A :class:`DeprecationMap`. Empty if the registry is legitimately
+        missing (older pipecat versions predate the registry).
+
+    Raises:
+        DeprecationRegistryError: The registry file exists but could not be
+            read or parsed (corrupt JSON, I/O error, etc.). Callers must not
+            treat this the same as a legitimate empty map — the caller should
+            preserve whatever deprecation map was previously published rather
+            than overwrite it with an empty one.
     """
     try:
         data = json.loads(registry_path.read_text(encoding="utf-8"))
@@ -193,9 +211,11 @@ def build_deprecation_map_from_registry(
             registry_path,
         )
         return DeprecationMap(pipecat_commit_sha=commit_sha)
-    except Exception:
+    except Exception as exc:
         logger.warning("Could not read deprecation registry at %s", registry_path, exc_info=True)
-        return DeprecationMap(pipecat_commit_sha=commit_sha)
+        raise DeprecationRegistryError(
+            f"Could not read deprecation registry at {registry_path}"
+        ) from exc
 
     records = data.get("deprecations", []) if isinstance(data, dict) else []
     entries: dict[str, DeprecationEntry] = {}

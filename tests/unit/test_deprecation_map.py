@@ -10,6 +10,7 @@ import pytest
 from pipecat_context_hub.services.ingest.deprecation_map import (
     DeprecationEntry,
     DeprecationMap,
+    DeprecationRegistryError,
     add_removals_from_registry,
     build_deprecation_map_from_registry,
     status_for,
@@ -273,11 +274,16 @@ class TestBuildFromRegistry:
         assert dm.entries == {}
         assert dm.pipecat_commit_sha == "sha"
 
-    def test_malformed_registry_returns_empty(self, tmp_path: Path) -> None:
+    def test_malformed_registry_raises_distinguishable_error(self, tmp_path: Path) -> None:
+        """A present-but-corrupt registry must raise, not silently return an
+        empty map — callers rely on this to distinguish "legitimately absent"
+        (older pipecat versions) from "present but unreadable" (should
+        preserve the previously published deprecation map instead of
+        overwriting it with an empty one)."""
         path = tmp_path / "deprecations.json"
         path.write_text("not json", encoding="utf-8")
-        dm = build_deprecation_map_from_registry(path)
-        assert dm.entries == {}
+        with pytest.raises(DeprecationRegistryError):
+            build_deprecation_map_from_registry(path)
 
     def test_duplicate_bare_subject_warns_and_keeps_both_qualified(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

@@ -1335,6 +1335,7 @@ def refresh(
         from pipecat_context_hub.services.ingest.deprecation_map import (
             REGISTRY_RELATIVE_PATH,
             REMOVALS_RELATIVE_PATH,
+            DeprecationRegistryError,
             add_removals_from_registry,
             build_deprecation_map_from_registry,
         )
@@ -1350,10 +1351,21 @@ def refresh(
         if framework_provenance_ready:
             fw_path, fw_sha = prefetched[framework_slug]
             registry_path = fw_path / REGISTRY_RELATIVE_PATH
-            dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)
-            # Merge removed symbols (no-op until pipecat ships removals.json).
-            add_removals_from_registry(dep_map, fw_path / REMOVALS_RELATIVE_PATH)
-            dep_map.save(dep_map_path)
+            try:
+                dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)
+            except DeprecationRegistryError as exc:
+                # Present-but-unreadable registry (corrupt/truncated JSON, I/O
+                # error). Distinguish this from the legitimate "registry
+                # doesn't exist yet" case, which returns an empty map safely.
+                # Do NOT publish here — an empty map would silently overwrite
+                # (and thus hide) a previously-good deprecation map.
+                msg = f"Deprecation registry unreadable at {registry_path}; preserving existing map: {exc}"
+                all_errors.append(msg)
+                logger.warning(msg)
+            else:
+                # Merge removed symbols (no-op until pipecat ships removals.json).
+                add_removals_from_registry(dep_map, fw_path / REMOVALS_RELATIVE_PATH)
+                dep_map.save(dep_map_path)
         else:
             logger.debug(
                 "Framework repo %s not cloned or tainted — preserving existing deprecation map",
