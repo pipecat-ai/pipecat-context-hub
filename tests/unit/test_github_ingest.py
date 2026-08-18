@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pipecat_context_hub.services.ingest.github_ingest import (
+    _FRAMEWORK_REPO,
     GitHubRepoIngester,
     _ROOT_FALLBACK_SKIP_ROOT_DIRS,
     _chunk_by_boundaries,
@@ -666,6 +667,40 @@ class TestGitHubRepoIngester:
             assert rec.metadata["repo"] == "test-org/test-repo"
             assert rec.metadata["commit_sha"] == commit_sha
             assert isinstance(rec.indexed_at, datetime)
+
+    async def test_pinned_framework_ingest_uses_resolved_tag_for_chunks(self, tmp_path: Path):
+        """A same-commit tag alias must retain the selected release identity."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "pipecat-ai_pipecat",
+            {"examples/bot1/main.py": "def run():\n    pass\n"},
+        )
+
+        from git import Repo as GitRepo
+
+        git_repo = GitRepo(str(repo_dir))
+        git_repo.git.update_ref("refs/tags/v1.10.0", "HEAD")
+        git_repo.git.update_ref("refs/tags/1.10.0", "HEAD")
+        selected_tag = GitHubRepoIngester._latest_version_tag(git_repo)
+        commit_sha = git_repo.head.commit.hexsha
+
+        config = self._make_config(tmp_path, repos=[_FRAMEWORK_REPO])
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest._get_framework_version",
+            side_effect=AssertionError("pinned ingestion must not use git describe"),
+        ):
+            result = await ingester.ingest(
+                repos=[_FRAMEWORK_REPO],
+                prefetched={_FRAMEWORK_REPO: (repo_dir, commit_sha)},
+                framework_version=selected_tag,
+            )
+
+        assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        assert {record.metadata["pipecat_version_pin"] for record in records} == {"1.10.0"}
 
     async def test_ingest_idempotent(self, tmp_path: Path):
         """Same commit SHA produces identical chunk IDs."""

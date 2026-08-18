@@ -22,8 +22,25 @@ class TestResolveFrameworkVersion:
         win even though framework_version still holds the unresolved 'latest'
         sentinel.
         """
-        store = _index_store({"framework_version": "latest", "indexed_framework_version": "1.10.0"})
+        store = _index_store(
+            {
+                "framework_version": "latest",
+                "indexed_framework_version": "1.10.0",
+                "indexed_framework_commits_ahead": "0",
+            }
+        )
         assert resolve_framework_version(store) == "1.10.0"
+
+    def test_floor_version_with_commit_distance_is_not_exact(self):
+        """A nearest tag on the default branch must not drive version-aware status."""
+        store = _index_store(
+            {
+                "framework_version": "latest",
+                "indexed_framework_version": "1.5.0",
+                "indexed_framework_commits_ahead": "80",
+            }
+        )
+        assert resolve_framework_version(store) is None
 
     def test_falls_back_to_framework_version_when_indexed_unset(self):
         store = _index_store({"framework_version": "v0.0.96"})

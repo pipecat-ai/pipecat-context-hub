@@ -885,11 +885,11 @@ def refresh(
     # the framework repo was not cloned (unconfigured, tainted, or clone failed).
     framework_checkout: Path | None = None
 
-    # The tag `resolve_tag_name` picked for the framework repo when pinned to
-    # the `latest` sentinel, captured during the clone loop so the metadata
-    # pass below can stamp the concrete tag instead of re-deriving one via
+    # The concrete tag/version selected for a pinned framework checkout,
+    # captured during the clone loop so both chunk metadata and the metadata
+    # pass below use the same release identity instead of re-deriving one via
     # `git describe` (which can disagree when multiple tags point at the same
-    # commit). None when unpinned, pinned to a concrete tag, or not cloned.
+    # commit). None for an unpinned default-branch refresh or a failed clone.
     resolved_framework_tag: str | None = None
 
     # Count of repos left un-pruned this run (not configured here, but not
@@ -1022,8 +1022,6 @@ def refresh(
                 repo_path, commit_sha = await asyncio.to_thread(
                     github.clone_or_fetch, repo_slug, False, tag=repo_tag
                 )
-                repo_shas[repo_slug] = commit_sha
-                prefetched[repo_slug] = (repo_path, commit_sha)
                 if (
                     repo_slug == framework_slug
                     and repo_tag
@@ -1032,6 +1030,10 @@ def refresh(
                     resolved_framework_tag = await asyncio.to_thread(
                         github.resolve_tag_name, repo_path, repo_tag
                     )
+                elif repo_slug == framework_slug:
+                    resolved_framework_tag = repo_tag
+                repo_shas[repo_slug] = commit_sha
+                prefetched[repo_slug] = (repo_path, commit_sha)
             except Exception as exc:
                 all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
                 source_status[repo_slug] = {
@@ -1154,6 +1156,7 @@ def refresh(
             code_result = await github.ingest(
                 repos=[repo_slug],
                 prefetched=prefetched,
+                framework_version=resolved_framework_tag if repo_slug == framework_slug else None,
             )
             total_upserted += code_result.records_upserted
             repo_upserted += code_result.records_upserted
@@ -1233,7 +1236,12 @@ def refresh(
 
         dep_map_path = config.storage.data_dir / "deprecation_map.json"
 
-        if framework_slug in prefetched and framework_slug not in frozen_sha_repos:
+        # Reuse the same successful-ingestion gate as framework provenance
+        # below. `prefetched` is populated immediately after clone/fetch, so it
+        # can contain a new latest checkout whose ingestion failed; publishing
+        # its registry would then pair a new deprecation map with old indexed
+        # framework records and provenance.
+        if framework_checkout is not None:
             fw_path, fw_sha = prefetched[framework_slug]
             registry_path = fw_path / REGISTRY_RELATIVE_PATH
             dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)

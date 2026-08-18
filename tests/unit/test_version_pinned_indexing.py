@@ -292,6 +292,22 @@ class TestResolveLatest:
 
         assert GitHubRepoIngester._latest_version_tag(git_repo) == "v1.0.0"
 
+    def test_equal_normalized_versions_on_different_commits_are_rejected(
+        self, tmp_path: Path
+    ):
+        """Aliases such as ``v1.0.0``/``1.0.0`` cannot choose arbitrarily."""
+        from git import Repo as GitRepo
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.0.0"])
+        git_repo = GitRepo(str(repo_dir))
+        (repo_dir / "README.md").write_text("# Changed\n")
+        git_repo.index.add(["README.md"])
+        git_repo.index.commit("second commit")
+        git_repo.git.update_ref("refs/tags/1.0.0", "HEAD")
+
+        with pytest.raises(ValueError, match="Ambiguous version aliases"):
+            GitHubRepoIngester._latest_version_tag(git_repo)
+
 
 class TestResolveTagName:
     """Tests for GitHubRepoIngester.resolve_tag_name."""
@@ -462,6 +478,39 @@ class TestCloneOrFetchWithTag:
         repo_path, sha = ingester.clone_or_fetch(repo_slug, tag="latest")
         assert (repo_path / "main.py").read_text() == "print('v1.10')\n"
         assert GitRepo(str(repo_path)).head.commit.hexsha == sha
+
+    def test_latest_drops_a_release_tag_deleted_from_origin(self, tmp_path: Path):
+        """A persistent clone must not keep selecting a deleted release tag."""
+        from git import Repo as GitRepo
+
+        repo_slug = "test-org/test-repo"
+        source_dir, _clone_dir = _create_remote_and_clone_with_tags(
+            tmp_path,
+            repo_slug,
+            {"main.py": "print('v1.9')\n"},
+            ["v1.9.0"],
+        )
+        source_repo = GitRepo(str(source_dir))
+        old_sha = source_repo.head.commit.hexsha
+        (source_dir / "main.py").write_text("print('v1.10')\n")
+        source_repo.index.add(["main.py"])
+        source_repo.index.commit("v1.10 release")
+        new_sha = source_repo.head.commit.hexsha
+        source_repo.git.update_ref("refs/tags/v1.10.0", "HEAD")
+        branch = source_repo.active_branch.name
+        source_repo.git.push("origin", branch, "--tags")
+
+        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+        repo_path, first_sha = ingester.clone_or_fetch(repo_slug, tag="latest")
+        assert first_sha == new_sha
+
+        source_repo.git.update_ref("-d", "refs/tags/v1.10.0")
+        source_repo.git.push("origin", "--delete", "v1.10.0")
+
+        _repo_path, second_sha = ingester.clone_or_fetch(repo_slug, tag="latest")
+        assert second_sha == old_sha
+        assert "v1.10.0" not in {tag.name for tag in GitRepo(str(repo_path)).tags}
 
     def test_invalid_tag_raises_on_fetch(self, tmp_path: Path):
         repo_slug = "test-org/test-repo"

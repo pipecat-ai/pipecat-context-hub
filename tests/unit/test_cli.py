@@ -1589,6 +1589,12 @@ class TestRefreshProvenanceMetadata:
         assert written["framework_version"] == "latest"
         assert written["indexed_framework_version"] == "1.10.0"
         assert written["indexed_framework_commits_ahead"] == "0"
+        framework_calls = [
+            call
+            for call in mock_github.ingest.call_args_list
+            if call.kwargs.get("repos") == ["pipecat-ai/pipecat"]
+        ]
+        assert framework_calls[0].kwargs["framework_version"] == "v1.10.0"
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -1655,6 +1661,100 @@ class TestRefreshProvenanceMetadata:
         # The tainted-framework fix's checkout-availability check must not
         # let a failed-but-untainted ingest through either.
         mock_describe.assert_not_called()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+        deleted = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            deleted.update(batch_call.kwargs.get("delete_keys") or ())
+        assert "indexed_framework_version" not in deleted
+        assert "indexed_framework_commits_ahead" not in deleted
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_failed_latest_ingest_keeps_map_and_provenance_aligned(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A failed latest ingest must leave the prior map and stamp together."""
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_github.resolve_tag_name = MagicMock(return_value="v1.6.0")
+
+        framework_slug = "pipecat-ai/pipecat"
+
+        def _clone_side_effect(repo_slug, _checkout=False, tag=None):
+            del tag
+            sha = "new-framework-sha" if repo_slug == framework_slug else "abc123"
+            return Path(f"/tmp/{repo_slug.replace('/', '_')}"), sha
+
+        mock_github.clone_or_fetch.side_effect = _clone_side_effect
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
+        meta[f"repo:{framework_slug}:commit_sha"] = "old-framework-sha"
+        meta["indexed_framework_version"] = "1.5.0"
+        meta["indexed_framework_commits_ahead"] = "0"
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            if repos == [framework_slug]:
+                return MagicMock(records_upserted=0, errors=["latest ingest failed"])
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        from pipecat_context_hub.services.ingest.deprecation_map import (
+            DeprecationEntry,
+            DeprecationMap,
+        )
+
+        data_dir = tmp_path / "hub-data"
+        prior_map_path = data_dir / "deprecation_map.json"
+        prior_map = DeprecationMap(
+            entries={"OldSymbol": DeprecationEntry(old_path="OldSymbol")},
+            pipecat_commit_sha="old-framework-sha",
+        )
+        prior_map.save(prior_map_path)
+        prior_bytes = prior_map_path.read_bytes()
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_registry"
+        ) as mock_build:
+            result = CliRunner().invoke(main, ["refresh", "--framework-version", "latest"])
+
+        assert result.exit_code == 0, result.output
+        mock_build.assert_not_called()
+        assert prior_map_path.read_bytes() == prior_bytes
+        assert DeprecationMap.load(prior_map_path).pipecat_commit_sha == "old-framework-sha"
 
         written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
         for batch_call in mock_store.set_metadata_batch.call_args_list:

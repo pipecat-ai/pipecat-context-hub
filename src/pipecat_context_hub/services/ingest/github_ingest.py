@@ -125,6 +125,16 @@ def _parse_tag_version(tag: str) -> Version:
     return Version(stripped)
 
 
+def _canonical_version_tag(tags: list[str]) -> str:
+    """Choose a stable spelling for aliases of one normalized version.
+
+    Pipecat release tags conventionally use a lowercase ``v`` prefix. Prefer
+    that spelling when both forms exist, then use a case-sensitive name order
+    only as a deterministic tie-breaker after commit identity has been checked.
+    """
+    return min(tags, key=lambda tag: (0 if tag.startswith("v") else 1, tag.casefold(), tag))
+
+
 def _version_sort_key(tag: str) -> tuple[int, Version, str]:
     """Order version-like tags above unparseable ones, newest last.
 
@@ -956,6 +966,7 @@ class GitHubRepoIngester:
         self,
         repos: list[str] | None = None,
         prefetched: dict[str, tuple[Path, str]] | None = None,
+        framework_version: str | None = None,
     ) -> IngestResult:
         """Clone (or fetch) repos and ingest their examples.
 
@@ -964,6 +975,9 @@ class GitHubRepoIngester:
                 configured repos from ``effective_repos``.
             prefetched: Optional mapping of ``{repo_slug: (repo_path, commit_sha)}``
                 from prior ``clone_or_fetch`` calls, avoiding redundant fetches.
+            framework_version: The concrete version for a pinned framework checkout.
+                When omitted, the framework version is derived with git-describe
+                floor semantics for an unpinned default-branch refresh.
         """
         start = time.monotonic()
         all_errors: list[str] = []
@@ -972,7 +986,11 @@ class GitHubRepoIngester:
 
         target_repos = repos if repos is not None else self._config.sources.effective_repos
         for repo_slug in target_repos:
-            result = await self._ingest_repo(repo_slug, prefetched=prefetched.get(repo_slug))
+            result = await self._ingest_repo(
+                repo_slug,
+                prefetched=prefetched.get(repo_slug),
+                framework_version=framework_version,
+            )
             total_upserted += result.records_upserted
             all_errors.extend(result.errors)
 
@@ -989,6 +1007,7 @@ class GitHubRepoIngester:
         self,
         repo_slug: str,
         prefetched: tuple[Path, str] | None = None,
+        framework_version: str | None = None,
     ) -> IngestResult:
         """Clone/fetch a single repo and ingest its example directories.
 
@@ -996,6 +1015,9 @@ class GitHubRepoIngester:
             repo_slug: GitHub repo slug (e.g. ``pipecat-ai/pipecat``).
             prefetched: Optional ``(repo_path, commit_sha)`` from a prior
                 ``clone_or_fetch`` call, avoiding a redundant fetch.
+            framework_version: Concrete version supplied for a pinned framework
+                checkout. ``None`` preserves git-describe floor semantics for
+                unpinned default-branch refreshes.
         """
         errors: list[str] = []
         records: list[ChunkedRecord] = []
@@ -1043,9 +1065,14 @@ class GitHubRepoIngester:
         # Extract pipecat version: framework repo uses git tag,
         # other repos extract per-example-directory from dependency files.
         is_framework = repo_slug == _FRAMEWORK_REPO
-        framework_version: str | None = None
         if is_framework:
-            framework_version = _get_framework_version(repo_path)
+            if framework_version is not None:
+                # A caller-provided tag is an exact release identity. Normalize
+                # only the conventional prefix; unlike git-describe this must
+                # not turn a release checkout into its nearest reachable floor.
+                framework_version = strip_v_prefix(framework_version.strip())
+            else:
+                framework_version = _get_framework_version(repo_path)
             if framework_version:
                 logger.debug("Framework version from git tag: %s", framework_version)
 
@@ -1291,9 +1318,12 @@ class GitHubRepoIngester:
 
         if (repo_path / ".git").is_dir():
             git_repo = GitRepo(str(repo_path))
-            git_repo.git.fetch("origin", "--tags")
+            self._fetch_origin_tags(git_repo)
             if tag:
-                commit_sha = self._resolve_tag(git_repo, tag)
+                if tag.strip().lower() == _LATEST_SENTINEL:
+                    _resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
+                else:
+                    commit_sha = self._resolve_tag(git_repo, tag)
             else:
                 commit_sha = _resolve_origin_head_commit(git_repo)
             if checkout:
@@ -1305,8 +1335,12 @@ class GitHubRepoIngester:
                 str(repo_path),
                 no_checkout=not checkout,
             )
+            self._fetch_origin_tags(git_repo)
             if tag:
-                commit_sha = self._resolve_tag(git_repo, tag)
+                if tag.strip().lower() == _LATEST_SENTINEL:
+                    _resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
+                else:
+                    commit_sha = self._resolve_tag(git_repo, tag)
                 if checkout:
                     self.checkout_commit(repo_path, commit_sha)
             else:
@@ -1322,7 +1356,7 @@ class GitHubRepoIngester:
 
     @staticmethod
     def _latest_version_tag(git_repo: GitRepo) -> str:
-        """Return the highest release tag present in *git_repo*.
+        """Return the highest release tag in the fetched origin tag mirror.
 
         Prefers final releases, falling back to prereleases only when the repo
         has nothing else. ``pipecat`` publishes no prerelease tags today, so the
@@ -1332,7 +1366,7 @@ class GitHubRepoIngester:
         Raises ``ValueError`` when no tag parses as a version — a bare clone with
         no tags, or a repo that names its refs something else entirely.
         """
-        parsed: list[tuple[Version, str]] = []
+        by_version: dict[Version, list[tuple[str, str]]] = {}
         for tag_ref in git_repo.tags:
             name = str(tag_ref)
             if not _TAG_RE.fullmatch(name):
@@ -1340,13 +1374,76 @@ class GitHubRepoIngester:
                 # "v1.10.0+cu121") from candidacy, since _TAG_RE forbids "+".
                 continue
             try:
-                parsed.append((_parse_tag_version(name), name))
+                version = _parse_tag_version(name)
             except InvalidVersion:
                 continue
+            try:
+                commit_sha = tag_ref.commit.hexsha
+            except (AttributeError, BadObject, GitCommandError, ValueError) as exc:
+                raise ValueError(f"Cannot resolve version-like tag {name!r}") from exc
+            by_version.setdefault(version, []).append((name, commit_sha))
+
+        parsed: list[tuple[Version, str]] = []
+        for version, aliases in by_version.items():
+            commit_shas = {commit_sha.lower() for _name, commit_sha in aliases}
+            if len(commit_shas) > 1:
+                names = sorted(name for name, _commit_sha in aliases)
+                raise ValueError(
+                    f"Ambiguous version aliases for {version}: {names} resolve to different commits"
+                )
+            parsed.append((version, _canonical_version_tag([name for name, _ in aliases])))
+
         if not parsed:
             raise ValueError("Cannot resolve 'latest': repository has no version-like tags")
         finals = [entry for entry in parsed if not entry[0].is_prerelease]
         return max(finals or parsed)[1]
+
+    @staticmethod
+    def _fetch_origin_tags(git_repo: GitRepo) -> None:
+        """Mirror origin's tags and prune releases deleted upstream.
+
+        ``--prune`` alone does not remove ordinary local tags. ``--prune-tags``
+        makes the local ``refs/tags`` namespace follow origin, so latest cannot
+        select a release that no longer exists upstream.
+        """
+        git_repo.git.fetch("origin", "--tags", "--prune", "--prune-tags")
+
+    @staticmethod
+    def _origin_tag_commit(git_repo: GitRepo, tag: str) -> str | None:
+        """Return origin's commit for *tag*, preferring an annotated peel."""
+        direct_ref = f"refs/tags/{tag}"
+        peeled_ref = f"{direct_ref}^{{}}"
+        try:
+            output = str(git_repo.git.ls_remote("origin", direct_ref, peeled_ref))
+        except GitCommandError as exc:
+            raise ValueError(f"Could not verify tag {tag!r} against origin") from exc
+
+        direct_sha: str | None = None
+        peeled_sha: str | None = None
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                continue
+            sha, ref = fields
+            if ref == peeled_ref:
+                peeled_sha = sha
+            elif ref == direct_ref:
+                direct_sha = sha
+        return peeled_sha or direct_sha
+
+    def _resolve_latest_tag(self, git_repo: GitRepo) -> tuple[str, str]:
+        """Select latest and verify its local commit still matches origin."""
+        tag = self._latest_version_tag(git_repo)
+        commit_sha = self._resolve_tag(git_repo, tag)
+        origin_sha = self._origin_tag_commit(git_repo, tag)
+        if origin_sha is None:
+            raise ValueError(f"Selected latest tag {tag!r} no longer exists on origin")
+        if origin_sha.lower() != commit_sha.lower():
+            raise ValueError(
+                f"Selected latest tag {tag!r} resolves locally to {commit_sha} but "
+                f"origin resolves it to {origin_sha}"
+            )
+        return tag, commit_sha
 
     def resolve_tag_name(self, repo_path: Path, tag: str) -> str:
         """Return the concrete tag ``tag`` resolves to, without touching the network.
