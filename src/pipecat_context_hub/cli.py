@@ -1202,7 +1202,7 @@ def refresh(
             if repo_has_errors:
                 await index_store.delete_by_repo(repo_slug)
                 logger.warning(
-                    "Framework ingest for %s failed partway through; purged "
+                    "Ingest for %s failed partway through; purged "
                     "partial records — a retry (refresh) is required to "
                     "fully re-index it",
                     repo_slug,
