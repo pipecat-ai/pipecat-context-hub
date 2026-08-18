@@ -2112,6 +2112,65 @@ class TestRefreshRecordReplacementGate:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_partial_error_ingest_purges_records_not_just_metadata(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (Round 4 Finding #1): a framework ingest that writes some
+        records (``records_upserted>0``) but also errors (``repo_has_errors``)
+        must not leave those partial *records* behind, even though the
+        provenance *metadata* correctly withholds itself already (per Round 3).
+
+        ``delete_by_repo`` runs once up front (stale-cleanup) and must run a
+        SECOND time for the same repo once the error is detected, so the repo
+        ends the run with zero records rather than a silent partial mix of
+        old-deleted + new-partial records. Before the fix, ``delete_by_repo``
+        was only called once per repo and the partial records from the failed
+        ingest were left in the index.
+        """
+        mock_store, _mock_github, _checkout, _dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=["Failed to read foo.py: invalid utf-8"],
+            framework_records_upserted=3500,
+        )
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 0),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        deleted_calls = [
+            call.args[0]
+            for call in mock_store.delete_by_repo.call_args_list
+            if call.args[0] == self.FRAMEWORK_SLUG
+        ]
+        # Once for stale-cleanup before ingest, once more to purge the
+        # partial records left by the errored ingest.
+        assert deleted_calls == [self.FRAMEWORK_SLUG, self.FRAMEWORK_SLUG], (
+            f"expected delete_by_repo({self.FRAMEWORK_SLUG!r}) to run twice "
+            f"(pre-ingest cleanup + post-error purge), got: {deleted_calls}"
+        )
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_zero_records_error_free_ingest_still_advances(
         self,
         mock_si_cls,

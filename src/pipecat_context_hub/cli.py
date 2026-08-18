@@ -1191,6 +1191,23 @@ def refresh(
                     len(source_result.errors),
                 )
 
+            # If ingest errored partway through, this repo's old records were
+            # already deleted above and the new ingest is incomplete — leaving
+            # the partial new records in place would silently mix stale-empty
+            # state with a partial re-index. Purge them so the repo ends the
+            # run with zero records rather than a misleading partial count;
+            # `ingested_repos`/`framework_provenance_ready` gating already
+            # correctly withholds itself on `repo_has_errors`, independent of
+            # this record-level cleanup.
+            if repo_has_errors:
+                await index_store.delete_by_repo(repo_slug)
+                logger.warning(
+                    "Framework ingest for %s failed partway through; purged "
+                    "partial records — a retry (refresh) is required to "
+                    "fully re-index it",
+                    repo_slug,
+                )
+
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",
                 "sha": repo_shas.get(repo_slug, _MISSING_SENTINEL)[:8],
