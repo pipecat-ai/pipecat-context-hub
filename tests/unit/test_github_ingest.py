@@ -262,11 +262,35 @@ class TestRepoRefIsTainted:
         assert repo_ref_is_tainted(repo_dir, commit_sha, {"v1.2.3"})
 
     def test_non_matching_tag_returns_false(self, tmp_path: Path):
+        """A tainted tag that exists locally but names a different commit is
+        genuinely not tainted — distinct from the tag being absent entirely,
+        which is covered by ``test_missing_named_ref_fails_closed`` below.
+        """
+        repo_dir = _create_fake_repo(tmp_path, "repo", {"main.py": "print('ok')\n"})
+        from git import Repo as GitRepo
+
+        git_repo = GitRepo(str(repo_dir))
+        first_commit_sha = git_repo.head.commit.hexsha
+        (repo_dir / "main.py").write_text("print('second')\n", encoding="utf-8")
+        git_repo.index.add([str(repo_dir / "main.py")])
+        git_repo.index.commit("second commit")
+        git_repo.git.update_ref("refs/tags/v9.9.9", "HEAD")
+
+        assert not repo_ref_is_tainted(repo_dir, first_commit_sha, {"v9.9.9"})
+
+    def test_missing_named_ref_fails_closed(self, tmp_path: Path):
+        """Regression (Round 3 Finding #3): a named tainted ref configured but
+        absent from the local tag set (e.g. deleted upstream and pruned)
+        must fail closed — treated as tainted — matching this function's
+        other two failure branches (can't-open-repo, can't-resolve-tag).
+        Silently falling through to "not tainted" would let an operator's
+        explicit exclusion slip back into the index.
+        """
         repo_dir = _create_fake_repo(tmp_path, "repo", {"main.py": "print('ok')\n"})
         from git import Repo as GitRepo
 
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
-        assert not repo_ref_is_tainted(repo_dir, commit_sha, {"v9.9.9"})
+        assert repo_ref_is_tainted(repo_dir, commit_sha, {"v9.9.9"})
 
     def test_repo_open_failure_fails_closed_for_named_refs(self, tmp_path: Path):
         missing_repo = tmp_path / "missing-repo"

@@ -228,7 +228,12 @@ def repo_ref_is_tainted(repo_path: Path, commit_sha: str, tainted_refs: set[str]
     for ref in named_refs:
         tag = tags_by_name.get(ref)
         if tag is None:
-            continue
+            logger.warning(
+                "Tainted ref %s not found locally in %s; treating ref as tainted",
+                ref,
+                repo_path,
+            )
+            return True
         try:
             if tag.commit.hexsha.lower() == sha:
                 return True
@@ -1347,7 +1352,7 @@ class GitHubRepoIngester:
         resolved_tag: str | None = None
         if (repo_path / ".git").is_dir():
             git_repo = GitRepo(str(repo_path))
-            self._fetch_origin_tags(git_repo)
+            self._fetch_origin_tags(git_repo, prune_tags=is_latest_sentinel(tag))
             if tag:
                 if is_latest_sentinel(tag):
                     resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
@@ -1365,7 +1370,7 @@ class GitHubRepoIngester:
                 str(repo_path),
                 no_checkout=not checkout,
             )
-            self._fetch_origin_tags(git_repo)
+            self._fetch_origin_tags(git_repo, prune_tags=is_latest_sentinel(tag))
             if tag:
                 if is_latest_sentinel(tag):
                     resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
@@ -1434,14 +1439,21 @@ class GitHubRepoIngester:
         return _canonical_version_tag([name for name, _tag_ref in aliases])
 
     @staticmethod
-    def _fetch_origin_tags(git_repo: GitRepo) -> None:
-        """Mirror origin's tags and prune releases deleted upstream.
+    def _fetch_origin_tags(git_repo: GitRepo, *, prune_tags: bool) -> None:
+        """Mirror origin's tags, optionally pruning releases deleted upstream.
 
         ``--prune`` alone does not remove ordinary local tags. ``--prune-tags``
-        makes the local ``refs/tags`` namespace follow origin, so latest cannot
-        select a release that no longer exists upstream.
+        makes the local ``refs/tags`` namespace follow origin, so ``latest``
+        cannot select a release that no longer exists upstream — but it also
+        deletes any locally-fetched tag origin no longer advertises, including
+        the tag a caller pinned to explicitly. Only pass ``prune_tags=True``
+        when resolving the ``latest`` sentinel; a literal pinned tag must not
+        be pruned out from under a caller relying on it still resolving.
         """
-        git_repo.git.fetch("origin", "--tags", "--prune", "--prune-tags")
+        args = ["origin", "--tags", "--prune"]
+        if prune_tags:
+            args.append("--prune-tags")
+        git_repo.git.fetch(*args)
 
     @staticmethod
     def _origin_tag_commit(git_repo: GitRepo, tag: str) -> str | None:
