@@ -1107,15 +1107,24 @@ def refresh(
                         await index_store.delete_by_repo(repo_slug)
                     except Exception:
                         logger.exception(
-                            "Failed to purge records for tainted ref %s during cleanup",
+                            "Failed to purge records for tainted ref %s during cleanup; "
+                            "its stale records may persist until a future refresh retries "
+                            "the cleanup",
                             repo_slug,
                         )
-                    index_store.delete_metadata(stored_sha_key)
-                    if repo_slug == framework_slug:
-                        # Framework records are gone, so any recorded provenance
-                        # would describe content the index no longer holds.
-                        index_store.delete_metadata("indexed_framework_version")
-                        index_store.delete_metadata("indexed_framework_commits_ahead")
+                    else:
+                        # Only drop bookkeeping once the records it describes are
+                        # actually gone — see `_delete_repo_index_data` for the
+                        # same pattern. A failed delete above must leave
+                        # `stored_sha_key` (and the framework provenance keys)
+                        # in place so a future refresh still knows this repo's
+                        # tainted records may still be sitting in the index.
+                        index_store.delete_metadata(stored_sha_key)
+                        if repo_slug == framework_slug:
+                            # Framework records are gone, so any recorded provenance
+                            # would describe content the index no longer holds.
+                            index_store.delete_metadata("indexed_framework_version")
+                            index_store.delete_metadata("indexed_framework_commits_ahead")
                     source_status[repo_slug] = {
                         "status": "tainted",
                         "sha": commit_sha[:8],

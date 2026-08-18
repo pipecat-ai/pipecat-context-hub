@@ -855,6 +855,84 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_tainted_ref_delete_failure_preserves_retry_metadata(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 6 Gate 1/Codex Finding #1 (High): this inline tainted-ref
+        cleanup site (indexed ref is *also* tainted -> purge local records) is
+        a third `delete_by_repo` call site distinct from
+        `_delete_repo_index_data`. Before the fix, a failed
+        `index_store.delete_by_repo` here was caught and logged but execution
+        fell through unconditionally to the metadata deletes anyway -- wiping
+        `stored_sha_key` and (for the framework repo) both provenance keys
+        even though the purge never happened. That leaves a future refresh
+        with no bookkeeping trail that this repo's stale/tainted records may
+        still be sitting in the index. The fix mirrors
+        `_delete_repo_index_data`: metadata deletes only run once
+        `delete_by_repo` actually succeeds.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
+        )
+        mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {
+            "docs:content_hash": content_hash,
+            **_sha_metadata("abc123"),
+            "indexed_framework_version": "1.6.0",
+            "indexed_framework_commits_ahead": "0",
+        }
+        # Both the upstream HEAD and the cached SHA are tainted, so the
+        # "indexed ref is also tainted" branch is taken.
+        meta["repo:pipecat-ai/pipecat:commit_sha"] = "badcafe"
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        mock_store.delete_by_repo = AsyncMock(side_effect=RuntimeError("boom"))
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REFS", "pipecat-ai/pipecat@badcafe")
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        mock_store.delete_by_repo.assert_any_call("pipecat-ai/pipecat")
+        # The failed delete must NOT be followed by metadata deletion --
+        # stored_sha_key and both framework provenance keys survive so a
+        # future refresh can still discover and retry this repo.
+        deleted_keys = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        assert "repo:pipecat-ai/pipecat:commit_sha" not in deleted_keys
+        assert "indexed_framework_version" not in deleted_keys
+        assert "indexed_framework_commits_ahead" not in deleted_keys
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_tainted_framework_does_not_rebuild_deprecation_map(
         self,
         mock_si_cls,
