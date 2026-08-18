@@ -23,6 +23,16 @@ This project uses [Semantic Versioning](https://semver.org/).
   tag the index was built from.
 
 ### Fixed
+- **Deprecation map and framework provenance stranded a revision behind after a
+  partial framework ingest.** `refresh` rebuilt `deprecation_map.json` and
+  restamped `indexed_framework_version` only when the framework repo ingested
+  without a single error — but the stale records are deleted *before* ingest, so
+  one unreadable file left the index holding the new checkout's code while the
+  map and the stamp still described the previous revision. Both now follow record
+  *replacement* (whether `delete_by_repo` ran), which is the condition that
+  actually decides which revision the index describes. A framework repo whose
+  checkout failed never reaches the delete, so its map and stamp are still
+  preserved.
 - **Version-ordered tag hint on an unresolvable `--framework-version`.** The
   "available tags (latest 5)" list in the error sorted tag names as strings, so it
   would have ranked `v1.7.0` above `v1.10.0` and omitted the newest release from

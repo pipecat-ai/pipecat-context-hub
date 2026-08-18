@@ -1130,6 +1130,12 @@ def refresh(
         # Delete and re-ingest each changed repo atomically to minimise
         # the window where a repo's index is empty (crash-safety).
         ingested_repos: set[str] = set()
+        # Repos whose indexed records were *replaced* this run — populated at the
+        # delete, not at the end of a clean ingest. Distinct from
+        # `ingested_repos` (error-free ingest) because the two diverge exactly in
+        # the partial-failure case, and it is record replacement, not ingest
+        # cleanliness, that decides which revision the index now describes.
+        replaced_repos: set[str] = set()
         for repo_slug in changed_repos:
             repo_path, commit_sha = prefetched[repo_slug]
             try:
@@ -1147,6 +1153,7 @@ def refresh(
                 continue
 
             await index_store.delete_by_repo(repo_slug)
+            replaced_repos.add(repo_slug)
             logger.info("Deleted stale records for %s", repo_slug)
 
             repo_has_errors = False
@@ -1196,17 +1203,21 @@ def refresh(
             if not repo_has_errors:
                 ingested_repos.add(repo_slug)
 
-        # Excludes a tainted framework repo: `prefetched` is populated as soon as
-        # the clone succeeds, before the taint check, but a tainted ref is never
-        # ingested — stamping its version would describe content the index does
-        # not hold. Also excludes a framework repo that was in `changed_repos`
-        # but failed to ingest this run: stamping it would describe content
-        # that was never successfully indexed, so the prior stamp (if any) is
-        # left untouched instead.
+        # Gated on record *replacement*, not on error-free ingest. Once
+        # `delete_by_repo` has run, the index holds the new checkout's records —
+        # whole or partial — so both the deprecation map and the provenance
+        # stamp must follow it. A framework repo whose `checkout_commit` failed
+        # never reached the delete, so its records still describe the old
+        # revision and are left alone.
+        #
+        # Also excludes a tainted framework repo: `prefetched` is populated as
+        # soon as the clone succeeds, before the taint check, but a tainted ref
+        # is never ingested — stamping its version would describe content the
+        # index does not hold.
         if (
             framework_slug in prefetched
             and framework_slug not in frozen_sha_repos
-            and (framework_slug not in changed_repos or framework_slug in ingested_repos)
+            and (framework_slug not in changed_repos or framework_slug in replaced_repos)
         ):
             framework_checkout = prefetched[framework_slug][0]
 
@@ -1236,11 +1247,12 @@ def refresh(
 
         dep_map_path = config.storage.data_dir / "deprecation_map.json"
 
-        # Reuse the same successful-ingestion gate as framework provenance
-        # below. `prefetched` is populated immediately after clone/fetch, so it
-        # can contain a new latest checkout whose ingestion failed; publishing
-        # its registry would then pair a new deprecation map with old indexed
-        # framework records and provenance.
+        # Reuse the same record-replacement gate as framework provenance below,
+        # so the map and the stamp can never describe different revisions.
+        # `prefetched` is populated immediately after clone/fetch, so it can
+        # contain a new checkout whose records were never swapped in (tainted
+        # ref, or a failed checkout); publishing its registry would then pair a
+        # new deprecation map with old indexed framework records.
         if framework_checkout is not None:
             fw_path, fw_sha = prefetched[framework_slug]
             registry_path = fw_path / REGISTRY_RELATIVE_PATH
