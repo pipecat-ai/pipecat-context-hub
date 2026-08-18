@@ -3526,6 +3526,70 @@ class TestPruneSafety(TestRefreshCommand):
         # pass can still discover and retry this repo.
         mock_store.delete_metadata.assert_not_called()
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_delete_by_repo_error_during_prune_surfaces_in_all_errors(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 6 Gate 1/Codex Finding #2 (Medium): a failed cleanup-pass
+        `delete_by_repo` used to be logged and swallowed with no other
+        signal, so `refresh` could exit 0 while `--prune`/tainted-repo
+        cleanup silently left stale/divergent records behind. Bounded fix:
+        `_delete_repo_index_data` now returns `False` on failure, and its two
+        call sites (both outside the `changed_repos` per-repo error-tracking
+        loop) append a message to `all_errors` so the failure is visible in
+        the refresh summary/error count -- without touching
+        `repo_has_errors` or the exit-code contract for the changed_repos
+        loop."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+        mock_store.delete_by_repo = AsyncMock(side_effect=RuntimeError("boom"))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--prune"])
+
+        # Still a clean, non-fatal exit -- this is a best-effort cleanup pass,
+        # not core ingestion.
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        # The failure is now visible via the refresh summary's error count:
+        # `last_refresh_error_count` in the persisted metadata batch reflects
+        # a non-zero `all_errors`, and the batch also stamps
+        # `last_refresh_errored_at`.
+        batch_calls = mock_store.set_metadata_batch.call_args_list
+        assert batch_calls, "expected set_metadata_batch to be called"
+        metadata_to_set = batch_calls[-1].args[0]
+        assert metadata_to_set["last_refresh_error_count"] != "0"
+        assert "last_refresh_errored_at" in metadata_to_set
+        # This cleanup path is outside the changed_repos loop entirely, so it
+        # cannot have touched that loop's repo_has_errors/exit-code
+        # contract -- reconfirm exit_code is still 0 (checked above) and that
+        # the metadata key was left untouched, exactly as before this fix.
+        mock_store.delete_metadata.assert_not_called()
+
 
 class TestRefreshIncompatibleIndex:
     """`refresh` against a pre-1.0 Chroma dir exits 2 with a bug-report hint."""

@@ -288,7 +288,7 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             )
 
 
-async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> None:
+async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> bool:
     """Remove every trace of ``slug`` from the index: records + bookkeeping.
 
     Shared by both deletion branches of ``refresh``'s cleanup pass (tainted
@@ -305,6 +305,10 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     purge, tainted-ref removal in ``_run_refresh``). The repo's stale data
     may persist for another run; that is strictly better than aborting an
     otherwise-successful refresh over cleanup of an already-unwanted repo.
+
+    Returns ``True`` on success, ``False`` if the delete failed (metadata is
+    left untouched in that case) — callers use this to surface the failure
+    through the refresh summary rather than only a log line.
     """
     from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
@@ -316,12 +320,13 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             "records may persist until a future refresh retries the cleanup",
             slug,
         )
-        return
+        return False
     index_store.delete_metadata(meta_key)
     if slug == _FRAMEWORK_REPO:
         # No framework records left to describe.
         index_store.delete_metadata("indexed_framework_version")
         index_store.delete_metadata("indexed_framework_commits_ahead")
+    return True
 
 
 def _log_serve_cwd() -> None:
@@ -1008,10 +1013,18 @@ def refresh(
                         # Explicit exclusion — always cleaned up, regardless
                         # of --prune.
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
-                        await _delete_repo_index_data(index_store, slug, meta_key)
+                        if not await _delete_repo_index_data(index_store, slug, meta_key):
+                            all_errors.append(
+                                f"Failed to clean up tainted repo {slug}; its stale index "
+                                "records may persist until a future refresh retries the cleanup"
+                            )
                     elif prune_enabled:
                         logger.info("Repo %s no longer configured, cleaning up", slug)
-                        await _delete_repo_index_data(index_store, slug, meta_key)
+                        if not await _delete_repo_index_data(index_store, slug, meta_key):
+                            all_errors.append(
+                                f"Failed to prune unconfigured repo {slug}; its stale index "
+                                "records may persist until a future refresh retries the cleanup"
+                            )
                     elif pre_counts.get(slug, 0) > 0:
                         # Implicit absence — not seen from this invocation's
                         # env layering, but not necessarily unconfigured
