@@ -112,6 +112,19 @@ This project uses [Semantic Versioning](https://semver.org/).
   repo, while cleanup-style deletes (post-error purge, tainted-ref cleanup,
   docs cleanup, unconfigured-repo removal) log the failure and continue on a
   best-effort basis rather than aborting an otherwise-successful refresh.
+- **A failed tainted-ref purge could wipe its own retry bookkeeping.** When a
+  repo's *indexed* ref was also tainted, a failed `delete_by_repo` was logged
+  and swallowed but execution still fell through to clearing the repo's
+  commit-SHA metadata (and, for the framework repo, both provenance keys) —
+  so a future refresh had no trail that stale tainted records might still be
+  sitting in the index. That metadata now only clears once the purge actually
+  succeeds.
+- **Cleanup-pass delete failures were logged but never counted as errors.**
+  All three `delete_by_repo` cleanup sites in `refresh` (tainted-repo removal,
+  `--prune`-authorized removal of an unconfigured repo, and tainted-ref
+  cleanup — now unified behind `_delete_repo_index_data`) append a message to
+  `all_errors` on failure, so a failed purge surfaces through the refresh
+  summary's error count instead of only a log line.
 
 ## [0.5.2] - 2026-08-09
 

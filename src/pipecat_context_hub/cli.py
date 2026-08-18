@@ -291,8 +291,9 @@ def _delete_local_index_storage(data_dir: Path) -> None:
 async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> bool:
     """Remove every trace of ``slug`` from the index: records + bookkeeping.
 
-    Shared by both deletion branches of ``refresh``'s cleanup pass (tainted
-    repo, and ``--prune``-authorized removal of an unconfigured one) so the
+    Shared by every deletion site in ``refresh``'s cleanup pass — tainted
+    repo, ``--prune``-authorized removal of an unconfigured one, and a
+    tainted ref whose already-*indexed* ref is also tainted — so the
     sequence — including the framework-repo special case, whose version
     metadata describes records that no longer exist once the repo is gone —
     cannot drift between them.
@@ -300,11 +301,11 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     Best-effort: ``IndexStore.delete_by_repo`` can now raise on an FTS-layer
     failure (round-5 gauntlet fix). This is a cleanup pass, not core
     ingestion, so a failure here is logged and swallowed rather than crashing
-    the whole refresh — matching the existing best-effort treatment of the
-    other two cleanup-style ``delete_by_repo`` call sites (post-ingest-error
-    purge, tainted-ref removal in ``_run_refresh``). The repo's stale data
-    may persist for another run; that is strictly better than aborting an
-    otherwise-successful refresh over cleanup of an already-unwanted repo.
+    the whole refresh. The repo's stale data may persist for another run;
+    that is strictly better than aborting an otherwise-successful refresh
+    over cleanup of an already-unwanted repo. Every caller reports a
+    ``False`` return through ``all_errors`` so the failure is visible in the
+    refresh summary, not just a log line.
 
     Returns ``True`` on success, ``False`` if the delete failed (metadata is
     left untouched in that case) — callers use this to surface the failure
@@ -1103,28 +1104,17 @@ def refresh(
                         "Indexed ref for %s is also tainted; removing local records",
                         repo_slug,
                     )
-                    try:
-                        await index_store.delete_by_repo(repo_slug)
-                    except Exception:
-                        logger.exception(
-                            "Failed to purge records for tainted ref %s during cleanup; "
-                            "its stale records may persist until a future refresh retries "
-                            "the cleanup",
-                            repo_slug,
+                    if not await _delete_repo_index_data(index_store, repo_slug, stored_sha_key):
+                        # `_delete_repo_index_data` already logs the exception and
+                        # leaves `stored_sha_key` (and, for the framework repo,
+                        # its provenance keys) untouched — a future refresh still
+                        # knows this repo's tainted records may still be sitting
+                        # in the index. Record it here too so the failure is
+                        # visible in the refresh summary, not just a log line.
+                        all_errors.append(
+                            f"Failed to purge records for tainted ref {repo_slug}; its stale "
+                            "records may persist until a future refresh retries the cleanup"
                         )
-                    else:
-                        # Only drop bookkeeping once the records it describes are
-                        # actually gone — see `_delete_repo_index_data` for the
-                        # same pattern. A failed delete above must leave
-                        # `stored_sha_key` (and the framework provenance keys)
-                        # in place so a future refresh still knows this repo's
-                        # tainted records may still be sitting in the index.
-                        index_store.delete_metadata(stored_sha_key)
-                        if repo_slug == framework_slug:
-                            # Framework records are gone, so any recorded provenance
-                            # would describe content the index no longer holds.
-                            index_store.delete_metadata("indexed_framework_version")
-                            index_store.delete_metadata("indexed_framework_commits_ahead")
                     source_status[repo_slug] = {
                         "status": "tainted",
                         "sha": commit_sha[:8],

@@ -879,6 +879,16 @@ class TestRefreshCommand:
         still be sitting in the index. The fix mirrors
         `_delete_repo_index_data`: metadata deletes only run once
         `delete_by_repo` actually succeeds.
+
+        Round 7 Gate 1/Codex + Architecture Finding #1 (High + Minor,
+        converged): this site now calls `_delete_repo_index_data` directly
+        instead of duplicating its try/except/else logic, and (like the
+        helper's other two call sites) appends a message to `all_errors` on
+        failure. Before that fix a failed purge here left
+        `last_refresh_error_count=0` even though FTS-side stale tainted
+        records could still be retrievable -- this test also asserts that
+        failure is now surfaced through the persisted refresh-summary
+        metadata batch.
         """
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
         mock_is_cls.return_value = mock_store
@@ -925,6 +935,14 @@ class TestRefreshCommand:
         assert "repo:pipecat-ai/pipecat:commit_sha" not in deleted_keys
         assert "indexed_framework_version" not in deleted_keys
         assert "indexed_framework_commits_ahead" not in deleted_keys
+        # The failure is now visible via the refresh summary's error count,
+        # not just a log line -- mirroring the other two
+        # `_delete_repo_index_data` call sites.
+        batch_calls = mock_store.set_metadata_batch.call_args_list
+        assert batch_calls, "expected set_metadata_batch to be called"
+        metadata_to_set = batch_calls[-1].args[0]
+        assert metadata_to_set["last_refresh_error_count"] != "0"
+        assert "last_refresh_errored_at" in metadata_to_set
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
