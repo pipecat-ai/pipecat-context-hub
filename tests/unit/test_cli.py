@@ -1700,6 +1700,85 @@ class TestRefreshProvenanceMetadata:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_undeterminable_provenance_clears_stale_stamp(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`framework_provenance_ready` is True (the framework repo's records
+        were replaced this run) but *neither* producer can derive a version:
+        `exact_release_version` rejects the checked-out tag, and
+        `describe_framework_checkout` also returns ``(None, None)`` (a
+        branch-shaped checkout with no reachable release tag at all).
+
+        The prior run's exact-provenance stamp is now stale — it describes a
+        revision the index no longer holds — and must be explicitly deleted,
+        not silently left in place alongside fresh, unrelated records.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_github.clone_or_fetch = MagicMock(
+            side_effect=lambda repo_slug, _checkout=False, tag=None: CloneResult(
+                Path("/tmp/repo"), "abc123", tag
+            )
+        )
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
+        meta["repo:pipecat-ai/pipecat:commit_sha"] = "old-sha"
+        # Seed a prior known-good stamp that must be cleared once the framework
+        # repo's records are replaced by an undeterminable checkout.
+        meta["indexed_framework_version"] = "1.5.0"
+        meta["indexed_framework_commits_ahead"] = "3"
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=(None, None),
+        ) as mock_describe:
+            result = CliRunner().invoke(
+                main, ["refresh", "--framework-version", "some-feature-tag"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_describe.assert_called_once()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+        deleted = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            deleted.update(batch_call.kwargs.get("delete_keys") or ())
+        assert "indexed_framework_version" in deleted
+        assert "indexed_framework_commits_ahead" in deleted
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_failed_framework_checkout_is_not_stamped(
         self,
         mock_si_cls,

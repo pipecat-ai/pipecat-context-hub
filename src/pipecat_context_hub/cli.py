@@ -1351,6 +1351,9 @@ def refresh(
                 if indexed_version is not None and commits_ahead is not None:
                     metadata_to_set["indexed_framework_version"] = indexed_version
                     metadata_to_set["indexed_framework_commits_ahead"] = str(commits_ahead)
+                else:
+                    metadata_to_delete.append("indexed_framework_version")
+                    metadata_to_delete.append("indexed_framework_commits_ahead")
 
         metadata_to_set["last_refresh_at"] = now
         if all_errors:
