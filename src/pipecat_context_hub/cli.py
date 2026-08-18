@@ -31,7 +31,11 @@ from pipecat_context_hub.shared.paths import (
     same_dir,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
-from pipecat_context_hub.shared.versioning import strip_v_prefix
+from pipecat_context_hub.shared.versioning import (
+    canonicalize_framework_pin,
+    is_latest_sentinel,
+    strip_v_prefix,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
@@ -808,7 +812,6 @@ def refresh(
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
     from pipecat_context_hub.services.ingest.github_ingest import (
         _FRAMEWORK_REPO,
-        _LATEST_SENTINEL,
         GitHubRepoIngester,
         describe_framework_checkout,
         repo_ref_is_tainted,
@@ -1022,11 +1025,7 @@ def refresh(
                 repo_path, commit_sha = await asyncio.to_thread(
                     github.clone_or_fetch, repo_slug, False, tag=repo_tag
                 )
-                if (
-                    repo_slug == framework_slug
-                    and repo_tag
-                    and repo_tag.strip().lower() == _LATEST_SENTINEL
-                ):
+                if repo_slug == framework_slug and repo_tag and is_latest_sentinel(repo_tag):
                     resolved_framework_tag = await asyncio.to_thread(
                         github.resolve_tag_name, repo_path, repo_tag
                     )
@@ -1300,12 +1299,9 @@ def refresh(
         # Persist pinned framework version (or clear it) for get_hub_status.
         # Normalize the `latest` sentinel's case/whitespace so a pin like
         # " Latest " is recorded as the canonical "latest", matching what
-        # `indexed_framework_version` below and `_LATEST_SENTINEL` compare
-        # against.
+        # `is_latest_sentinel` accepts everywhere else.
         if fw_version:
-            metadata_to_set["framework_version"] = (
-                _LATEST_SENTINEL if fw_version.strip().lower() == _LATEST_SENTINEL else fw_version
-            )
+            metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
         else:
             metadata_to_delete.append("framework_version")
 

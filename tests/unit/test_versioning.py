@@ -1,8 +1,17 @@
-"""Tests for shared.versioning.strip_v_prefix."""
+"""Tests for the shared version-tag string helpers."""
 
 from __future__ import annotations
 
-from pipecat_context_hub.shared.versioning import strip_v_prefix
+import pytest
+from packaging.version import InvalidVersion, Version
+
+from pipecat_context_hub.shared.versioning import (
+    LATEST_SENTINEL,
+    canonicalize_framework_pin,
+    is_latest_sentinel,
+    parse_release_version,
+    strip_v_prefix,
+)
 
 
 class TestStripVPrefix:
@@ -20,3 +29,46 @@ class TestStripVPrefix:
 
     def test_empty_string_unchanged(self):
         assert strip_v_prefix("") == ""
+
+
+class TestIsLatestSentinel:
+    @pytest.mark.parametrize("value", ["latest", "LATEST", "Latest", "  latest  ", "\tLaTeSt\n"])
+    def test_accepts_any_casing_or_surrounding_whitespace(self, value: str):
+        assert is_latest_sentinel(value) is True
+
+    @pytest.mark.parametrize("value", [None, "", "v1.2.0", "late", "latest-rc", "la test"])
+    def test_rejects_everything_else(self, value: str | None):
+        assert is_latest_sentinel(value) is False
+
+
+class TestCanonicalizeFrameworkPin:
+    @pytest.mark.parametrize("value", ["latest", "  LATEST  ", "Latest"])
+    def test_sentinel_collapses_to_canonical_spelling(self, value: str):
+        assert canonicalize_framework_pin(value) == LATEST_SENTINEL
+
+    @pytest.mark.parametrize("value", ["v0.0.96", " v0.0.96 ", "some-feature-tag", ""])
+    def test_non_sentinel_returned_verbatim(self, value: str):
+        """Only the sentinel is normalised — a real pin is handed to git as typed."""
+        assert canonicalize_framework_pin(value) == value
+
+
+class TestParseReleaseVersion:
+    def test_parses_v_prefixed_tag(self):
+        assert parse_release_version("v1.10.0") == Version("1.10.0")
+
+    def test_parses_bare_version(self):
+        assert parse_release_version("1.10.0") == Version("1.10.0")
+
+    def test_rejects_doubled_prefix(self):
+        """`Version()` alone would normalise "v1.0.0" (what strip_v_prefix leaves
+        behind) straight back to 1.0.0, erasing the single-strip guarantee."""
+        with pytest.raises(InvalidVersion):
+            parse_release_version("vv1.0.0")
+
+    @pytest.mark.parametrize("value", ["", "nightly", "some-feature-tag", "main"])
+    def test_rejects_non_versions(self, value: str):
+        with pytest.raises(InvalidVersion):
+            parse_release_version(value)
+
+    def test_prerelease_parses(self):
+        assert parse_release_version("v2.0.0rc1").is_prerelease

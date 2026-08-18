@@ -26,7 +26,7 @@ from typing import cast
 from packaging.version import InvalidVersion, Version
 
 from pipecat_context_hub.shared.types import DeprecationStatus
-from pipecat_context_hub.shared.versioning import strip_v_prefix
+from pipecat_context_hub.shared.versioning import parse_release_version
 
 logger = logging.getLogger(__name__)
 
@@ -310,11 +310,19 @@ def add_removals_from_registry(dep_map: DeprecationMap, removals_path: Path) -> 
 
 
 def _as_version(value: str | None) -> Version | None:
-    """Parse a ``X.Y.Z`` (optionally ``v``-prefixed) version, or ``None``."""
+    """Parse a ``X.Y.Z`` (optionally ``v``-prefixed) version, or ``None``.
+
+    Routed through the shared :func:`parse_release_version` so a doubled prefix
+    (``"vv1.0.0"``) is *not* silently coerced to ``1.0.0`` by ``Version()``'s
+    own normalisation. Registry values (``deprecated_in`` / ``removed_in``) are
+    plain ``X.Y.Z`` and unaffected; a caller who types a malformed version now
+    falls back to the entry's intrinsic status rather than getting an answer for
+    a version they did not ask about.
+    """
     if not value:
         return None
     try:
-        return Version(strip_v_prefix(str(value)))
+        return parse_release_version(str(value))
     except InvalidVersion:
         return None
 

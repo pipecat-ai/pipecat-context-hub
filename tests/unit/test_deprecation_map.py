@@ -502,6 +502,17 @@ class TestStatusFor:
     def test_unparseable_version_falls_back(self) -> None:
         assert status_for(self._removed(), "garbage") == "removed"
 
+    def test_single_v_prefix_is_still_accepted(self) -> None:
+        assert status_for(self._removed(), "v1.5.0") == "deprecated"
+
+    def test_doubled_v_prefix_is_not_silently_coerced(self) -> None:
+        """`Version("v1.5.0")` — what a naive strip leaves behind for "vv1.5.0" —
+        normalises straight back to 1.5.0, answering for a version the caller
+        never typed. Routing through `parse_release_version` makes it an
+        unparseable version, which falls back to the intrinsic status.
+        """
+        assert status_for(self._removed(), "vv1.5.0") == "removed"
+
 
 class TestCheckDeprecationVersionAware:
     """The handler computes status from the queried/indexed version."""

@@ -6,6 +6,7 @@ from typing import Any
 
 from pipecat_context_hub.services.ingest.deprecation_map import status_for
 from pipecat_context_hub.shared.types import CheckDeprecationInput, CheckDeprecationOutput
+from pipecat_context_hub.shared.versioning import is_latest_sentinel
 
 
 def resolve_framework_version(index_store: Any) -> str | None:
@@ -18,7 +19,9 @@ def resolve_framework_version(index_store: Any) -> str | None:
     indexed code. For a floor (or incomplete provenance), returning ``None`` lets
     the deprecation handler preserve the registry entry's intrinsic status instead
     of evaluating it against a potentially older release. Falls back to
-    ``framework_version`` only when no indexed revision is recorded.
+    ``framework_version`` only when no indexed revision is recorded — and never
+    to the ``latest`` sentinel, which metadata contract v2 permits that key to
+    hold: it is a pin, not a version, so it names no release to evaluate against.
     """
     if index_store is None:
         return None
@@ -33,7 +36,9 @@ def resolve_framework_version(index_store: Any) -> str | None:
             return str(indexed)
         return None
     version = metadata.get("framework_version")
-    return version if version is None else str(version)
+    if version is None or is_latest_sentinel(str(version)):
+        return None
+    return str(version)
 
 
 async def handle_check_deprecation(

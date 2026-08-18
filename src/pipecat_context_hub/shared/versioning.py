@@ -1,4 +1,22 @@
-"""Shared version-tag string helpers."""
+"""Shared version-tag string helpers.
+
+Every module that reasons about a framework tag *as a string* — the ingester
+resolving a pin, the CLI normalising one for metadata, the deprecation map
+comparing versions — goes through this module, so the sentinel spelling and the
+tag-to-``Version`` parse have exactly one definition each.
+"""
+
+from __future__ import annotations
+
+from typing import Final
+
+from packaging.version import InvalidVersion, Version
+
+# Sentinel accepted wherever a framework tag is expected, meaning "newest
+# release tag". Note this shadows any tag matching "latest" case-insensitively
+# after trimming whitespace (e.g. "Latest", " LATEST "); no pipecat-ai repo
+# publishes one, and an escape syntax would cost more than it buys.
+LATEST_SENTINEL: Final[str] = "latest"
 
 
 def strip_v_prefix(tag: str) -> str:
@@ -10,3 +28,37 @@ def strip_v_prefix(tag: str) -> str:
     leading 'v'.
     """
     return tag.removeprefix("v")
+
+
+def is_latest_sentinel(tag: str | None) -> bool:
+    """True when *tag* is the ``latest`` sentinel, case- and whitespace-insensitive."""
+    return tag is not None and tag.strip().lower() == LATEST_SENTINEL
+
+
+def canonicalize_framework_pin(pin: str) -> str:
+    """The canonical spelling of an operator's framework pin.
+
+    Returns the canonical ``latest`` for the sentinel in any casing or
+    surrounding whitespace, and the pin verbatim otherwise — so a pin recorded
+    in index metadata compares equal to what :func:`is_latest_sentinel` accepts.
+    """
+    return LATEST_SENTINEL if is_latest_sentinel(pin) else pin
+
+
+def parse_release_version(tag: str) -> Version:
+    """Parse *tag* as a version after stripping exactly one leading 'v'.
+
+    ``Version()`` performs its own PEP 440 normalisation that tolerates a
+    leading 'v' — so ``strip_v_prefix("vv1.0.0")`` yields ``"v1.0.0"``, which
+    ``Version()`` then happily accepts as ``1.0.0``, silently undoing the
+    single-strip guarantee. Rejecting any leading 'v'/'V' left after our own
+    strip closes that gap: a tag needs a real prefix mismatch (``"vv1.0.0"``)
+    to be excluded, not just an unlucky double-normalisation.
+
+    Raises ``InvalidVersion`` — same contract as ``Version()`` itself — so
+    every existing ``except InvalidVersion`` call site needs no changes.
+    """
+    stripped = strip_v_prefix(tag)
+    if stripped[:1] in ("v", "V"):
+        raise InvalidVersion(f"Invalid version: {tag!r}")
+    return Version(stripped)

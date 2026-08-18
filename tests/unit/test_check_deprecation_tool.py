@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from pipecat_context_hub.server.tools.check_deprecation import resolve_framework_version
 
 
@@ -48,4 +50,13 @@ class TestResolveFrameworkVersion:
 
     def test_neither_set_returns_none(self):
         store = _index_store({})
+        assert resolve_framework_version(store) is None
+
+    @pytest.mark.parametrize("pin", ["latest", "  LATEST  ", "Latest"])
+    def test_latest_pin_is_never_returned_as_a_version(self, pin: str):
+        """Metadata contract v2 permits ``framework_version == "latest"``. The
+        sentinel is a pin, not a version — returning it verbatim hands a
+        version-shaped non-version to the deprecation handler.
+        """
+        store = _index_store({"framework_version": pin})
         assert resolve_framework_version(store) is None

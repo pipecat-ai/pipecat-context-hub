@@ -22,7 +22,12 @@ from packaging.version import InvalidVersion, Version
 
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
-from pipecat_context_hub.shared.versioning import strip_v_prefix
+from pipecat_context_hub.shared.versioning import (
+    LATEST_SENTINEL,
+    is_latest_sentinel,
+    parse_release_version,
+    strip_v_prefix,
+)
 
 if TYPE_CHECKING:
     from pipecat_context_hub.shared.interfaces import IndexWriter
@@ -98,31 +103,7 @@ _REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._
 # Validation for git tag names (e.g. "v0.0.96", "0.0.96").
 _TAG_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
-# Sentinel accepted wherever a framework tag is expected, meaning "newest
-# release tag". Note this shadows any tag matching "latest" case-insensitively
-# after trimming whitespace (e.g. "Latest", " LATEST "); no pipecat-ai repo
-# publishes one, and an escape syntax would cost more than it buys.
-_LATEST_SENTINEL = "latest"
 _ZERO_VERSION = Version("0")
-
-
-def _parse_tag_version(tag: str) -> Version:
-    """Parse *tag* as a version after stripping exactly one leading 'v'.
-
-    ``Version()`` performs its own PEP 440 normalisation that tolerates a
-    leading 'v' — so ``strip_v_prefix("vv1.0.0")`` yields ``"v1.0.0"``, which
-    ``Version()`` then happily accepts as ``1.0.0``, silently undoing the
-    single-strip guarantee. Rejecting any leading 'v'/'V' left after our own
-    strip closes that gap: a tag needs a real prefix mismatch (``"vv1.0.0"``)
-    to be excluded, not just an unlucky double-normalisation.
-
-    Raises ``InvalidVersion`` — same contract as ``Version()`` itself — so
-    every existing ``except InvalidVersion`` call site needs no changes.
-    """
-    stripped = strip_v_prefix(tag)
-    if stripped[:1] in ("v", "V"):
-        raise InvalidVersion(f"Invalid version: {tag!r}")
-    return Version(stripped)
 
 
 def _canonical_version_tag(tags: list[str]) -> str:
@@ -144,7 +125,7 @@ def _version_sort_key(tag: str) -> tuple[int, Version, str]:
     sorts above ``v1.10.0`` lexicographically.
     """
     try:
-        return (1, _parse_tag_version(tag), tag)
+        return (1, parse_release_version(tag), tag)
     except InvalidVersion:
         return (0, _ZERO_VERSION, tag)
 
@@ -1320,7 +1301,7 @@ class GitHubRepoIngester:
             git_repo = GitRepo(str(repo_path))
             self._fetch_origin_tags(git_repo)
             if tag:
-                if tag.strip().lower() == _LATEST_SENTINEL:
+                if is_latest_sentinel(tag):
                     _resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
                 else:
                     commit_sha = self._resolve_tag(git_repo, tag)
@@ -1337,7 +1318,7 @@ class GitHubRepoIngester:
             )
             self._fetch_origin_tags(git_repo)
             if tag:
-                if tag.strip().lower() == _LATEST_SENTINEL:
+                if is_latest_sentinel(tag):
                     _resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
                 else:
                     commit_sha = self._resolve_tag(git_repo, tag)
@@ -1374,7 +1355,7 @@ class GitHubRepoIngester:
                 # "v1.10.0+cu121") from candidacy, since _TAG_RE forbids "+".
                 continue
             try:
-                version = _parse_tag_version(name)
+                version = parse_release_version(name)
             except InvalidVersion:
                 continue
             try:
@@ -1458,7 +1439,7 @@ class GitHubRepoIngester:
 
         Non-sentinel tags are returned unchanged.
         """
-        if tag.strip().lower() != _LATEST_SENTINEL:
+        if not is_latest_sentinel(tag):
             return tag
         git_repo = GitRepo(str(repo_path))
         return self._latest_version_tag(git_repo)
@@ -1473,9 +1454,9 @@ class GitHubRepoIngester:
         """
         # Resolve the sentinel before validation: `latest` matches _TAG_RE, so
         # falling through would fail as a missing tag rather than as itself.
-        if tag.strip().lower() == _LATEST_SENTINEL:
+        if is_latest_sentinel(tag):
             tag = GitHubRepoIngester._latest_version_tag(git_repo)
-            logger.info("Resolved framework version '%s' to tag %s", _LATEST_SENTINEL, tag)
+            logger.info("Resolved framework version '%s' to tag %s", LATEST_SENTINEL, tag)
 
         if not _TAG_RE.fullmatch(tag):
             raise ValueError(f"Invalid tag format: {tag!r}")
