@@ -970,6 +970,13 @@ def refresh(
                     # function is recorded, rather than letting it crash the
                     # whole refresh.
                     all_errors.append(f"Failed to delete stale docs records: {exc}")
+                    # Vector-side delete already ran before the FTS side
+                    # raised, so docs records have diverged from whatever
+                    # `docs:content_hash` still describes. Clear the stamp so
+                    # a future refresh — forced or not — can never take the
+                    # "docs unchanged, skip" shortcut on this stale hash; it
+                    # will retry the delete+ingest instead.
+                    index_store.delete_metadata("docs:content_hash")
                     source_status[docs_key] = {
                         "status": "error",
                         "sha": _MISSING_SENTINEL,

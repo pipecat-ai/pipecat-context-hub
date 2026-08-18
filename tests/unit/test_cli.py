@@ -1551,6 +1551,102 @@ class TestRefreshFtsFaultInjection:
             written.update(batch_call.args[0])
         assert int(written["last_refresh_error_count"]) >= 1
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_docs_content_hash_cleared_after_delete_failure_and_next_refresh_retries(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round-8 gauntlet Finding #1 regression.
+
+        When `delete_by_content_type("doc")` raises, the handler must clear
+        `docs:content_hash` (not merely record the error) — otherwise the
+        stale stamp still matches the (never re-fetched) content hash, and a
+        *subsequent non-force* refresh takes the "docs unchanged, skipping"
+        shortcut forever, permanently suppressing automatic recovery.
+
+        Reproduces the real scenario: `docs:content_hash` is already stamped
+        (matching the crawler's current content — a prior refresh succeeded),
+        so a plain non-force refresh would take the unchanged-skip branch
+        without even reaching the delete. `--force` is what gets a refresh
+        past that skip and into the failing delete, exactly as it would for
+        an operator retrying after an earlier failure. Uses a stateful fake
+        metadata store (a plain dict wired through get/set/delete_metadata)
+        so the second `invoke()` in this test actually observes what the
+        first one left behind.
+
+        1. After the failed forced delete, `docs:content_hash` is absent —
+           not left stamped at its old (now-stale) value.
+        2. A second, non-force refresh (where the delete now succeeds) does
+           NOT take the unchanged-skip branch — `delete_by_content_type` and
+           `crawler.ingest` are invoked again.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        import hashlib
+
+        # Matches mock_crawler.fetch_llms_txt's fixed return value from
+        # `_make_mocks` — a prior successful refresh already stamped this.
+        content_hash = hashlib.sha256(
+            b"# Page\nSource: https://example.com\nContent here"
+        ).hexdigest()
+
+        # Stateful fake metadata store so get_metadata reflects prior
+        # set_metadata/delete_metadata calls across the two invocations below.
+        meta: dict[str, str] = {"docs:content_hash": content_hash}
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        mock_store.set_metadata = MagicMock(
+            side_effect=lambda key, value: meta.__setitem__(key, value)
+        )
+        mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
+
+        mock_store.delete_by_content_type = AsyncMock(
+            side_effect=RuntimeError("FTS delete_by_content_type failed; indexes may have diverged")
+        )
+
+        monkeypatch.chdir(tmp_path)
+
+        # --- First refresh (--force, so the delete is reached despite the
+        # matching hash): the delete fails. ---
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+        assert result.exit_code == 0, result.output
+        mock_crawler.ingest.assert_not_called()
+        assert "docs:content_hash" not in meta, (
+            "docs:content_hash must be cleared, not left stamped, after a "
+            "failed delete_by_content_type — otherwise a future refresh's "
+            "unchanged-hash check silently skips re-ingesting docs forever"
+        )
+
+        # --- Second, non-force refresh: the delete now succeeds. ---
+        mock_store.delete_by_content_type = AsyncMock(return_value=0)
+        mock_crawler.ingest.reset_mock()
+
+        result2 = CliRunner().invoke(main, ["refresh"])
+        assert result2.exit_code == 0, result2.output
+        mock_store.delete_by_content_type.assert_awaited_once_with("doc")
+        mock_crawler.ingest.assert_awaited_once()
+        assert meta.get("docs:content_hash") == content_hash
+
 
 class TestRefreshProvenanceMetadata:
     """Refresh stamps the contract version and the indexed pipecat revision."""
