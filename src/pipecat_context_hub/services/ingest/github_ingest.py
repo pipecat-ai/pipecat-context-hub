@@ -28,7 +28,6 @@ from pipecat_context_hub.shared.versioning import (
     exact_release_version,
     is_latest_sentinel,
     parse_release_version,
-    strip_v_prefix,
 )
 
 if TYPE_CHECKING:
@@ -871,10 +870,11 @@ def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None
     except ValueError:
         logger.debug("Unexpected `git describe --long` output: %r", described)
         return None, None
-    if exact_release_version(tag) is None:
+    exact_version = exact_release_version(tag)
+    if exact_version is None:
         logger.debug("Nearest tag %r does not parse as a release; not stamping provenance", tag)
         return None, None
-    return strip_v_prefix(tag), int(commits_ahead)
+    return exact_version, int(commits_ahead)
 
 
 def _get_framework_version(repo_path: Path) -> str | None:

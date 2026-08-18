@@ -263,8 +263,14 @@ class TestDescribeFrameworkCheckout:
             assert describe_framework_checkout(tmp_path) == ("1.5.0", 80)
 
     def test_hyphenated_tag_survives_split(self, tmp_path: Path) -> None:
+        # The tag itself contains a hyphen (prerelease suffix); rsplit from the
+        # right must still isolate it correctly rather than mis-splitting on
+        # the tag's own hyphen. The returned version is PEP 440 canonical
+        # (exact_release_version's output), which drops the hyphen before a
+        # prerelease segment — that's the same normalization the pinned-tag
+        # provenance path already applies, so both producers agree.
         with self._patched("v1.0.0-rc1-12-gdeadbee"):
-            assert describe_framework_checkout(tmp_path) == ("1.0.0-rc1", 12)
+            assert describe_framework_checkout(tmp_path) == ("1.0.0rc1", 12)
 
     def test_no_tags_returns_none_silently(self, tmp_path: Path, caplog) -> None:
         from git.exc import GitCommandError
