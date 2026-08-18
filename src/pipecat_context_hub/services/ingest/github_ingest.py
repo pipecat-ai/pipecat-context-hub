@@ -25,6 +25,7 @@ from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
+    exact_release_version,
     is_latest_sentinel,
     parse_release_version,
     strip_v_prefix,
@@ -867,10 +868,13 @@ def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None
     # keeps tags that themselves contain hyphens (e.g. v1.0.0-rc1) intact.
     try:
         tag, commits_ahead, _sha = described.rsplit("-", 2)
-        return strip_v_prefix(tag), int(commits_ahead)
     except ValueError:
         logger.debug("Unexpected `git describe --long` output: %r", described)
         return None, None
+    if exact_release_version(tag) is None:
+        logger.debug("Nearest tag %r does not parse as a release; not stamping provenance", tag)
+        return None, None
+    return strip_v_prefix(tag), int(commits_ahead)
 
 
 def _get_framework_version(repo_path: Path) -> str | None:
@@ -1002,7 +1006,8 @@ class GitHubRepoIngester:
                 configured repos from ``effective_repos``.
             prefetched: Optional mapping of ``{repo_slug: (repo_path, commit_sha)}``
                 from prior ``clone_or_fetch`` calls, avoiding redundant fetches.
-            framework_version: The concrete version for a pinned framework checkout.
+            framework_version: The concrete, already-normalized version for a
+                pinned framework checkout (e.g. from ``exact_release_version``).
                 When omitted, the framework version is derived with git-describe
                 floor semantics for an unpinned default-branch refresh.
         """
@@ -1042,9 +1047,10 @@ class GitHubRepoIngester:
             repo_slug: GitHub repo slug (e.g. ``pipecat-ai/pipecat``).
             prefetched: Optional ``(repo_path, commit_sha)`` from a prior
                 ``clone_or_fetch`` call, avoiding a redundant fetch.
-            framework_version: Concrete version supplied for a pinned framework
-                checkout. ``None`` preserves git-describe floor semantics for
-                unpinned default-branch refreshes.
+            framework_version: Concrete, already-normalized version supplied
+                for a pinned framework checkout (e.g. from
+                ``exact_release_version``). ``None`` preserves git-describe
+                floor semantics for unpinned default-branch refreshes.
         """
         errors: list[str] = []
         records: list[ChunkedRecord] = []
@@ -1098,10 +1104,11 @@ class GitHubRepoIngester:
         chunk_version: str | None = None
         if is_framework:
             if framework_version is not None:
-                # A caller-provided tag is an exact release identity. Normalize
-                # only the conventional prefix; unlike git-describe this must
-                # not turn a release checkout into its nearest reachable floor.
-                chunk_version = strip_v_prefix(framework_version.strip())
+                # A caller-provided tag is an exact release identity, already
+                # normalized by the caller (e.g. `exact_release_version`).
+                # Unlike git-describe this must not turn a release checkout
+                # into its nearest reachable floor.
+                chunk_version = framework_version.strip()
             else:
                 chunk_version = _get_framework_version(repo_path)
             if chunk_version:

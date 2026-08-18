@@ -698,7 +698,15 @@ class TestGitHubRepoIngester:
             assert isinstance(rec.indexed_at, datetime)
 
     async def test_pinned_framework_ingest_uses_resolved_tag_for_chunks(self, tmp_path: Path):
-        """A same-commit tag alias must retain the selected release identity."""
+        """A same-commit tag alias must retain the selected release identity.
+
+        ``framework_version`` is documented as an already-normalized value —
+        its sole real-world caller (cli.py's refresh) always passes the output
+        of ``exact_release_version()`` — so this test passes that same
+        normalized form rather than the raw resolved tag.
+        """
+        from pipecat_context_hub.shared.versioning import exact_release_version
+
         repo_dir = _create_fake_repo(
             tmp_path / "data" / "repos",
             "pipecat-ai_pipecat",
@@ -724,7 +732,7 @@ class TestGitHubRepoIngester:
             result = await ingester.ingest(
                 repos=[_FRAMEWORK_REPO],
                 prefetched={_FRAMEWORK_REPO: (repo_dir, commit_sha)},
-                framework_version=selected_tag,
+                framework_version=exact_release_version(selected_tag),
             )
 
         assert result.errors == []

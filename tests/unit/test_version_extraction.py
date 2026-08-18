@@ -286,6 +286,18 @@ class TestDescribeFrameworkCheckout:
         with self._patched("v1.5.0"):
             assert describe_framework_checkout(tmp_path) == (None, None)
 
+    def test_non_release_nearest_tag_returns_none(self, tmp_path: Path) -> None:
+        """Regression (Round 3 Finding #4/#5): a nearest tag that `git describe`
+        happily nominates but that does not parse as a PEP 440 release (a
+        branch-shaped or feature tag, e.g. ``some-feature-tag``) must not be
+        trusted as provenance. Before the fix this returned
+        ``("some-feature-tag", 12)`` verbatim; after the fix it must return
+        ``(None, None)``, matching the git-describe floor semantics used
+        elsewhere in this module for an undescribable checkout.
+        """
+        with self._patched("some-feature-tag-12-gdeadbee"):
+            assert describe_framework_checkout(tmp_path) == (None, None)
+
 
 class TestBuildChunkMetadataVersion:
     """Test that _build_chunk_metadata includes pipecat_version_pin."""
