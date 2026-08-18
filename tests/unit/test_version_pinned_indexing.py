@@ -325,33 +325,6 @@ class TestResolveLatest:
             GitHubRepoIngester._latest_version_tag(git_repo)
 
 
-class TestResolveTagName:
-    """Tests for GitHubRepoIngester.resolve_tag_name."""
-
-    def test_concrete_tag_returned_unchanged_without_touching_git(self, tmp_path: Path):
-        """A non-'latest' tag is returned as-is; the repo_path need not even
-        point at a valid git repo, since resolve_tag_name must never call
-        into git for a concrete tag.
-        """
-        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
-        ingester = GitHubRepoIngester(config, _make_mock_writer())
-
-        result = ingester.resolve_tag_name(tmp_path / "not-a-git-repo", "v0.0.96")
-        assert result == "v0.0.96"
-
-    def test_latest_resolves_to_same_tag_as_latest_version_tag(self, tmp_path: Path):
-        from git import Repo as GitRepo
-
-        repo_dir = _create_tagged_repo(tmp_path, ["v0.0.99", "v1.7.0", "v1.10.0"])
-        git_repo = GitRepo(str(repo_dir))
-        expected = GitHubRepoIngester._latest_version_tag(git_repo)
-
-        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
-        ingester = GitHubRepoIngester(config, _make_mock_writer())
-
-        assert ingester.resolve_tag_name(repo_dir, "latest") == expected
-
-
 # ---------------------------------------------------------------------------
 # clone_or_fetch with tag parameter
 # ---------------------------------------------------------------------------
@@ -434,11 +407,13 @@ class TestCloneOrFetchWithTag:
         ingester = GitHubRepoIngester(config, _make_mock_writer())
 
         # Fetch with tag — should get the tagged commit, not HEAD
-        repo_path, tag_sha = ingester.clone_or_fetch(repo_slug, tag="v0.0.96")
+        repo_path, tag_sha, resolved_tag = ingester.clone_or_fetch(repo_slug, tag="v0.0.96")
         tagged_repo = GitRepo(str(repo_path))
         assert tagged_repo.head.commit.hexsha == tag_sha
         # The file content should be from the tagged version
         assert (repo_path / "main.py").read_text() == "print('v1')\n"
+        # A literal pin is already concrete; it comes back verbatim.
+        assert resolved_tag == "v0.0.96"
 
     def test_clone_or_fetch_without_tag_gets_head(self, tmp_path: Path):
         from git import Repo as GitRepo
@@ -462,8 +437,10 @@ class TestCloneOrFetchWithTag:
         ingester = GitHubRepoIngester(config, _make_mock_writer())
 
         # No tag — should get HEAD
-        repo_path, head_sha = ingester.clone_or_fetch(repo_slug, tag=None)
+        repo_path, head_sha, resolved_tag = ingester.clone_or_fetch(repo_slug, tag=None)
         assert (repo_path / "main.py").read_text() == "print('v2')\n"
+        # No tag was requested, so there is no tag identity to report.
+        assert resolved_tag is None
 
     def test_clone_or_fetch_with_latest_resolves_newest_release(self, tmp_path: Path):
         """`tag="latest"` lands on the newest release tag, not on HEAD."""
@@ -491,9 +468,13 @@ class TestCloneOrFetchWithTag:
         config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
         ingester = GitHubRepoIngester(config, _make_mock_writer())
 
-        repo_path, sha = ingester.clone_or_fetch(repo_slug, tag="latest")
+        repo_path, sha, resolved_tag = ingester.clone_or_fetch(repo_slug, tag="latest")
         assert (repo_path / "main.py").read_text() == "print('v1.10')\n"
         assert GitRepo(str(repo_path)).head.commit.hexsha == sha
+        # The tag is reported by the same resolution that produced the commit —
+        # not re-derived afterwards, which is what used to let the two disagree.
+        assert resolved_tag == "v1.10.0"
+        assert GitHubRepoIngester._resolve_tag(GitRepo(str(repo_path)), resolved_tag) == sha
 
     def test_latest_drops_a_release_tag_deleted_from_origin(self, tmp_path: Path):
         """A persistent clone must not keep selecting a deleted release tag."""
@@ -518,13 +499,13 @@ class TestCloneOrFetchWithTag:
 
         config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
         ingester = GitHubRepoIngester(config, _make_mock_writer())
-        repo_path, first_sha = ingester.clone_or_fetch(repo_slug, tag="latest")
+        repo_path, first_sha, _first_tag = ingester.clone_or_fetch(repo_slug, tag="latest")
         assert first_sha == new_sha
 
         source_repo.git.update_ref("-d", "refs/tags/v1.10.0")
         source_repo.git.push("origin", "--delete", "v1.10.0")
 
-        _repo_path, second_sha = ingester.clone_or_fetch(repo_slug, tag="latest")
+        _repo_path, second_sha, _second_tag = ingester.clone_or_fetch(repo_slug, tag="latest")
         assert second_sha == old_sha
         assert "v1.10.0" not in {tag.name for tag in GitRepo(str(repo_path)).tags}
 

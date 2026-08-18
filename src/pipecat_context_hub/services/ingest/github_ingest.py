@@ -14,7 +14,7 @@ import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from git import Repo as GitRepo
 from git.exc import BadObject, GitCommandError, InvalidGitRepositoryError, NoSuchPathError
@@ -104,6 +104,22 @@ _REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._
 _TAG_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 _ZERO_VERSION = Version("0")
+
+
+class CloneResult(NamedTuple):
+    """Outcome of one clone/fetch: where, at what commit, and — when a tag was
+    requested — the concrete tag that commit was resolved from.
+
+    ``resolved_tag`` is the *verified* answer: for the ``latest`` sentinel it is
+    the tag ``_resolve_latest_tag`` selected and checked against origin, and for
+    a literal pin it is the operator's tag. Returning it (rather than letting a
+    caller re-derive it from the clone afterwards) is what makes it impossible
+    for the commit and the tag naming it to come from two different resolutions.
+    """
+
+    path: Path
+    commit_sha: str
+    resolved_tag: str | None
 
 
 def _canonical_version_tag(tags: list[str]) -> str:
@@ -1013,7 +1029,8 @@ class GitHubRepoIngester:
                 return IngestResult(source=repo_slug, errors=[msg])
         else:
             try:
-                repo_path, commit_sha = await asyncio.to_thread(self.clone_or_fetch, repo_slug)
+                clone = await asyncio.to_thread(self.clone_or_fetch, repo_slug)
+                repo_path, commit_sha = clone.path, clone.commit_sha
             except Exception as exc:
                 msg = f"Failed to clone/fetch {repo_slug}: {exc}"
                 logger.error(msg)
@@ -1263,7 +1280,7 @@ class GitHubRepoIngester:
         repo_slug: str,
         checkout: bool = True,
         tag: str | None = None,
-    ) -> tuple[Path, str]:
+    ) -> CloneResult:
         """Clone repo if not present, otherwise fetch latest.
 
         Args:
@@ -1273,7 +1290,9 @@ class GitHubRepoIngester:
                  Only used for the framework repo to support version-pinned indexing.
 
         Returns:
-            ``(repo_path, commit_sha)`` — the SHA of the checked-out commit.
+            A :class:`CloneResult`. ``resolved_tag`` is ``None`` only when no tag
+            was requested (a default-branch refresh); otherwise it names the tag
+            the returned commit was resolved from.
         """
         if not _REPO_SLUG_RE.fullmatch(repo_slug):
             raise ValueError(f"Invalid repo slug: {repo_slug}")
@@ -1297,13 +1316,15 @@ class GitHubRepoIngester:
             shutil.rmtree(repo_path, ignore_errors=False)
             was_corrupt = True
 
+        resolved_tag: str | None = None
         if (repo_path / ".git").is_dir():
             git_repo = GitRepo(str(repo_path))
             self._fetch_origin_tags(git_repo)
             if tag:
                 if is_latest_sentinel(tag):
-                    _resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
+                    resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
                 else:
+                    resolved_tag = tag
                     commit_sha = self._resolve_tag(git_repo, tag)
             else:
                 commit_sha = _resolve_origin_head_commit(git_repo)
@@ -1319,8 +1340,9 @@ class GitHubRepoIngester:
             self._fetch_origin_tags(git_repo)
             if tag:
                 if is_latest_sentinel(tag):
-                    _resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
+                    resolved_tag, commit_sha = self._resolve_latest_tag(git_repo)
                 else:
+                    resolved_tag = tag
                     commit_sha = self._resolve_tag(git_repo, tag)
                 if checkout:
                     self.checkout_commit(repo_path, commit_sha)
@@ -1333,7 +1355,7 @@ class GitHubRepoIngester:
         if was_corrupt:
             self._recovered_repos.add(repo_slug)
 
-        return repo_path, commit_sha
+        return CloneResult(repo_path, commit_sha, resolved_tag)
 
     @staticmethod
     def _latest_version_tag(git_repo: GitRepo) -> str:
@@ -1425,24 +1447,6 @@ class GitHubRepoIngester:
                 f"origin resolves it to {origin_sha}"
             )
         return tag, commit_sha
-
-    def resolve_tag_name(self, repo_path: Path, tag: str) -> str:
-        """Return the concrete tag ``tag`` resolves to, without touching the network.
-
-        ``clone_or_fetch`` resolves ``tag`` (including the ``latest`` sentinel) down to
-        a commit SHA internally and discards the tag name it picked. Callers that need
-        the resolved tag *string* — e.g. to stamp ``indexed_framework_version`` metadata
-        — call this immediately after ``clone_or_fetch`` against the same already-fetched
-        clone, so it reuses the identical resolution algorithm (``_latest_version_tag``)
-        instead of re-deriving an answer a different way (``git describe``), which can
-        disagree when multiple tags point at the same commit.
-
-        Non-sentinel tags are returned unchanged.
-        """
-        if not is_latest_sentinel(tag):
-            return tag
-        git_repo = GitRepo(str(repo_path))
-        return self._latest_version_tag(git_repo)
 
     @staticmethod
     def _resolve_tag(git_repo: GitRepo, tag: str) -> str:

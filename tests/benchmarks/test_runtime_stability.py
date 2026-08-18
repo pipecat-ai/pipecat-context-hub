@@ -28,6 +28,7 @@ import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import main
+from pipecat_context_hub.services.ingest.github_ingest import CloneResult
 from pipecat_context_hub.shared.config import HubConfig, RerankerConfig, StorageConfig
 from pipecat_context_hub.shared.types import IngestResult, SearchDocsInput
 
@@ -144,11 +145,13 @@ class _FakeGitHubRepoIngester:
     def __init__(self, config: HubConfig, *_args, **_kwargs) -> None:
         self._repos_dir = config.storage.data_dir / "repos"
 
-    def clone_or_fetch(self, repo_slug: str, checkout: bool = True) -> tuple[Path, str]:
+    def clone_or_fetch(
+        self, repo_slug: str, checkout: bool = True, tag: str | None = None
+    ) -> CloneResult:
         del checkout
         repo_path = self._repos_dir / repo_slug.replace("/", "_")
         repo_path.mkdir(parents=True, exist_ok=True)
-        return repo_path, "bench-sha"
+        return CloneResult(repo_path, "bench-sha", tag)
 
     def checkout_commit(self, repo_path: Path, commit_sha: str) -> None:
         del repo_path, commit_sha
@@ -198,8 +201,13 @@ def _invoke_refresh(data_dir: Path) -> None:
             "pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester",
             _FakeGitHubRepoIngester,
         ),
-        patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted", return_value=False),
-        patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester", _FakeSourceIngester),
+        patch(
+            "pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted",
+            return_value=False,
+        ),
+        patch(
+            "pipecat_context_hub.services.ingest.source_ingest.SourceIngester", _FakeSourceIngester
+        ),
     ):
         result = runner.invoke(main, ["refresh", "--force"])
     assert result.exit_code == 0, result.output
@@ -296,10 +304,7 @@ class TestRuntimeStability:
         query = SearchDocsInput(query="TTS + STT + pipeline", limit=5)
         snapshots: list[ResourceSnapshot] = []
         for _ in range(_CONCURRENCY_ROUNDS):
-            await asyncio.gather(*[
-                bench_retriever.search_docs(query)
-                for _ in range(_CONCURRENCY)
-            ])
+            await asyncio.gather(*[bench_retriever.search_docs(query) for _ in range(_CONCURRENCY)])
             snapshots.append(_snapshot())
 
         concurrency_delta = _assert_steady_state_growth(

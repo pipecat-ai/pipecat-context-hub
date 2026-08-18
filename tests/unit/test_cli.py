@@ -30,6 +30,7 @@ from pipecat_context_hub.cli import (
     main,
 )
 from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
+from pipecat_context_hub.services.ingest.github_ingest import CloneResult
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_global_config
@@ -224,7 +225,9 @@ class TestRefreshCommand:
         mock_crawler.close = AsyncMock()
 
         mock_github = MagicMock()
-        mock_github.clone_or_fetch = MagicMock(return_value=(Path("/tmp/repo"), "abc123"))
+        mock_github.clone_or_fetch = MagicMock(
+            return_value=CloneResult(Path("/tmp/repo"), "abc123", None)
+        )
         mock_github.ingest = AsyncMock(return_value=MagicMock(records_upserted=20, errors=[]))
 
         mock_source_ingester = MagicMock()
@@ -754,8 +757,11 @@ class TestRefreshCommand:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
@@ -812,8 +818,11 @@ class TestRefreshCommand:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
@@ -871,8 +880,11 @@ class TestRefreshCommand:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
@@ -1441,8 +1453,11 @@ class TestRefreshProvenanceMetadata:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
@@ -1489,8 +1504,11 @@ class TestRefreshProvenanceMetadata:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
         meta = {"repo:pipecat-ai/pipecat:commit_sha": "badcafe"}
@@ -1558,8 +1576,9 @@ class TestRefreshProvenanceMetadata:
         """`--framework-version` with mixed case/whitespace ('  LATEST  ') is
         persisted as the canonical 'latest' sentinel, and once the framework
         repo is cloned, `indexed_framework_version` is stamped from the tag
-        `resolve_tag_name` resolved — not from a `git describe`-derived value —
-        with `indexed_framework_commits_ahead` fixed at "0".
+        `clone_or_fetch` resolved and verified — not from a `git describe`-derived
+        value, and not from a second resolution run afterwards — with
+        `indexed_framework_commits_ahead` fixed at "0".
         """
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
             TestRefreshCommand()
@@ -1569,7 +1588,11 @@ class TestRefreshProvenanceMetadata:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_ref_tainted.return_value = False
-        mock_github.resolve_tag_name = MagicMock(return_value="v1.10.0")
+        mock_github.clone_or_fetch = MagicMock(
+            side_effect=lambda repo_slug, _checkout=False, tag=None: CloneResult(
+                Path("/tmp/repo"), "abc123", "v1.10.0" if tag else None
+            )
+        )
 
         monkeypatch.chdir(tmp_path)
         # `describe_framework_checkout` must NOT be consulted for the stamp
@@ -1705,14 +1728,12 @@ class TestRefreshProvenanceMetadata:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_ref_tainted.return_value = False
-        mock_github.resolve_tag_name = MagicMock(return_value="v1.6.0")
 
         framework_slug = "pipecat-ai/pipecat"
 
         def _clone_side_effect(repo_slug, _checkout=False, tag=None):
-            del tag
             sha = "new-framework-sha" if repo_slug == framework_slug else "abc123"
-            return Path(f"/tmp/{repo_slug.replace('/', '_')}"), sha
+            return CloneResult(Path(f"/tmp/{repo_slug.replace('/', '_')}"), sha, tag)
 
         mock_github.clone_or_fetch.side_effect = _clone_side_effect
 
@@ -1849,10 +1870,9 @@ class TestRefreshRecordReplacementGate:
         self._write_registry(framework_checkout, "NewOnlySymbol")
 
         def _clone_side_effect(repo_slug, _checkout=False, tag=None):
-            del tag
             if repo_slug == self.FRAMEWORK_SLUG:
-                return framework_checkout, "new-framework-sha"
-            return tmp_path / repo_slug.replace("/", "_"), "abc123"
+                return CloneResult(framework_checkout, "new-framework-sha", tag)
+            return CloneResult(tmp_path / repo_slug.replace("/", "_"), "abc123", tag)
 
         mock_github.clone_or_fetch.side_effect = _clone_side_effect
 
