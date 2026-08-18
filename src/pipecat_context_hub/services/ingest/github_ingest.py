@@ -866,7 +866,8 @@ def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None
     # --long always renders as <tag>-<commits>-g<sha>. Splitting from the right
     # keeps tags that themselves contain hyphens (e.g. v1.0.0-rc1) intact.
     try:
-        tag, commits_ahead, _sha = described.rsplit("-", 2)
+        tag, commits_ahead_str, _sha = described.rsplit("-", 2)
+        commits_ahead = int(commits_ahead_str)
     except ValueError:
         logger.debug("Unexpected `git describe --long` output: %r", described)
         return None, None
@@ -874,7 +875,7 @@ def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None
     if exact_version is None:
         logger.debug("Nearest tag %r does not parse as a release; not stamping provenance", tag)
         return None, None
-    return exact_version, int(commits_ahead)
+    return exact_version, commits_ahead
 
 
 def _get_framework_version(repo_path: Path) -> str | None:

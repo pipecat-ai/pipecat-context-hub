@@ -44,6 +44,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   actually decides which revision the index describes. A framework repo whose
   checkout failed never reaches the delete, so its map and stamp are still
   preserved.
+- **A repo whose ingest errored after old records were already deleted could be
+  left with a silent mix of stale-empty and partial-new records.** The partial
+  new records are now purged too, so an errored repo ends the run with zero
+  records and a warning naming the repo and prompting a retry, rather than a
+  misleading partial index.
 - **`latest` skipped an uppercase-`V` release tag.** The release-tag parse
   stripped a lowercase `v` but rejected any leading `v` *or* `V` left behind, so
   a well-formed `V2.0.0` was classed unparseable — a repo whose newest release

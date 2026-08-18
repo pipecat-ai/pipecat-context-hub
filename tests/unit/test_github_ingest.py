@@ -819,7 +819,9 @@ class TestGitHubRepoIngester:
         assert "network error" in result.errors[0]
         assert result.records_upserted == 0
 
-    async def test_ingest_upsert_failure_is_reported_as_error(self, tmp_path: Path):
+    async def test_ingest_upsert_failure_is_reported_as_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """Regression (Round 5 Finding #2): a real `IndexStore` whose FTS
         index fails during `upsert` now re-raises (Part A) instead of
         swallowing the exception and silently returning only the vector
@@ -843,7 +845,11 @@ class TestGitHubRepoIngester:
 
         config = self._make_config(tmp_path)
         store = IndexStore(config.storage)
-        store._fts.upsert = MagicMock(side_effect=RuntimeError("FTS upsert failed (disk full)"))
+        monkeypatch.setattr(
+            store._fts,
+            "upsert",
+            MagicMock(side_effect=RuntimeError("FTS upsert failed (disk full)")),
+        )
         try:
             ingester = GitHubRepoIngester(config, store)
 
