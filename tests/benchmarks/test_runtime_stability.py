@@ -160,8 +160,9 @@ class _FakeGitHubRepoIngester:
         self,
         repos: list[str] | None = None,
         prefetched: dict[str, tuple[Path, str]] | None = None,
+        framework_checkout_version: str | None = None,
     ) -> IngestResult:
-        del prefetched
+        del prefetched, framework_checkout_version
         repo_count = len(repos) if repos is not None else 0
         return IngestResult(
             source="github",

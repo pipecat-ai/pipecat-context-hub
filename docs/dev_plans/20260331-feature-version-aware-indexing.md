@@ -230,7 +230,9 @@ penalty or make mutually exclusive.
 3. **Single-version replacement** — replaces HEAD source chunks with the
    pinned version's chunks (not multi-version; avoids ~3x storage cost)
 4. **Tag validation** — `_TAG_INPUT_RE` regex validates tag format before git ops;
-   `_resolve_tag()` normalises `v` prefix and dereferences annotated tags
+   `_resolve_tag()` normalises `v` prefix and dereferences annotated tags.
+   `_resolve_tag()` resolves a literal tag only — it does not resolve `latest`;
+   that's handled separately by `_resolve_latest_tag`/`_latest_version_tag`.
 
 ## Implementation Checklist
 

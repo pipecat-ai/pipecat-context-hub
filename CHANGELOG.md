@@ -85,6 +85,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   SHA was already cached and no name-based resolve occurred to write the
   missing ref. The probe now checks the same pinned revision the download
   used. (#115)
+- **`--prune-tags` could prune a pinned `--framework-version` tag out from under
+  itself.** A pinned fetch that pruned remote tags could remove the pinned tag
+  if it had disappeared upstream between runs, leaving the pin unresolvable.
+  `--prune-tags` now only runs when resolving `latest`, not for a literal pin.
+- **A tainted ref no longer resolvable locally fell through as untainted.** A
+  ref that was deleted or pruned upstream after being marked tainted previously
+  fell through the taint check as if it were clean; it's now treated as
+  tainted, matching the function's other failure branches.
 
 ## [0.5.2] - 2026-08-09
 
