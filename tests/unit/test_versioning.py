@@ -8,6 +8,7 @@ from packaging.version import InvalidVersion, Version
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
     canonicalize_framework_pin,
+    exact_release_version,
     is_latest_sentinel,
     parse_release_version,
     strip_v_prefix,
@@ -80,3 +81,23 @@ class TestParseReleaseVersion:
 
     def test_prerelease_parses(self):
         assert parse_release_version("v2.0.0rc1").is_prerelease
+
+
+class TestExactReleaseVersion:
+    @pytest.mark.parametrize(
+        ("tag", "expected"),
+        [("v1.10.0", "1.10.0"), ("1.10.0", "1.10.0"), ("V2.0.0", "2.0.0"), ("  v1.0.0  ", "1.0.0")],
+    )
+    def test_release_tags_normalize(self, tag: str, expected: str):
+        assert exact_release_version(tag) == expected
+
+    @pytest.mark.parametrize("tag", [None, "some-feature-tag", "main", "nightly", "vv1.0.0", ""])
+    def test_non_releases_are_none(self, tag: str | None):
+        """A tag with no version identity must not be mistaken for an exact
+        release — the caller has to fall back to git-describe floor semantics."""
+        assert exact_release_version(tag) is None
+
+    def test_local_version_segment_is_not_a_bare_release(self):
+        """`v1.10.0+cu121` parses, and normalizing it keeps the local segment —
+        so it never silently reads as the plain 1.10.0 release."""
+        assert exact_release_version("v1.10.0+cu121") == "1.10.0+cu121"

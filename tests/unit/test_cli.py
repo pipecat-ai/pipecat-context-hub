@@ -1617,7 +1617,81 @@ class TestRefreshProvenanceMetadata:
             for call in mock_github.ingest.call_args_list
             if call.kwargs.get("repos") == ["pipecat-ai/pipecat"]
         ]
-        assert framework_calls[0].kwargs["framework_version"] == "v1.10.0"
+        # Already normalised to a release version by `exact_release_version`, so
+        # the chunk pin and the metadata stamp are literally the same value.
+        assert framework_calls[0].kwargs["framework_version"] == "1.10.0"
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_non_release_pin_falls_back_to_describe_for_stamp_and_chunk_pin(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Git — and this tool's tag-input validation — accept a branch-shaped tag
+        like ``some-feature-tag``. It names no release, so it must not be stamped
+        verbatim as `indexed_framework_version` with `commits_ahead="0"`: that
+        publishes a non-version against a contract that promises one, and breaks
+        every downstream `Version()` comparison (including `check_deprecation`).
+
+        Both consumers of the pin — the metadata stamp and the per-chunk
+        `pipecat_version_pin` — fall back to the unpinned paths instead.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_github.clone_or_fetch = MagicMock(
+            side_effect=lambda repo_slug, _checkout=False, tag=None: CloneResult(
+                Path("/tmp/repo"), "abc123", tag
+            )
+        )
+
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 42),
+        ) as mock_describe:
+            result = CliRunner().invoke(
+                main, ["refresh", "--framework-version", "some-feature-tag"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_describe.assert_called_once()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+
+        # The operator's pin is still recorded verbatim…
+        assert written["framework_version"] == "some-feature-tag"
+        # …but provenance comes from describe's floor, not from the tag.
+        assert written["indexed_framework_version"] == "1.6.0"
+        assert written["indexed_framework_commits_ahead"] == "42"
+
+        framework_calls = [
+            call
+            for call in mock_github.ingest.call_args_list
+            if call.kwargs.get("repos") == ["pipecat-ai/pipecat"]
+        ]
+        # None routes _ingest_repo to its existing unpinned version extraction.
+        assert framework_calls[0].kwargs["framework_version"] is None
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")

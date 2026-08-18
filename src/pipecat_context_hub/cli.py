@@ -31,7 +31,7 @@ from pipecat_context_hub.shared.paths import (
     same_dir,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
-from pipecat_context_hub.shared.versioning import canonicalize_framework_pin, strip_v_prefix
+from pipecat_context_hub.shared.versioning import canonicalize_framework_pin, exact_release_version
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
@@ -1157,9 +1157,11 @@ def refresh(
             code_result = await github.ingest(
                 repos=[repo_slug],
                 prefetched=prefetched,
-                framework_version=checked_out_framework_tag
-                if repo_slug == framework_slug
-                else None,
+                framework_version=(
+                    exact_release_version(checked_out_framework_tag)
+                    if repo_slug == framework_slug
+                    else None
+                ),
             )
             total_upserted += code_result.records_upserted
             repo_upserted += code_result.records_upserted
@@ -1310,14 +1312,18 @@ def refresh(
         # not cloned this run, so a transient clone failure keeps the last
         # known-good stamp rather than erasing it.
         if framework_checkout is not None:
-            if checked_out_framework_tag is not None:
-                # A pinned refresh already knows the verified tag its commit was
-                # resolved from (returned by `clone_or_fetch`) — trust that over
-                # `git describe`, which can pick a different tag when multiple
-                # point at the same commit.
-                metadata_to_set["indexed_framework_version"] = strip_v_prefix(
-                    checked_out_framework_tag
-                )
+            # A pinned refresh already knows the verified tag its commit was
+            # resolved from (returned by `clone_or_fetch`) — trust that over
+            # `git describe`, which can pick a different tag when multiple point
+            # at the same commit. But only a tag that *parses as a release*
+            # asserts exactness: git (and this tool's tag-input validation)
+            # accept branch-shaped tags too, and stamping one verbatim would
+            # publish a non-version as `indexed_framework_version` with
+            # `commits_ahead="0"`. Those fall through to describe's floor
+            # semantics, exactly like an unpinned refresh.
+            exact_version = exact_release_version(checked_out_framework_tag)
+            if exact_version is not None:
+                metadata_to_set["indexed_framework_version"] = exact_version
                 metadata_to_set["indexed_framework_commits_ahead"] = "0"
             else:
                 indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)

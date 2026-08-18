@@ -71,3 +71,20 @@ def parse_release_version(tag: str) -> Version:
     if stripped[:1] in ("v", "V"):
         raise InvalidVersion(f"Invalid version: {tag!r}")
     return Version(stripped)
+
+
+def exact_release_version(tag: str | None) -> str | None:
+    """The normalized release version *tag* names, or ``None`` when it is not a release.
+
+    A tag that parses as a PEP 440 release identifies the checkout exactly
+    (``commits_ahead == 0``). A tag that does not — a branch-shaped or feature
+    tag such as ``some-feature-tag``, which git accepts and this tool's tag-input
+    validation permits — carries no version identity, so callers must fall back
+    to git-describe floor semantics rather than stamping the tag verbatim.
+    """
+    if tag is None:
+        return None
+    try:
+        return str(parse_release_version(tag.strip()))
+    except InvalidVersion:
+        return None
