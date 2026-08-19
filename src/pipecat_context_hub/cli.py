@@ -1551,7 +1551,12 @@ def refresh(
             # publish a non-version as `indexed_framework_version` with
             # `commits_ahead="0"`. Those fall through to describe's floor
             # semantics, exactly like an unpinned refresh.
-            assert dep_map_commit_sha is not None
+            # nosec B101 - invariant, not a runtime check: this branch only runs
+            # when deprecation_map_published is True, which is set only after
+            # dep_map_commit_sha is assigned alongside it (see its declaration
+            # above). AssertionError would mean a caller-contract bug, not
+            # untrusted input.
+            assert dep_map_commit_sha is not None  # nosec B101
             metadata_to_set["deprecation_map_commit_sha"] = dep_map_commit_sha
 
             exact_version = exact_release_version(checked_out_framework_tag)
@@ -1559,7 +1564,12 @@ def refresh(
                 metadata_to_set["indexed_framework_version"] = exact_version
                 metadata_to_set["indexed_framework_commits_ahead"] = "0"
             else:
-                assert framework_checkout is not None
+                # nosec B101 - invariant, not a runtime check: this branch only
+                # runs when framework_provenance_ready is True, which is set
+                # only after framework_checkout is assigned a Path (see the
+                # framework_provenance_ready declaration above). AssertionError
+                # would mean a caller-contract bug, not untrusted input.
+                assert framework_checkout is not None  # nosec B101
                 indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
                 if indexed_version is not None and commits_ahead is not None:
                     metadata_to_set["indexed_framework_version"] = indexed_version
