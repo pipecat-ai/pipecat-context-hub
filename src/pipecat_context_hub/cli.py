@@ -968,10 +968,22 @@ def refresh(
     # the summary pass.
     unpruned_repo_count = 0
 
+    # True when the framework repo's records were actually deleted and
+    # re-ingested (successfully) *this run* — i.e. `framework_slug` is both
+    # in `changed_repos` (SHA moved, so a delete+ingest was attempted) and in
+    # `ingested_repos` (that ingest completed error-free). Distinct from
+    # `framework_provenance_ready`, which is also True when the framework
+    # repo simply didn't change this run (records untouched, old stamp still
+    # correct). Read after `_run_refresh` returns to decide whether a failed
+    # deprecation-map build/save this run left the provenance stamp
+    # describing stale (pre-replacement) records rather than merely an
+    # unpublished-but-still-accurate one.
+    framework_records_replaced_this_run = False
+
     async def _run_refresh() -> None:
         nonlocal total_upserted, all_errors, framework_checkout, framework_provenance_ready
         nonlocal unpruned_repo_count, checked_out_framework_tag, deprecation_map_published
-        nonlocal dep_map_commit_sha
+        nonlocal dep_map_commit_sha, framework_records_replaced_this_run
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -1395,6 +1407,9 @@ def refresh(
         ):
             framework_provenance_ready = True
             framework_checkout = prefetched[framework_slug][0]
+            framework_records_replaced_this_run = (
+                framework_slug in changed_repos and framework_slug in ingested_repos
+            )
 
         # Store SHAs: unchanged repos (handles first-run) + successfully ingested repos.
         # For failed repos: delete the cached SHA so the next non-force refresh
@@ -1536,6 +1551,18 @@ def refresh(
                 else:
                     metadata_to_delete.append("indexed_framework_version")
                     metadata_to_delete.append("indexed_framework_commits_ahead")
+        elif framework_records_replaced_this_run:
+            # The framework repo's records were deleted and re-ingested this
+            # run, but the deprecation-map build/save failed (else
+            # `deprecation_map_published` would be True) — the *old* stamp on
+            # disk still matches the *old* (preserved) map, but both are now
+            # stale relative to the NEW records the index actually holds.
+            # Clear them so `resolve_framework_version` falls back to
+            # intrinsic status instead of confidently reporting a version the
+            # newly-indexed records may no longer match.
+            metadata_to_delete.append("indexed_framework_version")
+            metadata_to_delete.append("indexed_framework_commits_ahead")
+            metadata_to_delete.append("deprecation_map_commit_sha")
 
         metadata_to_set["last_refresh_at"] = now
         if all_errors:

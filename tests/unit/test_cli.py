@@ -3029,6 +3029,197 @@ class TestRefreshRecordReplacementGate:
         assert "unreadable" in caplog.text.lower()
 
 
+class TestFinding1StaleStampClearedAfterFailedMapPublish(TestRefreshRecordReplacementGate):
+    """Round 11 Finding #1: when the framework repo's records WERE replaced
+    this run (delete + successful re-ingest) but the deprecation-map
+    build/save then fails, the *old* `indexed_framework_version` /
+    `indexed_framework_commits_ahead` / `deprecation_map_commit_sha` stamp
+    describes a revision the index no longer holds (it was just replaced),
+    even though it still matches the untouched on-disk map byte-for-byte.
+    The stamp must be cleared so `resolve_framework_version` falls back to
+    `None` (intrinsic status) rather than confidently reporting a stale
+    exact version.
+
+    Contrast with the SHA-unchanged case: there, records were never touched
+    this run, so the old stamp is still completely accurate and must be left
+    alone even though the same map-save failure was injected.
+    """
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_records_replaced_and_map_save_fails_clears_stale_stamp(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        from pipecat_context_hub.server.tools.check_deprecation import resolve_framework_version
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        mock_store, _mock_github, _checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.6.0", 0),
+            ),
+            patch.object(DeprecationMap, "save", side_effect=OSError("disk full")),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        # Old map untouched — save() never completed.
+        assert dep_map_path.read_bytes() == prior_bytes
+
+        batch_call = mock_store.set_metadata_batch.call_args
+        delete_keys = set(batch_call.kwargs["delete_keys"])
+        assert "indexed_framework_version" in delete_keys
+        assert "indexed_framework_commits_ahead" in delete_keys
+        assert "deprecation_map_commit_sha" in delete_keys
+
+        # Simulate the deletion applied to the store's metadata, then confirm
+        # the reader-facing contract: no confident exact-version answer.
+        remaining_metadata = {
+            "indexed_framework_version": "1.5.0",
+            "indexed_framework_commits_ahead": "0",
+            "deprecation_map_commit_sha": "old-framework-sha",
+        }
+        for key in delete_keys:
+            remaining_metadata.pop(key, None)
+        fake_store = MagicMock()
+        fake_store.get_all_metadata = MagicMock(return_value=remaining_metadata)
+        assert resolve_framework_version(fake_store) is None
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_records_unchanged_and_map_save_fails_preserves_old_stamp(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Legitimate skip path: the framework repo's SHA did not change this
+        run, so its records were never replaced. The same injected map-save
+        failure must NOT punish this case — the old stamp is still exactly
+        accurate and must survive untouched.
+        """
+        from pipecat_context_hub.server.tools.check_deprecation import resolve_framework_version
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        # Build a harness identical to `_harness` but with the framework repo
+        # reporting the SAME sha as already stored, so it never lands in
+        # `changed_repos`.
+        mock_si_cls_, mock_gh_cls_, mock_dc_cls_, mock_is_cls_, mock_ref_tainted_ = (
+            mock_si_cls,
+            mock_gh_cls,
+            mock_dc_cls,
+            mock_is_cls,
+            mock_ref_tainted,
+        )
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls_.return_value = mock_store
+        mock_dc_cls_.return_value = mock_crawler
+        mock_gh_cls_.return_value = mock_github
+        mock_si_cls_.return_value = mock_source
+        mock_ref_tainted_.return_value = False
+
+        framework_checkout = tmp_path / "fw-checkout"
+        framework_checkout.mkdir()
+        self._write_registry(framework_checkout, "SameOnlySymbol")
+
+        def _clone_side_effect(repo_slug, _checkout=False, tag=None):
+            if repo_slug == self.FRAMEWORK_SLUG:
+                return CloneResult(framework_checkout, "same-framework-sha", tag)
+            return CloneResult(tmp_path / repo_slug.replace("/", "_"), "abc123", tag)
+
+        mock_github.clone_or_fetch.side_effect = _clone_side_effect
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        meta = {
+            "docs:content_hash": hashlib.sha256(content.encode()).hexdigest(),
+            **_sha_metadata("abc123"),
+            f"repo:{self.FRAMEWORK_SLUG}:commit_sha": "same-framework-sha",
+            "indexed_framework_version": "1.5.0",
+            "indexed_framework_commits_ahead": "0",
+            "deprecation_map_commit_sha": "same-framework-sha",
+        }
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        dep_map_path = self._prior_map(data_dir)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+
+        prior_bytes = dep_map_path.read_bytes()
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.5.0", 0),
+            ),
+            patch.object(DeprecationMap, "save", side_effect=OSError("disk full")),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert dep_map_path.read_bytes() == prior_bytes
+
+        written = self._written(mock_store)
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+        assert "deprecation_map_commit_sha" not in written
+
+        batch_call = mock_store.set_metadata_batch.call_args
+        delete_keys = set(batch_call.kwargs["delete_keys"]) if batch_call else set()
+        assert "indexed_framework_version" not in delete_keys
+        assert "indexed_framework_commits_ahead" not in delete_keys
+        assert "deprecation_map_commit_sha" not in delete_keys
+
+        # The old stamp (unaffected by this run) must still resolve exactly.
+        fake_store = MagicMock()
+        fake_store.get_all_metadata = MagicMock(
+            return_value={
+                "indexed_framework_version": "1.5.0",
+                "indexed_framework_commits_ahead": "0",
+            }
+        )
+        assert resolve_framework_version(fake_store) == "1.5.0"
+
+
 class TestPruneEnabledValues:
     """`_OPT_IN_ENABLED_VALUES` frozenset exactness and `_prune_enabled()`
     env-var parsing (dev plan docs/dev_plans/20260807-feature-global-config-toml.md,
