@@ -6,18 +6,56 @@ from typing import Any
 
 from pipecat_context_hub.services.ingest.deprecation_map import status_for
 from pipecat_context_hub.shared.types import CheckDeprecationInput, CheckDeprecationOutput
+from pipecat_context_hub.shared.versioning import is_latest_sentinel
 
 
-def resolve_framework_version(index_store: Any) -> str | None:
+def resolve_framework_version(index_store: Any, deprecation_map: Any = None) -> str | None:
     """The indexed pipecat version, the default ``version`` for ``check_deprecation``.
 
     Shared by the MCP server and the one-shot CLI so both resolve the default the
-    same way. Returns ``None`` when no index is open or the version is unset.
+    same way. Uses ``indexed_framework_version`` only when
+    ``indexed_framework_commits_ahead`` is exactly zero: an unpinned default-branch
+    refresh records the nearest release as a floor, not the exact version of the
+    indexed code. For a floor (or incomplete provenance), returning ``None`` lets
+    the deprecation handler preserve the registry entry's intrinsic status instead
+    of evaluating it against a potentially older release. Falls back to
+    ``framework_version`` only when no indexed revision is recorded — and never
+    to the ``latest`` sentinel, which metadata contract v2 permits that key to
+    hold: it is a pin, not a version, so it names no release to evaluate against.
+
+    When ``deprecation_map`` is supplied, also cross-checks the metadata's
+    ``deprecation_map_commit_sha`` stamp against the map's own
+    ``pipecat_commit_sha``. A refresh crash between publishing the deprecation
+    map and writing the provenance metadata can leave the two describing
+    different revisions; when that divergence is detectable, this falls back to
+    ``None`` rather than asserting version-exactness against a map that may not
+    match. Missing/None on either side skips the check (fail open, matching the
+    existing tolerance for missing provenance elsewhere).
     """
     if index_store is None:
         return None
-    version = index_store.get_all_metadata().get("framework_version")
-    return version if version is None else str(version)
+    metadata = index_store.get_all_metadata()
+    indexed = metadata.get("indexed_framework_version")
+    if indexed is not None:
+        try:
+            commits_ahead = int(str(metadata.get("indexed_framework_commits_ahead")))
+        except (TypeError, ValueError):
+            commits_ahead = None
+        if commits_ahead == 0:
+            stamped_sha = metadata.get("deprecation_map_commit_sha")
+            loaded_sha = getattr(deprecation_map, "pipecat_commit_sha", None) or None
+            if stamped_sha and loaded_sha and stamped_sha != loaded_sha:
+                # The on-disk map and the indexed-version stamp were committed
+                # in different runs (crash/failure between the two writes) —
+                # don't assert version-exactness against a map that may not
+                # match. Callers fall back to the entry's intrinsic status.
+                return None
+            return str(indexed)
+        return None
+    version = metadata.get("framework_version")
+    if version is None or is_latest_sentinel(str(version)):
+        return None
+    return str(version)
 
 
 async def handle_check_deprecation(

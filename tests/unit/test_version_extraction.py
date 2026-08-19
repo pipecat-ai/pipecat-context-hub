@@ -263,8 +263,14 @@ class TestDescribeFrameworkCheckout:
             assert describe_framework_checkout(tmp_path) == ("1.5.0", 80)
 
     def test_hyphenated_tag_survives_split(self, tmp_path: Path) -> None:
+        # The tag itself contains a hyphen (prerelease suffix); rsplit from the
+        # right must still isolate it correctly rather than mis-splitting on
+        # the tag's own hyphen. The returned version is PEP 440 canonical
+        # (exact_release_version's output), which drops the hyphen before a
+        # prerelease segment — that's the same normalization the pinned-tag
+        # provenance path already applies, so both producers agree.
         with self._patched("v1.0.0-rc1-12-gdeadbee"):
-            assert describe_framework_checkout(tmp_path) == ("1.0.0-rc1", 12)
+            assert describe_framework_checkout(tmp_path) == ("1.0.0rc1", 12)
 
     def test_no_tags_returns_none_silently(self, tmp_path: Path, caplog) -> None:
         from git.exc import GitCommandError
@@ -284,6 +290,18 @@ class TestDescribeFrameworkCheckout:
     def test_unparseable_describe_returns_none(self, tmp_path: Path) -> None:
         # Guards against a git that renders --long differently than expected.
         with self._patched("v1.5.0"):
+            assert describe_framework_checkout(tmp_path) == (None, None)
+
+    def test_non_release_nearest_tag_returns_none(self, tmp_path: Path) -> None:
+        """Regression (Round 3 Finding #4/#5): a nearest tag that `git describe`
+        happily nominates but that does not parse as a PEP 440 release (a
+        branch-shaped or feature tag, e.g. ``some-feature-tag``) must not be
+        trusted as provenance. Before the fix this returned
+        ``("some-feature-tag", 12)`` verbatim; after the fix it must return
+        ``(None, None)``, matching the git-describe floor semantics used
+        elsewhere in this module for an undescribable checkout.
+        """
+        with self._patched("some-feature-tag-12-gdeadbee"):
             assert describe_framework_checkout(tmp_path) == (None, None)
 
 

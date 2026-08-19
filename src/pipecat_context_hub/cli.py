@@ -31,6 +31,7 @@ from pipecat_context_hub.shared.paths import (
     same_dir,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
+from pipecat_context_hub.shared.versioning import canonicalize_framework_pin, exact_release_version
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
@@ -287,23 +288,70 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             )
 
 
-async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> None:
+async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> bool:
     """Remove every trace of ``slug`` from the index: records + bookkeeping.
 
-    Shared by both deletion branches of ``refresh``'s cleanup pass (tainted
-    repo, and ``--prune``-authorized removal of an unconfigured one) so the
+    Shared by every deletion site in ``refresh``'s cleanup pass — tainted
+    repo, ``--prune``-authorized removal of an unconfigured one, and a
+    tainted ref whose already-*indexed* ref is also tainted — so the
     sequence — including the framework-repo special case, whose version
     metadata describes records that no longer exist once the repo is gone —
     cannot drift between them.
+
+    Best-effort: ``IndexStore.delete_by_repo`` can now raise on an FTS-layer
+    failure (round-5 gauntlet fix). This is a cleanup pass, not core
+    ingestion, so a failure here is logged and swallowed rather than crashing
+    the whole refresh. The repo's stale data may persist for another run;
+    that is strictly better than aborting an otherwise-successful refresh
+    over cleanup of an already-unwanted repo. Every caller reports a
+    ``False`` return through ``all_errors`` so the failure is visible in the
+    refresh summary, not just a log line.
+
+    Returns ``True`` on success, ``False`` if the delete failed (metadata is
+    left untouched in that case) — callers use this to surface the failure
+    through the refresh summary rather than only a log line.
     """
     from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
-    await index_store.delete_by_repo(slug)
-    index_store.delete_metadata(meta_key)
-    if slug == _FRAMEWORK_REPO:
-        # No framework records left to describe.
-        index_store.delete_metadata("indexed_framework_version")
-        index_store.delete_metadata("indexed_framework_commits_ahead")
+    try:
+        await index_store.delete_by_repo(slug)
+    except Exception:
+        _module_logger.exception(
+            "Failed to delete index data for %s during cleanup; its stale "
+            "records may persist until a future refresh retries the cleanup",
+            slug,
+        )
+        # Flag the failure so a later refresh's unchanged-skip shortcut can't
+        # trust `indexed_records > 0` alone: that count is FTS-side, and a
+        # partial delete (vector delete succeeds, FTS delete raises) can
+        # leave stale FTS rows behind that would otherwise make the vector
+        # store's now-empty state for this repo look healthy indefinitely.
+        # Cleared once the repo is fully re-ingested (see the refresh loop's
+        # success path).
+        try:
+            index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
+        except Exception:
+            _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
+        return False
+    try:
+        index_store.delete_metadata(meta_key)
+        if slug == _FRAMEWORK_REPO:
+            # No framework records left to describe.
+            index_store.delete_metadata("indexed_framework_version")
+            index_store.delete_metadata("indexed_framework_commits_ahead")
+    except Exception:
+        _module_logger.exception(
+            "Failed to clear bookkeeping metadata for %s after a successful "
+            "index delete; its stale metadata keys may persist until a "
+            "future refresh retries the cleanup",
+            slug,
+        )
+        try:
+            index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
+        except Exception:
+            _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
+        return False
+    return True
 
 
 def _log_serve_cwd() -> None:
@@ -771,8 +819,9 @@ def start(ctx: click.Context) -> None:
     "--framework-version",
     default=None,
     help="Pin the framework repo (pipecat-ai/pipecat) to a specific git tag "
-    "(e.g. 'v0.0.96'). Source chunks will come from that version instead of HEAD. "
-    "Can also be set via PIPECAT_HUB_FRAMEWORK_VERSION env var.",
+    "(e.g. 'v0.0.96'), or 'latest' for its newest release tag. Source chunks "
+    "will come from that version instead of HEAD. Can also be set via "
+    "PIPECAT_HUB_FRAMEWORK_VERSION env var.",
 )
 @click.option(
     "--prune",
@@ -881,14 +930,63 @@ def refresh(
     # pass below can record which pipecat revision the index reflects. None when
     # the framework repo was not cloned (unconfigured, tainted, or clone failed).
     framework_checkout: Path | None = None
+    # True only once the framework checkout's records are known-coherent with
+    # the index (error-free ingest, per the `ingested_repos` gate) — a
+    # separate bool from `framework_checkout` being non-None so a type
+    # checker can't mistake "we have a path" for "that path's provenance is
+    # safe to stamp"; the two conditions differ exactly in the partial-ingest
+    # case this gate exists to guard against.
+    framework_provenance_ready = False
+
+    # True only once the deprecation map derived from this run's framework
+    # checkout has actually been written to disk (`dep_map.save()` returned
+    # without raising). Separate from `framework_provenance_ready`: that flag
+    # says the framework *records* are coherent with the index, but building
+    # or saving the deprecation map is a further step that can independently
+    # fail (corrupt/malformed registry, disk/permission error on save). The
+    # provenance stamp below must describe the same revision as the published
+    # map, so it is gated on this flag rather than reused from the records
+    # gate.
+    deprecation_map_published = False
+
+    # The framework commit SHA whose registry produced the deprecation map
+    # just published (set alongside `deprecation_map_published = True`, from
+    # the same `fw_sha` used to build it). Stamped into metadata below so a
+    # reader can detect map/provenance divergence — a crash between the map
+    # write and the metadata write would otherwise leave a stale
+    # `indexed_framework_version` describing a checkout the on-disk map
+    # doesn't match.
+    dep_map_commit_sha: str | None = None
+
+    # The tag of the commit actually checked out for a pinned framework
+    # refresh, as returned (and origin-verified) by `clone_or_fetch` itself —
+    # not re-derived afterwards, so the tag and the commit can never come from
+    # two different resolutions. Both chunk metadata and the metadata pass below
+    # read it, so they share one release identity. None for an unpinned
+    # default-branch refresh or a failed clone.
+    checked_out_framework_tag: str | None = None
 
     # Count of repos left un-pruned this run (not configured here, but not
     # deleted because --prune/PIPECAT_HUB_PRUNE wasn't set). Read later by
     # the summary pass.
     unpruned_repo_count = 0
 
+    # True when the framework repo's records were actually deleted and
+    # re-ingested (successfully) *this run* — i.e. `framework_slug` is both
+    # in `changed_repos` (SHA moved, so a delete+ingest was attempted) and in
+    # `ingested_repos` (that ingest completed error-free). Distinct from
+    # `framework_provenance_ready`, which is also True when the framework
+    # repo simply didn't change this run (records untouched, old stamp still
+    # correct). Read after `_run_refresh` returns to decide whether a failed
+    # deprecation-map build/save this run left the provenance stamp
+    # describing stale (pre-replacement) records rather than merely an
+    # unpublished-but-still-accurate one.
+    framework_records_replaced_this_run = False
+
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, framework_checkout, unpruned_repo_count
+        nonlocal total_upserted, all_errors, framework_checkout, framework_provenance_ready
+        nonlocal unpruned_repo_count, checked_out_framework_tag, deprecation_map_published
+        nonlocal dep_map_commit_sha, framework_records_replaced_this_run
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -920,23 +1018,60 @@ def refresh(
                     "updated": _MISSING_SENTINEL,
                 }
             else:
-                await index_store.delete_by_content_type("doc")
-                docs_result = await crawler.ingest(prefetched_text=raw_text)
-                total_upserted += docs_result.records_upserted
-                all_errors.extend(docs_result.errors)
-                logger.info(
-                    "Docs crawl: upserted=%d errors=%d",
-                    docs_result.records_upserted,
-                    len(docs_result.errors),
-                )
-                if not docs_result.errors:
-                    index_store.set_metadata("docs:content_hash", content_hash)
-                source_status[docs_key] = {
-                    "status": "error" if docs_result.errors else "updated",
-                    "sha": _MISSING_SENTINEL,
-                    "existing": pre_counts.get(docs_key, 0),
-                    "updated": docs_result.records_upserted,
-                }
+                try:
+                    await index_store.delete_by_content_type("doc")
+                except Exception as exc:
+                    # IndexStore.delete_by_content_type can now raise on an
+                    # FTS-layer failure (round-5 gauntlet fix). Record it the
+                    # same way every other ingest-step failure in this
+                    # function is recorded, rather than letting it crash the
+                    # whole refresh.
+                    all_errors.append(f"Failed to delete stale docs records: {exc}")
+                    # Vector-side delete already ran before the FTS side
+                    # raised, so docs records have diverged from whatever
+                    # `docs:content_hash` still describes. Clear the stamp so
+                    # a future refresh — forced or not — can never take the
+                    # "docs unchanged, skip" shortcut on this stale hash; it
+                    # will retry the delete+ingest instead.
+                    #
+                    # This call is itself best-effort: if the same underlying
+                    # storage fault that broke `delete_by_content_type` also
+                    # breaks `delete_metadata` (e.g. a disk/lock issue
+                    # affecting the whole SQLite file), don't let it propagate
+                    # unhandled and abort the whole refresh — that would
+                    # reproduce exactly the permanent-skip bug this clear is
+                    # meant to close, just one layer deeper. Log and record
+                    # the failure in `all_errors`, then fall through to the
+                    # same "error" status as the primary failure.
+                    try:
+                        index_store.delete_metadata("docs:content_hash")
+                    except Exception as meta_exc:
+                        meta_msg = f"Failed to clear stale docs:content_hash stamp: {meta_exc}"
+                        all_errors.append(meta_msg)
+                        logger.warning(meta_msg)
+                    source_status[docs_key] = {
+                        "status": "error",
+                        "sha": _MISSING_SENTINEL,
+                        "existing": pre_counts.get(docs_key, 0),
+                        "updated": _MISSING_SENTINEL,
+                    }
+                else:
+                    docs_result = await crawler.ingest(prefetched_text=raw_text)
+                    total_upserted += docs_result.records_upserted
+                    all_errors.extend(docs_result.errors)
+                    logger.info(
+                        "Docs crawl: upserted=%d errors=%d",
+                        docs_result.records_upserted,
+                        len(docs_result.errors),
+                    )
+                    if not docs_result.errors:
+                        index_store.set_metadata("docs:content_hash", content_hash)
+                    source_status[docs_key] = {
+                        "status": "error" if docs_result.errors else "updated",
+                        "sha": _MISSING_SENTINEL,
+                        "existing": pre_counts.get(docs_key, 0),
+                        "updated": docs_result.records_upserted,
+                    }
         await crawler.close()
 
         # ----- 2. Repos (code + source) -----
@@ -958,10 +1093,18 @@ def refresh(
                         # Explicit exclusion — always cleaned up, regardless
                         # of --prune.
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
-                        await _delete_repo_index_data(index_store, slug, meta_key)
+                        if not await _delete_repo_index_data(index_store, slug, meta_key):
+                            all_errors.append(
+                                f"Failed to clean up tainted repo {slug}; its stale index "
+                                "records may persist until a future refresh retries the cleanup"
+                            )
                     elif prune_enabled:
                         logger.info("Repo %s no longer configured, cleaning up", slug)
-                        await _delete_repo_index_data(index_store, slug, meta_key)
+                        if not await _delete_repo_index_data(index_store, slug, meta_key):
+                            all_errors.append(
+                                f"Failed to prune unconfigured repo {slug}; its stale index "
+                                "records may persist until a future refresh retries the cleanup"
+                            )
                     elif pre_counts.get(slug, 0) > 0:
                         # Implicit absence — not seen from this invocation's
                         # env layering, but not necessarily unconfigured
@@ -1008,9 +1151,13 @@ def refresh(
             # Pin the framework repo to a specific tag when configured.
             repo_tag = fw_version if repo_slug == framework_slug and fw_version else None
             try:
-                repo_path, commit_sha = await asyncio.to_thread(
+                clone = await asyncio.to_thread(
                     github.clone_or_fetch, repo_slug, False, tag=repo_tag
                 )
+                repo_path, commit_sha = clone.path, clone.commit_sha
+                if repo_slug == framework_slug:
+                    # Already concrete for both a `latest` pin and a literal one.
+                    checked_out_framework_tag = clone.resolved_tag
                 repo_shas[repo_slug] = commit_sha
                 prefetched[repo_slug] = (repo_path, commit_sha)
             except Exception as exc:
@@ -1036,13 +1183,17 @@ def refresh(
                         "Indexed ref for %s is also tainted; removing local records",
                         repo_slug,
                     )
-                    await index_store.delete_by_repo(repo_slug)
-                    index_store.delete_metadata(stored_sha_key)
-                    if repo_slug == framework_slug:
-                        # Framework records are gone, so any recorded provenance
-                        # would describe content the index no longer holds.
-                        index_store.delete_metadata("indexed_framework_version")
-                        index_store.delete_metadata("indexed_framework_commits_ahead")
+                    if not await _delete_repo_index_data(index_store, repo_slug, stored_sha_key):
+                        # `_delete_repo_index_data` already logs the exception and
+                        # leaves `stored_sha_key` (and, for the framework repo,
+                        # its provenance keys) untouched — a future refresh still
+                        # knows this repo's tainted records may still be sitting
+                        # in the index. Record it here too so the failure is
+                        # visible in the refresh summary, not just a log line.
+                        all_errors.append(
+                            f"Failed to purge records for tainted ref {repo_slug}; its stale "
+                            "records may persist until a future refresh retries the cleanup"
+                        )
                     source_status[repo_slug] = {
                         "status": "tainted",
                         "sha": commit_sha[:8],
@@ -1073,11 +1224,21 @@ def refresh(
             # thought to run `--force`. So the shortcut requires both halves:
             # the SHA is unchanged *and* records for it actually exist.
             indexed_records = pre_counts.get(repo_slug, 0)
+            # A prior cleanup failure for this repo (`_delete_repo_index_data`
+            # raising) leaves stale FTS rows behind even though the vector
+            # store may already be empty for it — `indexed_records` alone
+            # can't tell those apart from a healthy repo. Don't take the
+            # unchanged-skip shortcut while that flag is set; force a
+            # re-ingest instead, which clears it on success below.
+            cleanup_failed = (
+                index_store.get_metadata(f"repo:{repo_slug}:cleanup_failed") is not None
+            )
             if (
                 not force
                 and stored_sha == commit_sha
                 and indexed_records > 0
                 and repo_slug not in github.recovered_repos
+                and not cleanup_failed
             ):
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
@@ -1104,6 +1265,13 @@ def refresh(
                         repo_slug,
                         commit_sha[:8],
                     )
+                elif not force and stored_sha == commit_sha and cleanup_failed:
+                    logger.warning(
+                        "Repo %s SHA unchanged (sha=%s…) but a prior cleanup "
+                        "failed — re-ingesting to reconcile the index",
+                        repo_slug,
+                        commit_sha[:8],
+                    )
                 changed_repos.append(repo_slug)
 
         # Delete and re-ingest each changed repo atomically to minimise
@@ -1125,7 +1293,32 @@ def refresh(
                 }
                 continue
 
-            await index_store.delete_by_repo(repo_slug)
+            try:
+                await index_store.delete_by_repo(repo_slug)
+            except Exception as exc:
+                msg = f"Failed to delete stale records for {repo_slug}: {exc}"
+                all_errors.append(msg)
+                logger.error(msg)
+                # Defense-in-depth / consistency with the sibling
+                # `_delete_repo_index_data` failure paths, which set this
+                # marker on any delete failure. Not load-bearing here: this
+                # `continue` skips `ingested_repos.add()` below, and the
+                # SHA-bookkeeping loop further down already deletes this
+                # repo's stored commit_sha on any failure path (forcing a
+                # retry next non-force refresh) independent of this marker.
+                try:
+                    index_store.set_metadata(f"repo:{repo_slug}:cleanup_failed", "1")
+                except Exception:
+                    logger.exception(
+                        "Also failed to record cleanup_failed marker for %s", repo_slug
+                    )
+                source_status[repo_slug] = {
+                    "status": "error",
+                    "sha": commit_sha[:8],
+                    "existing": pre_counts.get(repo_slug, 0),
+                    "updated": _MISSING_SENTINEL,
+                }
+                continue
             logger.info("Deleted stale records for %s", repo_slug)
 
             repo_has_errors = False
@@ -1135,6 +1328,11 @@ def refresh(
             code_result = await github.ingest(
                 repos=[repo_slug],
                 prefetched=prefetched,
+                framework_checkout_version=(
+                    exact_release_version(checked_out_framework_tag)
+                    if repo_slug == framework_slug
+                    else None
+                ),
             )
             total_upserted += code_result.records_upserted
             repo_upserted += code_result.records_upserted
@@ -1164,6 +1362,37 @@ def refresh(
                     len(source_result.errors),
                 )
 
+            # If ingest errored partway through, this repo's old records were
+            # already deleted above and the new ingest is incomplete — leaving
+            # the partial new records in place would silently mix stale-empty
+            # state with a partial re-index. Purge them so the repo ends the
+            # run with zero records rather than a misleading partial count;
+            # `ingested_repos`/`framework_provenance_ready` gating already
+            # correctly withholds itself on `repo_has_errors`, independent of
+            # this record-level cleanup.
+            if repo_has_errors:
+                try:
+                    await index_store.delete_by_repo(repo_slug)
+                except Exception:
+                    logger.exception(
+                        "Failed to purge partial records for %s after ingest errors",
+                        repo_slug,
+                    )
+                else:
+                    logger.warning(
+                        "Ingest for %s failed partway through; purged "
+                        "partial records — a retry (refresh) is required to "
+                        "fully re-index it",
+                        repo_slug,
+                    )
+
+            if not repo_has_errors:
+                # Repo fully re-ingested — any earlier cleanup-failure flag
+                # for it is now moot: the index is coherent again, so the
+                # unchanged-skip shortcut can trust `indexed_records` for it
+                # on future runs.
+                index_store.delete_metadata(f"repo:{repo_slug}:cleanup_failed")
+
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",
                 "sha": repo_shas.get(repo_slug, _MISSING_SENTINEL)[:8],
@@ -1174,19 +1403,29 @@ def refresh(
             if not repo_has_errors:
                 ingested_repos.add(repo_slug)
 
-        # Excludes a tainted framework repo: `prefetched` is populated as soon as
-        # the clone succeeds, before the taint check, but a tainted ref is never
-        # ingested — stamping its version would describe content the index does
-        # not hold. Also excludes a framework repo that was in `changed_repos`
-        # but failed to ingest this run: stamping it would describe content
-        # that was never successfully indexed, so the prior stamp (if any) is
-        # left untouched instead.
+        # Gated on error-free ingest (`ingested_repos`), not merely on record
+        # *replacement*. `delete_by_repo` running is not enough on its own: a
+        # framework ingest that errors out (e.g. `records_upserted=0` after the
+        # delete) leaves the index in a state that does not correspond to any
+        # coherent revision, so neither the deprecation map nor the provenance
+        # stamp should follow it. A framework repo whose `checkout_commit`
+        # failed never reached the delete, so its records still describe the
+        # old revision and are left alone either way.
+        #
+        # Also excludes a tainted framework repo: `prefetched` is populated as
+        # soon as the clone succeeds, before the taint check, but a tainted ref
+        # is never ingested — stamping its version would describe content the
+        # index does not hold.
         if (
             framework_slug in prefetched
             and framework_slug not in frozen_sha_repos
             and (framework_slug not in changed_repos or framework_slug in ingested_repos)
         ):
+            framework_provenance_ready = True
             framework_checkout = prefetched[framework_slug][0]
+            framework_records_replaced_this_run = (
+                framework_slug in changed_repos and framework_slug in ingested_repos
+            )
 
         # Store SHAs: unchanged repos (handles first-run) + successfully ingested repos.
         # For failed repos: delete the cached SHA so the next non-force refresh
@@ -1214,13 +1453,36 @@ def refresh(
 
         dep_map_path = config.storage.data_dir / "deprecation_map.json"
 
-        if framework_slug in prefetched and framework_slug not in frozen_sha_repos:
+        # Reuse the same record-replacement gate as framework provenance below,
+        # so the map and the stamp can never describe different revisions.
+        # `prefetched` is populated immediately after clone/fetch, so it can
+        # contain a new checkout whose records were never swapped in (tainted
+        # ref, or a failed checkout); publishing its registry would then pair a
+        # new deprecation map with old indexed framework records.
+        if framework_provenance_ready:
             fw_path, fw_sha = prefetched[framework_slug]
             registry_path = fw_path / REGISTRY_RELATIVE_PATH
-            dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)
-            # Merge removed symbols (no-op until pipecat ships removals.json).
-            add_removals_from_registry(dep_map, fw_path / REMOVALS_RELATIVE_PATH)
-            dep_map.save(dep_map_path)
+            try:
+                dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)
+                # Merge removed symbols (no-op until pipecat ships removals.json).
+                add_removals_from_registry(dep_map, fw_path / REMOVALS_RELATIVE_PATH)
+                dep_map.save(dep_map_path)
+            except Exception as exc:
+                # Either the registry was present-but-unreadable/malformed
+                # (corrupt/truncated JSON, I/O error, structurally invalid
+                # shape) or the save itself failed (disk/permission). Both
+                # leave `deprecation_map_published` False, so the provenance
+                # stamp below — gated on that flag, not on
+                # `framework_provenance_ready` alone — is not advanced to
+                # describe a checkout the on-disk map doesn't match. Do NOT
+                # publish here — an empty/partial map would silently overwrite
+                # (and thus hide) a previously-good deprecation map.
+                msg = f"Deprecation registry unreadable or map unsaveable at {registry_path}; preserving existing map: {exc}"
+                all_errors.append(msg)
+                logger.warning(msg)
+            else:
+                deprecation_map_published = True
+                dep_map_commit_sha = fw_sha
         else:
             logger.debug(
                 "Framework repo %s not cloned or tainted — preserving existing deprecation map",
@@ -1259,8 +1521,11 @@ def refresh(
         metadata_to_set["content_type_counts"] = json.dumps(stats["counts_by_type"])
 
         # Persist pinned framework version (or clear it) for get_hub_status.
+        # Normalize the `latest` sentinel's case/whitespace so a pin like
+        # " Latest " is recorded as the canonical "latest", matching what
+        # `is_latest_sentinel` accepts everywhere else.
         if fw_version:
-            metadata_to_set["framework_version"] = fw_version
+            metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
         else:
             metadata_to_delete.append("framework_version")
 
@@ -1271,11 +1536,59 @@ def refresh(
         # project builds against. Left untouched when the framework repo was
         # not cloned this run, so a transient clone failure keeps the last
         # known-good stamp rather than erasing it.
-        if framework_checkout is not None:
-            indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
-            if indexed_version is not None and commits_ahead is not None:
-                metadata_to_set["indexed_framework_version"] = indexed_version
-                metadata_to_set["indexed_framework_commits_ahead"] = str(commits_ahead)
+        if deprecation_map_published:
+            # Gated on the deprecation map having actually been published
+            # (not just `framework_provenance_ready`) so the stamp and the
+            # on-disk map always describe the same revision — see the
+            # `deprecation_map_published` declaration above.
+            #
+            # A pinned refresh already knows the verified tag its commit was
+            # resolved from (returned by `clone_or_fetch`) — trust that over
+            # `git describe`, which can pick a different tag when multiple point
+            # at the same commit. But only a tag that *parses as a release*
+            # asserts exactness: git (and this tool's tag-input validation)
+            # accept branch-shaped tags too, and stamping one verbatim would
+            # publish a non-version as `indexed_framework_version` with
+            # `commits_ahead="0"`. Those fall through to describe's floor
+            # semantics, exactly like an unpinned refresh.
+            # nosec B101 - invariant, not a runtime check: this branch only runs
+            # when deprecation_map_published is True, which is set only after
+            # dep_map_commit_sha is assigned alongside it (see its declaration
+            # above). AssertionError would mean a caller-contract bug, not
+            # untrusted input.
+            assert dep_map_commit_sha is not None  # nosec B101
+            metadata_to_set["deprecation_map_commit_sha"] = dep_map_commit_sha
+
+            exact_version = exact_release_version(checked_out_framework_tag)
+            if exact_version is not None:
+                metadata_to_set["indexed_framework_version"] = exact_version
+                metadata_to_set["indexed_framework_commits_ahead"] = "0"
+            else:
+                # nosec B101 - invariant, not a runtime check: this branch only
+                # runs when framework_provenance_ready is True, which is set
+                # only after framework_checkout is assigned a Path (see the
+                # framework_provenance_ready declaration above). AssertionError
+                # would mean a caller-contract bug, not untrusted input.
+                assert framework_checkout is not None  # nosec B101
+                indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
+                if indexed_version is not None and commits_ahead is not None:
+                    metadata_to_set["indexed_framework_version"] = indexed_version
+                    metadata_to_set["indexed_framework_commits_ahead"] = str(commits_ahead)
+                else:
+                    metadata_to_delete.append("indexed_framework_version")
+                    metadata_to_delete.append("indexed_framework_commits_ahead")
+        elif framework_records_replaced_this_run:
+            # The framework repo's records were deleted and re-ingested this
+            # run, but the deprecation-map build/save failed (else
+            # `deprecation_map_published` would be True) — the *old* stamp on
+            # disk still matches the *old* (preserved) map, but both are now
+            # stale relative to the NEW records the index actually holds.
+            # Clear them so `resolve_framework_version` falls back to
+            # intrinsic status instead of confidently reporting a version the
+            # newly-indexed records may no longer match.
+            metadata_to_delete.append("indexed_framework_version")
+            metadata_to_delete.append("indexed_framework_commits_ahead")
+            metadata_to_delete.append("deprecation_map_commit_sha")
 
         metadata_to_set["last_refresh_at"] = now
         if all_errors:

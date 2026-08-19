@@ -234,6 +234,22 @@ uvx pipecat-ai-context-hub refresh --framework-version v0.0.96
 PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 uvx pipecat-ai-context-hub refresh
 ```
 
+Without a pin, every repo is indexed at its default branch (`main`). Pass
+`latest` to index the framework's newest release tag instead:
+
+```bash
+uvx pipecat-ai-context-hub refresh --framework-version latest
+```
+
+`latest` re-resolves on every refresh, so setting
+`PIPECAT_HUB_FRAMEWORK_VERSION=latest` in your MCP client's `env` block tracks
+releases as they ship — a plain incremental `refresh` picks up a new release
+without `--force`. Prereleases are skipped unless the repo has nothing else.
+
+Note that a pin applies only to the framework repo (`pipecat-ai/pipecat`).
+The examples, flows, and client SDK repos always track their default branch,
+and docs come from the live `docs.pipecat.ai`, which is unversioned.
+
 ## Index Metadata Contract
 
 External tooling — editor plugins, CI checks, the Pipecat CLI — often needs one
@@ -272,12 +288,13 @@ set — e.g. a new `indexed_framework_version` can never be paired with a stale
 
 | Key | Meaning |
 |-----|---------|
-| `metadata_contract_version` | Version of this contract (currently `1`). Absent on indexes built before it was published |
+| `metadata_contract_version` | Version of this contract (currently `2`). Absent on indexes built before it was published |
 | `last_refresh_at` | UTC ISO-8601 timestamp of the last completed refresh |
 | `last_refresh_error_count` | Errors in that refresh; `last_refresh_errored_at` is present only when non-zero |
 | `indexed_framework_version` | Nearest pipecat release tag the index was built from, e.g. `1.6.0` |
 | `indexed_framework_commits_ahead` | Commits from that tag to the indexed revision. `0` means the index *is* that release |
-| `framework_version` | The operator's explicit `--framework-version` pin. Absent unless pinned — this is *not* the version the index was built from |
+| `deprecation_map_commit_sha` | Pipecat commit SHA the on-disk deprecation map was built from. Cross-checked against `indexed_framework_version`'s stamp by `resolve_framework_version` — a mismatch means the map and the stamp were published in different runs (crash between the two writes), so the exact-version answer falls back to `None`/intrinsic status |
+| `framework_version` | The operator's explicit `--framework-version` pin, recorded verbatim — so a `latest` pin stores `latest`, not the tag it resolved to. Absent unless pinned — this is *not* the version the index was built from |
 | `repo:<org>/<repo>:commit_sha` | Indexed commit for each source repo |
 | `content_type_counts` | JSON object of record counts by content type |
 
@@ -286,6 +303,18 @@ tracks the default branch, so an index built 55 commits past `v1.6.0` still
 reports `1.6.0` with `indexed_framework_commits_ahead: 55`. Compare versions with
 that slack in mind, or every developer working from a source checkout gets a
 spurious mismatch.
+
+`indexed_framework_commits_ahead` is `0` **if and only if**
+`indexed_framework_version` is a parseable release the checkout sits exactly on.
+A pin that is not a release — a branch-shaped or feature tag — is recorded under
+`framework_version` but falls back to the same git-describe floor as an unpinned
+refresh, so the pair never claims exactness for a value that is not a version.
+
+`check_deprecation` uses `indexed_framework_version` as its default `version`
+only when `indexed_framework_commits_ahead` is `0`. For a floor — a default-branch
+refresh, or an index built before this contract — it evaluates symbols at their
+intrinsic registry status instead, rather than answering as though the index were
+the older release the floor names.
 
 ### Compatibility
 
@@ -305,7 +334,7 @@ works immediately; version comparison starts working after the next refresh.
 |----------|---------|-------------|
 | `PIPECAT_HUB_DATA_DIR` | `~/.pipecat-context-hub` | Index, clones, and metadata location. Consumers of the metadata contract must honour it |
 | `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
-| `PIPECAT_HUB_FRAMEWORK_VERSION` | *(empty)* | Pin framework repo to a specific git tag (e.g. `v0.0.96`) |
+| `PIPECAT_HUB_FRAMEWORK_VERSION` | *(empty)* | Pin framework repo to a specific git tag (e.g. `v0.0.96`), or `latest` for its newest release tag |
 | `PIPECAT_HUB_TAINTED_REPOS` | *(empty)* | Comma-separated repo slugs to skip entirely |
 | `PIPECAT_HUB_TAINTED_REFS` | *(empty)* | Comma-separated `org/repo@ref` entries to skip |
 | `PIPECAT_HUB_STALE_AFTER_DAYS` | `7` | Index age (days) after which tool responses carry an `index_staleness` field with a refresh hint. `0` disables |

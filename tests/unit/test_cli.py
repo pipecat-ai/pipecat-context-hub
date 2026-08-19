@@ -30,6 +30,7 @@ from pipecat_context_hub.cli import (
     main,
 )
 from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
+from pipecat_context_hub.services.ingest.github_ingest import CloneResult
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_global_config
@@ -224,7 +225,9 @@ class TestRefreshCommand:
         mock_crawler.close = AsyncMock()
 
         mock_github = MagicMock()
-        mock_github.clone_or_fetch = MagicMock(return_value=(Path("/tmp/repo"), "abc123"))
+        mock_github.clone_or_fetch = MagicMock(
+            return_value=CloneResult(Path("/tmp/repo"), "abc123", None)
+        )
         mock_github.ingest = AsyncMock(return_value=MagicMock(records_upserted=20, errors=[]))
 
         mock_source_ingester = MagicMock()
@@ -754,8 +757,11 @@ class TestRefreshCommand:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
@@ -812,8 +818,11 @@ class TestRefreshCommand:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
@@ -838,6 +847,178 @@ class TestRefreshCommand:
         mock_source.ingest.assert_not_called()
         set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
         assert "repo:pipecat-ai/pipecat:commit_sha" not in set_calls
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_tainted_ref_delete_failure_preserves_retry_metadata(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 6 Gate 1/Codex Finding #1 (High): this inline tainted-ref
+        cleanup site (indexed ref is *also* tainted -> purge local records) is
+        a third `delete_by_repo` call site distinct from
+        `_delete_repo_index_data`. Before the fix, a failed
+        `index_store.delete_by_repo` here was caught and logged but execution
+        fell through unconditionally to the metadata deletes anyway -- wiping
+        `stored_sha_key` and (for the framework repo) both provenance keys
+        even though the purge never happened. That leaves a future refresh
+        with no bookkeeping trail that this repo's stale/tainted records may
+        still be sitting in the index. The fix mirrors
+        `_delete_repo_index_data`: metadata deletes only run once
+        `delete_by_repo` actually succeeds.
+
+        Round 7 Gate 1/Codex + Architecture Finding #1 (High + Minor,
+        converged): this site now calls `_delete_repo_index_data` directly
+        instead of duplicating its try/except/else logic, and (like the
+        helper's other two call sites) appends a message to `all_errors` on
+        failure. Before that fix a failed purge here left
+        `last_refresh_error_count=0` even though FTS-side stale tainted
+        records could still be retrievable -- this test also asserts that
+        failure is now surfaced through the persisted refresh-summary
+        metadata batch.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
+        )
+        mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {
+            "docs:content_hash": content_hash,
+            **_sha_metadata("abc123"),
+            "indexed_framework_version": "1.6.0",
+            "indexed_framework_commits_ahead": "0",
+        }
+        # Both the upstream HEAD and the cached SHA are tainted, so the
+        # "indexed ref is also tainted" branch is taken.
+        meta["repo:pipecat-ai/pipecat:commit_sha"] = "badcafe"
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        mock_store.delete_by_repo = AsyncMock(side_effect=RuntimeError("boom"))
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REFS", "pipecat-ai/pipecat@badcafe")
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        mock_store.delete_by_repo.assert_any_call("pipecat-ai/pipecat")
+        # The failed delete must NOT be followed by metadata deletion --
+        # stored_sha_key and both framework provenance keys survive so a
+        # future refresh can still discover and retry this repo.
+        deleted_keys = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        assert "repo:pipecat-ai/pipecat:commit_sha" not in deleted_keys
+        assert "indexed_framework_version" not in deleted_keys
+        assert "indexed_framework_commits_ahead" not in deleted_keys
+        # The failure is now visible via the refresh summary's error count,
+        # not just a log line -- mirroring the other two
+        # `_delete_repo_index_data` call sites.
+        batch_calls = mock_store.set_metadata_batch.call_args_list
+        assert batch_calls, "expected set_metadata_batch to be called"
+        metadata_to_set = batch_calls[-1].args[0]
+        assert metadata_to_set["last_refresh_error_count"] != "0"
+        assert "last_refresh_errored_at" in metadata_to_set
+        # Round 9 Finding #3: a failed cleanup also flags the repo so a
+        # future unchanged-SHA refresh can't trust `indexed_records > 0`
+        # alone (stale FTS rows from the partial delete would otherwise
+        # satisfy that check even though the vector store is now empty).
+        set_calls = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        assert set_calls.get("repo:pipecat-ai/pipecat:cleanup_failed") == "1"
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_cleanup_failed_flag_forces_reingest_and_is_cleared_on_success(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 9 Finding #3 regression: a repo whose stale cleanup
+        previously failed (leaving `repo:<slug>:cleanup_failed` set) must NOT
+        take the unchanged-SHA skip shortcut on a subsequent refresh, even
+        though `stored_sha == commit_sha` and `indexed_records > 0` (stale
+        FTS rows). It must be re-ingested, and once that re-ingest succeeds
+        cleanly, the flag must be cleared so future runs can trust the
+        shortcut again.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        target_repo = "pipecat-ai/pipecat-flows"
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {
+            "docs:content_hash": content_hash,
+            **_sha_metadata("abc123"),
+            f"repo:{target_repo}:cleanup_failed": "1",
+        }
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        ingested_repo_calls: list[str] = []
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            ingested_repo_calls.extend(repos)
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+        mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
+            CloneResult(Path(f"/tmp/{repo_slug.replace('/', '_')}"), "abc123", tag)
+        )
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        # SHA is unchanged and records "exist" (per get_counts_by_repo), but
+        # the cleanup_failed flag must force a real re-ingest, not a skip.
+        assert target_repo in ingested_repo_calls
+
+        # A clean re-ingest (no errors) must clear the flag.
+        deleted_keys = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        assert f"repo:{target_repo}:cleanup_failed" in deleted_keys
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -871,8 +1052,11 @@ class TestRefreshCommand:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
@@ -1293,6 +1477,415 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         mock_is_cls.assert_not_called()
 
 
+class TestRefreshFtsFaultInjection:
+    """`IndexStore`'s FTS-side exceptions are no longer swallowed (Round 5
+    Finding #2): `upsert`/`delete_by_repo`/`delete_by_content_type`/
+    `delete_by_source` now re-raise after logging. `refresh` must not crash
+    when that happens — the three previously-unguarded `delete_by_repo` call
+    sites need to catch and handle it.
+
+    The store-level `upsert` fault-injection regression test (proving
+    `IndexWriter.upsert` failures now surface as `IngestResult.errors`
+    instead of a silently-swallowed vector/FTS divergence) lives in
+    `test_github_ingest.py::TestGitHubRepoIngester::
+    test_ingest_upsert_failure_is_reported_as_error`, using the real
+    `IndexStore` with its FTS index fault-injected — that is the seam where
+    the `store.py` fix (Part A) and the pre-existing `github_ingest.py`
+    error handling (Part B, unchanged) actually meet. Once
+    `IngestResult.errors` is non-empty, `refresh`'s per-repo
+    `repo_has_errors`/purge/`ingested_repos` handling is pre-existing Round 4
+    logic (see `TestRefreshRecordReplacementGate::
+    test_partial_error_ingest_purges_records_not_just_metadata`) and is not
+    re-tested here.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_deprecation_map(self):
+        """Avoid touching the registry/filesystem during refresh tests."""
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_registry",
+            return_value=MagicMock(entries={}, save=MagicMock()),
+        ):
+            yield
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_fts_delete_by_repo_failure_during_pre_ingest_delete_is_handled(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`IndexStore.delete_by_repo` now re-raises an FTS-side failure. The
+        pre-ingest delete inside the `changed_repos` loop must catch it: the
+        refresh completes without an uncaught exception, the failing repo is
+        skipped for the rest of that iteration (never reaches `github.ingest`
+        for it), is recorded as errored, and the error is reflected in the
+        persisted `last_refresh_error_count`.
+        """
+        target_repo = "pipecat-ai/pipecat-flows"
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        async def _delete_by_repo_side_effect(repo):
+            if repo == target_repo:
+                raise RuntimeError("FTS delete_by_repo failed; indexes may have diverged")
+            return 0
+
+        mock_store.delete_by_repo = AsyncMock(side_effect=_delete_by_repo_side_effect)
+
+        ingested_repo_calls: list[str] = []
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            ingested_repo_calls.extend(repos)
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        # No uncaught exception propagated out of the CLI invocation.
+        assert result.exit_code == 0, result.output
+        assert target_repo not in ingested_repo_calls
+        assert target_repo in result.output
+        assert "error" in result.output.lower()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert int(written["last_refresh_error_count"]) >= 1
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_pre_ingest_delete_failure_sets_cleanup_failed_marker(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 11 Finding #2 (corrected to defense-in-depth): the pre-ingest
+        `delete_by_repo` failure branch must also set the
+        `repo:<slug>:cleanup_failed` marker, mirroring the sibling
+        `_delete_repo_index_data` failure paths. Not load-bearing for the
+        originally-reported "permanent same-SHA skip" scenario — that
+        `continue` already skips `ingested_repos.add()`, and the
+        SHA-bookkeeping loop already deletes this repo's stored `commit_sha`
+        on any failure path — but the marker should be set anyway for
+        consistency with the sibling pattern.
+        """
+        target_repo = "pipecat-ai/pipecat-flows"
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        async def _delete_by_repo_side_effect(repo):
+            if repo == target_repo:
+                raise RuntimeError("FTS delete_by_repo failed; indexes may have diverged")
+            return 0
+
+        mock_store.delete_by_repo = AsyncMock(side_effect=_delete_by_repo_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.set_metadata.assert_any_call(f"repo:{target_repo}:cleanup_failed", "1")
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_pre_ingest_delete_failure_marker_cleared_by_subsequent_success(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A subsequent, fully-successful forced re-ingest of the same repo
+        must clear the `cleanup_failed` marker (existing success-path
+        behavior, unrelated to this fix) — confirms the marker set on
+        failure isn't permanently stuck.
+        """
+        target_repo = "pipecat-ai/pipecat-flows"
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        deleted_keys = [call.args[0] for call in mock_store.delete_metadata.call_args_list]
+        assert f"repo:{target_repo}:cleanup_failed" in deleted_keys
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_fts_delete_by_content_type_failure_during_docs_delete_is_handled(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`IndexStore.delete_by_content_type` now re-raises an FTS-side
+        failure too. The docs-ingest branch (the stale-docs delete before
+        re-crawling) must catch it: the refresh completes without an
+        uncaught exception, docs re-ingest is skipped this run, and the
+        error is recorded and reflected in the persisted
+        `last_refresh_error_count` — mirroring the pre-ingest-delete
+        handling above, for the one other previously-unguarded call site
+        the round-5 verifier's blast-radius sweep found.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        mock_store.delete_by_content_type = AsyncMock(
+            side_effect=RuntimeError("FTS delete_by_content_type failed; indexes may have diverged")
+        )
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        # No uncaught exception propagated out of the CLI invocation.
+        assert result.exit_code == 0, result.output
+        mock_crawler.ingest.assert_not_called()
+        assert "error" in result.output.lower()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert int(written["last_refresh_error_count"]) >= 1
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_docs_content_hash_clear_failure_does_not_crash_refresh(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 9 Finding #4 regression: round 8's own recovery call —
+        `index_store.delete_metadata("docs:content_hash")`, added inside the
+        `delete_by_content_type` failure handler to guarantee future
+        retries — is itself unprotected. If the SAME underlying storage
+        fault also breaks `delete_metadata` (e.g. a disk/lock issue
+        affecting the whole SQLite file), the exception must not propagate
+        unhandled and abort the whole refresh; it must be recorded in
+        `all_errors` and refresh must complete.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        mock_store.delete_by_content_type = AsyncMock(
+            side_effect=RuntimeError("FTS delete_by_content_type failed; indexes may have diverged")
+        )
+
+        def _delete_metadata_side_effect(key):
+            if key == "docs:content_hash":
+                raise RuntimeError("sqlite database is locked")
+
+        mock_store.delete_metadata = MagicMock(side_effect=_delete_metadata_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        # No uncaught exception propagated out of the CLI invocation, even
+        # though BOTH the primary delete and the stamp-clearing recovery
+        # call failed.
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        mock_crawler.ingest.assert_not_called()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        # Both failures are recorded — the error count reflects more than
+        # just the primary `delete_by_content_type` failure.
+        assert int(written["last_refresh_error_count"]) >= 2
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_docs_content_hash_cleared_after_delete_failure_and_next_refresh_retries(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round-8 gauntlet Finding #1 regression.
+
+        When `delete_by_content_type("doc")` raises, the handler must clear
+        `docs:content_hash` (not merely record the error) — otherwise the
+        stale stamp still matches the (never re-fetched) content hash, and a
+        *subsequent non-force* refresh takes the "docs unchanged, skipping"
+        shortcut forever, permanently suppressing automatic recovery.
+
+        Reproduces the real scenario: `docs:content_hash` is already stamped
+        (matching the crawler's current content — a prior refresh succeeded),
+        so a plain non-force refresh would take the unchanged-skip branch
+        without even reaching the delete. `--force` is what gets a refresh
+        past that skip and into the failing delete, exactly as it would for
+        an operator retrying after an earlier failure. Uses a stateful fake
+        metadata store (a plain dict wired through get/set/delete_metadata)
+        so the second `invoke()` in this test actually observes what the
+        first one left behind.
+
+        1. After the failed forced delete, `docs:content_hash` is absent —
+           not left stamped at its old (now-stale) value.
+        2. A second, non-force refresh (where the delete now succeeds) does
+           NOT take the unchanged-skip branch — `delete_by_content_type` and
+           `crawler.ingest` are invoked again.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        import hashlib
+
+        # Matches mock_crawler.fetch_llms_txt's fixed return value from
+        # `_make_mocks` — a prior successful refresh already stamped this.
+        content_hash = hashlib.sha256(
+            b"# Page\nSource: https://example.com\nContent here"
+        ).hexdigest()
+
+        # Stateful fake metadata store so get_metadata reflects prior
+        # set_metadata/delete_metadata calls across the two invocations below.
+        meta: dict[str, str] = {"docs:content_hash": content_hash}
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        mock_store.set_metadata = MagicMock(
+            side_effect=lambda key, value: meta.__setitem__(key, value)
+        )
+        mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
+
+        mock_store.delete_by_content_type = AsyncMock(
+            side_effect=RuntimeError("FTS delete_by_content_type failed; indexes may have diverged")
+        )
+
+        monkeypatch.chdir(tmp_path)
+
+        # --- First refresh (--force, so the delete is reached despite the
+        # matching hash): the delete fails. ---
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+        assert result.exit_code == 0, result.output
+        mock_crawler.ingest.assert_not_called()
+        assert "docs:content_hash" not in meta, (
+            "docs:content_hash must be cleared, not left stamped, after a "
+            "failed delete_by_content_type — otherwise a future refresh's "
+            "unchanged-hash check silently skips re-ingesting docs forever"
+        )
+
+        # --- Second, non-force refresh: the delete now succeeds. ---
+        mock_store.delete_by_content_type = AsyncMock(return_value=0)
+        mock_crawler.ingest.reset_mock()
+
+        result2 = CliRunner().invoke(main, ["refresh"])
+        assert result2.exit_code == 0, result2.output
+        mock_store.delete_by_content_type.assert_awaited_once_with("doc")
+        mock_crawler.ingest.assert_awaited_once()
+        assert meta.get("docs:content_hash") == content_hash
+
+
 class TestRefreshProvenanceMetadata:
     """Refresh stamps the contract version and the indexed pipecat revision."""
 
@@ -1441,8 +2034,11 @@ class TestRefreshProvenanceMetadata:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
 
@@ -1489,8 +2085,11 @@ class TestRefreshProvenanceMetadata:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_github.clone_or_fetch.side_effect = lambda repo_slug, _checkout=False, tag=None: (
-            Path(f"/tmp/{repo_slug.replace('/', '_')}"),
-            "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+            CloneResult(
+                Path(f"/tmp/{repo_slug.replace('/', '_')}"),
+                "badcafe" if repo_slug == "pipecat-ai/pipecat" else "abc123",
+                tag,
+            )
         )
         mock_ref_tainted.side_effect = lambda _repo_path, sha, _refs: sha == "badcafe"
         meta = {"repo:pipecat-ai/pipecat:commit_sha": "badcafe"}
@@ -1535,7 +2134,6 @@ class TestRefreshProvenanceMetadata:
         assert "indexed_framework_version" not in written
         deleted = {call.args[0] for call in store.delete_metadata.call_args_list}
         assert "indexed_framework_version" not in deleted
-        assert "indexed_framework_commits_ahead" not in deleted
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -1544,7 +2142,225 @@ class TestRefreshProvenanceMetadata:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
-    def test_failed_framework_ingest_is_not_stamped(
+    def test_latest_pin_normalized_and_stamped_from_resolved_tag(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`--framework-version` with mixed case/whitespace ('  LATEST  ') is
+        persisted as the canonical 'latest' sentinel, and once the framework
+        repo is cloned, `indexed_framework_version` is stamped from the tag
+        `clone_or_fetch` resolved and verified — not from a `git describe`-derived
+        value, and not from a second resolution run afterwards — with
+        `indexed_framework_commits_ahead` fixed at "0".
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_github.clone_or_fetch = MagicMock(
+            side_effect=lambda repo_slug, _checkout=False, tag=None: CloneResult(
+                Path("/tmp/repo"), "abc123", "v1.10.0" if tag else None
+            )
+        )
+
+        monkeypatch.chdir(tmp_path)
+        # `describe_framework_checkout` must NOT be consulted for the stamp
+        # when a `latest`-resolved tag is available; give it a distinct value
+        # so a regression back to `git describe` would be caught.
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("9.9.9", 42),
+        ):
+            result = CliRunner().invoke(main, ["refresh", "--framework-version", "  LATEST  "])
+
+        assert result.exit_code == 0, result.output
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+
+        assert written["framework_version"] == "latest"
+        assert written["indexed_framework_version"] == "1.10.0"
+        assert written["indexed_framework_commits_ahead"] == "0"
+        framework_calls = [
+            call
+            for call in mock_github.ingest.call_args_list
+            if call.kwargs.get("repos") == ["pipecat-ai/pipecat"]
+        ]
+        # Already normalised to a release version by `exact_release_version`, so
+        # the chunk pin and the metadata stamp are literally the same value.
+        assert framework_calls[0].kwargs["framework_checkout_version"] == "1.10.0"
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_non_release_pin_falls_back_to_describe_for_stamp_and_chunk_pin(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Git — and this tool's tag-input validation — accept a branch-shaped tag
+        like ``some-feature-tag``. It names no release, so it must not be stamped
+        verbatim as `indexed_framework_version` with `commits_ahead="0"`: that
+        publishes a non-version against a contract that promises one, and breaks
+        every downstream `Version()` comparison (including `check_deprecation`).
+
+        Both consumers of the pin — the metadata stamp and the per-chunk
+        `pipecat_version_pin` — fall back to the unpinned paths instead.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_github.clone_or_fetch = MagicMock(
+            side_effect=lambda repo_slug, _checkout=False, tag=None: CloneResult(
+                Path("/tmp/repo"), "abc123", tag
+            )
+        )
+
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 42),
+        ) as mock_describe:
+            result = CliRunner().invoke(
+                main, ["refresh", "--framework-version", "some-feature-tag"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_describe.assert_called_once()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+
+        # The operator's pin is still recorded verbatim…
+        assert written["framework_version"] == "some-feature-tag"
+        # …but provenance comes from describe's floor, not from the tag.
+        assert written["indexed_framework_version"] == "1.6.0"
+        assert written["indexed_framework_commits_ahead"] == "42"
+
+        framework_calls = [
+            call
+            for call in mock_github.ingest.call_args_list
+            if call.kwargs.get("repos") == ["pipecat-ai/pipecat"]
+        ]
+        # None routes _ingest_repo to its existing unpinned version extraction.
+        assert framework_calls[0].kwargs["framework_checkout_version"] is None
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_undeterminable_provenance_clears_stale_stamp(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """`framework_provenance_ready` is True (the framework repo's records
+        were replaced this run) but *neither* producer can derive a version:
+        `exact_release_version` rejects the checked-out tag, and
+        `describe_framework_checkout` also returns ``(None, None)`` (a
+        branch-shaped checkout with no reachable release tag at all).
+
+        The prior run's exact-provenance stamp is now stale — it describes a
+        revision the index no longer holds — and must be explicitly deleted,
+        not silently left in place alongside fresh, unrelated records.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_github.clone_or_fetch = MagicMock(
+            side_effect=lambda repo_slug, _checkout=False, tag=None: CloneResult(
+                Path("/tmp/repo"), "abc123", tag
+            )
+        )
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
+        meta["repo:pipecat-ai/pipecat:commit_sha"] = "old-sha"
+        # Seed a prior known-good stamp that must be cleared once the framework
+        # repo's records are replaced by an undeterminable checkout.
+        meta["indexed_framework_version"] = "1.5.0"
+        meta["indexed_framework_commits_ahead"] = "3"
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=(None, None),
+        ) as mock_describe:
+            result = CliRunner().invoke(
+                main, ["refresh", "--framework-version", "some-feature-tag"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_describe.assert_called_once()
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+        deleted = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            deleted.update(batch_call.kwargs.get("delete_keys") or ())
+        assert "indexed_framework_version" in deleted
+        assert "indexed_framework_commits_ahead" in deleted
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_failed_framework_checkout_is_not_stamped(
         self,
         mock_si_cls,
         mock_ref_tainted,
@@ -1557,10 +2373,14 @@ class TestRefreshProvenanceMetadata:
         monkeypatch,
     ):
         """The framework repo's SHA changed (so it's in `changed_repos`, not
-        tainted) but ingest fails for it — it must not land in
-        `ingested_repos`, and its version must not be stamped, leaving any
-        prior known-good stamp untouched rather than describing content that
-        was never successfully indexed.
+        tainted) but its checkout fails — so it never reaches `delete_by_repo`
+        and its indexed records still describe the old revision. Its version
+        must not be stamped, leaving the prior known-good stamp untouched
+        rather than describing a revision the index does not hold.
+
+        The discriminator is record *replacement*, not error-free ingest: an
+        ingest that errored *after* the delete has still replaced the records,
+        and is covered by `TestRefreshRecordReplacementGate`.
         """
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
             TestRefreshCommand()
@@ -1584,12 +2404,8 @@ class TestRefreshProvenanceMetadata:
         meta["indexed_framework_commits_ahead"] = "3"
         mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
 
-        def _ingest_side_effect(*, repos, **_kwargs):
-            if repos == ["pipecat-ai/pipecat"]:
-                return MagicMock(records_upserted=0, errors=["ingest failed"])
-            return MagicMock(records_upserted=20, errors=[])
-
-        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+        # Only the framework repo is in `changed_repos`; its checkout fails.
+        mock_github.checkout_commit = MagicMock(side_effect=RuntimeError("checkout failed"))
 
         monkeypatch.chdir(tmp_path)
         with patch(
@@ -1599,8 +2415,9 @@ class TestRefreshProvenanceMetadata:
             result = CliRunner().invoke(main, ["refresh"])
 
         assert result.exit_code == 0, result.output
-        # The tainted-framework fix's checkout-availability check must not
-        # let a failed-but-untainted ingest through either.
+        # The framework's records were never deleted, so nothing about it is
+        # restamped.
+        mock_store.delete_by_repo.assert_not_awaited()
         mock_describe.assert_not_called()
 
         written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
@@ -1614,6 +2431,960 @@ class TestRefreshProvenanceMetadata:
             deleted.update(batch_call.kwargs.get("delete_keys") or ())
         assert "indexed_framework_version" not in deleted
         assert "indexed_framework_commits_ahead" not in deleted
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_failed_latest_checkout_keeps_map_and_provenance_aligned(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A `latest` checkout that failed before `delete_by_repo` must leave the
+        prior map and the prior stamp together, both describing the old revision
+        the index still holds."""
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        framework_slug = "pipecat-ai/pipecat"
+
+        def _clone_side_effect(repo_slug, _checkout=False, tag=None):
+            sha = "new-framework-sha" if repo_slug == framework_slug else "abc123"
+            return CloneResult(Path(f"/tmp/{repo_slug.replace('/', '_')}"), sha, tag)
+
+        mock_github.clone_or_fetch.side_effect = _clone_side_effect
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
+        meta[f"repo:{framework_slug}:commit_sha"] = "old-framework-sha"
+        meta["indexed_framework_version"] = "1.5.0"
+        meta["indexed_framework_commits_ahead"] = "0"
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        def _checkout_side_effect(repo_path, _commit_sha):
+            if repo_path.name == framework_slug.replace("/", "_"):
+                raise RuntimeError("latest checkout failed")
+
+        mock_github.checkout_commit = MagicMock(side_effect=_checkout_side_effect)
+
+        from pipecat_context_hub.services.ingest.deprecation_map import (
+            DeprecationEntry,
+            DeprecationMap,
+        )
+
+        data_dir = tmp_path / "hub-data"
+        prior_map_path = data_dir / "deprecation_map.json"
+        prior_map = DeprecationMap(
+            entries={"OldSymbol": DeprecationEntry(old_path="OldSymbol")},
+            pipecat_commit_sha="old-framework-sha",
+        )
+        prior_map.save(prior_map_path)
+        prior_bytes = prior_map_path.read_bytes()
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        with patch(
+            "pipecat_context_hub.services.ingest.deprecation_map.build_deprecation_map_from_registry"
+        ) as mock_build:
+            result = CliRunner().invoke(main, ["refresh", "--framework-version", "latest"])
+
+        assert result.exit_code == 0, result.output
+        mock_build.assert_not_called()
+        assert prior_map_path.read_bytes() == prior_bytes
+        assert DeprecationMap.load(prior_map_path).pipecat_commit_sha == "old-framework-sha"
+
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+        deleted = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            deleted.update(batch_call.kwargs.get("delete_keys") or ())
+        assert "indexed_framework_version" not in deleted
+        assert "indexed_framework_commits_ahead" not in deleted
+
+
+class TestRefreshRecordReplacementGate:
+    """The deprecation-map rebuild and the provenance stamp follow *record
+    replacement*, not error-free ingest.
+
+    Once ``delete_by_repo`` has run for the framework repo, the index no longer
+    holds the previous revision's records — so both the map and the stamp must
+    describe the new checkout, whole or partial. A framework repo whose
+    ``checkout_commit`` failed never reached the delete, so its records still
+    describe the old revision and everything about it is left alone.
+
+    These tests deliberately do **not** mock ``build_deprecation_map_from_registry``:
+    the assertions are on the deprecation map's on-disk *content*, which is the
+    only way to tell a rebuilt map from an untouched one.
+    """
+
+    FRAMEWORK_SLUG = "pipecat-ai/pipecat"
+
+    def _write_registry(self, checkout: Path, subject: str) -> None:
+        """Write a minimal real pipecat deprecation registry into *checkout*."""
+        import json as _json
+
+        from pipecat_context_hub.services.ingest.deprecation_map import REGISTRY_RELATIVE_PATH
+
+        registry_path = checkout / REGISTRY_RELATIVE_PATH
+        registry_path.parent.mkdir(parents=True, exist_ok=True)
+        registry_path.write_text(
+            _json.dumps(
+                {
+                    "deprecations": [
+                        {
+                            "subject": subject,
+                            "module": "pipecat.services.example",
+                            "kind": "class",
+                            "deprecated_in": "1.6.0",
+                            "message": f"{subject} is deprecated",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _prior_map(self, data_dir: Path) -> Path:
+        """Persist a deprecation map describing the *previous* framework revision."""
+        from pipecat_context_hub.services.ingest.deprecation_map import (
+            DeprecationEntry,
+            DeprecationMap,
+        )
+
+        path = data_dir / "deprecation_map.json"
+        DeprecationMap(
+            entries={"OldOnlySymbol": DeprecationEntry(old_path="OldOnlySymbol")},
+            pipecat_commit_sha="old-framework-sha",
+        ).save(path)
+        return path
+
+    def _harness(
+        self,
+        mocks,
+        tmp_path,
+        monkeypatch,
+        *,
+        framework_ingest_errors: list[str],
+        framework_records_upserted: int = 5000,
+    ):
+        """Arrange a refresh where only the framework repo changed.
+
+        Returns ``(mock_store, mock_github, framework_checkout, dep_map_path)``.
+        """
+        import hashlib
+
+        mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted = mocks
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        framework_checkout = tmp_path / "fw-checkout"
+        framework_checkout.mkdir()
+        self._write_registry(framework_checkout, "NewOnlySymbol")
+
+        def _clone_side_effect(repo_slug, _checkout=False, tag=None):
+            if repo_slug == self.FRAMEWORK_SLUG:
+                return CloneResult(framework_checkout, "new-framework-sha", tag)
+            return CloneResult(tmp_path / repo_slug.replace("/", "_"), "abc123", tag)
+
+        mock_github.clone_or_fetch.side_effect = _clone_side_effect
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        meta = {
+            "docs:content_hash": hashlib.sha256(content.encode()).hexdigest(),
+            **_sha_metadata("abc123"),
+            f"repo:{self.FRAMEWORK_SLUG}:commit_sha": "old-framework-sha",
+            "indexed_framework_version": "1.5.0",
+            "indexed_framework_commits_ahead": "0",
+        }
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            if repos == [self.FRAMEWORK_SLUG]:
+                return MagicMock(
+                    records_upserted=framework_records_upserted,
+                    errors=list(framework_ingest_errors),
+                )
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        dep_map_path = self._prior_map(data_dir)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        return mock_store, mock_github, framework_checkout, dep_map_path
+
+    @staticmethod
+    def _written(mock_store) -> dict[str, str]:
+        written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            written.update(batch_call.args[0])
+        return written
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_deprecation_map_preserved_when_framework_ingest_has_nonfatal_errors(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (Round 3 Finding #1): ``delete_by_repo`` runs before ingest
+        completes, so a partially-failed framework ingest (errors present, even
+        with a substantial number of records written) must NOT be treated as a
+        clean replacement. The provenance stamp and the deprecation map must stay
+        exactly where they were — describing content the index can no longer
+        promise is complete — rather than advancing to describe a revision whose
+        ingest did not fully succeed.
+
+        Before the fix, gating on record *replacement* (``delete_by_repo`` having
+        run) rather than on error-free ingest (``not repo_has_errors``) advanced
+        both the map and the stamp here even though ``framework_ingest_errors``
+        is non-empty.
+        """
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        mock_store, _mock_github, _checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=["Failed to read foo.py: invalid utf-8"],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 0),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        assert dep_map_path.read_bytes() == prior_bytes
+        preserved = DeprecationMap.load(dep_map_path)
+        assert preserved.pipecat_commit_sha == "old-framework-sha"
+        assert "OldOnlySymbol" in preserved.entries
+        assert "NewOnlySymbol" not in preserved.entries
+
+        written = self._written(mock_store)
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_stamp_not_advanced_when_deprecation_map_save_fails(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 9 Finding #1 regression: ``dep_map.save()`` can fail (disk or
+        permission error) even when the framework registry parses fine and
+        ingest is error-free — a failure mode outside
+        ``DeprecationRegistryError``'s coverage. Before the fix,
+        ``indexed_framework_version``/``indexed_framework_commits_ahead`` were
+        gated on ``framework_provenance_ready`` alone, independent of whether
+        the deprecation map was actually published — so the stamp could
+        advance to describe the new checkout while ``deprecation_map.json`` on
+        disk still describes the old one. The stamp must now be gated on
+        ``deprecation_map_published``, so the two always move together: both
+        the on-disk map and the metadata stamp must stay exactly where they
+        were.
+        """
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        mock_store, _mock_github, _checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.6.0", 0),
+            ),
+            patch.object(DeprecationMap, "save", side_effect=OSError("disk full")),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        # The map on disk is byte-for-byte unchanged — save() never completed.
+        assert dep_map_path.read_bytes() == prior_bytes
+        preserved = DeprecationMap.load(dep_map_path)
+        assert preserved.pipecat_commit_sha == "old-framework-sha"
+        assert "OldOnlySymbol" in preserved.entries
+
+        written = self._written(mock_store)
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_zero_records_ingest_error_after_delete_is_not_stamped(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (Round 3 Finding #1, the reported scenario exactly):
+        ``github.ingest()`` returns errors AND ``records_upserted=0`` for the
+        framework repo, after ``delete_by_repo`` has already removed the old
+        records. Nothing new was written, so the provenance stamp must not
+        advance and the deprecation map must not be rebuilt from the (now
+        record-less) checkout.
+        """
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        mock_store, _mock_github, _checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=["Failed to clone/read: network error"],
+            framework_records_upserted=0,
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 0),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        assert dep_map_path.read_bytes() == prior_bytes
+        preserved = DeprecationMap.load(dep_map_path)
+        assert preserved.pipecat_commit_sha == "old-framework-sha"
+
+        written = self._written(mock_store)
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_partial_error_ingest_purges_records_not_just_metadata(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (Round 4 Finding #1): a framework ingest that writes some
+        records (``records_upserted>0``) but also errors (``repo_has_errors``)
+        must not leave those partial *records* behind, even though the
+        provenance *metadata* correctly withholds itself already (per Round 3).
+
+        ``delete_by_repo`` runs once up front (stale-cleanup) and must run a
+        SECOND time for the same repo once the error is detected, so the repo
+        ends the run with zero records rather than a silent partial mix of
+        old-deleted + new-partial records. Before the fix, ``delete_by_repo``
+        was only called once per repo and the partial records from the failed
+        ingest were left in the index.
+        """
+        mock_store, _mock_github, _checkout, _dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=["Failed to read foo.py: invalid utf-8"],
+            framework_records_upserted=3500,
+        )
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 0),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        deleted_calls = [
+            call.args[0]
+            for call in mock_store.delete_by_repo.call_args_list
+            if call.args[0] == self.FRAMEWORK_SLUG
+        ]
+        # Once for stale-cleanup before ingest, once more to purge the
+        # partial records left by the errored ingest.
+        assert deleted_calls == [self.FRAMEWORK_SLUG, self.FRAMEWORK_SLUG], (
+            f"expected delete_by_repo({self.FRAMEWORK_SLUG!r}) to run twice "
+            f"(pre-ingest cleanup + post-error purge), got: {deleted_calls}"
+        )
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_zero_records_error_free_ingest_still_advances(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The legitimate empty-repo case must not regress from the Finding #1
+        fix: a framework ingest that completes with zero errors but genuinely
+        zero records (e.g. an empty repo state) is still a clean replacement —
+        the stamp and the deprecation map must advance normally.
+        """
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        mock_store, _mock_github, _checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+            framework_records_upserted=0,
+        )
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 0),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        rebuilt = DeprecationMap.load(dep_map_path)
+        assert rebuilt.pipecat_commit_sha == "new-framework-sha"
+        assert "NewOnlySymbol" in rebuilt.entries
+        assert "OldOnlySymbol" not in rebuilt.entries
+
+        written = self._written(mock_store)
+        assert written["indexed_framework_version"] == "1.6.0"
+        assert written["indexed_framework_commits_ahead"] == "0"
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_deprecation_map_preserved_when_framework_checkout_fails(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The other half of the invariant: a framework repo whose checkout failed
+        never reached ``delete_by_repo``, so its indexed records still describe the
+        old revision — the map and the stamp must stay exactly where they were.
+
+        Guards against over-loosening the gate to "the framework was cloned".
+        """
+        mock_store, mock_github, _checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        def _checkout_side_effect(repo_path, _commit_sha):
+            if repo_path.name == "fw-checkout":
+                raise RuntimeError("checkout failed")
+
+        mock_github.checkout_commit = MagicMock(side_effect=_checkout_side_effect)
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+            return_value=("1.6.0", 0),
+        ) as mock_describe:
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert dep_map_path.read_bytes() == prior_bytes
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert self.FRAMEWORK_SLUG not in deleted_repos
+        mock_describe.assert_not_called()
+
+        written = self._written(mock_store)
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_deprecation_map_rebuild_follows_error_free_ingest(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """State the corrected coupling directly (Round 3 Finding #1): the map is
+        rewritten **iff** the framework's ingest both ran (checkout succeeded)
+        *and* completed error-free — not merely because ``delete_by_repo`` ran.
+        Asserted across all four combinations of checkout failure x ingest
+        errors, since record replacement alone (the pre-fix gate) is no longer
+        sufficient.
+        """
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        cases = [
+            (False, []),
+            (False, ["partial failure"]),
+            (True, []),
+            (True, ["partial failure"]),
+        ]
+        for fail_checkout, ingest_errors in cases:
+            run_dir = tmp_path / f"run-{'fail' if fail_checkout else 'ok'}-{len(ingest_errors)}"
+            run_dir.mkdir()
+            mock_store, mock_github, _checkout, dep_map_path = self._harness(
+                (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+                run_dir,
+                monkeypatch,
+                framework_ingest_errors=ingest_errors,
+            )
+            if fail_checkout:
+
+                def _boom(repo_path, _commit_sha):
+                    if repo_path.name == "fw-checkout":
+                        raise RuntimeError("checkout failed")
+
+                mock_github.checkout_commit = MagicMock(side_effect=_boom)
+
+            with patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.6.0", 0),
+            ):
+                result = CliRunner().invoke(main, ["refresh"])
+
+            assert result.exit_code == 0, result.output
+            rebuilt = DeprecationMap.load(dep_map_path).pipecat_commit_sha == "new-framework-sha"
+            expected_rebuilt = not fail_checkout and not ingest_errors
+            assert rebuilt is expected_rebuilt, (
+                f"fail_checkout={fail_checkout} ingest_errors={ingest_errors}: "
+                f"expected rebuilt={expected_rebuilt} but got {rebuilt}"
+            )
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_corrupt_registry_preserves_existing_map_and_records_error(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Round-8 gauntlet Finding #2 regression.
+
+        A registry that is *present but unreadable/corrupt* must not be
+        published as an empty deprecation map — that would silently
+        overwrite (and hide) a previously-good map. It must be distinguished
+        from the legitimate "registry doesn't exist yet" case (covered by
+        ``test_tainted_framework_does_not_rebuild_deprecation_map`` and
+        friends, which still publish an empty map safely for that case).
+
+        Deliberately does not mock ``build_deprecation_map_from_registry``,
+        same rationale as the rest of this class: the assertion is on the
+        deprecation map's on-disk *content*.
+        """
+        import logging
+
+        mock_store, _mock_github, framework_checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        from pipecat_context_hub.services.ingest.deprecation_map import REGISTRY_RELATIVE_PATH
+
+        registry_path = framework_checkout / REGISTRY_RELATIVE_PATH
+        registry_path.write_text("not json", encoding="utf-8")
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.6.0", 0),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert dep_map_path.read_bytes() == prior_bytes, (
+            "a corrupt/unreadable registry must never overwrite the "
+            "previously published deprecation map with an empty one"
+        )
+
+        written = self._written(mock_store)
+        assert int(written["last_refresh_error_count"]) >= 1
+        assert "deprecation registry" in caplog.text.lower()
+        assert "unreadable" in caplog.text.lower()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_malformed_removals_registry_preserves_old_map(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Round 11 Finding #4 integration case: `add_removals_from_registry`
+        now raises `DeprecationRegistryError` on a structurally invalid
+        removals.json. `build_deprecation_map_from_registry`,
+        `add_removals_from_registry`, and `dep_map.save` all run inside the
+        same try/except in `refresh` (round 10 Finding #5's widened except),
+        so this raise is caught there, publication is skipped, and the old
+        map on disk survives untouched.
+        """
+        import logging
+
+        from pipecat_context_hub.services.ingest.deprecation_map import (
+            REMOVALS_RELATIVE_PATH,
+            DeprecationMap,
+        )
+
+        mock_store, _mock_github, framework_checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        removals_path = framework_checkout / REMOVALS_RELATIVE_PATH
+        removals_path.parent.mkdir(parents=True, exist_ok=True)
+        removals_path.write_text('{"removals": "not-a-list"}', encoding="utf-8")
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.6.0", 0),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        # Old map survives byte-for-byte — publication was skipped entirely.
+        assert dep_map_path.read_bytes() == prior_bytes
+        preserved = DeprecationMap.load(dep_map_path)
+        assert preserved.pipecat_commit_sha == "old-framework-sha"
+        assert "OldOnlySymbol" in preserved.entries
+
+        written = self._written(mock_store)
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+        assert "deprecation_map_commit_sha" not in written
+
+
+class TestFinding1StaleStampClearedAfterFailedMapPublish(TestRefreshRecordReplacementGate):
+    """Round 11 Finding #1: when the framework repo's records WERE replaced
+    this run (delete + successful re-ingest) but the deprecation-map
+    build/save then fails, the *old* `indexed_framework_version` /
+    `indexed_framework_commits_ahead` / `deprecation_map_commit_sha` stamp
+    describes a revision the index no longer holds (it was just replaced),
+    even though it still matches the untouched on-disk map byte-for-byte.
+    The stamp must be cleared so `resolve_framework_version` falls back to
+    `None` (intrinsic status) rather than confidently reporting a stale
+    exact version.
+
+    Contrast with the SHA-unchanged case: there, records were never touched
+    this run, so the old stamp is still completely accurate and must be left
+    alone even though the same map-save failure was injected.
+    """
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_records_replaced_and_map_save_fails_clears_stale_stamp(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        from pipecat_context_hub.server.tools.check_deprecation import resolve_framework_version
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        mock_store, _mock_github, _checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.6.0", 0),
+            ),
+            patch.object(DeprecationMap, "save", side_effect=OSError("disk full")),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        # Old map untouched — save() never completed.
+        assert dep_map_path.read_bytes() == prior_bytes
+
+        batch_call = mock_store.set_metadata_batch.call_args
+        delete_keys = set(batch_call.kwargs["delete_keys"])
+        assert "indexed_framework_version" in delete_keys
+        assert "indexed_framework_commits_ahead" in delete_keys
+        assert "deprecation_map_commit_sha" in delete_keys
+
+        # Simulate the deletion applied to the store's metadata, then confirm
+        # the reader-facing contract: no confident exact-version answer.
+        remaining_metadata = {
+            "indexed_framework_version": "1.5.0",
+            "indexed_framework_commits_ahead": "0",
+            "deprecation_map_commit_sha": "old-framework-sha",
+        }
+        for key in delete_keys:
+            remaining_metadata.pop(key, None)
+        fake_store = MagicMock()
+        fake_store.get_all_metadata = MagicMock(return_value=remaining_metadata)
+        assert resolve_framework_version(fake_store) is None
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_records_unchanged_and_map_save_fails_preserves_old_stamp(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Legitimate skip path: the framework repo's SHA did not change this
+        run, so its records were never replaced. The same injected map-save
+        failure must NOT punish this case — the old stamp is still exactly
+        accurate and must survive untouched.
+        """
+        from pipecat_context_hub.server.tools.check_deprecation import resolve_framework_version
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        # Build a harness identical to `_harness` but with the framework repo
+        # reporting the SAME sha as already stored, so it never lands in
+        # `changed_repos`.
+        mock_si_cls_, mock_gh_cls_, mock_dc_cls_, mock_is_cls_, mock_ref_tainted_ = (
+            mock_si_cls,
+            mock_gh_cls,
+            mock_dc_cls,
+            mock_is_cls,
+            mock_ref_tainted,
+        )
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls_.return_value = mock_store
+        mock_dc_cls_.return_value = mock_crawler
+        mock_gh_cls_.return_value = mock_github
+        mock_si_cls_.return_value = mock_source
+        mock_ref_tainted_.return_value = False
+
+        framework_checkout = tmp_path / "fw-checkout"
+        framework_checkout.mkdir()
+        self._write_registry(framework_checkout, "SameOnlySymbol")
+
+        def _clone_side_effect(repo_slug, _checkout=False, tag=None):
+            if repo_slug == self.FRAMEWORK_SLUG:
+                return CloneResult(framework_checkout, "same-framework-sha", tag)
+            return CloneResult(tmp_path / repo_slug.replace("/", "_"), "abc123", tag)
+
+        mock_github.clone_or_fetch.side_effect = _clone_side_effect
+
+        import hashlib
+
+        content = "# Page\nSource: https://example.com\nContent here"
+        meta = {
+            "docs:content_hash": hashlib.sha256(content.encode()).hexdigest(),
+            **_sha_metadata("abc123"),
+            f"repo:{self.FRAMEWORK_SLUG}:commit_sha": "same-framework-sha",
+            "indexed_framework_version": "1.5.0",
+            "indexed_framework_commits_ahead": "0",
+            "deprecation_map_commit_sha": "same-framework-sha",
+        }
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        dep_map_path = self._prior_map(data_dir)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+
+        prior_bytes = dep_map_path.read_bytes()
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.5.0", 0),
+            ),
+            patch.object(DeprecationMap, "save", side_effect=OSError("disk full")),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        assert dep_map_path.read_bytes() == prior_bytes
+
+        written = self._written(mock_store)
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+        assert "deprecation_map_commit_sha" not in written
+
+        batch_call = mock_store.set_metadata_batch.call_args
+        delete_keys = set(batch_call.kwargs["delete_keys"]) if batch_call else set()
+        assert "indexed_framework_version" not in delete_keys
+        assert "indexed_framework_commits_ahead" not in delete_keys
+        assert "deprecation_map_commit_sha" not in delete_keys
+
+        # The old stamp (unaffected by this run) must still resolve exactly.
+        fake_store = MagicMock()
+        fake_store.get_all_metadata = MagicMock(
+            return_value={
+                "indexed_framework_version": "1.5.0",
+                "indexed_framework_commits_ahead": "0",
+            }
+        )
+        assert resolve_framework_version(fake_store) == "1.5.0"
 
 
 class TestPruneEnabledValues:
@@ -2537,10 +4308,22 @@ class TestPruneSafety(TestRefreshCommand):
         tmp_path,
         monkeypatch,
     ):
-        """index_store.delete_by_repo raising during a --prune delete: the
-        error propagates and is not swallowed silently, consistent with
-        today's unconditional delete-path error handling for tainted
-        repos."""
+        """index_store.delete_by_repo raising during a --prune delete used to
+        propagate and crash the whole refresh. Round 5's verifier flagged
+        that as a real blast-radius gap once `IndexStore.delete_by_repo`
+        started re-raising FTS-layer failures instead of swallowing them
+        (Finding #2): `_delete_repo_index_data` — the cleanup-pass helper
+        shared by both the tainted-repo and `--prune` deletion branches — now
+        catches the failure and logs it, consistent with the other two
+        best-effort cleanup-style `delete_by_repo` call sites (post-ingest-
+        error purge, tainted-ref removal). This is a cleanup pass, not core
+        ingestion: leaving a stale, already-unwanted repo's data in place for
+        another run is strictly better than aborting an otherwise-successful
+        refresh over it. The repo's metadata key is deliberately left in
+        place on failure too (not deleted), so a future cleanup pass can
+        still find and retry it — see `_delete_repo_index_data`'s docstring
+        and the existing "orphan from future cleanup passes" comment above
+        this loop."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -2557,9 +4340,76 @@ class TestPruneSafety(TestRefreshCommand):
         runner = CliRunner()
         result = runner.invoke(main, ["refresh", "--prune"])
 
-        assert result.exit_code != 0
-        assert result.exception is not None
-        assert "boom" in str(result.exception)
+        # No uncaught exception propagates out of the CLI invocation.
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        # The metadata key survives the failed delete, so a later cleanup
+        # pass can still discover and retry this repo.
+        mock_store.delete_metadata.assert_not_called()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_delete_by_repo_error_during_prune_surfaces_in_all_errors(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 6 Gate 1/Codex Finding #2 (Medium): a failed cleanup-pass
+        `delete_by_repo` used to be logged and swallowed with no other
+        signal, so `refresh` could exit 0 while `--prune`/tainted-repo
+        cleanup silently left stale/divergent records behind. Bounded fix:
+        `_delete_repo_index_data` now returns `False` on failure, and its two
+        call sites (both outside the `changed_repos` per-repo error-tracking
+        loop) append a message to `all_errors` so the failure is visible in
+        the refresh summary/error count -- without touching
+        `repo_has_errors` or the exit-code contract for the changed_repos
+        loop."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = self._meta_with_removed_repo()
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+        mock_store.delete_by_repo = AsyncMock(side_effect=RuntimeError("boom"))
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["refresh", "--prune"])
+
+        # Still a clean, non-fatal exit -- this is a best-effort cleanup pass,
+        # not core ingestion.
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        # The failure is now visible via the refresh summary's error count:
+        # `last_refresh_error_count` in the persisted metadata batch reflects
+        # a non-zero `all_errors`, and the batch also stamps
+        # `last_refresh_errored_at`.
+        batch_calls = mock_store.set_metadata_batch.call_args_list
+        assert batch_calls, "expected set_metadata_batch to be called"
+        metadata_to_set = batch_calls[-1].args[0]
+        assert metadata_to_set["last_refresh_error_count"] != "0"
+        assert "last_refresh_errored_at" in metadata_to_set
+        # This cleanup path is outside the changed_repos loop entirely, so it
+        # cannot have touched that loop's repo_has_errors/exit-code
+        # contract -- reconfirm exit_code is still 0 (checked above) and that
+        # the metadata key was left untouched, exactly as before this fix.
+        mock_store.delete_metadata.assert_not_called()
 
 
 class TestRefreshIncompatibleIndex:
@@ -3468,3 +5318,77 @@ class TestDebugProbeSymlinkHardening:
         probe_path = home / ".cache" / "pipecat-context-hub" / "serve-debug.log"
         assert stat_module.S_IMODE(probe_path.stat().st_mode) == 0o600
         assert stat_module.S_IMODE(probe_path.parent.stat().st_mode) == 0o700
+
+
+class TestDeleteRepoIndexDataBookkeepingGuard:
+    """Round 10 Finding #3: `_delete_repo_index_data`'s bookkeeping
+    `delete_metadata` calls (run only after a successful `delete_by_repo`)
+    must themselves be guarded -- an exception there should return `False`
+    and record the `cleanup_failed` marker, not propagate uncaught.
+    """
+
+    async def test_delete_metadata_failure_returns_false_and_sets_cleanup_marker(self):
+        from pipecat_context_hub.cli import _delete_repo_index_data
+
+        store = MagicMock()
+        store.delete_by_repo = AsyncMock(return_value=None)
+        store.delete_metadata = MagicMock(side_effect=RuntimeError("boom"))
+        store.set_metadata = MagicMock()
+
+        result = await _delete_repo_index_data(
+            store, "some-org/some-repo", "repo:some-org/some-repo:commit_sha"
+        )
+
+        assert result is False
+        store.set_metadata.assert_any_call("repo:some-org/some-repo:cleanup_failed", "1")
+
+    async def test_framework_repo_third_delete_metadata_failure_returns_false(self):
+        """The framework-repo branch makes three `delete_metadata` calls
+        (meta_key, indexed_framework_version, indexed_framework_commits_ahead).
+        A failure on the third must also be caught.
+        """
+        from pipecat_context_hub.cli import _delete_repo_index_data
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        store = MagicMock()
+        store.delete_by_repo = AsyncMock(return_value=None)
+        calls = {"count": 0}
+
+        def flaky_delete_metadata(key: str) -> None:
+            calls["count"] += 1
+            if calls["count"] == 3:
+                raise RuntimeError("boom on third call")
+
+        store.delete_metadata = MagicMock(side_effect=flaky_delete_metadata)
+        store.set_metadata = MagicMock()
+
+        result = await _delete_repo_index_data(store, _FRAMEWORK_REPO, "repo:framework:commit_sha")
+
+        assert result is False
+        assert calls["count"] == 3
+        store.set_metadata.assert_any_call(f"repo:{_FRAMEWORK_REPO}:cleanup_failed", "1")
+
+
+class TestDeleteRepoIndexDataDeleteByRepoGuard:
+    """Round 11 Finding #3: the `delete_by_repo`-failure except block's own
+    `set_metadata("...:cleanup_failed", "1")` call must also be guarded --
+    mirroring the sibling bookkeeping-deletes except block above. A failure
+    in *both* `delete_by_repo` and the follow-up `set_metadata` must not
+    propagate; the function must still return `False`.
+    """
+
+    async def test_delete_by_repo_and_set_metadata_both_fail_returns_false(self):
+        from pipecat_context_hub.cli import _delete_repo_index_data
+
+        store = MagicMock()
+        store.delete_by_repo = AsyncMock(side_effect=RuntimeError("delete_by_repo boom"))
+        store.set_metadata = MagicMock(side_effect=RuntimeError("set_metadata boom too"))
+        store.delete_metadata = MagicMock()
+
+        result = await _delete_repo_index_data(
+            store, "some-org/some-repo", "repo:some-org/some-repo:commit_sha"
+        )
+
+        assert result is False
+        store.set_metadata.assert_any_call("repo:some-org/some-repo:cleanup_failed", "1")
+        store.delete_metadata.assert_not_called()

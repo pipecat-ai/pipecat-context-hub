@@ -5,9 +5,82 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.3] - 2026-08-19
+
+### Added
+- **`--framework-version latest`.** `refresh` accepts `latest` (case-insensitive)
+  wherever a framework tag is expected — CLI flag or
+  `PIPECAT_HUB_FRAMEWORK_VERSION` — and resolves it to the highest release tag on
+  `pipecat-ai/pipecat`. Without a pin, refresh still indexes the default branch
+  (`main`); `latest` is the way to index a released version without hard-coding a
+  tag that goes stale. It re-resolves on every run, so setting it in an MCP
+  client's `env` block tracks releases as they ship and a plain incremental
+  `refresh` picks up a new release without `--force`. Resolution is version-aware
+  rather than lexicographic (`v1.10.0` beats `v1.7.0`), skips prereleases unless
+  the repo has nothing else, and ignores tags that do not parse as versions. The
+  pin is still framework-only, and `framework_version` index metadata records
+  `latest` verbatim — `indexed_framework_version` continues to report the concrete
+  tag the index was built from.
+
+### Changed
+- **`check_deprecation` no longer answers at a floor version.** Its default
+  `version` (used when the caller passes none) is now `indexed_framework_version`
+  only when `indexed_framework_commits_ahead` is `0` — i.e. when the index sits
+  exactly on that release. For a floor — an unpinned default-branch refresh, or
+  an index built before the provenance keys existed — it evaluates symbols at
+  their intrinsic registry status instead. Previously an index built 80 commits
+  past `v1.5.0` answered as if it were `1.5.0`, reporting symbols deprecated in
+  `1.6.0` as "current". Existing indexes get the new behaviour without a
+  re-index; pass `version` explicitly to pin the evaluation yourself.
 
 ### Fixed
+- **Deprecation map and framework provenance stranded a revision behind after a
+  partial framework ingest.** `refresh` rebuilt `deprecation_map.json` and
+  restamped `indexed_framework_version` only when the framework repo ingested
+  without a single error — but the stale records are deleted *before* ingest, so
+  one unreadable file left the index holding the new checkout's code while the
+  map and the stamp still described the previous revision. Both now follow record
+  *replacement* (whether `delete_by_repo` ran), which is the condition that
+  actually decides which revision the index describes. A framework repo whose
+  checkout failed never reaches the delete, so its map and stamp are still
+  preserved.
+- **A repo whose ingest errored after old records were already deleted could be
+  left with a silent mix of stale-empty and partial-new records.** The partial
+  new records are now purged too, so an errored repo ends the run with zero
+  records and a warning naming the repo and prompting a retry, rather than a
+  misleading partial index.
+- **`latest` skipped an uppercase-`V` release tag.** The release-tag parse
+  stripped a lowercase `v` but rejected any leading `v` *or* `V` left behind, so
+  a well-formed `V2.0.0` was classed unparseable — a repo whose newest release
+  used that spelling silently resolved `latest` to an older `v1.x`, and such tags
+  sorted as junk in the "available tags" error hint. The strip is now symmetric
+  with the guard; a genuinely doubled prefix (`vv`/`vV`/`Vv`/`VV`) is still
+  rejected.
+- **One bad tag anywhere in the repo aborted `latest`.** Resolution validated
+  every version-like tag in the repository — resolving each one's commit and
+  checking every version group for ambiguous aliases — before selecting
+  anything, so a single unresolvable ref or one historical ambiguous alias pair
+  failed the whole resolution even when neither tag was remotely the newest.
+  Validation now applies to the selected tag only; it still fails closed on that
+  one.
+- **A non-release `--framework-version` pin was stamped as an exact version.**
+  A branch-shaped or feature tag (which git and the tool's tag validation both
+  accept) was written verbatim to `indexed_framework_version` with
+  `indexed_framework_commits_ahead: "0"`, publishing a non-version against a
+  contract that promises one and breaking downstream version comparisons —
+  including `check_deprecation`, which silently degraded. Such a pin now falls
+  back to git-describe floor semantics for both the metadata stamp and the
+  per-chunk version pin.
+- **`latest` could be stamped with a tag the indexed commit is not at.** The
+  resolved tag was recovered by re-running the resolution against the clone
+  *after* the checkout, without the origin verification the first resolution
+  performed — so a concurrent refresh landing a newer tag in between could name
+  a release the indexed commit does not correspond to. The verified tag is now
+  returned by the clone itself.
+- **Version-ordered tag hint on an unresolvable `--framework-version`.** The
+  "available tags (latest 5)" list in the error sorted tag names as strings, so it
+  would have ranked `v1.7.0` above `v1.10.0` and omitted the newest release from
+  the hint once pipecat reaches a double-digit minor.
 - **Reranker permanently disabled after a successful `refresh`.** `is_model_cached`
   probed the HF cache at `revision="main"` while `_download` fetches shipped
   models at a pinned commit SHA — a pinned download populates
@@ -17,6 +90,167 @@ This project uses [Semantic Versioning](https://semver.org/).
   SHA was already cached and no name-based resolve occurred to write the
   missing ref. The probe now checks the same pinned revision the download
   used. (#115)
+- **`--prune-tags` could prune a pinned `--framework-version` tag out from under
+  itself.** A pinned fetch that pruned remote tags could remove the pinned tag
+  if it had disappeared upstream between runs, leaving the pin unresolvable.
+  `--prune-tags` now only runs when resolving `latest`, not for a literal pin.
+- **A tainted ref no longer resolvable locally fell through as untainted.** A
+  ref that was deleted or pruned upstream after being marked tainted previously
+  fell through the taint check as if it were clean; it's now treated as
+  tainted, matching the function's other failure branches.
+- **A stale exact-provenance stamp could survive a refresh that couldn't derive
+  a new one.** When a refresh replaced the framework repo's records but the
+  resulting checkout was branch-shaped (not a release), `indexed_framework_version`
+  and `indexed_framework_commits_ahead` were left holding the previous run's
+  stamp instead of being cleared, so a stale exact version kept describing
+  records it no longer matched.
+- **`IndexStore` write/delete methods now re-raise FTS-layer failures** —
+  `upsert`, `delete_by_content_type`, `delete_by_repo`, and `delete_by_source`
+  previously swallowed a SQLite FTS5-side error, leaving the vector and FTS
+  indexes silently diverged. `refresh`'s call sites handle the re-raise per
+  context: the pre-ingest per-repo delete records an error and skips that
+  repo, while cleanup-style deletes (post-error purge, tainted-ref cleanup,
+  docs cleanup, unconfigured-repo removal) log the failure and continue on a
+  best-effort basis rather than aborting an otherwise-successful refresh.
+- **A failed tainted-ref purge could wipe its own retry bookkeeping.** When a
+  repo's *indexed* ref was also tainted, a failed `delete_by_repo` was logged
+  and swallowed but execution still fell through to clearing the repo's
+  commit-SHA metadata (and, for the framework repo, both provenance keys) —
+  so a future refresh had no trail that stale tainted records might still be
+  sitting in the index. That metadata now only clears once the purge actually
+  succeeds.
+- **Cleanup-pass delete failures were logged but never counted as errors.**
+  All three `delete_by_repo` cleanup sites in `refresh` (tainted-repo removal,
+  `--prune`-authorized removal of an unconfigured repo, and tainted-ref
+  cleanup — now unified behind `_delete_repo_index_data`) append a message to
+  `all_errors` on failure, so a failed purge surfaces through the refresh
+  summary's error count instead of only a log line.
+- **A failed stale-docs delete could skip re-ingestion forever.** When
+  `delete_by_content_type("doc")` failed, `docs:content_hash` still described
+  the (partially-diverged) old crawl, so an unforced refresh kept taking the
+  "docs unchanged, skip" shortcut on every subsequent run. `docs:content_hash`
+  is now cleared as part of the failure handler, so the next refresh — forced
+  or not — always retries the delete and re-ingest instead of silently
+  skipping.
+- **A corrupt or unreadable deprecation registry silently published an empty
+  deprecation map.** `build_deprecation_map_from_registry` distinguished a
+  legitimately absent registry (older pipecat versions) from a present but
+  unparseable one only by both returning an empty map — so a truncated/corrupt
+  `deprecations.json` overwrote a previously good `deprecation_map.json` with
+  nothing, and every deprecation check against it went silently blank. A
+  present-but-unreadable registry now raises `DeprecationRegistryError`, and
+  `refresh` catches it to preserve the existing on-disk map instead of
+  publishing an empty one.
+- **A schema-invalid (but syntactically valid) deprecation registry bypassed
+  `DeprecationRegistryError` entirely.** A registry root with the
+  `deprecations` key simply absent is a legitimate empty map, but a bare list
+  root, or a present `deprecations` field that isn't a list (e.g. `null`),
+  either produced a silent empty map or an unhandled `TypeError`/
+  `AttributeError` that aborted the whole refresh. Both invalid shapes now
+  raise `DeprecationRegistryError` up front, so `refresh` preserves the
+  existing map the same way it does for unreadable JSON.
+- **The framework provenance stamp could advance independently of the
+  deprecation map it should describe.** `indexed_framework_version` /
+  `indexed_framework_commits_ahead` were gated on the framework records having
+  been replaced, but not on the deprecation map having actually been
+  published — so a `dep_map.save()` failure (or a registry error) could leave
+  `deprecation_map.json` describing the old checkout while the stamp advanced
+  to describe the new one, producing an incoherent revision triple. The stamp
+  is now gated on the map publish having succeeded, so the two always move
+  together.
+- **A repo whose stale-record cleanup failed could be skipped forever with an
+  empty vector index.** `refresh`'s unchanged-SHA skip shortcut trusted
+  `indexed_records > 0` (an FTS-side count) as proof a repo's index is
+  healthy — but a failed `_delete_repo_index_data` call (vector delete
+  succeeds, FTS delete raises) can leave stale FTS rows behind even though the
+  vector store is now empty for that repo, letting the shortcut fire
+  indefinitely on a silently-empty index. Cleanup failures now set a
+  `cleanup_failed` flag that blocks the shortcut until the repo is
+  successfully re-ingested.
+- **The docs-recovery hash-clearing call (added to fix the "skipped forever"
+  bug above) was itself unprotected.** If the same underlying storage fault
+  that broke `delete_by_content_type` also broke `delete_metadata`, the
+  exception propagated unhandled and aborted the whole refresh — reproducing
+  the permanent-skip bug one layer deeper. That call is now wrapped in its own
+  try/except, best-effort, with the failure recorded in the refresh summary.
+- **`--framework-version` pins with an uppercase-`V` prefix could fail to
+  resolve.** `_resolve_tag`'s candidate generation only checked
+  `tag.startswith("v")`, so a literal pin like `V1.2.0` never tried the
+  un-prefixed tag as a fallback candidate even though `latest` resolution and
+  version parsing both already handle that case. Candidate generation is now
+  case-insensitive, matching the rest of the pin-resolution path.
+- **`--framework-version` pins with an uppercase-`V` prefix could still fail
+  to resolve when only the lowercase-prefixed tag exists upstream (the common
+  case).** The previous fix made candidate generation case-insensitive but
+  still branched on whether the input already had a `v`/`V` prefix, so an
+  already-prefixed pin like `V1.2.0` produced candidates `["V1.2.0", "1.2.0"]`
+  and never tried the real upstream tag `v1.2.0`. Candidate generation now
+  always includes the bare, lowercase-`v`-prefixed, and as-given forms.
+- **`deprecation_map.json` could be left truncated or invalid by an
+  interrupted write.** `DeprecationMap.save()` wrote directly to the target
+  path, so a crash, disk-full, or other interruption mid-write left partial
+  JSON in place; `load()` silently treats invalid JSON as an empty map,
+  destroying the last known-good deprecation map. `save()` now writes to a
+  temp file and atomically renames it into place, so `path` always holds
+  either the complete prior map or the complete new one.
+- **`refresh`'s deprecation-map build/save step only tolerated
+  `DeprecationRegistryError`/`OSError`.** Any other exception from
+  `build_deprecation_map_from_registry` or `dep_map.save()` propagated
+  uncaught and aborted the whole refresh instead of being recorded as a
+  refresh error with the existing map preserved. The catch is now
+  exception-agnostic, matching the message-formatting logic below it.
+- **The deprecation map and its `indexed_framework_version` provenance stamp
+  could silently describe different revisions after a crash between the two
+  writes.** `check_deprecation`'s default-version resolution had no way to
+  detect that divergence and could assert version-exactness against a map
+  that no longer matched the stamped revision. A refresh now also stamps
+  `deprecation_map_commit_sha` alongside the other provenance metadata, and
+  `resolve_framework_version` cross-checks it against the loaded map's own
+  commit SHA, falling back to `None` (intrinsic registry status) on a
+  mismatch. Missing/older indexes without the new stamp are unaffected — the
+  check is skipped when either side is absent.
+- **`_delete_repo_index_data`'s bookkeeping `delete_metadata` calls (run after
+  a successful record delete) were unguarded.** An exception there propagated
+  uncaught instead of being recorded through the same failure path as the
+  record-delete step. Those calls are now wrapped in their own try/except,
+  returning `False` and setting the repo's `cleanup_failed` marker on
+  failure, consistent with the rest of the helper.
+- **A stale exact-provenance stamp could survive a refresh that replaced the
+  framework repo's records but then failed to publish the deprecation map.**
+  `indexed_framework_version` / `indexed_framework_commits_ahead` /
+  `deprecation_map_commit_sha` were left describing the previous revision —
+  still consistent with the untouched on-disk map, but no longer with the
+  records the index actually holds, a divergence the existing map/stamp
+  SHA cross-check can't detect since both sides still match each other. The
+  stamp is now cleared whenever the framework repo's records were replaced
+  this run but the map publish did not follow, so `resolve_framework_version`
+  falls back to intrinsic status instead of a wrong exact answer. A refresh
+  where the framework repo simply didn't change is unaffected — its old
+  stamp is still accurate and is left alone.
+- **The pre-ingest `delete_by_repo` failure branch didn't record the
+  `cleanup_failed` marker** that the sibling `_delete_repo_index_data`
+  failure paths already set. Defense-in-depth / consistency fix — this
+  branch's existing `continue` already skips `ingested_repos.add()`, and the
+  SHA-bookkeeping loop already deletes the repo's stored `commit_sha` on any
+  failure path, so a same-SHA skip was never actually reachable here; the
+  marker is now set anyway for parity with the rest of the cleanup-failure
+  handling.
+- **`_delete_repo_index_data`'s `delete_by_repo`-failure except block called
+  `set_metadata` for the `cleanup_failed` marker unguarded**, unlike the
+  sibling bookkeeping-deletes except block fixed previously. A failure in
+  both `delete_by_repo` and that follow-up `set_metadata` call would have
+  propagated uncaught instead of returning `False`. Now wrapped in its own
+  try/except, mirroring the sibling pattern exactly.
+- **A malformed `removals.json` was silently treated as empty instead of
+  raising.** `add_removals_from_registry` swallowed every non-
+  `FileNotFoundError` read/parse failure, treated a non-dict JSON root as
+  legitimately empty, and never validated a present `removals` field was a
+  list before iterating — unlike the sibling
+  `build_deprecation_map_from_registry`, which already raises
+  `DeprecationRegistryError` for all three cases. Root-shape validation now
+  mirrors that sibling exactly, so `refresh` preserves the previously
+  published deprecation map instead of silently merging nothing (or
+  crashing on an unhandled `TypeError`) from a corrupt removals registry.
 
 ## [0.5.2] - 2026-08-09
 

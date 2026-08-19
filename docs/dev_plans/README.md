@@ -7,6 +7,7 @@
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-08-18 | feature | `--framework-version latest` resolves the newest release tag; hardened through an 11-round adversarial review gauntlet (deprecation-map/provenance crash-safety, tag-resolution edge cases, cleanup bookkeeping) | Complete (PR #116) | vr000m | `feature/framework-version-latest` | `20260331-feature-version-aware-indexing.md` |
 | 2026-08-07 | feature | Global `config.toml` fallback for machine-scoped hub installs + `refresh` prune safety | Complete | vr000m | `feature/global-config-toml` | `20260807-feature-global-config-toml.md` |
 | 2026-08-03 | feature | CLI/MCP self-report guidance parity (shared issue-template URLs, CLI bug-report hints, reranker `not_cached` warning) | Complete (PR #111) | vr000m | `feature/self-report-guidance-parity` | `20260803-feature-cli-mcp-report-hint-parity.md` |
 | 2026-08-03 | chore | Replace sentence-transformers/torch with ONNX Runtime (Linux install 5.1 GB → 351 MB; fixes multi-concept CLI crash) | Complete (v0.5.0; PR #107) | markbackman | `chore/onnx-runtime-migration` | `20260803-chore-onnx-runtime-migration.md` |

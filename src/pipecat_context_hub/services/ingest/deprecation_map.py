@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from packaging.version import InvalidVersion, Version
 
 from pipecat_context_hub.shared.types import DeprecationStatus
+from pipecat_context_hub.shared.versioning import parse_release_version
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +149,23 @@ class DeprecationMap:
         )
 
     def save(self, path: Path) -> None:
-        """Persist the deprecation map to a JSON file."""
+        """Persist the deprecation map to a JSON file.
+
+        Writes to a temporary file in the same directory and atomically renames
+        it over `path`, so a crash, disk-full, or interruption mid-write can
+        never leave `path` holding truncated/invalid JSON. `load()` always sees
+        either the complete prior map or the complete new one, never a partial
+        file — closing the same failure mode round 9's registry-read guard
+        covers, reached here via a write failure instead of a read failure.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        try:
+            tmp_path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
         logger.info("Deprecation map saved to %s (%d entries)", path, len(self.entries))
 
     @classmethod
@@ -161,6 +177,17 @@ class DeprecationMap:
         except Exception:
             logger.debug("Could not load deprecation map from %s", path)
             return cls()
+
+
+class DeprecationRegistryError(Exception):
+    """Raised when the deprecation registry is present but unreadable/corrupt.
+
+    Distinguishes this case from a *legitimate* missing registry (older
+    pipecat versions predate it, ``FileNotFoundError``), which returns an
+    empty :class:`DeprecationMap` instead of raising. Callers must not treat
+    an empty map returned in response to this exception as authoritative —
+    the previously published map should be preserved.
+    """
 
 
 def build_deprecation_map_from_registry(
@@ -180,8 +207,17 @@ def build_deprecation_map_from_registry(
         commit_sha: Current pipecat commit SHA, for staleness detection.
 
     Returns:
-        A :class:`DeprecationMap`. Empty if the registry is missing or unreadable
-        (older pipecat versions predate the registry).
+        A :class:`DeprecationMap`. Empty if the registry is legitimately
+        missing (older pipecat versions predate the registry).
+
+    Raises:
+        DeprecationRegistryError: The registry file exists but could not be
+            read or parsed (corrupt JSON, I/O error, etc.), or parsed to a
+            structurally invalid shape (non-dict root, or a ``deprecations``
+            field present but not a list — e.g. ``null``). Callers must not
+            treat this the same as a legitimate empty map — the caller should
+            preserve whatever deprecation map was previously published rather
+            than overwrite it with an empty one.
     """
     try:
         data = json.loads(registry_path.read_text(encoding="utf-8"))
@@ -192,11 +228,26 @@ def build_deprecation_map_from_registry(
             registry_path,
         )
         return DeprecationMap(pipecat_commit_sha=commit_sha)
-    except Exception:
+    except Exception as exc:
         logger.warning("Could not read deprecation registry at %s", registry_path, exc_info=True)
-        return DeprecationMap(pipecat_commit_sha=commit_sha)
+        raise DeprecationRegistryError(
+            f"Could not read deprecation registry at {registry_path}"
+        ) from exc
 
-    records = data.get("deprecations", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        raise DeprecationRegistryError(
+            f"Deprecation registry at {registry_path} is not a JSON object "
+            f"(got {type(data).__name__})"
+        )
+    if "deprecations" not in data:
+        records: list[Any] = []
+    else:
+        records = data["deprecations"]
+        if not isinstance(records, list):
+            raise DeprecationRegistryError(
+                f"Deprecation registry at {registry_path} has a non-list "
+                f"'deprecations' field (got {type(records).__name__})"
+            )
     entries: dict[str, DeprecationEntry] = {}
     aliases: dict[str, DeprecationEntry] = {}
     for rec in records:
@@ -251,17 +302,40 @@ def add_removals_from_registry(dep_map: DeprecationMap, removals_path: Path) -> 
     with ``status="removed"``, the *actual* ``removed_in``, and ``announced_removed_in``
     — keyed by bare subject and fully-qualified path, like active deprecations. No-op
     if the file is absent (older pipecat predates it). Mutates ``dep_map`` in place.
+
+    Raises:
+        DeprecationRegistryError: The removals registry file exists but could
+            not be read/parsed, or parsed to a structurally invalid shape
+            (non-dict root, or a ``removals`` field present but not a list).
+            Mirrors ``build_deprecation_map_from_registry``'s validation —
+            callers must not treat this as a legitimate empty result; the
+            caller should preserve whatever deprecation map was previously
+            published rather than merge a wrong/incomplete one.
     """
     try:
         data = json.loads(removals_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         logger.info("No removals registry at %s — no removed symbols merged.", removals_path)
         return
-    except Exception:
+    except Exception as exc:
         logger.warning("Could not read removals registry at %s", removals_path, exc_info=True)
-        return
+        raise DeprecationRegistryError(
+            f"Could not read removals registry at {removals_path}"
+        ) from exc
 
-    records = data.get("removals", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        raise DeprecationRegistryError(
+            f"Removals registry at {removals_path} is not a JSON object (got {type(data).__name__})"
+        )
+    if "removals" not in data:
+        records: list[Any] = []
+    else:
+        records = data["removals"]
+        if not isinstance(records, list):
+            raise DeprecationRegistryError(
+                f"Removals registry at {removals_path} has a non-list "
+                f"'removals' field (got {type(records).__name__})"
+            )
     aliases: dict[str, DeprecationEntry] = {}
     added = 0
     for rec in records:
@@ -309,11 +383,19 @@ def add_removals_from_registry(dep_map: DeprecationMap, removals_path: Path) -> 
 
 
 def _as_version(value: str | None) -> Version | None:
-    """Parse a ``X.Y.Z`` (optionally ``v``-prefixed) version, or ``None``."""
+    """Parse a ``X.Y.Z`` (optionally ``v``-prefixed) version, or ``None``.
+
+    Routed through the shared :func:`parse_release_version` so a doubled prefix
+    (``"vv1.0.0"``) is *not* silently coerced to ``1.0.0`` by ``Version()``'s
+    own normalisation. Registry values (``deprecated_in`` / ``removed_in``) are
+    plain ``X.Y.Z`` and unaffected; a caller who types a malformed version now
+    falls back to the entry's intrinsic status rather than getting an answer for
+    a version they did not ask about.
+    """
     if not value:
         return None
     try:
-        return Version(str(value).lstrip("v"))
+        return parse_release_version(str(value))
     except InvalidVersion:
         return None
 

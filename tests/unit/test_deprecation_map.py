@@ -10,6 +10,7 @@ import pytest
 from pipecat_context_hub.services.ingest.deprecation_map import (
     DeprecationEntry,
     DeprecationMap,
+    DeprecationRegistryError,
     add_removals_from_registry,
     build_deprecation_map_from_registry,
     status_for,
@@ -143,6 +144,45 @@ class TestDeprecationMapSerialization:
         loaded = DeprecationMap.load(tmp_path / "nonexistent.json")
         assert loaded.entries == {}
 
+    def test_save_failure_mid_write_preserves_prior_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Round 10 Finding #2 regression: `save()` writes to a temp file and
+        renames it into place, so a crash/failure mid-write can never leave
+        `path` holding truncated/invalid JSON. A prior good map on disk must
+        survive a failed save byte-for-byte, and no leftover temp file should
+        remain.
+        """
+        path = tmp_path / "deprecation_map.json"
+        good = DeprecationMap(
+            entries={
+                "pipecat.services.grok": DeprecationEntry(
+                    old_path="pipecat.services.grok",
+                    new_path="pipecat.services.xai.llm",
+                    kind="module",
+                ),
+            },
+            pipecat_commit_sha="good-sha",
+        )
+        good.save(path)
+        original_bytes = path.read_bytes()
+
+        broken = DeprecationMap(entries={}, pipecat_commit_sha="broken-sha")
+
+        real_replace = Path.replace
+
+        def failing_replace(self: Path, target: object) -> object:
+            raise OSError("simulated disk failure during rename")
+
+        monkeypatch.setattr(Path, "replace", failing_replace)
+        with pytest.raises(OSError, match="simulated disk failure"):
+            broken.save(path)
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert path.read_bytes() == original_bytes
+        leftover_tmp_files = list(tmp_path.glob("deprecation_map.json.tmp.*"))
+        assert leftover_tmp_files == []
+
     def test_to_dict_from_dict(self) -> None:
         dm = DeprecationMap(
             entries={
@@ -273,11 +313,48 @@ class TestBuildFromRegistry:
         assert dm.entries == {}
         assert dm.pipecat_commit_sha == "sha"
 
-    def test_malformed_registry_returns_empty(self, tmp_path: Path) -> None:
+    def test_malformed_registry_raises_distinguishable_error(self, tmp_path: Path) -> None:
+        """A present-but-corrupt registry must raise, not silently return an
+        empty map — callers rely on this to distinguish "legitimately absent"
+        (older pipecat versions) from "present but unreadable" (should
+        preserve the previously published deprecation map instead of
+        overwriting it with an empty one)."""
         path = tmp_path / "deprecations.json"
         path.write_text("not json", encoding="utf-8")
-        dm = build_deprecation_map_from_registry(path)
+        with pytest.raises(DeprecationRegistryError):
+            build_deprecation_map_from_registry(path)
+
+    def test_empty_object_is_legitimately_empty(self, tmp_path: Path) -> None:
+        """`{}` — a dict root with the 'deprecations' key simply absent — is
+        the legitimate "older pipecat version predates the key" shape, so it
+        must produce a (deliberately) empty map, not raise. Pinned explicitly
+        alongside the invalid-shape cases below so the boundary is visible."""
+        path = tmp_path / "deprecations.json"
+        path.write_text("{}", encoding="utf-8")
+        dm = build_deprecation_map_from_registry(path, commit_sha="sha")
         assert dm.entries == {}
+        assert dm.pipecat_commit_sha == "sha"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[]",
+            '{"deprecations": null}',
+        ],
+    )
+    def test_schema_invalid_registry_raises_distinguishable_error(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        """Round 9 Finding #2 regression: syntactically valid JSON that is
+        structurally invalid — a bare list root, or a present 'deprecations'
+        field that is null instead of a list — must raise
+        `DeprecationRegistryError` rather than silently producing an empty
+        map (which would overwrite a previously good one) or letting an
+        unhandled TypeError/AttributeError escape from the iteration below."""
+        path = tmp_path / "deprecations.json"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(DeprecationRegistryError):
+            build_deprecation_map_from_registry(path)
 
     def test_duplicate_bare_subject_warns_and_keeps_both_qualified(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -411,6 +488,53 @@ class TestRemovalsMerge:
         add_removals_from_registry(dm, tmp_path / "absent.json")
         assert set(dm.entries) == {"X"}  # unchanged
 
+    def test_malformed_removals_registry_raises_distinguishable_error(self, tmp_path: Path) -> None:
+        """Round 11 Finding #4 regression: a present-but-corrupt removals
+        registry must raise, not silently be treated as empty — mirroring
+        `build_deprecation_map_from_registry`'s validation. Before the fix,
+        any non-`FileNotFoundError` read/parse failure was swallowed."""
+        dm = DeprecationMap(entries={"X": DeprecationEntry(old_path="X")})
+        path = tmp_path / "removals.json"
+        path.write_text("not json", encoding="utf-8")
+        with pytest.raises(DeprecationRegistryError):
+            add_removals_from_registry(dm, path)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[]",
+            '"a string root"',
+        ],
+    )
+    def test_non_dict_root_raises_distinguishable_error(self, tmp_path: Path, content: str) -> None:
+        """A non-dict JSON root (e.g. a bare list or a bare string) was
+        previously treated as legitimately empty (`isinstance(data, dict)`
+        guarding a silent `[]` fallback) instead of raising."""
+        dm = DeprecationMap(entries={"X": DeprecationEntry(old_path="X")})
+        path = tmp_path / "removals.json"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(DeprecationRegistryError):
+            add_removals_from_registry(dm, path)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '{"removals": null}',
+            '{"removals": "not-a-list"}',
+        ],
+    )
+    def test_non_list_removals_field_raises_distinguishable_error(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        """A dict root with a present `removals` field that isn't a list
+        (`null`, a string, ...) must raise rather than let an unhandled
+        TypeError escape from iterating over it."""
+        dm = DeprecationMap(entries={"X": DeprecationEntry(old_path="X")})
+        path = tmp_path / "removals.json"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(DeprecationRegistryError):
+            add_removals_from_registry(dm, path)
+
     def test_removal_does_not_shadow_active_deprecation_on_bare_key(self, tmp_path: Path) -> None:
         # A *different* symbol sharing the same bare name: an active deprecation
         # (Foo in module a) plus a removed Foo in module b. The removal must NOT
@@ -501,6 +625,17 @@ class TestStatusFor:
 
     def test_unparseable_version_falls_back(self) -> None:
         assert status_for(self._removed(), "garbage") == "removed"
+
+    def test_single_v_prefix_is_still_accepted(self) -> None:
+        assert status_for(self._removed(), "v1.5.0") == "deprecated"
+
+    def test_doubled_v_prefix_is_not_silently_coerced(self) -> None:
+        """`Version("v1.5.0")` — what a naive strip leaves behind for "vv1.5.0" —
+        normalises straight back to 1.5.0, answering for a version the caller
+        never typed. Routing through `parse_release_version` makes it an
+        unparseable version, which falls back to the intrinsic status.
+        """
+        assert status_for(self._removed(), "vv1.5.0") == "removed"
 
 
 class TestCheckDeprecationVersionAware:

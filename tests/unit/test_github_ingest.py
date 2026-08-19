@@ -11,8 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pipecat_context_hub.services.ingest.github_ingest import (
-    GitHubRepoIngester,
+    _FRAMEWORK_REPO,
     _ROOT_FALLBACK_SKIP_ROOT_DIRS,
+    CloneResult,
+    GitHubRepoIngester,
     _chunk_by_boundaries,
     _chunk_by_lines,
     _chunk_code,
@@ -28,7 +30,6 @@ from pipecat_context_hub.services.ingest.github_ingest import (
 )
 from pipecat_context_hub.shared.config import HubConfig, StorageConfig
 from pipecat_context_hub.shared.types import ChunkedRecord
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,7 +68,9 @@ def _create_fake_repo(tmp_path: Path, repo_name: str, files: dict[str, str]) -> 
     return repo_dir
 
 
-def _create_remote_and_clone(tmp_path: Path, repo_slug: str, files: dict[str, str]) -> tuple[Path, Path]:
+def _create_remote_and_clone(
+    tmp_path: Path, repo_slug: str, files: dict[str, str]
+) -> tuple[Path, Path]:
     """Create a source repo with a bare origin and return the local clone path."""
     from git import Repo as GitRepo
 
@@ -259,11 +262,35 @@ class TestRepoRefIsTainted:
         assert repo_ref_is_tainted(repo_dir, commit_sha, {"v1.2.3"})
 
     def test_non_matching_tag_returns_false(self, tmp_path: Path):
+        """A tainted tag that exists locally but names a different commit is
+        genuinely not tainted — distinct from the tag being absent entirely,
+        which is covered by ``test_missing_named_ref_fails_closed`` below.
+        """
+        repo_dir = _create_fake_repo(tmp_path, "repo", {"main.py": "print('ok')\n"})
+        from git import Repo as GitRepo
+
+        git_repo = GitRepo(str(repo_dir))
+        first_commit_sha = git_repo.head.commit.hexsha
+        (repo_dir / "main.py").write_text("print('second')\n", encoding="utf-8")
+        git_repo.index.add([str(repo_dir / "main.py")])
+        git_repo.index.commit("second commit")
+        git_repo.git.update_ref("refs/tags/v9.9.9", "HEAD")
+
+        assert not repo_ref_is_tainted(repo_dir, first_commit_sha, {"v9.9.9"})
+
+    def test_missing_named_ref_fails_closed(self, tmp_path: Path):
+        """Regression (Round 3 Finding #3): a named tainted ref configured but
+        absent from the local tag set (e.g. deleted upstream and pruned)
+        must fail closed — treated as tainted — matching this function's
+        other two failure branches (can't-open-repo, can't-resolve-tag).
+        Silently falling through to "not tainted" would let an operator's
+        explicit exclusion slip back into the index.
+        """
         repo_dir = _create_fake_repo(tmp_path, "repo", {"main.py": "print('ok')\n"})
         from git import Repo as GitRepo
 
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
-        assert not repo_ref_is_tainted(repo_dir, commit_sha, {"v9.9.9"})
+        assert repo_ref_is_tainted(repo_dir, commit_sha, {"v9.9.9"})
 
     def test_repo_open_failure_fails_closed_for_named_refs(self, tmp_path: Path):
         missing_repo = tmp_path / "missing-repo"
@@ -308,7 +335,7 @@ class TestCloneOrFetchCheckoutControl:
             tag="v1.2.3",
         )
 
-        repo_path, fetched_sha = ingester.clone_or_fetch(repo_slug, checkout=False)
+        repo_path, fetched_sha, _tag = ingester.clone_or_fetch(repo_slug, checkout=False)
 
         assert repo_path == clone_dir
         assert fetched_sha == new_sha
@@ -339,7 +366,7 @@ class TestCloneOrFetchCheckoutControl:
         writer = _make_mock_writer()
         ingester = GitHubRepoIngester(config, writer)
 
-        repo_path, prefetched_sha = ingester.clone_or_fetch(repo_slug, checkout=False)
+        repo_path, prefetched_sha, _tag = ingester.clone_or_fetch(repo_slug, checkout=False)
 
         result = await ingester.ingest(
             repos=[repo_slug],
@@ -397,6 +424,7 @@ class TestCloneOrFetchCorruptRecovery:
         # Redirect cloning to our bare origin instead of real GitHub.
         bare_remote = tmp_path / "origin.git"
         from git import Repo as GitRepo
+
         real_clone_from = GitRepo.clone_from
 
         def fake_clone_from(url, to_path, **kwargs):
@@ -406,7 +434,7 @@ class TestCloneOrFetchCorruptRecovery:
             "pipecat_context_hub.services.ingest.github_ingest.GitRepo.clone_from",
             side_effect=fake_clone_from,
         ) as mock_clone:
-            repo_path, sha = ingester.clone_or_fetch(repo_slug, checkout=False)
+            repo_path, sha, _tag = ingester.clone_or_fetch(repo_slug, checkout=False)
 
         assert mock_clone.called, "expected re-clone after corrupt state"
         assert repo_slug in ingester.recovered_repos
@@ -435,12 +463,14 @@ class TestCloneOrFetchCorruptRecovery:
         )
         ingester = GitHubRepoIngester(config, _make_mock_writer())
 
-        with patch(
-            "pipecat_context_hub.services.ingest.github_ingest.GitRepo.clone_from",
-            side_effect=RuntimeError("simulated network failure"),
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.GitRepo.clone_from",
+                side_effect=RuntimeError("simulated network failure"),
+            ),
+            pytest.raises(RuntimeError, match="simulated network failure"),
         ):
-            with pytest.raises(RuntimeError, match="simulated network failure"):
-                ingester.clone_or_fetch(repo_slug, checkout=False)
+            ingester.clone_or_fetch(repo_slug, checkout=False)
 
         assert repo_slug not in ingester.recovered_repos, (
             "repo must not be flagged as recovered when re-clone fails"
@@ -646,7 +676,7 @@ class TestGitHubRepoIngester:
         commit_sha = git_repo.head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -667,6 +697,48 @@ class TestGitHubRepoIngester:
             assert rec.metadata["commit_sha"] == commit_sha
             assert isinstance(rec.indexed_at, datetime)
 
+    async def test_pinned_framework_ingest_uses_resolved_tag_for_chunks(self, tmp_path: Path):
+        """A same-commit tag alias must retain the selected release identity.
+
+        ``framework_version`` is documented as an already-normalized value —
+        its sole real-world caller (cli.py's refresh) always passes the output
+        of ``exact_release_version()`` — so this test passes that same
+        normalized form rather than the raw resolved tag.
+        """
+        from pipecat_context_hub.shared.versioning import exact_release_version
+
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "pipecat-ai_pipecat",
+            {"examples/bot1/main.py": "def run():\n    pass\n"},
+        )
+
+        from git import Repo as GitRepo
+
+        git_repo = GitRepo(str(repo_dir))
+        git_repo.git.update_ref("refs/tags/v1.10.0", "HEAD")
+        git_repo.git.update_ref("refs/tags/1.10.0", "HEAD")
+        selected_tag = GitHubRepoIngester._latest_version_tag(git_repo)
+        commit_sha = git_repo.head.commit.hexsha
+
+        config = self._make_config(tmp_path, repos=[_FRAMEWORK_REPO])
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        with patch(
+            "pipecat_context_hub.services.ingest.github_ingest._get_framework_version",
+            side_effect=AssertionError("pinned ingestion must not use git describe"),
+        ):
+            result = await ingester.ingest(
+                repos=[_FRAMEWORK_REPO],
+                prefetched={_FRAMEWORK_REPO: (repo_dir, commit_sha)},
+                framework_checkout_version=exact_release_version(selected_tag),
+            )
+
+        assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        assert {record.metadata["pipecat_version_pin"] for record in records} == {"1.10.0"}
+
     async def test_ingest_idempotent(self, tmp_path: Path):
         """Same commit SHA produces identical chunk IDs."""
         repo_dir = _create_fake_repo(
@@ -685,7 +757,7 @@ class TestGitHubRepoIngester:
         commit_sha = git_repo.head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             await ingester.ingest()
             await ingester.ingest()
@@ -720,10 +792,10 @@ class TestGitHubRepoIngester:
         sha_a = GitRepo(str(repo_a)).head.commit.hexsha
         sha_b = GitRepo(str(repo_b)).head.commit.hexsha
 
-        def mock_clone(slug: str) -> tuple[Path, str]:
+        def mock_clone(slug: str) -> CloneResult:
             if slug == "org/repo-a":
-                return repo_a, sha_a
-            return repo_b, sha_b
+                return CloneResult(repo_a, sha_a, None)
+            return CloneResult(repo_b, sha_b, None)
 
         with patch.object(ingester, "clone_or_fetch", side_effect=mock_clone):
             result = await ingester.ingest()
@@ -740,14 +812,62 @@ class TestGitHubRepoIngester:
         writer = _make_mock_writer()
         ingester = GitHubRepoIngester(config, writer)
 
-        with patch.object(
-            ingester, "clone_or_fetch", side_effect=RuntimeError("network error")
-        ):
+        with patch.object(ingester, "clone_or_fetch", side_effect=RuntimeError("network error")):
             result = await ingester.ingest()
 
         assert len(result.errors) == 1
         assert "network error" in result.errors[0]
         assert result.records_upserted == 0
+
+    async def test_ingest_upsert_failure_is_reported_as_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Regression (Round 5 Finding #2): a real `IndexStore` whose FTS
+        index fails during `upsert` now re-raises (Part A) instead of
+        swallowing the exception and silently returning only the vector
+        count. `_ingest_repo`'s existing `except Exception as exc:` around
+        `self._writer.upsert(records)` (Part B, unchanged) must catch that
+        and report it via `IngestResult.errors`, leaving `records_upserted`
+        at 0 rather than the vector-only count a swallowed exception would
+        have produced.
+
+        Uses the real `IndexStore` (not `_make_mock_writer`) with only its
+        underlying FTS index's `upsert` faulted, so this exercises the actual
+        `store.py` fix rather than a mocked-away substitute.
+        """
+        from pipecat_context_hub.services.index.store import IndexStore
+
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {"examples/bot1/main.py": "def run():\n    pass\n"},
+        )
+
+        config = self._make_config(tmp_path)
+        store = IndexStore(config.storage)
+        monkeypatch.setattr(
+            store._fts,
+            "upsert",
+            MagicMock(side_effect=RuntimeError("FTS upsert failed (disk full)")),
+        )
+        try:
+            ingester = GitHubRepoIngester(config, store)
+
+            from git import Repo as GitRepo
+
+            git_repo = GitRepo(str(repo_dir))
+            commit_sha = git_repo.head.commit.hexsha
+
+            with patch.object(
+                ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
+            ):
+                result = await ingester.ingest()
+
+            assert result.records_upserted == 0
+            assert len(result.errors) == 1
+            assert "FTS upsert failed" in result.errors[0]
+        finally:
+            store.close()
 
     async def test_ingest_src_layout_repo(self, tmp_path: Path):
         """Repo with only src/ dir (no examples/) is indexed via root fallback."""
@@ -766,7 +886,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -797,7 +917,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -833,7 +953,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -870,7 +990,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             await ingester.ingest()
 
@@ -908,7 +1028,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -943,7 +1063,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -990,7 +1110,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             await ingester.ingest()
 
@@ -1027,7 +1147,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -1060,13 +1180,11 @@ class TestGitHubRepoIngester:
             "test-org_test-examples",
             {
                 "chatbot/main.py": (
-                    "from pipecat.services.openai import OpenAILLMService\n"
-                    "def run(): pass\n"
+                    "from pipecat.services.openai import OpenAILLMService\ndef run(): pass\n"
                 ),
                 "chatbot/README.md": "# Chatbot\n\nA conversational bot.\n",
                 "storytelling/app.py": (
-                    "from pipecat.services.anthropic import AnthropicLLMService\n"
-                    "def run(): pass\n"
+                    "from pipecat.services.anthropic import AnthropicLLMService\ndef run(): pass\n"
                 ),
             },
         )
@@ -1080,7 +1198,7 @@ class TestGitHubRepoIngester:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -1228,7 +1346,7 @@ class TestRootLevelFileCapture:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -1254,8 +1372,7 @@ class TestRootLevelFileCapture:
                     "def main(): pass\n"
                 ),
                 "processors/video.py": (
-                    "from pipecat.services.openai import OpenAILLMService\n"
-                    "def process(): pass\n"
+                    "from pipecat.services.openai import OpenAILLMService\ndef process(): pass\n"
                 ),
             },
         )
@@ -1269,7 +1386,7 @@ class TestRootLevelFileCapture:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 
@@ -1284,6 +1401,63 @@ class TestRootLevelFileCapture:
         )
         assert isinstance(root_rec.metadata.get("capability_tags"), list), (
             "root-level file missing capability_tags"
+        )
+
+    async def test_framework_root_files_use_chunk_version_fallback(self, tmp_path: Path):
+        """Regression (Round 4 Finding #3): for the framework repo's Layout-B
+        root-file fallback, when ``framework_checkout_version`` is None,
+        ``root_version`` must fall back through ``chunk_version`` (which uses
+        ``_get_framework_version``/git-describe) rather than staying None.
+
+        Before the fix, ``root_version`` used ``framework_checkout_version``
+        directly, so root-level framework files ended up with no
+        ``pipecat_version_pin`` metadata whenever the checkout wasn't
+        explicitly pinned (the common unpinned-refresh case).
+        """
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "pipecat-ai_pipecat",
+            {
+                "setup.py": "pass\n",
+                # A subdirectory example is required so the Layout-B
+                # root-file-capture branch (is_layout_b and
+                # has_subdir_examples) actually triggers — without it,
+                # setup.py is instead picked up by the unrelated
+                # is_root_fallback path, which already uses chunk_version.
+                "processors/video.py": "def process(): pass\n",
+            },
+        )
+
+        config = self._make_config(tmp_path, repos=["pipecat-ai/pipecat"])
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+
+        with (
+            patch.object(
+                ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
+            ),
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("0.0.99", 3),
+            ),
+        ):
+            # framework_checkout_version omitted (None) — the unpinned
+            # default-branch refresh case.
+            result = await ingester.ingest(repos=["pipecat-ai/pipecat"])
+
+        assert result.records_upserted > 0
+        assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        by_path = {r.path: r for r in records}
+
+        root_rec = by_path["setup.py"]
+        assert root_rec.metadata.get("pipecat_version_pin") is not None, (
+            "root-level framework file should fall back to chunk_version "
+            "(git-describe) when framework_checkout_version is None"
         )
 
     async def test_root_files_not_captured_for_examples_layout(self, tmp_path: Path):
@@ -1306,7 +1480,7 @@ class TestRootLevelFileCapture:
         commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
 
         with patch.object(
-            ingester, "clone_or_fetch", return_value=(repo_dir, commit_sha)
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
         ):
             result = await ingester.ingest()
 

@@ -1,8 +1,8 @@
 # Version-Aware Indexing & Deprecation Checking
 
-**Status:** Phase 1a + 1b + 2 + 4 Complete (Phase 1b extended with release-notes parsing)
+**Status:** Phase 1a + 1b + 2 + 4 Complete (Phase 1b extended with release-notes parsing; Phase 4 extended with `--framework-version latest`, PR #116)
 **Priority:** Medium
-**Branch:** `feature/version-aware-indexing` (Phase 1a+1b), `feature/version-aware-retrieval` (Phase 2), `feature/release-notes-deprecation` (Phase 1b extension), `feature/version-pinned-indexing` (Phase 4)
+**Branch:** `feature/version-aware-indexing` (Phase 1a+1b), `feature/version-aware-retrieval` (Phase 2), `feature/release-notes-deprecation` (Phase 1b extension), `feature/version-pinned-indexing` (Phase 4), `feature/framework-version-latest` (Phase 4 extension: `latest` sentinel, PR #116)
 **Created:** 2026-03-31
 **Objective:** Track which pipecat version each repo/example targets, expose
 deprecation checking as a first-class MCP tool, and enable version-aware
@@ -229,8 +229,10 @@ penalty or make mutually exclusive.
    `refresh --framework-version v0.0.95` CLI flag
 3. **Single-version replacement** — replaces HEAD source chunks with the
    pinned version's chunks (not multi-version; avoids ~3x storage cost)
-4. **Tag validation** — `_TAG_RE` regex validates tag format before git ops;
-   `_resolve_tag()` normalises `v` prefix and dereferences annotated tags
+4. **Tag validation** — `_TAG_INPUT_RE` regex validates tag format before git ops;
+   `_resolve_tag()` normalises `v` prefix and dereferences annotated tags.
+   `_resolve_tag()` resolves a literal tag only — it does not resolve `latest`;
+   that's handled separately by `_resolve_latest_tag`/`_latest_version_tag`.
 
 ## Implementation Checklist
 
@@ -342,6 +344,11 @@ penalty or make mutually exclusive.
 
 - [x] `PIPECAT_HUB_FRAMEWORK_VERSION` env var / `--framework-version` CLI
 - [x] Tag-based checkout in `GitHubRepoIngester.clone_or_fetch()`
+- [x] `--framework-version latest` — resolves the highest release tag on
+      `pipecat-ai/pipecat` (version-aware, not lexicographic; prereleases
+      skipped unless nothing else exists), re-resolved on every refresh so
+      `PIPECAT_HUB_FRAMEWORK_VERSION=latest` tracks releases as they ship
+      (PR #116; shared helpers consolidated in `shared/versioning.py`)
 - [ ] ~~Separate index partitions per version~~ (deferred — single-version
       replacement model used instead, avoiding 3x storage cost)
 - [ ] ~~Performance benchmarks for multi-version index~~ (deferred — single-version

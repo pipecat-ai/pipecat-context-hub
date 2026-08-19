@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # with a runtime lookup, the PyPI distribution name is "pipecat-ai-context-hub"
 # (not "pipecat-context-hub", which is only the command / server name) —
 # importlib.metadata.version() must use the former.
-_SERVER_VERSION = "0.5.2"
+_SERVER_VERSION = "0.5.3"
 
 # Tool name → (description, input schema, handler)
 _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
@@ -360,7 +360,7 @@ def create_server(
             # indexed framework version as the default for version-relative status.
             if name == "check_deprecation":
                 dep_map = getattr(retriever, "deprecation_map", None)
-                fw_version = resolve_framework_version(index_store)
+                fw_version = resolve_framework_version(index_store, dep_map)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return [types.TextContent(type="text", text=_annotate(result_json))]
 

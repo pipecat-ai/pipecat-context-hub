@@ -26,7 +26,8 @@
 # Repo slugs to ingest alongside defaults, as a native TOML array.
 # PIPECAT_HUB_EXTRA_REPOS = ["org/repo-a", "org/repo-b"]
 
-# Pin the framework repo to a specific git tag.
+# Pin the framework repo to a specific git tag, or "latest" for its newest
+# release tag (re-resolved on every refresh). Unpinned, refresh indexes `main`.
 # PIPECAT_HUB_FRAMEWORK_VERSION = "v0.0.96"
 
 # Repo slugs to skip entirely, as a native TOML array.

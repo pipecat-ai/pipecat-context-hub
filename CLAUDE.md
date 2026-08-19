@@ -20,6 +20,7 @@ uv run pipecat-context-hub refresh                  # incremental rebuild
 uv run pipecat-context-hub refresh --force          # full re-ingest
 uv run pipecat-context-hub refresh --force --reset-index  # recover unhealthy local Chroma state
 uv run pipecat-context-hub refresh --framework-version v0.0.96  # index framework at a specific tag
+uv run pipecat-context-hub refresh --framework-version latest   # ...or at its newest release tag
 uv run pipecat-context-hub serve                    # start MCP server (`start` is an alias)
 uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
 ```
@@ -139,7 +140,8 @@ src/pipecat_context_hub/
 │   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside (filesystem-identity predicates shared by every deletion guard)
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
 │   ├── support_links.py      # RETRIEVAL_QUALITY_ISSUE_URL / BUG_REPORT_ISSUE_URL — single source for MCP + CLI report-hint URLs
-│   └── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
+│   ├── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
+│   └── versioning.py         # LATEST_SENTINEL / is_latest_sentinel / canonicalize_framework_pin / parse_release_version / exact_release_version — shared tag/version helpers for `--framework-version` (pin, `latest`, and provenance stamping)
 ├── services/
 │   ├── embedding.py          # EmbeddingService
 │   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
