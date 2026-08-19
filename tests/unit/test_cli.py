@@ -1580,6 +1580,104 @@ class TestRefreshFtsFaultInjection:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_pre_ingest_delete_failure_sets_cleanup_failed_marker(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Round 11 Finding #2 (corrected to defense-in-depth): the pre-ingest
+        `delete_by_repo` failure branch must also set the
+        `repo:<slug>:cleanup_failed` marker, mirroring the sibling
+        `_delete_repo_index_data` failure paths. Not load-bearing for the
+        originally-reported "permanent same-SHA skip" scenario — that
+        `continue` already skips `ingested_repos.add()`, and the
+        SHA-bookkeeping loop already deletes this repo's stored `commit_sha`
+        on any failure path — but the marker should be set anyway for
+        consistency with the sibling pattern.
+        """
+        target_repo = "pipecat-ai/pipecat-flows"
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        async def _delete_by_repo_side_effect(repo):
+            if repo == target_repo:
+                raise RuntimeError("FTS delete_by_repo failed; indexes may have diverged")
+            return 0
+
+        mock_store.delete_by_repo = AsyncMock(side_effect=_delete_by_repo_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.set_metadata.assert_any_call(f"repo:{target_repo}:cleanup_failed", "1")
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_pre_ingest_delete_failure_marker_cleared_by_subsequent_success(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A subsequent, fully-successful forced re-ingest of the same repo
+        must clear the `cleanup_failed` marker (existing success-path
+        behavior, unrelated to this fix) — confirms the marker set on
+        failure isn't permanently stuck.
+        """
+        target_repo = "pipecat-ai/pipecat-flows"
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        deleted_keys = [call.args[0] for call in mock_store.delete_metadata.call_args_list]
+        assert f"repo:{target_repo}:cleanup_failed" in deleted_keys
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_fts_delete_by_content_type_failure_during_docs_delete_is_handled(
         self,
         mock_si_cls,

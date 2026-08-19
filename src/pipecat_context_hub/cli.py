@@ -1296,6 +1296,19 @@ def refresh(
                 msg = f"Failed to delete stale records for {repo_slug}: {exc}"
                 all_errors.append(msg)
                 logger.error(msg)
+                # Defense-in-depth / consistency with the sibling
+                # `_delete_repo_index_data` failure paths, which set this
+                # marker on any delete failure. Not load-bearing here: this
+                # `continue` skips `ingested_repos.add()` below, and the
+                # SHA-bookkeeping loop further down already deletes this
+                # repo's stored commit_sha on any failure path (forcing a
+                # retry next non-force refresh) independent of this marker.
+                try:
+                    index_store.set_metadata(f"repo:{repo_slug}:cleanup_failed", "1")
+                except Exception:
+                    logger.exception(
+                        "Also failed to record cleanup_failed marker for %s", repo_slug
+                    )
                 source_status[repo_slug] = {
                     "status": "error",
                     "sha": commit_sha[:8],
