@@ -148,6 +148,25 @@ class TestResolveTag:
         assert sha_lower == expected_sha
         assert sha_upper == expected_sha
 
+    def test_uppercase_v_prefix_resolves_when_only_lowercase_tag_exists(self, tmp_path: Path):
+        """Round 10 Finding #4 regression: when only the lowercase-prefixed
+        tag exists upstream (the common case — `v1.2.0`, not `1.2.0`), an
+        uppercase-'V' literal pin ('V1.2.0') must still resolve to it.
+        Candidate generation used to build `[tag, bare]` for an already
+        prefixed tag, so `"V1.2.0"` produced `["V1.2.0", "1.2.0"]` and never
+        tried the real upstream tag `"v1.2.0"`.
+        """
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["v1.2.0"])
+        git_repo = GitRepo(str(repo_dir))
+
+        sha_lower = GitHubRepoIngester._resolve_tag(git_repo, "v1.2.0")
+        sha_upper = GitHubRepoIngester._resolve_tag(git_repo, "V1.2.0")
+        assert sha_upper == sha_lower
+
     def test_missing_tag_raises(self, tmp_path: Path):
         from git import Repo as GitRepo
 

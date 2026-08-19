@@ -1540,11 +1540,8 @@ class GitHubRepoIngester:
         # lowercase-only by design (other callers rely on that strict
         # contract); this is a separate, narrower case-insensitive check
         # local to candidate generation.
-        candidates = [tag]
-        if tag[:1].lower() != "v":
-            candidates.append(f"v{tag}")
-        else:
-            candidates.append(tag[1:])
+        bare = tag[1:] if tag[:1].lower() == "v" else tag
+        candidates = list(dict.fromkeys([tag, f"v{bare}", bare]))
 
         for candidate in candidates:
             try:
