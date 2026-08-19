@@ -125,6 +125,60 @@ This project uses [Semantic Versioning](https://semver.org/).
   cleanup — now unified behind `_delete_repo_index_data`) append a message to
   `all_errors` on failure, so a failed purge surfaces through the refresh
   summary's error count instead of only a log line.
+- **A failed stale-docs delete could skip re-ingestion forever.** When
+  `delete_by_content_type("doc")` failed, `docs:content_hash` still described
+  the (partially-diverged) old crawl, so an unforced refresh kept taking the
+  "docs unchanged, skip" shortcut on every subsequent run. `docs:content_hash`
+  is now cleared as part of the failure handler, so the next refresh — forced
+  or not — always retries the delete and re-ingest instead of silently
+  skipping.
+- **A corrupt or unreadable deprecation registry silently published an empty
+  deprecation map.** `build_deprecation_map_from_registry` distinguished a
+  legitimately absent registry (older pipecat versions) from a present but
+  unparseable one only by both returning an empty map — so a truncated/corrupt
+  `deprecations.json` overwrote a previously good `deprecation_map.json` with
+  nothing, and every deprecation check against it went silently blank. A
+  present-but-unreadable registry now raises `DeprecationRegistryError`, and
+  `refresh` catches it to preserve the existing on-disk map instead of
+  publishing an empty one.
+- **A schema-invalid (but syntactically valid) deprecation registry bypassed
+  `DeprecationRegistryError` entirely.** A registry root with the
+  `deprecations` key simply absent is a legitimate empty map, but a bare list
+  root, or a present `deprecations` field that isn't a list (e.g. `null`),
+  either produced a silent empty map or an unhandled `TypeError`/
+  `AttributeError` that aborted the whole refresh. Both invalid shapes now
+  raise `DeprecationRegistryError` up front, so `refresh` preserves the
+  existing map the same way it does for unreadable JSON.
+- **The framework provenance stamp could advance independently of the
+  deprecation map it should describe.** `indexed_framework_version` /
+  `indexed_framework_commits_ahead` were gated on the framework records having
+  been replaced, but not on the deprecation map having actually been
+  published — so a `dep_map.save()` failure (or a registry error) could leave
+  `deprecation_map.json` describing the old checkout while the stamp advanced
+  to describe the new one, producing an incoherent revision triple. The stamp
+  is now gated on the map publish having succeeded, so the two always move
+  together.
+- **A repo whose stale-record cleanup failed could be skipped forever with an
+  empty vector index.** `refresh`'s unchanged-SHA skip shortcut trusted
+  `indexed_records > 0` (an FTS-side count) as proof a repo's index is
+  healthy — but a failed `_delete_repo_index_data` call (vector delete
+  succeeds, FTS delete raises) can leave stale FTS rows behind even though the
+  vector store is now empty for that repo, letting the shortcut fire
+  indefinitely on a silently-empty index. Cleanup failures now set a
+  `cleanup_failed` flag that blocks the shortcut until the repo is
+  successfully re-ingested.
+- **The docs-recovery hash-clearing call (added to fix the "skipped forever"
+  bug above) was itself unprotected.** If the same underlying storage fault
+  that broke `delete_by_content_type` also broke `delete_metadata`, the
+  exception propagated unhandled and aborted the whole refresh — reproducing
+  the permanent-skip bug one layer deeper. That call is now wrapped in its own
+  try/except, best-effort, with the failure recorded in the refresh summary.
+- **`--framework-version` pins with an uppercase-`V` prefix could fail to
+  resolve.** `_resolve_tag`'s candidate generation only checked
+  `tag.startswith("v")`, so a literal pin like `V1.2.0` never tried the
+  un-prefixed tag as a fallback candidate even though `latest` resolution and
+  version parsing both already handle that case. Candidate generation is now
+  case-insensitive, matching the rest of the pin-resolution path.
 
 ## [0.5.2] - 2026-08-09
 
