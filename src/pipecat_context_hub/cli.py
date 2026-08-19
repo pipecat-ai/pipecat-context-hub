@@ -321,6 +321,14 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             "records may persist until a future refresh retries the cleanup",
             slug,
         )
+        # Flag the failure so a later refresh's unchanged-skip shortcut can't
+        # trust `indexed_records > 0` alone: that count is FTS-side, and a
+        # partial delete (vector delete succeeds, FTS delete raises) can
+        # leave stale FTS rows behind that would otherwise make the vector
+        # store's now-empty state for this repo look healthy indefinitely.
+        # Cleared once the repo is fully re-ingested (see the refresh loop's
+        # success path).
+        index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
         return False
     index_store.delete_metadata(meta_key)
     if slug == _FRAMEWORK_REPO:
@@ -914,6 +922,17 @@ def refresh(
     # case this gate exists to guard against.
     framework_provenance_ready = False
 
+    # True only once the deprecation map derived from this run's framework
+    # checkout has actually been written to disk (`dep_map.save()` returned
+    # without raising). Separate from `framework_provenance_ready`: that flag
+    # says the framework *records* are coherent with the index, but building
+    # or saving the deprecation map is a further step that can independently
+    # fail (corrupt/malformed registry, disk/permission error on save). The
+    # provenance stamp below must describe the same revision as the published
+    # map, so it is gated on this flag rather than reused from the records
+    # gate.
+    deprecation_map_published = False
+
     # The tag of the commit actually checked out for a pinned framework
     # refresh, as returned (and origin-verified) by `clone_or_fetch` itself —
     # not re-derived afterwards, so the tag and the commit can never come from
@@ -929,7 +948,7 @@ def refresh(
 
     async def _run_refresh() -> None:
         nonlocal total_upserted, all_errors, framework_checkout, framework_provenance_ready
-        nonlocal unpruned_repo_count, checked_out_framework_tag
+        nonlocal unpruned_repo_count, checked_out_framework_tag, deprecation_map_published
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -976,7 +995,22 @@ def refresh(
                     # a future refresh — forced or not — can never take the
                     # "docs unchanged, skip" shortcut on this stale hash; it
                     # will retry the delete+ingest instead.
-                    index_store.delete_metadata("docs:content_hash")
+                    #
+                    # This call is itself best-effort: if the same underlying
+                    # storage fault that broke `delete_by_content_type` also
+                    # breaks `delete_metadata` (e.g. a disk/lock issue
+                    # affecting the whole SQLite file), don't let it propagate
+                    # unhandled and abort the whole refresh — that would
+                    # reproduce exactly the permanent-skip bug this clear is
+                    # meant to close, just one layer deeper. Log and record
+                    # the failure in `all_errors`, then fall through to the
+                    # same "error" status as the primary failure.
+                    try:
+                        index_store.delete_metadata("docs:content_hash")
+                    except Exception as meta_exc:
+                        meta_msg = f"Failed to clear stale docs:content_hash stamp: {meta_exc}"
+                        all_errors.append(meta_msg)
+                        logger.warning(meta_msg)
                     source_status[docs_key] = {
                         "status": "error",
                         "sha": _MISSING_SENTINEL,
@@ -1152,11 +1186,21 @@ def refresh(
             # thought to run `--force`. So the shortcut requires both halves:
             # the SHA is unchanged *and* records for it actually exist.
             indexed_records = pre_counts.get(repo_slug, 0)
+            # A prior cleanup failure for this repo (`_delete_repo_index_data`
+            # raising) leaves stale FTS rows behind even though the vector
+            # store may already be empty for it — `indexed_records` alone
+            # can't tell those apart from a healthy repo. Don't take the
+            # unchanged-skip shortcut while that flag is set; force a
+            # re-ingest instead, which clears it on success below.
+            cleanup_failed = (
+                index_store.get_metadata(f"repo:{repo_slug}:cleanup_failed") is not None
+            )
             if (
                 not force
                 and stored_sha == commit_sha
                 and indexed_records > 0
                 and repo_slug not in github.recovered_repos
+                and not cleanup_failed
             ):
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
@@ -1180,6 +1224,13 @@ def refresh(
                     logger.warning(
                         "Repo %s SHA unchanged (sha=%s…) but no indexed records "
                         "found — re-ingesting",
+                        repo_slug,
+                        commit_sha[:8],
+                    )
+                elif not force and stored_sha == commit_sha and cleanup_failed:
+                    logger.warning(
+                        "Repo %s SHA unchanged (sha=%s…) but a prior cleanup "
+                        "failed — re-ingesting to reconcile the index",
                         repo_slug,
                         commit_sha[:8],
                     )
@@ -1284,6 +1335,13 @@ def refresh(
                         repo_slug,
                     )
 
+            if not repo_has_errors:
+                # Repo fully re-ingested — any earlier cleanup-failure flag
+                # for it is now moot: the index is coherent again, so the
+                # unchanged-skip shortcut can trust `indexed_records` for it
+                # on future runs.
+                index_store.delete_metadata(f"repo:{repo_slug}:cleanup_failed")
+
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",
                 "sha": repo_shas.get(repo_slug, _MISSING_SENTINEL)[:8],
@@ -1353,19 +1411,24 @@ def refresh(
             registry_path = fw_path / REGISTRY_RELATIVE_PATH
             try:
                 dep_map = build_deprecation_map_from_registry(registry_path, commit_sha=fw_sha)
-            except DeprecationRegistryError as exc:
-                # Present-but-unreadable registry (corrupt/truncated JSON, I/O
-                # error). Distinguish this from the legitimate "registry
-                # doesn't exist yet" case, which returns an empty map safely.
-                # Do NOT publish here — an empty map would silently overwrite
-                # (and thus hide) a previously-good deprecation map.
-                msg = f"Deprecation registry unreadable at {registry_path}; preserving existing map: {exc}"
-                all_errors.append(msg)
-                logger.warning(msg)
-            else:
                 # Merge removed symbols (no-op until pipecat ships removals.json).
                 add_removals_from_registry(dep_map, fw_path / REMOVALS_RELATIVE_PATH)
                 dep_map.save(dep_map_path)
+            except (DeprecationRegistryError, OSError) as exc:
+                # Either the registry was present-but-unreadable/malformed
+                # (corrupt/truncated JSON, I/O error, structurally invalid
+                # shape) or the save itself failed (disk/permission). Both
+                # leave `deprecation_map_published` False, so the provenance
+                # stamp below — gated on that flag, not on
+                # `framework_provenance_ready` alone — is not advanced to
+                # describe a checkout the on-disk map doesn't match. Do NOT
+                # publish here — an empty/partial map would silently overwrite
+                # (and thus hide) a previously-good deprecation map.
+                msg = f"Deprecation registry unreadable or map unsaveable at {registry_path}; preserving existing map: {exc}"
+                all_errors.append(msg)
+                logger.warning(msg)
+            else:
+                deprecation_map_published = True
         else:
             logger.debug(
                 "Framework repo %s not cloned or tainted — preserving existing deprecation map",
@@ -1419,7 +1482,12 @@ def refresh(
         # project builds against. Left untouched when the framework repo was
         # not cloned this run, so a transient clone failure keeps the last
         # known-good stamp rather than erasing it.
-        if framework_provenance_ready:
+        if deprecation_map_published:
+            # Gated on the deprecation map having actually been published
+            # (not just `framework_provenance_ready`) so the stamp and the
+            # on-disk map always describe the same revision — see the
+            # `deprecation_map_published` declaration above.
+            #
             # A pinned refresh already knows the verified tag its commit was
             # resolved from (returned by `clone_or_fetch`) — trust that over
             # `git describe`, which can pick a different tag when multiple point
