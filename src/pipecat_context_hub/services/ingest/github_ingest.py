@@ -1534,9 +1534,14 @@ class GitHubRepoIngester:
         """
         if not _TAG_INPUT_RE.fullmatch(tag):
             raise ValueError(f"Invalid tag format: {tag!r}")
-        # Normalise: accept both "v0.0.96" and "0.0.96"
+        # Normalise: accept "v0.0.96", "V0.0.96", and "0.0.96" alike. Mirrors
+        # the case-insensitive guard in `shared/versioning.parse_release_version`
+        # — deliberately NOT routed through `strip_v_prefix`, which is
+        # lowercase-only by design (other callers rely on that strict
+        # contract); this is a separate, narrower case-insensitive check
+        # local to candidate generation.
         candidates = [tag]
-        if not tag.startswith("v"):
+        if tag[:1].lower() != "v":
             candidates.append(f"v{tag}")
         else:
             candidates.append(tag[1:])

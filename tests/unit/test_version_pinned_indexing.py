@@ -128,6 +128,26 @@ class TestResolveTag:
         sha = GitHubRepoIngester._resolve_tag(git_repo, "v1.0.0")
         assert sha == expected_sha
 
+    def test_uppercase_v_prefix_resolves_same_as_lowercase(self, tmp_path: Path):
+        """Round 9 Finding #5 regression: an uppercase-'V' literal pin (e.g.
+        '--framework-version V1.2.0') must resolve identically to its
+        lowercase equivalent — `_resolve_tag`'s candidate generation used to
+        only check `tag.startswith("v")`, so an uppercase-prefixed pin never
+        got 'v' stripped to try the un-prefixed tag as a candidate.
+        """
+        from git import Repo as GitRepo
+
+        from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
+
+        repo_dir = _create_tagged_repo(tmp_path, ["1.2.0"])
+        git_repo = GitRepo(str(repo_dir))
+        expected_sha = git_repo.head.commit.hexsha
+
+        sha_lower = GitHubRepoIngester._resolve_tag(git_repo, "v1.2.0")
+        sha_upper = GitHubRepoIngester._resolve_tag(git_repo, "V1.2.0")
+        assert sha_lower == expected_sha
+        assert sha_upper == expected_sha
+
     def test_missing_tag_raises(self, tmp_path: Path):
         from git import Repo as GitRepo
 
