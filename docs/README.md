@@ -293,6 +293,7 @@ set — e.g. a new `indexed_framework_version` can never be paired with a stale
 | `last_refresh_error_count` | Errors in that refresh; `last_refresh_errored_at` is present only when non-zero |
 | `indexed_framework_version` | Nearest pipecat release tag the index was built from, e.g. `1.6.0` |
 | `indexed_framework_commits_ahead` | Commits from that tag to the indexed revision. `0` means the index *is* that release |
+| `deprecation_map_commit_sha` | Pipecat commit SHA the on-disk deprecation map was built from. Cross-checked against `indexed_framework_version`'s stamp by `resolve_framework_version` — a mismatch means the map and the stamp were published in different runs (crash between the two writes), so the exact-version answer falls back to `None`/intrinsic status |
 | `framework_version` | The operator's explicit `--framework-version` pin, recorded verbatim — so a `latest` pin stores `latest`, not the tag it resolved to. Absent unless pinned — this is *not* the version the index was built from |
 | `repo:<org>/<repo>:commit_sha` | Indexed commit for each source repo |
 | `content_type_counts` | JSON object of record counts by content type |

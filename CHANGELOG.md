@@ -215,6 +215,42 @@ This project uses [Semantic Versioning](https://semver.org/).
   record-delete step. Those calls are now wrapped in their own try/except,
   returning `False` and setting the repo's `cleanup_failed` marker on
   failure, consistent with the rest of the helper.
+- **A stale exact-provenance stamp could survive a refresh that replaced the
+  framework repo's records but then failed to publish the deprecation map.**
+  `indexed_framework_version` / `indexed_framework_commits_ahead` /
+  `deprecation_map_commit_sha` were left describing the previous revision —
+  still consistent with the untouched on-disk map, but no longer with the
+  records the index actually holds, a divergence the existing map/stamp
+  SHA cross-check can't detect since both sides still match each other. The
+  stamp is now cleared whenever the framework repo's records were replaced
+  this run but the map publish did not follow, so `resolve_framework_version`
+  falls back to intrinsic status instead of a wrong exact answer. A refresh
+  where the framework repo simply didn't change is unaffected — its old
+  stamp is still accurate and is left alone.
+- **The pre-ingest `delete_by_repo` failure branch didn't record the
+  `cleanup_failed` marker** that the sibling `_delete_repo_index_data`
+  failure paths already set. Defense-in-depth / consistency fix — this
+  branch's existing `continue` already skips `ingested_repos.add()`, and the
+  SHA-bookkeeping loop already deletes the repo's stored `commit_sha` on any
+  failure path, so a same-SHA skip was never actually reachable here; the
+  marker is now set anyway for parity with the rest of the cleanup-failure
+  handling.
+- **`_delete_repo_index_data`'s `delete_by_repo`-failure except block called
+  `set_metadata` for the `cleanup_failed` marker unguarded**, unlike the
+  sibling bookkeeping-deletes except block fixed previously. A failure in
+  both `delete_by_repo` and that follow-up `set_metadata` call would have
+  propagated uncaught instead of returning `False`. Now wrapped in its own
+  try/except, mirroring the sibling pattern exactly.
+- **A malformed `removals.json` was silently treated as empty instead of
+  raising.** `add_removals_from_registry` swallowed every non-
+  `FileNotFoundError` read/parse failure, treated a non-dict JSON root as
+  legitimately empty, and never validated a present `removals` field was a
+  list before iterating — unlike the sibling
+  `build_deprecation_map_from_registry`, which already raises
+  `DeprecationRegistryError` for all three cases. Root-shape validation now
+  mirrors that sibling exactly, so `refresh` preserves the previously
+  published deprecation map instead of silently merging nothing (or
+  crashing on an unhandled `TypeError`) from a corrupt removals registry.
 
 ## [0.5.2] - 2026-08-09
 
