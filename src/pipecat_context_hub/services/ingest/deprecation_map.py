@@ -302,17 +302,40 @@ def add_removals_from_registry(dep_map: DeprecationMap, removals_path: Path) -> 
     with ``status="removed"``, the *actual* ``removed_in``, and ``announced_removed_in``
     — keyed by bare subject and fully-qualified path, like active deprecations. No-op
     if the file is absent (older pipecat predates it). Mutates ``dep_map`` in place.
+
+    Raises:
+        DeprecationRegistryError: The removals registry file exists but could
+            not be read/parsed, or parsed to a structurally invalid shape
+            (non-dict root, or a ``removals`` field present but not a list).
+            Mirrors ``build_deprecation_map_from_registry``'s validation —
+            callers must not treat this as a legitimate empty result; the
+            caller should preserve whatever deprecation map was previously
+            published rather than merge a wrong/incomplete one.
     """
     try:
         data = json.loads(removals_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         logger.info("No removals registry at %s — no removed symbols merged.", removals_path)
         return
-    except Exception:
+    except Exception as exc:
         logger.warning("Could not read removals registry at %s", removals_path, exc_info=True)
-        return
+        raise DeprecationRegistryError(
+            f"Could not read removals registry at {removals_path}"
+        ) from exc
 
-    records = data.get("removals", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        raise DeprecationRegistryError(
+            f"Removals registry at {removals_path} is not a JSON object (got {type(data).__name__})"
+        )
+    if "removals" not in data:
+        records: list[Any] = []
+    else:
+        records = data["removals"]
+        if not isinstance(records, list):
+            raise DeprecationRegistryError(
+                f"Removals registry at {removals_path} has a non-list "
+                f"'removals' field (got {type(records).__name__})"
+            )
     aliases: dict[str, DeprecationEntry] = {}
     added = 0
     for rec in records:

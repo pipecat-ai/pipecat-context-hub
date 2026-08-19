@@ -488,6 +488,53 @@ class TestRemovalsMerge:
         add_removals_from_registry(dm, tmp_path / "absent.json")
         assert set(dm.entries) == {"X"}  # unchanged
 
+    def test_malformed_removals_registry_raises_distinguishable_error(self, tmp_path: Path) -> None:
+        """Round 11 Finding #4 regression: a present-but-corrupt removals
+        registry must raise, not silently be treated as empty — mirroring
+        `build_deprecation_map_from_registry`'s validation. Before the fix,
+        any non-`FileNotFoundError` read/parse failure was swallowed."""
+        dm = DeprecationMap(entries={"X": DeprecationEntry(old_path="X")})
+        path = tmp_path / "removals.json"
+        path.write_text("not json", encoding="utf-8")
+        with pytest.raises(DeprecationRegistryError):
+            add_removals_from_registry(dm, path)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[]",
+            '"a string root"',
+        ],
+    )
+    def test_non_dict_root_raises_distinguishable_error(self, tmp_path: Path, content: str) -> None:
+        """A non-dict JSON root (e.g. a bare list or a bare string) was
+        previously treated as legitimately empty (`isinstance(data, dict)`
+        guarding a silent `[]` fallback) instead of raising."""
+        dm = DeprecationMap(entries={"X": DeprecationEntry(old_path="X")})
+        path = tmp_path / "removals.json"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(DeprecationRegistryError):
+            add_removals_from_registry(dm, path)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '{"removals": null}',
+            '{"removals": "not-a-list"}',
+        ],
+    )
+    def test_non_list_removals_field_raises_distinguishable_error(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        """A dict root with a present `removals` field that isn't a list
+        (`null`, a string, ...) must raise rather than let an unhandled
+        TypeError escape from iterating over it."""
+        dm = DeprecationMap(entries={"X": DeprecationEntry(old_path="X")})
+        path = tmp_path / "removals.json"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(DeprecationRegistryError):
+            add_removals_from_registry(dm, path)
+
     def test_removal_does_not_shadow_active_deprecation_on_bare_key(self, tmp_path: Path) -> None:
         # A *different* symbol sharing the same bare name: an active deprecation
         # (Foo in module a) plus a removed Foo in module b. The removal must NOT

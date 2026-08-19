@@ -3126,6 +3126,75 @@ class TestRefreshRecordReplacementGate:
         assert "deprecation registry" in caplog.text.lower()
         assert "unreadable" in caplog.text.lower()
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_malformed_removals_registry_preserves_old_map(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Round 11 Finding #4 integration case: `add_removals_from_registry`
+        now raises `DeprecationRegistryError` on a structurally invalid
+        removals.json. `build_deprecation_map_from_registry`,
+        `add_removals_from_registry`, and `dep_map.save` all run inside the
+        same try/except in `refresh` (round 10 Finding #5's widened except),
+        so this raise is caught there, publication is skipped, and the old
+        map on disk survives untouched.
+        """
+        import logging
+
+        from pipecat_context_hub.services.ingest.deprecation_map import (
+            REMOVALS_RELATIVE_PATH,
+            DeprecationMap,
+        )
+
+        mock_store, _mock_github, framework_checkout, dep_map_path = self._harness(
+            (mock_si_cls, mock_gh_cls, mock_dc_cls, mock_is_cls, mock_ref_tainted),
+            tmp_path,
+            monkeypatch,
+            framework_ingest_errors=[],
+        )
+        prior_bytes = dep_map_path.read_bytes()
+
+        removals_path = framework_checkout / REMOVALS_RELATIVE_PATH
+        removals_path.parent.mkdir(parents=True, exist_ok=True)
+        removals_path.write_text('{"removals": "not-a-list"}', encoding="utf-8")
+
+        with (
+            patch(
+                "pipecat_context_hub.services.ingest.github_ingest.describe_framework_checkout",
+                return_value=("1.6.0", 0),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+
+        # Old map survives byte-for-byte — publication was skipped entirely.
+        assert dep_map_path.read_bytes() == prior_bytes
+        preserved = DeprecationMap.load(dep_map_path)
+        assert preserved.pipecat_commit_sha == "old-framework-sha"
+        assert "OldOnlySymbol" in preserved.entries
+
+        written = self._written(mock_store)
+        assert "indexed_framework_version" not in written
+        assert "indexed_framework_commits_ahead" not in written
+        assert "deprecation_map_commit_sha" not in written
+
 
 class TestFinding1StaleStampClearedAfterFailedMapPublish(TestRefreshRecordReplacementGate):
     """Round 11 Finding #1: when the framework repo's records WERE replaced
