@@ -140,7 +140,8 @@ src/pipecat_context_hub/
 │   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside (filesystem-identity predicates shared by every deletion guard)
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
 │   ├── support_links.py      # RETRIEVAL_QUALITY_ISSUE_URL / BUG_REPORT_ISSUE_URL — single source for MCP + CLI report-hint URLs
-│   └── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
+│   ├── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
+│   └── versioning.py         # LATEST_SENTINEL / is_latest_sentinel / canonicalize_framework_pin / parse_release_version / exact_release_version — shared tag/version helpers for `--framework-version` (pin, `latest`, and provenance stamping)
 ├── services/
 │   ├── embedding.py          # EmbeddingService
 │   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
