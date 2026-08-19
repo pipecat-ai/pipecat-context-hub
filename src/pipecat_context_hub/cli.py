@@ -328,7 +328,10 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
         # store's now-empty state for this repo look healthy indefinitely.
         # Cleared once the repo is fully re-ingested (see the refresh loop's
         # success path).
-        index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
+        try:
+            index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
+        except Exception:
+            _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
     try:
         index_store.delete_metadata(meta_key)

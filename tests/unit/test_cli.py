@@ -5298,3 +5298,28 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
         assert result is False
         assert calls["count"] == 3
         store.set_metadata.assert_any_call(f"repo:{_FRAMEWORK_REPO}:cleanup_failed", "1")
+
+
+class TestDeleteRepoIndexDataDeleteByRepoGuard:
+    """Round 11 Finding #3: the `delete_by_repo`-failure except block's own
+    `set_metadata("...:cleanup_failed", "1")` call must also be guarded --
+    mirroring the sibling bookkeeping-deletes except block above. A failure
+    in *both* `delete_by_repo` and the follow-up `set_metadata` must not
+    propagate; the function must still return `False`.
+    """
+
+    async def test_delete_by_repo_and_set_metadata_both_fail_returns_false(self):
+        from pipecat_context_hub.cli import _delete_repo_index_data
+
+        store = MagicMock()
+        store.delete_by_repo = AsyncMock(side_effect=RuntimeError("delete_by_repo boom"))
+        store.set_metadata = MagicMock(side_effect=RuntimeError("set_metadata boom too"))
+        store.delete_metadata = MagicMock()
+
+        result = await _delete_repo_index_data(
+            store, "some-org/some-repo", "repo:some-org/some-repo:commit_sha"
+        )
+
+        assert result is False
+        store.set_metadata.assert_any_call("repo:some-org/some-repo:cleanup_failed", "1")
+        store.delete_metadata.assert_not_called()
