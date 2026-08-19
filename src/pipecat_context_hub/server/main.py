@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # with a runtime lookup, the PyPI distribution name is "pipecat-ai-context-hub"
 # (not "pipecat-context-hub", which is only the command / server name) —
 # importlib.metadata.version() must use the former.
-_SERVER_VERSION = "0.5.2"
+_SERVER_VERSION = "0.5.3"
 
 # Tool name → (description, input schema, handler)
 _BASE_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
