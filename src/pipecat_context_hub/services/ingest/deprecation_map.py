@@ -21,7 +21,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from packaging.version import InvalidVersion, Version
 
@@ -197,7 +197,9 @@ def build_deprecation_map_from_registry(
 
     Raises:
         DeprecationRegistryError: The registry file exists but could not be
-            read or parsed (corrupt JSON, I/O error, etc.). Callers must not
+            read or parsed (corrupt JSON, I/O error, etc.), or parsed to a
+            structurally invalid shape (non-dict root, or a ``deprecations``
+            field present but not a list — e.g. ``null``). Callers must not
             treat this the same as a legitimate empty map — the caller should
             preserve whatever deprecation map was previously published rather
             than overwrite it with an empty one.
@@ -217,7 +219,20 @@ def build_deprecation_map_from_registry(
             f"Could not read deprecation registry at {registry_path}"
         ) from exc
 
-    records = data.get("deprecations", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        raise DeprecationRegistryError(
+            f"Deprecation registry at {registry_path} is not a JSON object "
+            f"(got {type(data).__name__})"
+        )
+    if "deprecations" not in data:
+        records: list[Any] = []
+    else:
+        records = data["deprecations"]
+        if not isinstance(records, list):
+            raise DeprecationRegistryError(
+                f"Deprecation registry at {registry_path} has a non-list "
+                f"'deprecations' field (got {type(records).__name__})"
+            )
     entries: dict[str, DeprecationEntry] = {}
     aliases: dict[str, DeprecationEntry] = {}
     for rec in records:

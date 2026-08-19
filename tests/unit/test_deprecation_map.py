@@ -285,6 +285,38 @@ class TestBuildFromRegistry:
         with pytest.raises(DeprecationRegistryError):
             build_deprecation_map_from_registry(path)
 
+    def test_empty_object_is_legitimately_empty(self, tmp_path: Path) -> None:
+        """`{}` — a dict root with the 'deprecations' key simply absent — is
+        the legitimate "older pipecat version predates the key" shape, so it
+        must produce a (deliberately) empty map, not raise. Pinned explicitly
+        alongside the invalid-shape cases below so the boundary is visible."""
+        path = tmp_path / "deprecations.json"
+        path.write_text("{}", encoding="utf-8")
+        dm = build_deprecation_map_from_registry(path, commit_sha="sha")
+        assert dm.entries == {}
+        assert dm.pipecat_commit_sha == "sha"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[]",
+            '{"deprecations": null}',
+        ],
+    )
+    def test_schema_invalid_registry_raises_distinguishable_error(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        """Round 9 Finding #2 regression: syntactically valid JSON that is
+        structurally invalid — a bare list root, or a present 'deprecations'
+        field that is null instead of a list — must raise
+        `DeprecationRegistryError` rather than silently producing an empty
+        map (which would overwrite a previously good one) or letting an
+        unhandled TypeError/AttributeError escape from the iteration below."""
+        path = tmp_path / "deprecations.json"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(DeprecationRegistryError):
+            build_deprecation_map_from_registry(path)
+
     def test_duplicate_bare_subject_warns_and_keeps_both_qualified(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
