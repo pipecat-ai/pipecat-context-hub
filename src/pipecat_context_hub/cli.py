@@ -933,6 +933,15 @@ def refresh(
     # gate.
     deprecation_map_published = False
 
+    # The framework commit SHA whose registry produced the deprecation map
+    # just published (set alongside `deprecation_map_published = True`, from
+    # the same `fw_sha` used to build it). Stamped into metadata below so a
+    # reader can detect map/provenance divergence — a crash between the map
+    # write and the metadata write would otherwise leave a stale
+    # `indexed_framework_version` describing a checkout the on-disk map
+    # doesn't match.
+    dep_map_commit_sha: str | None = None
+
     # The tag of the commit actually checked out for a pinned framework
     # refresh, as returned (and origin-verified) by `clone_or_fetch` itself —
     # not re-derived afterwards, so the tag and the commit can never come from
@@ -949,6 +958,7 @@ def refresh(
     async def _run_refresh() -> None:
         nonlocal total_upserted, all_errors, framework_checkout, framework_provenance_ready
         nonlocal unpruned_repo_count, checked_out_framework_tag, deprecation_map_published
+        nonlocal dep_map_commit_sha
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -1428,6 +1438,7 @@ def refresh(
                 logger.warning(msg)
             else:
                 deprecation_map_published = True
+                dep_map_commit_sha = fw_sha
         else:
             logger.debug(
                 "Framework repo %s not cloned or tainted — preserving existing deprecation map",
@@ -1496,6 +1507,9 @@ def refresh(
             # publish a non-version as `indexed_framework_version` with
             # `commits_ahead="0"`. Those fall through to describe's floor
             # semantics, exactly like an unpinned refresh.
+            assert dep_map_commit_sha is not None
+            metadata_to_set["deprecation_map_commit_sha"] = dep_map_commit_sha
+
             exact_version = exact_release_version(checked_out_framework_tag)
             if exact_version is not None:
                 metadata_to_set["indexed_framework_version"] = exact_version

@@ -9,7 +9,7 @@ from pipecat_context_hub.shared.types import CheckDeprecationInput, CheckDepreca
 from pipecat_context_hub.shared.versioning import is_latest_sentinel
 
 
-def resolve_framework_version(index_store: Any) -> str | None:
+def resolve_framework_version(index_store: Any, deprecation_map: Any = None) -> str | None:
     """The indexed pipecat version, the default ``version`` for ``check_deprecation``.
 
     Shared by the MCP server and the one-shot CLI so both resolve the default the
@@ -22,6 +22,15 @@ def resolve_framework_version(index_store: Any) -> str | None:
     ``framework_version`` only when no indexed revision is recorded — and never
     to the ``latest`` sentinel, which metadata contract v2 permits that key to
     hold: it is a pin, not a version, so it names no release to evaluate against.
+
+    When ``deprecation_map`` is supplied, also cross-checks the metadata's
+    ``deprecation_map_commit_sha`` stamp against the map's own
+    ``pipecat_commit_sha``. A refresh crash between publishing the deprecation
+    map and writing the provenance metadata can leave the two describing
+    different revisions; when that divergence is detectable, this falls back to
+    ``None`` rather than asserting version-exactness against a map that may not
+    match. Missing/None on either side skips the check (fail open, matching the
+    existing tolerance for missing provenance elsewhere).
     """
     if index_store is None:
         return None
@@ -33,6 +42,14 @@ def resolve_framework_version(index_store: Any) -> str | None:
         except (TypeError, ValueError):
             commits_ahead = None
         if commits_ahead == 0:
+            stamped_sha = metadata.get("deprecation_map_commit_sha")
+            loaded_sha = getattr(deprecation_map, "pipecat_commit_sha", None) or None
+            if stamped_sha and loaded_sha and stamped_sha != loaded_sha:
+                # The on-disk map and the indexed-version stamp were committed
+                # in different runs (crash/failure between the two writes) —
+                # don't assert version-exactness against a map that may not
+                # match. Callers fall back to the entry's intrinsic status.
+                return None
             return str(indexed)
         return None
     version = metadata.get("framework_version")

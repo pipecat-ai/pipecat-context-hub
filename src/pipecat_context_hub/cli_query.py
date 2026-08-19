@@ -422,7 +422,7 @@ def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
         )
     if tool == "check_deprecation":
         dep_map = getattr(runtime.retriever, "deprecation_map", None)
-        fw_version = resolve_framework_version(runtime.index_store)
+        fw_version = resolve_framework_version(runtime.index_store, dep_map)
         return asyncio.run(handle_check_deprecation(args, dep_map, fw_version))
 
     handler_map: dict[str, Any] = {

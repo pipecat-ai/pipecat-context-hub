@@ -360,7 +360,7 @@ def create_server(
             # indexed framework version as the default for version-relative status.
             if name == "check_deprecation":
                 dep_map = getattr(retriever, "deprecation_map", None)
-                fw_version = resolve_framework_version(index_store)
+                fw_version = resolve_framework_version(index_store, dep_map)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return [types.TextContent(type="text", text=_annotate(result_json))]
 

@@ -60,3 +60,48 @@ class TestResolveFrameworkVersion:
         """
         store = _index_store({"framework_version": pin})
         assert resolve_framework_version(store) is None
+
+    def test_map_provenance_mismatch_falls_back_to_none(self):
+        """Round 10 Finding #1 regression: if the on-disk deprecation map's
+        commit SHA doesn't match the metadata's `deprecation_map_commit_sha`
+        stamp (a crash between the two writes left them describing different
+        revisions), don't assert version-exactness against a map that may not
+        match — fall back to None.
+        """
+        store = _index_store(
+            {
+                "indexed_framework_version": "1.2.0",
+                "indexed_framework_commits_ahead": "0",
+                "deprecation_map_commit_sha": "abc123",
+            }
+        )
+        dep_map = MagicMock()
+        dep_map.pipecat_commit_sha = "def456"
+        assert resolve_framework_version(store, dep_map) is None
+
+    def test_map_provenance_match_returns_version(self):
+        store = _index_store(
+            {
+                "indexed_framework_version": "1.2.0",
+                "indexed_framework_commits_ahead": "0",
+                "deprecation_map_commit_sha": "abc123",
+            }
+        )
+        dep_map = MagicMock()
+        dep_map.pipecat_commit_sha = "abc123"
+        assert resolve_framework_version(store, dep_map) == "1.2.0"
+
+    def test_missing_map_commit_sha_stamp_preserves_old_behavior(self):
+        """A pre-fix index has no `deprecation_map_commit_sha` key at all —
+        the cross-check must skip (fail open), not force a None regression
+        for existing indexes built before this fix shipped.
+        """
+        store = _index_store(
+            {
+                "indexed_framework_version": "1.2.0",
+                "indexed_framework_commits_ahead": "0",
+            }
+        )
+        dep_map = MagicMock()
+        dep_map.pipecat_commit_sha = "def456"
+        assert resolve_framework_version(store, dep_map) == "1.2.0"
