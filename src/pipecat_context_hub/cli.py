@@ -1393,7 +1393,6 @@ def refresh(
         from pipecat_context_hub.services.ingest.deprecation_map import (
             REGISTRY_RELATIVE_PATH,
             REMOVALS_RELATIVE_PATH,
-            DeprecationRegistryError,
             add_removals_from_registry,
             build_deprecation_map_from_registry,
         )
@@ -1414,7 +1413,7 @@ def refresh(
                 # Merge removed symbols (no-op until pipecat ships removals.json).
                 add_removals_from_registry(dep_map, fw_path / REMOVALS_RELATIVE_PATH)
                 dep_map.save(dep_map_path)
-            except (DeprecationRegistryError, OSError) as exc:
+            except Exception as exc:
                 # Either the registry was present-but-unreadable/malformed
                 # (corrupt/truncated JSON, I/O error, structurally invalid
                 # shape) or the save itself failed (disk/permission). Both

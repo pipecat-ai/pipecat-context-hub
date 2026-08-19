@@ -144,6 +144,45 @@ class TestDeprecationMapSerialization:
         loaded = DeprecationMap.load(tmp_path / "nonexistent.json")
         assert loaded.entries == {}
 
+    def test_save_failure_mid_write_preserves_prior_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Round 10 Finding #2 regression: `save()` writes to a temp file and
+        renames it into place, so a crash/failure mid-write can never leave
+        `path` holding truncated/invalid JSON. A prior good map on disk must
+        survive a failed save byte-for-byte, and no leftover temp file should
+        remain.
+        """
+        path = tmp_path / "deprecation_map.json"
+        good = DeprecationMap(
+            entries={
+                "pipecat.services.grok": DeprecationEntry(
+                    old_path="pipecat.services.grok",
+                    new_path="pipecat.services.xai.llm",
+                    kind="module",
+                ),
+            },
+            pipecat_commit_sha="good-sha",
+        )
+        good.save(path)
+        original_bytes = path.read_bytes()
+
+        broken = DeprecationMap(entries={}, pipecat_commit_sha="broken-sha")
+
+        real_replace = Path.replace
+
+        def failing_replace(self: Path, target: object) -> object:
+            raise OSError("simulated disk failure during rename")
+
+        monkeypatch.setattr(Path, "replace", failing_replace)
+        with pytest.raises(OSError, match="simulated disk failure"):
+            broken.save(path)
+        monkeypatch.setattr(Path, "replace", real_replace)
+
+        assert path.read_bytes() == original_bytes
+        leftover_tmp_files = list(tmp_path.glob("deprecation_map.json.tmp.*"))
+        assert leftover_tmp_files == []
+
     def test_to_dict_from_dict(self) -> None:
         dm = DeprecationMap(
             entries={

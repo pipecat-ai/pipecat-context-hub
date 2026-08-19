@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -148,9 +149,23 @@ class DeprecationMap:
         )
 
     def save(self, path: Path) -> None:
-        """Persist the deprecation map to a JSON file."""
+        """Persist the deprecation map to a JSON file.
+
+        Writes to a temporary file in the same directory and atomically renames
+        it over `path`, so a crash, disk-full, or interruption mid-write can
+        never leave `path` holding truncated/invalid JSON. `load()` always sees
+        either the complete prior map or the complete new one, never a partial
+        file — closing the same failure mode round 9's registry-read guard
+        covers, reached here via a write failure instead of a read failure.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        try:
+            tmp_path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
         logger.info("Deprecation map saved to %s (%d entries)", path, len(self.entries))
 
     @classmethod
