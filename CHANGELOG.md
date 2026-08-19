@@ -179,6 +179,42 @@ This project uses [Semantic Versioning](https://semver.org/).
   un-prefixed tag as a fallback candidate even though `latest` resolution and
   version parsing both already handle that case. Candidate generation is now
   case-insensitive, matching the rest of the pin-resolution path.
+- **`--framework-version` pins with an uppercase-`V` prefix could still fail
+  to resolve when only the lowercase-prefixed tag exists upstream (the common
+  case).** The previous fix made candidate generation case-insensitive but
+  still branched on whether the input already had a `v`/`V` prefix, so an
+  already-prefixed pin like `V1.2.0` produced candidates `["V1.2.0", "1.2.0"]`
+  and never tried the real upstream tag `v1.2.0`. Candidate generation now
+  always includes the bare, lowercase-`v`-prefixed, and as-given forms.
+- **`deprecation_map.json` could be left truncated or invalid by an
+  interrupted write.** `DeprecationMap.save()` wrote directly to the target
+  path, so a crash, disk-full, or other interruption mid-write left partial
+  JSON in place; `load()` silently treats invalid JSON as an empty map,
+  destroying the last known-good deprecation map. `save()` now writes to a
+  temp file and atomically renames it into place, so `path` always holds
+  either the complete prior map or the complete new one.
+- **`refresh`'s deprecation-map build/save step only tolerated
+  `DeprecationRegistryError`/`OSError`.** Any other exception from
+  `build_deprecation_map_from_registry` or `dep_map.save()` propagated
+  uncaught and aborted the whole refresh instead of being recorded as a
+  refresh error with the existing map preserved. The catch is now
+  exception-agnostic, matching the message-formatting logic below it.
+- **The deprecation map and its `indexed_framework_version` provenance stamp
+  could silently describe different revisions after a crash between the two
+  writes.** `check_deprecation`'s default-version resolution had no way to
+  detect that divergence and could assert version-exactness against a map
+  that no longer matched the stamped revision. A refresh now also stamps
+  `deprecation_map_commit_sha` alongside the other provenance metadata, and
+  `resolve_framework_version` cross-checks it against the loaded map's own
+  commit SHA, falling back to `None` (intrinsic registry status) on a
+  mismatch. Missing/older indexes without the new stamp are unaffected — the
+  check is skipped when either side is absent.
+- **`_delete_repo_index_data`'s bookkeeping `delete_metadata` calls (run after
+  a successful record delete) were unguarded.** An exception there propagated
+  uncaught instead of being recorded through the same failure path as the
+  record-delete step. Those calls are now wrapped in their own try/except,
+  returning `False` and setting the repo's `cleanup_failed` marker on
+  failure, consistent with the rest of the helper.
 
 ## [0.5.2] - 2026-08-09
 

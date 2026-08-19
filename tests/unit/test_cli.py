@@ -4960,3 +4960,52 @@ class TestDebugProbeSymlinkHardening:
         probe_path = home / ".cache" / "pipecat-context-hub" / "serve-debug.log"
         assert stat_module.S_IMODE(probe_path.stat().st_mode) == 0o600
         assert stat_module.S_IMODE(probe_path.parent.stat().st_mode) == 0o700
+
+
+class TestDeleteRepoIndexDataBookkeepingGuard:
+    """Round 10 Finding #3: `_delete_repo_index_data`'s bookkeeping
+    `delete_metadata` calls (run only after a successful `delete_by_repo`)
+    must themselves be guarded -- an exception there should return `False`
+    and record the `cleanup_failed` marker, not propagate uncaught.
+    """
+
+    async def test_delete_metadata_failure_returns_false_and_sets_cleanup_marker(self):
+        from pipecat_context_hub.cli import _delete_repo_index_data
+
+        store = MagicMock()
+        store.delete_by_repo = AsyncMock(return_value=None)
+        store.delete_metadata = MagicMock(side_effect=RuntimeError("boom"))
+        store.set_metadata = MagicMock()
+
+        result = await _delete_repo_index_data(
+            store, "some-org/some-repo", "repo:some-org/some-repo:commit_sha"
+        )
+
+        assert result is False
+        store.set_metadata.assert_any_call("repo:some-org/some-repo:cleanup_failed", "1")
+
+    async def test_framework_repo_third_delete_metadata_failure_returns_false(self):
+        """The framework-repo branch makes three `delete_metadata` calls
+        (meta_key, indexed_framework_version, indexed_framework_commits_ahead).
+        A failure on the third must also be caught.
+        """
+        from pipecat_context_hub.cli import _delete_repo_index_data
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        store = MagicMock()
+        store.delete_by_repo = AsyncMock(return_value=None)
+        calls = {"count": 0}
+
+        def flaky_delete_metadata(key: str) -> None:
+            calls["count"] += 1
+            if calls["count"] == 3:
+                raise RuntimeError("boom on third call")
+
+        store.delete_metadata = MagicMock(side_effect=flaky_delete_metadata)
+        store.set_metadata = MagicMock()
+
+        result = await _delete_repo_index_data(store, _FRAMEWORK_REPO, "repo:framework:commit_sha")
+
+        assert result is False
+        assert calls["count"] == 3
+        store.set_metadata.assert_any_call(f"repo:{_FRAMEWORK_REPO}:cleanup_failed", "1")

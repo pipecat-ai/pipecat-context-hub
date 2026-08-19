@@ -330,11 +330,24 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
         # success path).
         index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
         return False
-    index_store.delete_metadata(meta_key)
-    if slug == _FRAMEWORK_REPO:
-        # No framework records left to describe.
-        index_store.delete_metadata("indexed_framework_version")
-        index_store.delete_metadata("indexed_framework_commits_ahead")
+    try:
+        index_store.delete_metadata(meta_key)
+        if slug == _FRAMEWORK_REPO:
+            # No framework records left to describe.
+            index_store.delete_metadata("indexed_framework_version")
+            index_store.delete_metadata("indexed_framework_commits_ahead")
+    except Exception:
+        _module_logger.exception(
+            "Failed to clear bookkeeping metadata for %s after a successful "
+            "index delete; its stale metadata keys may persist until a "
+            "future refresh retries the cleanup",
+            slug,
+        )
+        try:
+            index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
+        except Exception:
+            _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
+        return False
     return True
 
 
