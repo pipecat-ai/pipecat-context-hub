@@ -160,11 +160,21 @@ jobs:
         # left the dependency tree when embedding and reranking moved to ONNX
         # Runtime, so there is nothing left to ignore.
         #
-        # The unfiltered biweekly security-audit.yml job re-surfaces this one so
-        # the ignore cannot silently outlive its upstream patch.
+        # PYSEC-2026-3721 (pip <=26.1.2, fixed in 26.2): doubly-encoded package
+        # URLs from a malicious index can make pip install a wheel to an
+        # arbitrary disk location. Only reachable via `pip download
+        # --only-binary` against an untrusted index. Unreachable here: CI and
+        # local dev only ever run `uv sync --frozen` against locked, trusted
+        # PyPI — no `pip download`, no untrusted index. pip itself isn't a
+        # project dependency (nothing to bump in pyproject.toml/uv.lock); it's
+        # whatever setup-python/uv bundles into the runner's venv.
+        #
+        # The unfiltered biweekly security-audit.yml job re-surfaces both of
+        # these so the ignores cannot silently outlive their upstream patches.
         run: >-
           uv run pip-audit --local --progress-spinner off
           --ignore-vuln CVE-2026-45829
+          --ignore-vuln PYSEC-2026-3721
 
       - name: Bandit
         run: uv run bandit -r src
