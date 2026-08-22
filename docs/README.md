@@ -31,9 +31,16 @@ uv tool install "pipecat-ai[cli]" --with pipecat-ai-context-hub
 pipecat context-hub install      # register the MCP server, then build the index
 ```
 
-Or run the hub on its own with [`uv`](https://docs.astral.sh/uv/). `uvx` fetches
-and runs it on demand; the first invocation downloads the package and local
-models (allow a few minutes).
+Or run the hub on its own with [`uv`](https://docs.astral.sh/uv/) — install it
+first if you don't already have it:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh   # macOS/Linux
+# or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
+```
+
+Once `uv` is on `PATH`, `uvx` fetches and runs the hub on demand; the first
+invocation downloads the package and local models (allow a few minutes).
 
 > **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat
 > packages are `pipecat-ai*`); the command and MCP server name are
@@ -401,6 +408,14 @@ works everywhere `Path.home()` resolves.
 Two ways to point an MCP client (Claude Code, Cursor, Zed, etc.) at this
 hub. Both exit cleanly within ~2s when the client goes away; they differ
 only in convenience.
+
+This is standard MCP stdio config — the `command`/`args` pair below works
+with *any* MCP-compatible client, not just the ones named above. If your
+client isn't in that list (including an unfamiliar coding agent you've
+pointed at this repo), adapt the same `command`/`args` values to wherever
+that client keeps its own MCP server config; `pipecat-context-hub install
+--print-config` prints this exact JSON without writing anything, if you'd
+rather generate it than copy it by hand.
 
 > **Note:** an MCP server is a subprocess the client spawns over stdio — it
 > cannot restart *itself*. If you want the hub back after it exits, that is
