@@ -56,9 +56,13 @@ audit-deps:
     # Enforced by tests/unit/test_audit_sync.py (drift fails the suite).
     #   CVE-2026-45829: chromadb HTTP-server pre-auth RCE — unreachable (embedded
     #                   PersistentClient only, no server/endpoint).
+    #   PYSEC-2026-3721: pip <=26.1.2 doubly-encoded package-URL install to an
+    #                   arbitrary path — only reachable via `pip download
+    #                   --only-binary` against an untrusted index; we only run
+    #                   `uv sync --frozen` against locked, trusted PyPI.
     # The two torch advisories (PYSEC-2026-139, CVE-2025-3000) were dropped when
     # torch left the tree — embedding and reranking now run on ONNX Runtime.
-    uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-45829
+    uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-45829 --ignore-vuln PYSEC-2026-3721
 
 # Static security scan for Python code
 audit-security:
