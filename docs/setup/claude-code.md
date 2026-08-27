@@ -27,7 +27,10 @@ This populates `~/.pipecat-context-hub/`.
 Install persistently first — `install` records the exact interpreter it runs
 under into the registration, and that registration is now machine-wide (see
 below), so a `uvx`-run interpreter (torn down and rebuilt by `uv cache prune`
-at any time) is the wrong thing to pin:
+at any time) is the wrong thing to pin. Run this with no project virtualenv
+active — otherwise the bare `pipecat-context-hub` on the next line can resolve
+to that venv's copy instead of the one `uv tool install` just placed on `PATH`,
+pinning a project interpreter into the machine-wide registration by accident:
 
 ```bash
 uv tool install pipecat-ai-context-hub
