@@ -36,8 +36,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   directory `install` ran in — but the `user`-scope change above launches it
   from every directory the user opens, turning it into a real cwd-shadowing
   exposure. Fixed by adding `-P` to the registered command, which is a
-  mismatch for every existing registration and gets repaired the next time
-  `install` runs (or `claude mcp list`/`codex mcp list` reports it).
+  mismatch for every existing registration; running `install` again repairs
+  it (`claude mcp list`/`codex mcp list` only report the mismatch, they don't
+  fix it).
 
 ## [0.5.3] - 2026-08-19
 
