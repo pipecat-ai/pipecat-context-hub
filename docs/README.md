@@ -111,6 +111,14 @@ to their config file. Cursor, VS Code, and Zed are configured by hand, so
 it does not own. MCP servers are read at session start — restart your agent
 afterwards.
 
+A fresh Claude Code registration is made at Claude's `user` scope, so it applies
+in every directory rather than only the one `install` ran in. Nothing about the
+hub is per-project: one index serves the machine, and the registered command is
+an absolute path to a global install. An entry that already exists is repaired
+at whatever scope it currently holds, so a deliberate `local` or `project`
+registration stays where it is. Codex has no scope concept — its single config
+is already machine-wide.
+
 To set a client up manually, point its MCP config at
 `uvx pipecat-ai-context-hub serve`. Per-client setup guides:
 

@@ -22,9 +22,24 @@ This populates `~/.pipecat-context-hub/`.
 
 ## Configure
 
-### Option A: Project-level config (recommended for teams)
+### Option A: `install` (recommended)
 
-Create `.mcp.json` at the root of your project:
+```bash
+pipecat-context-hub install --client claude-code
+```
+
+This shells out to `claude mcp add` for you and then builds the index. The entry
+is registered at Claude's `user` scope, so it applies in every directory — one
+index serves the whole machine, so there is nothing per-project to scope it to.
+An entry that already exists is repaired at whatever scope it currently holds,
+so a deliberate `local` or `project` registration stays where it is.
+
+Pass `--no-refresh` to skip the index build, or `--print-config` to see the
+config without changing anything.
+
+### Option B: User-level config (all projects)
+
+Add this block to `~/.claude.json` — the hand-edited equivalent of Option A:
 
 ```json
 {
@@ -38,15 +53,19 @@ Create `.mcp.json` at the root of your project:
 }
 ```
 
-### Option B: User-level config (all projects)
+### Option C: Project-level config (for teams)
 
-Add the same block to `~/.claude.json`.
+Put the same block in `.mcp.json` at the root of your project instead. Prefer
+this over Option A only when the registration should be checked into the repo so
+teammates pick it up — it costs you the server in every other project.
 
-### Option C: CLI
+### Option D: CLI
 
 ```bash
-claude mcp add --scope project pipecat-context-hub -- uvx pipecat-ai-context-hub serve
+claude mcp add -s user pipecat-context-hub -- uvx pipecat-ai-context-hub serve
 ```
+
+Swap `-s user` for `-s project` to match Option C.
 
 ## Recommended CLAUDE.md Instructions
 
