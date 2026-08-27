@@ -129,7 +129,9 @@ To set a client up manually, point its MCP config at
 | **VS Code** | [docs/setup/vscode.md](setup/vscode.md) |
 | **Zed** | [docs/setup/zed.md](setup/zed.md) |
 
-**Example** (Claude Code `.mcp.json`):
+**Example** (manual config — the shape `install` writes; `~/.claude.json` for
+the `user`-scope default above, or `.mcp.json` for the deliberate project-scope
+choice):
 
 ```json
 {

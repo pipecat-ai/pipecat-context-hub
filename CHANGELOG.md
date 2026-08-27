@@ -27,6 +27,18 @@ This project uses [Semantic Versioning](https://semver.org/).
   pipecat-context-hub install --no-refresh
   ```
 
+### Security
+- **Isolate the registered server's module resolution from its launch
+  directory.** The registered command (`python -m pipecat_context_hub`) let a
+  directory on the launch path prepend itself to `sys.path`, so a same-named
+  local package could shadow the installed one. This mattered little at the
+  old `local`-scoped default, since the server only ever launched from the one
+  directory `install` ran in — but the `user`-scope change above launches it
+  from every directory the user opens, turning it into a real cwd-shadowing
+  exposure. Fixed by adding `-P` to the registered command, which is a
+  mismatch for every existing registration and gets repaired the next time
+  `install` runs (or `claude mcp list`/`codex mcp list` reports it).
+
 ## [0.5.3] - 2026-08-19
 
 ### Added
