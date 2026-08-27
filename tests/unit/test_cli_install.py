@@ -213,6 +213,27 @@ class TestRegisterWithCli:
             assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert self._subcommands(calls) == ["get", "remove", "add"]
 
+    @pytest.mark.parametrize("scope", ["local", "project"])
+    def test_mismatched_entry_is_repaired_at_its_own_scope_not_promoted_to_user(self, scope):
+        """A mismatched entry that already exists at `local` or `project` scope must
+        be replaced at that SAME scope, not silently promoted to the fresh-registration
+        `user` scope -- that would override a deliberate prior scoping choice."""
+        recorded = (
+            "Command: pipecat-context-hub\n  Args: serve\n"
+            f"To remove this server, run: claude mcp remove pipecat-context-hub -s {scope}"
+        )
+        calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
+        existing = {"type": "stdio", "command": "pipecat-context-hub", "args": ["serve"]}
+        with (
+            patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
+            patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
+        ):
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
+        remove = next(c for c in calls if c[2] == "remove")
+        add = next(c for c in calls if c[2] == "add")
+        assert remove[3:6] == ["pipecat-context-hub", "-s", scope]
+        assert add[2:5] == ["add", "-s", scope]
+
     def test_unparseable_get_failure_fails_closed_without_attempting_repair(self):
         """`mcp get` failing with an unrecognized error (not a clean "not found")
         means an entry may or may not be there, and its scope is unknown. Rather
@@ -329,6 +350,27 @@ class TestRegisterWithCli:
             assert _register_with_cli("claude-code", _server_command()) == "ok"
 
         assert self._subcommands(calls) == ["get", "add"]
+        add = next(c for c in calls if c[2] == "add")
+        assert "-s" not in add
+
+    def test_unknown_registration_state_is_not_treated_as_fresh(self):
+        """`mcp get` failing to run at all (e.g. a timeout) means `unknown`, not
+        `absent` -- an entry may already exist at some uninspected scope. Applying
+        the fresh-registration `-s user` here would risk creating a stray duplicate
+        instead of leaving a possibly-existing registration alone."""
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[2] == "get":
+                raise subprocess.TimeoutExpired(argv, timeout=60)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
+
+        add = next(c for c in calls if c[2] == "add")
+        assert "-s" not in add
 
     def test_failed_replacement_with_failed_rollback_is_reported_as_corrupted(self):
         """When both the replacement add and the rollback fail, the previous

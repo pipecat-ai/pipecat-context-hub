@@ -340,7 +340,14 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
         # Repair in place: an entry that is already somewhere was put there by
         # someone, and relocating it would override that choice.
         add_options = ["-s", registration.scope]
-    elif client == "claude-code":
+    elif client == "claude-code" and registration.state == "absent":
+        # Only a confirmed-absent entry is "fresh" and safe to scope to every
+        # directory. `unknown` means `mcp get` itself could not be run (e.g. it
+        # timed out) -- an entry may already exist at some uninspected scope, so
+        # applying `-s user` here could create a stray duplicate instead of
+        # leaving the (possibly-existing) registration alone. Fall through to
+        # Claude's own default `add` behavior instead, matching what happened
+        # for `unknown` before this scope policy existed.
         add_options = ["-s", _CLAUDE_FRESH_SCOPE]
 
     # `codex mcp add` overwrites an existing name atomically. For an absent entry,
