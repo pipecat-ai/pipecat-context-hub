@@ -24,16 +24,15 @@ This populates `~/.pipecat-context-hub/`.
 
 ### Option A: `install` (recommended)
 
-```bash
-uvx pipecat-ai-context-hub install --client claude-code
-```
+Install persistently first — `install` records the exact interpreter it runs
+under into the registration, and that registration is now machine-wide (see
+below), so a `uvx`-run interpreter (torn down and rebuilt by `uv cache prune`
+at any time) is the wrong thing to pin:
 
-`uvx` runs the package without installing it persistently, so the bare
-`pipecat-context-hub` command above (used elsewhere in this doc, and in
-`--print-config` output) is only on `PATH` if you've separately run
-`uv tool install pipecat-ai-context-hub` (or installed it into an active venv).
-Without a persistent install, prefix every command in this doc with `uvx
-pipecat-ai-context-hub` instead of `pipecat-context-hub`.
+```bash
+uv tool install pipecat-ai-context-hub
+pipecat-context-hub install --client claude-code
+```
 
 This shells out to `claude mcp add` for you and then builds the index. The entry
 is registered at Claude's `user` scope, so it applies in every directory — one
