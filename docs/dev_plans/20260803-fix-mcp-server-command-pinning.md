@@ -245,7 +245,7 @@ floor bump alone.
   unrelated and separately measured.
 - Scope selection for `mcp add`/`remove`. Both default to `local`, so they agree; whether
   a user-scope entry should be detected is a separate question.
-  **Resolved (2026-08-27, PR #TBD):** a fresh Claude registration is now made at `user`
+  **Resolved (2026-08-27, PR #121):** a fresh Claude registration is now made at `user`
   scope so it covers every directory; a mismatched entry is still removed and re-added at
   the scope it already holds, which is what keeps `add`/`remove` agreeing. User-scope
   entries were already detected — `_inspect_registration`'s scope regex and
