@@ -30,6 +30,15 @@ _SERVER_NAME = "pipecat-context-hub"
 # Clients configured by shelling out to their own CLI: name -> executable.
 _CLI_CLIENTS = {"claude-code": "claude", "codex": "codex"}
 
+# Scope for a fresh Claude registration. Claude's own default is `local`, which
+# keys the entry on the directory `install` ran in — so every other project is
+# left without the server, silently: the agent doesn't fail, it just answers from
+# training data, which is the thing the hub exists to prevent. Nothing here is
+# per-project. One index serves the machine, and the registered command is an
+# absolute path to a global install. Codex has no scope concept; its single
+# config is already machine-wide.
+_CLAUDE_FRESH_SCOPE = "user"
+
 # Exit code for "nothing was configured automatically; the config was printed to paste".
 # Distinct from success because a caller cannot see the difference otherwise, and from
 # failure because the command did everything it could for that client.
@@ -284,6 +293,9 @@ def _fail_with_rollback(exe: str, registration: _Registration) -> Literal["faile
 def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed", "corrupted"]:
     """Register the server via *client*'s own CLI.
 
+    A fresh Claude entry is registered at ``_CLAUDE_FRESH_SCOPE`` so it covers
+    every directory; a mismatched one is repaired at the scope it already holds.
+
     Replaces a mismatched entry rather than skipping it. Codex supports an atomic
     overwrite. Claude does not, so its exact entry is captured before removal and
     restored if adding the replacement fails.
@@ -316,7 +328,11 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
         if removed.returncode != 0:
             _report_failure(exe, removed)
             return _fail_with_rollback(exe, registration)
+        # Repair in place: an entry that is already somewhere was put there by
+        # someone, and relocating it would override that choice.
         add_options = ["-s", registration.scope]
+    elif client == "claude-code":
+        add_options = ["-s", _CLAUDE_FRESH_SCOPE]
 
     # `codex mcp add` overwrites an existing name atomically. For an absent entry,
     # both clients take this same non-destructive path.
@@ -360,6 +376,12 @@ def install_command(
     Configures every detected client CLI (Claude Code, Codex) unless --client
     is given, then runs the first refresh. MCP servers are read at session
     start, so restart your agent afterwards.
+
+    \b
+    A fresh Claude Code entry is registered at Claude's `user` scope, so it
+    applies in every directory rather than only this one. An entry that already
+    exists is repaired at the scope it already holds. Codex has no scope
+    concept; its single config is already machine-wide.
 
     \b
     Exit codes: 0 = a client was configured, 1 = a client CLI rejected the

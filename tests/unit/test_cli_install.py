@@ -231,6 +231,26 @@ class TestRegisterWithCli:
             assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert "add" in self._subcommands(calls)
 
+    def test_a_fresh_claude_entry_is_registered_for_every_directory(self):
+        """A directory-scoped entry leaves every other project without the server."""
+        calls, fake_run = self._fake_client(
+            get_code=1, get_stderr='No MCP server named "pipecat-context-hub".'
+        )
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
+        add = next(c for c in calls if c[2] == "add")
+        assert add[2:5] == ["add", "-s", "user"]
+
+    def test_codex_is_registered_without_a_scope(self):
+        """Codex has no scope concept; a `-s` would be rejected."""
+        calls, fake_run = self._fake_client(
+            get_code=1, get_stderr='No MCP server named "pipecat-context-hub".'
+        )
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("codex", _server_command()) == "ok"
+        add = next(c for c in calls if c[2] == "add")
+        assert "-s" not in add
+
     def test_a_failed_add_is_reported(self):
         calls, fake_run = self._fake_client(
             get_code=1,
@@ -497,10 +517,10 @@ class TestInstallCommand:
 
         assert result.exit_code == 0
         argv = run.call_args.args[0]
-        assert argv[:4] == ["claude", "mcp", "add", "pipecat-context-hub"]
+        assert argv[:6] == ["claude", "mcp", "add", "-s", "user", "pipecat-context-hub"]
         # The `--` separator keeps the server's own args out of claude's parser.
-        assert argv[4] == "--"
-        assert argv[5:] == [sys.executable, "-m", "pipecat_context_hub", "serve"]
+        assert argv[6] == "--"
+        assert argv[7:] == [sys.executable, "-m", "pipecat_context_hub", "serve"]
 
     def test_client_cli_failure_is_reported_as_error_exit(self):
         """A failed client registration is surfaced via a nonzero exit, not silently ignored."""

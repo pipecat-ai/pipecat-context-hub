@@ -5,6 +5,28 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **`install` registers with Claude Code for every directory.** A fresh
+  registration is made at Claude's `user` scope rather than its default `local`,
+  which keys the entry on the directory `install` happened to run in and leaves
+  every other project without the server — silently, since an agent without the
+  tools answers from training data instead of failing. Nothing about the hub is
+  per-project: one index serves the machine, and the registered command is an
+  absolute path to a global install. An entry that already exists is still
+  repaired at whatever scope it holds, so a deliberate `local` or `project`
+  registration is left where it is. Codex is unaffected; its single config is
+  already machine-wide.
+
+  Existing per-directory registrations keep working and are not migrated. To
+  move one, remove it and re-run `install`:
+
+  ```
+  claude mcp remove pipecat-context-hub -s local
+  pipecat-context-hub install --no-refresh
+  ```
+
 ## [0.5.3] - 2026-08-19
 
 ### Added
