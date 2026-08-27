@@ -81,8 +81,17 @@ def _server_command() -> list[str]:
 
     Never ``pipecat context-hub serve``: that would load typer and the Pipecat CLI's
     plugin machinery on every start for no benefit.
+
+    ``-P`` isolates module resolution from the launching process's cwd. Without it,
+    ``python -m`` prepends the current working directory to ``sys.path``, so a client
+    started from a directory containing its own ``pipecat_context_hub/`` package (e.g.
+    a cloned, untrusted repo with a same-named top-level package) would shadow the real
+    installed one and execute arbitrary code at server startup. This now matters more
+    than it used to: a fresh Claude Code registration is ``user``-scoped (see
+    ``_CLAUDE_FRESH_SCOPE``), so this command can be launched from *any* directory the
+    user later opens the client in, not just the one ``install`` ran in.
     """
-    return [sys.executable, "-m", "pipecat_context_hub", "serve"]
+    return [sys.executable, "-P", "-m", "pipecat_context_hub", "serve"]
 
 
 def _mcp_json(command: list[str], client: str | None = None) -> str:

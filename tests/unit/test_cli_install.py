@@ -55,7 +55,24 @@ class TestServerCommand:
         that wrote it, and failed with ENOENT everywhere else.
         """
         with patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/x"):
-            assert _server_command() == [sys.executable, "-m", "pipecat_context_hub", "serve"]
+            assert _server_command() == [
+                sys.executable,
+                "-P",
+                "-m",
+                "pipecat_context_hub",
+                "serve",
+            ]
+
+    def test_isolates_module_resolution_from_launch_cwd(self):
+        """`-P` must be present so a client launched from an untrusted directory
+        (e.g. one containing its own `pipecat_context_hub/` package) can't have
+        that directory's copy shadow the real installed one via `sys.path[0]`.
+        This matters most now that a fresh registration is `user`-scoped and can
+        be launched from any directory, not just the one `install` ran in."""
+        command = _server_command()
+        assert command[0] == sys.executable
+        assert command[1] == "-P"
+        assert command[2:] == ["-m", "pipecat_context_hub", "serve"]
 
     def test_is_independent_of_the_environment(self):
         """What gets registered must not depend on where install happened to run."""
@@ -164,14 +181,14 @@ class TestRegisterWithCli:
     def test_a_matching_entry_is_left_alone(self):
         """Removing a correct registration to rewrite it risks losing it for nothing."""
         recorded = (
-            f"Command: {sys.executable}\n  Args: -m pipecat_context_hub serve\n"
+            f"Command: {sys.executable}\n  Args: -P -m pipecat_context_hub serve\n"
             "To remove this server, run: claude mcp remove pipecat-context-hub -s local"
         )
         calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
         existing = {
             "type": "stdio",
             "command": sys.executable,
-            "args": ["-m", "pipecat_context_hub", "serve"],
+            "args": ["-P", "-m", "pipecat_context_hub", "serve"],
             "env": {},
         }
         with (
@@ -520,7 +537,7 @@ class TestInstallCommand:
         assert argv[:6] == ["claude", "mcp", "add", "-s", "user", "pipecat-context-hub"]
         # The `--` separator keeps the server's own args out of claude's parser.
         assert argv[6] == "--"
-        assert argv[7:] == [sys.executable, "-m", "pipecat_context_hub", "serve"]
+        assert argv[7:] == [sys.executable, "-P", "-m", "pipecat_context_hub", "serve"]
 
     def test_client_cli_failure_is_reported_as_error_exit(self):
         """A failed client registration is surfaced via a nonzero exit, not silently ignored."""
