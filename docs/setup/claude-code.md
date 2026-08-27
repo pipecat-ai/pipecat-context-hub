@@ -25,8 +25,15 @@ This populates `~/.pipecat-context-hub/`.
 ### Option A: `install` (recommended)
 
 ```bash
-pipecat-context-hub install --client claude-code
+uvx pipecat-ai-context-hub install --client claude-code
 ```
+
+`uvx` runs the package without installing it persistently, so the bare
+`pipecat-context-hub` command above (used elsewhere in this doc, and in
+`--print-config` output) is only on `PATH` if you've separately run
+`uv tool install pipecat-ai-context-hub` (or installed it into an active venv).
+Without a persistent install, prefix every command in this doc with `uvx
+pipecat-ai-context-hub` instead of `pipecat-context-hub`.
 
 This shells out to `claude mcp add` for you and then builds the index. The entry
 is registered at Claude's `user` scope, so it applies in every directory — one
@@ -111,6 +118,10 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 ## Troubleshooting
 
-- **Server not detected**: Ensure `.mcp.json` is at the project root (not inside `.claude/`).
+- **Server not detected**: `install` (Option A) registers at Claude's `user`
+  scope by default, so first check `claude mcp list` or `~/.claude.json` for
+  the `pipecat-context-hub` entry. Only if you deliberately used Option C
+  (project-scoped, for teams) should you check `.mcp.json` at the project root
+  (not inside `.claude/`) instead.
 - **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
 - **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
