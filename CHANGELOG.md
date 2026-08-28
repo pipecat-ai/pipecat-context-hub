@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-28
+
 ### Changed
 - **`install` registers with Claude Code for every directory.** A fresh
   registration is made at Claude's `user` scope rather than its default `local`,
