@@ -109,7 +109,6 @@ _TAG_INPUT_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 _ZERO_VERSION = Version("0")
 
-
 class CloneResult(NamedTuple):
     """Outcome of one clone/fetch: where, at what commit, and — when a tag was
     requested — the concrete tag that commit was resolved from.
@@ -839,7 +838,7 @@ def _extract_pipecat_version(example_dir: Path, repo_root: Path) -> str | None:
 def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None]:
     """Describe a checkout as (nearest release tag, commits ahead of that tag).
 
-    An unpinned refresh tracks the default branch, where the nearest tag is a
+    A ``head`` refresh tracks the default branch, where the nearest tag is a
     floor rather than an identity — a checkout eighty commits past ``v1.5.0``
     still describes as ``v1.5.0``. Anything comparing the index against a
     project's installed pipecat needs the distance to tell "this index *is*

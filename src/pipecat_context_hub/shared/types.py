@@ -550,8 +550,10 @@ class HubStatusOutput(BaseModel):
     framework_version: str | None = Field(
         default=None,
         description=(
-            "Pinned framework version tag (e.g. 'v0.0.96'), the literal sentinel "
-            "'latest', or None (HEAD)."
+            "The framework pin the index was built with: a version tag (e.g. "
+            "'v0.0.96'), or the literal sentinel 'latest' (newest release tag, "
+            "the default) or 'head' (default branch). None when the index holds "
+            "no framework records to attribute a pin to."
         ),
     )
     indexed_framework_version: str | None = Field(
@@ -565,8 +567,8 @@ class HubStatusOutput(BaseModel):
         default=None,
         description="Commits between indexed_framework_version's tag and the "
         "revision that was indexed. 0 means the index is exactly that release; "
-        "a larger value means the tag is only a floor, since an unpinned "
-        "refresh tracks the default branch.",
+        "a larger value means the tag is only a floor, as it is for a 'head' "
+        "refresh, which tracks the default branch.",
     )
     reranker_enabled: bool = Field(
         default=False,

@@ -6,7 +6,7 @@ from typing import Any
 
 from pipecat_context_hub.services.ingest.deprecation_map import status_for
 from pipecat_context_hub.shared.types import CheckDeprecationInput, CheckDeprecationOutput
-from pipecat_context_hub.shared.versioning import is_latest_sentinel
+from pipecat_context_hub.shared.versioning import is_head_sentinel, is_latest_sentinel
 
 
 def resolve_framework_version(index_store: Any, deprecation_map: Any = None) -> str | None:
@@ -14,14 +14,15 @@ def resolve_framework_version(index_store: Any, deprecation_map: Any = None) -> 
 
     Shared by the MCP server and the one-shot CLI so both resolve the default the
     same way. Uses ``indexed_framework_version`` only when
-    ``indexed_framework_commits_ahead`` is exactly zero: an unpinned default-branch
-    refresh records the nearest release as a floor, not the exact version of the
+    ``indexed_framework_commits_ahead`` is exactly zero: a ``head`` refresh
+    records the nearest release as a floor, not the exact version of the
     indexed code. For a floor (or incomplete provenance), returning ``None`` lets
     the deprecation handler preserve the registry entry's intrinsic status instead
     of evaluating it against a potentially older release. Falls back to
     ``framework_version`` only when no indexed revision is recorded — and never
-    to the ``latest`` sentinel, which metadata contract v2 permits that key to
-    hold: it is a pin, not a version, so it names no release to evaluate against.
+    to the ``latest`` or ``head`` sentinels, which metadata contract v2 permits
+    that key to hold: they are pins, not versions, so they name no release to
+    evaluate against.
 
     When ``deprecation_map`` is supplied, also cross-checks the metadata's
     ``deprecation_map_commit_sha`` stamp against the map's own
@@ -53,7 +54,7 @@ def resolve_framework_version(index_store: Any, deprecation_map: Any = None) -> 
             return str(indexed)
         return None
     version = metadata.get("framework_version")
-    if version is None or is_latest_sentinel(str(version)):
+    if version is None or is_latest_sentinel(str(version)) or is_head_sentinel(str(version)):
         return None
     return str(version)
 

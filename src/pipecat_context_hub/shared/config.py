@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
+from pipecat_context_hub.shared.versioning import DEFAULT_FRAMEWORK_PIN
+
 logger = logging.getLogger(__name__)
 
 # Environment variable for adding extra repos (comma-separated).
@@ -495,19 +497,23 @@ class HubConfig(BaseModel):
     framework_version: str | None = Field(
         default=None,
         description="Pin the framework repo (pipecat-ai/pipecat) to a specific git tag "
-        "(e.g. 'v0.0.96'), or 'latest' to track its newest release tag. When set, "
-        "source chunks come from that tag instead of HEAD. Set via "
-        "--framework-version CLI flag or PIPECAT_HUB_FRAMEWORK_VERSION env var.",
+        "(e.g. 'v0.0.96'), 'latest' to track its newest release tag, or 'head' for its "
+        "default branch. Set via --framework-version CLI flag or "
+        "PIPECAT_HUB_FRAMEWORK_VERSION env var; None means neither was given, and "
+        "resolves to the default pin.",
     )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def effective_framework_version(self) -> str | None:
-        """Resolve framework version from field or env var.
+    def effective_framework_version(self) -> str:
+        """Resolve the framework pin from field, env var, or the default.
 
-        CLI flag (stored in ``framework_version``) takes precedence over env var.
+        CLI flag (stored in ``framework_version``) takes precedence over env
+        var, which takes precedence over :data:`DEFAULT_FRAMEWORK_PIN`. Always
+        a pin: indexing the framework at its default branch is reached through
+        the ``head`` sentinel, not by leaving this unset.
         """
         if self.framework_version is not None:
             return self.framework_version
         env = os.environ.get(_FRAMEWORK_VERSION_ENV, "").strip()
-        return env or None
+        return env or DEFAULT_FRAMEWORK_PIN

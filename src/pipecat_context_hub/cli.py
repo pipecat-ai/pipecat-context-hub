@@ -31,7 +31,11 @@ from pipecat_context_hub.shared.paths import (
     same_dir,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
-from pipecat_context_hub.shared.versioning import canonicalize_framework_pin, exact_release_version
+from pipecat_context_hub.shared.versioning import (
+    canonicalize_framework_pin,
+    exact_release_version,
+    is_head_sentinel,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
@@ -819,8 +823,9 @@ def start(ctx: click.Context) -> None:
     "--framework-version",
     default=None,
     help="Pin the framework repo (pipecat-ai/pipecat) to a specific git tag "
-    "(e.g. 'v0.0.96'), or 'latest' for its newest release tag. Source chunks "
-    "will come from that version instead of HEAD. Can also be set via "
+    "(e.g. 'v0.0.96'), 'latest' for its newest release tag, or 'head' for its "
+    "default branch. Defaults to 'latest'; use 'head' when working against "
+    "unreleased framework code. Can also be set via "
     "PIPECAT_HUB_FRAMEWORK_VERSION env var.",
 )
 @click.option(
@@ -869,6 +874,7 @@ def refresh(
         config = config.model_copy(update={"framework_version": framework_version})
 
     fw_version = config.effective_framework_version
+    fw_at_head = is_head_sentinel(fw_version)
     prune_enabled = prune or _prune_enabled()
     logger.info(
         "Starting index refresh (force=%s reset_index=%s framework_version=%s prune=%s)",
@@ -962,8 +968,8 @@ def refresh(
     # refresh, as returned (and origin-verified) by `clone_or_fetch` itself —
     # not re-derived afterwards, so the tag and the commit can never come from
     # two different resolutions. Both chunk metadata and the metadata pass below
-    # read it, so they share one release identity. None for an unpinned
-    # default-branch refresh or a failed clone.
+    # read it, so they share one release identity. None for a `head`
+    # (default-branch) refresh or a failed clone.
     checked_out_framework_tag: str | None = None
 
     # Count of repos left un-pruned this run (not configured here, but not
@@ -1148,15 +1154,17 @@ def refresh(
         framework_slug = _FRAMEWORK_REPO
         for repo_slug in config.sources.effective_repos:
             stored_sha_key = f"repo:{repo_slug}:commit_sha"
-            # Pin the framework repo to a specific tag when configured.
-            repo_tag = fw_version if repo_slug == framework_slug and fw_version else None
+            # Pin the framework repo to the resolved tag. `head` asks for the
+            # default branch, which `clone_or_fetch` expresses as no tag at all.
+            repo_tag = fw_version if repo_slug == framework_slug and not fw_at_head else None
             try:
                 clone = await asyncio.to_thread(
                     github.clone_or_fetch, repo_slug, False, tag=repo_tag
                 )
                 repo_path, commit_sha = clone.path, clone.commit_sha
                 if repo_slug == framework_slug:
-                    # Already concrete for both a `latest` pin and a literal one.
+                    # Already concrete for both a `latest` pin and a literal one;
+                    # None at `head`, which carries no release identity.
                     checked_out_framework_tag = clone.resolved_tag
                 repo_shas[repo_slug] = commit_sha
                 prefetched[repo_slug] = (repo_path, commit_sha)
@@ -1520,18 +1528,16 @@ def refresh(
         stats = index_store.get_index_stats()
         metadata_to_set["content_type_counts"] = json.dumps(stats["counts_by_type"])
 
-        # Persist pinned framework version (or clear it) for get_hub_status.
-        # Normalize the `latest` sentinel's case/whitespace so a pin like
-        # " Latest " is recorded as the canonical "latest", matching what
-        # `is_latest_sentinel` accepts everywhere else.
-        if fw_version:
-            metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
-        else:
-            metadata_to_delete.append("framework_version")
+        # Persist the framework pin for get_hub_status. Always present, since
+        # an unspecified pin resolves to a default rather than to "no pin".
+        # Normalize a sentinel's case/whitespace so a pin like " Latest " is
+        # recorded as the canonical "latest", matching what
+        # `is_latest_sentinel` / `is_head_sentinel` accept everywhere else.
+        metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
 
         # Record the pipecat revision the index was actually built from.
-        # `framework_version` above is the operator's pin — frequently unset;
-        # this is observed from the checkout, so consumers can tell which
+        # `framework_version` above is the pin that was requested; this is
+        # observed from the checkout, so consumers can tell which
         # release the index reflects and whether it matches the version a
         # project builds against. Left untouched when the framework repo was
         # not cloned this run, so a transient clone failure keeps the last
@@ -1550,7 +1556,7 @@ def refresh(
             # accept branch-shaped tags too, and stamping one verbatim would
             # publish a non-version as `indexed_framework_version` with
             # `commits_ahead="0"`. Those fall through to describe's floor
-            # semantics, exactly like an unpinned refresh.
+            # semantics, exactly like a `head` refresh.
             # nosec B101 - invariant, not a runtime check: this branch only runs
             # when deprecation_map_published is True, which is set only after
             # dep_map_commit_sha is assigned alongside it (see its declaration

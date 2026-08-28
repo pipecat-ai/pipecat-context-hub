@@ -61,6 +61,12 @@ class TestResolveFrameworkVersion:
         store = _index_store({"framework_version": pin})
         assert resolve_framework_version(store) is None
 
+    @pytest.mark.parametrize("pin", ["head", "  MAIN  ", "Head"])
+    def test_head_pin_is_never_returned_as_a_version(self, pin: str):
+        """``head`` is a pin like ``latest`` — it names no release to evaluate against."""
+        store = _index_store({"framework_version": pin})
+        assert resolve_framework_version(store) is None
+
     def test_map_provenance_mismatch_falls_back_to_none(self):
         """Round 10 Finding #1 regression: if the on-disk deprecation map's
         commit SHA doesn't match the metadata's `deprecation_map_commit_sha`

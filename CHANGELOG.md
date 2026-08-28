@@ -15,6 +15,31 @@ This project uses [Semantic Versioning](https://semver.org/).
   `refresh --framework-version latest` run as not run — the exact gap
   PR #122 later hit.
 
+### Changed
+- **`refresh` indexes the framework at its newest release tag by default.** With
+  no `--framework-version`, the framework repo (`pipecat-ai/pipecat`) is pinned
+  to `latest` instead of tracking its default branch. Every other indexed source
+  is already release-aligned — the docs site publishes from a release-time
+  promotion, and the example repos depend on released wheels — so a
+  default-branch framework checkout was the one source contributing unreleased
+  APIs. Since `indexed_framework_version` is a git-describe *floor*, those APIs
+  were stamped with the previous release's number, which `version_compatibility`
+  reports as `compatible` to a caller running that release, and
+  `version_filter="compatible_only"` did not exclude them.
+
+  Pass `--framework-version head` (or `main`) for the default branch — the right
+  choice when developing Pipecat itself or building against unreleased code.
+  Both spellings are accepted wherever a pin is, including
+  `PIPECAT_HUB_FRAMEWORK_VERSION`, and both are recorded as `head`.
+
+- **`framework_version` index metadata records the pin behind the indexed
+  framework records.** An unspecified pin resolves to `latest` rather than to no
+  pin, so every refresh that indexes the framework repo records one. A
+  metadata-contract reader that treated the key's absence as "default branch"
+  should look for `head` instead; absent now means the index holds no framework
+  records to attribute a pin to. `check_deprecation` never returns either
+  sentinel as a version.
+
 ## [0.6.0] - 2026-08-28
 
 ### Changed

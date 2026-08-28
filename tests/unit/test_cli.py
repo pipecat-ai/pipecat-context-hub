@@ -1120,6 +1120,105 @@ class TestRefreshCommand:
         assert result.exit_code == 0, result.output
         mock_build_dep_map.assert_called_once()
 
+    @pytest.mark.parametrize(
+        "argv, expected_tag, expected_pin",
+        [
+            ([], "latest", "latest"),
+            (["--framework-version", "latest"], "latest", "latest"),
+            (["--framework-version", "head"], None, "head"),
+            (["--framework-version", "MAIN"], None, "head"),
+            (["--framework-version", "v1.2.0"], "v1.2.0", "v1.2.0"),
+        ],
+    )
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_framework_pin_resolution(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        argv,
+        expected_tag,
+        expected_pin,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The framework repo is pinned to `latest` unless told otherwise.
+
+        `head` (spelled either way) is the only route back to the default
+        branch, and reaches `clone_or_fetch` as no tag at all. Every other
+        repo is unpinned regardless — a pin is framework-only.
+        """
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        monkeypatch.delenv("PIPECAT_HUB_FRAMEWORK_VERSION", raising=False)
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", *argv])
+
+        assert result.exit_code == 0, result.output
+        tags_by_repo = {
+            call.args[0]: call.kwargs["tag"] for call in mock_github.clone_or_fetch.call_args_list
+        }
+        assert tags_by_repo["pipecat-ai/pipecat"] == expected_tag
+        assert all(
+            tag is None for slug, tag in tags_by_repo.items() if slug != "pipecat-ai/pipecat"
+        )
+
+        batch_calls = mock_store.set_metadata_batch.call_args_list
+        assert batch_calls, "expected set_metadata_batch to be called"
+        assert batch_calls[-1].args[0]["framework_version"] == expected_pin
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_framework_pin_env_var_overrides_the_default(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The env var still reaches refresh now that the field has a default."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        monkeypatch.setenv("PIPECAT_HUB_FRAMEWORK_VERSION", "head")
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        tags_by_repo = {
+            call.args[0]: call.kwargs["tag"] for call in mock_github.clone_or_fetch.call_args_list
+        }
+        assert tags_by_repo["pipecat-ai/pipecat"] is None
+
 
 class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
     """`refresh --reset-index` through the real (unmocked) code path for

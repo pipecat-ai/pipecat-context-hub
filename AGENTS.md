@@ -197,11 +197,16 @@ the indexed pipecat version; re-verify against the current registry if they drif
     includes `framework_version: "v0.0.96"` (confirms pinned version persisted
     and surfaced)
 38a. `get_hub_status()` after a plain `refresh` (no pin) — `framework_version` is
-    `null` but `indexed_framework_version` is a release number (e.g. `"1.6.0"`) and
-    `indexed_framework_commits_ahead` is an integer. Cross-check both against
-    `git describe --tags --long` in `~/.pipecat-context-hub/repos/pipecat-ai_pipecat`:
-    `v1.6.0-55-g1ad34dd98` must yield `("1.6.0", 55)`. Confirms the index records
-    the revision it was actually built from, not just an operator's pin — a `null`
+    `"latest"`, `indexed_framework_version` is the newest release number (e.g.
+    `"1.6.0"`) and `indexed_framework_commits_ahead` is `0`. A pin other than
+    `latest` reaching the index from a no-flag refresh is the regression.
+38b. `get_hub_status()` after `refresh --framework-version head` —
+    `framework_version` is `"head"`, `indexed_framework_version` is a release
+    number and `indexed_framework_commits_ahead` is an integer. Cross-check both
+    against `git describe --tags --long` in
+    `~/.pipecat-context-hub/repos/pipecat-ai_pipecat`: `v1.6.0-55-g1ad34dd98`
+    must yield `("1.6.0", 55)`. Confirms the index records the revision it was
+    actually built from, not just an operator's pin — a `null`
     `indexed_framework_version` after a successful pipecat ingest is the regression.
 39. `refresh --framework-version nonexistent-tag-xyz` — fails with a clear
     `ValueError` mentioning "not found" and listing available tags (confirms

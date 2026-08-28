@@ -243,25 +243,30 @@ Results are annotated with `version_compatibility`: `"compatible"`,
 `"newer_required"`, `"older_targeted"`, or `"unknown"`. Use
 `version_filter="compatible_only"` to exclude results requiring a newer version.
 
-You can also pin the framework index to a specific version:
+The framework repo is indexed at its newest release tag (`latest`), which
+re-resolves on every refresh — a plain incremental `refresh` picks up a new
+release without `--force`. Prereleases are skipped unless the repo has nothing
+else.
+
+That default keeps the framework aligned with the rest of the index: the docs
+site publishes from a release-time promotion, and the example repos depend on
+released wheels. A default-branch framework checkout would be the only source
+contributing unreleased APIs, and since `indexed_framework_version` is a
+git-describe *floor*, those APIs would be stamped with the previous release's
+number — which reads as "compatible" to a caller running that release.
+
+Pin a different version, or ask for the default branch, with
+`--framework-version`:
 
 ```bash
 uvx pipecat-ai-context-hub refresh --framework-version v0.0.96
+uvx pipecat-ai-context-hub refresh --framework-version head    # or `main`
 # or via env var:
 PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 uvx pipecat-ai-context-hub refresh
 ```
 
-Without a pin, every repo is indexed at its default branch (`main`). Pass
-`latest` to index the framework's newest release tag instead:
-
-```bash
-uvx pipecat-ai-context-hub refresh --framework-version latest
-```
-
-`latest` re-resolves on every refresh, so setting
-`PIPECAT_HUB_FRAMEWORK_VERSION=latest` in your MCP client's `env` block tracks
-releases as they ship — a plain incremental `refresh` picks up a new release
-without `--force`. Prereleases are skipped unless the repo has nothing else.
+Use `head` when you are working against unreleased framework code — developing
+Pipecat itself, or building on a feature that has not shipped yet.
 
 Note that a pin applies only to the framework repo (`pipecat-ai/pipecat`).
 The examples, flows, and client SDK repos always track their default branch,
@@ -311,11 +316,11 @@ set — e.g. a new `indexed_framework_version` can never be paired with a stale
 | `indexed_framework_version` | Nearest pipecat release tag the index was built from, e.g. `1.6.0` |
 | `indexed_framework_commits_ahead` | Commits from that tag to the indexed revision. `0` means the index *is* that release |
 | `deprecation_map_commit_sha` | Pipecat commit SHA the on-disk deprecation map was built from. Cross-checked against `indexed_framework_version`'s stamp by `resolve_framework_version` — a mismatch means the map and the stamp were published in different runs (crash between the two writes), so the exact-version answer falls back to `None`/intrinsic status |
-| `framework_version` | The operator's explicit `--framework-version` pin, recorded verbatim — so a `latest` pin stores `latest`, not the tag it resolved to. Absent unless pinned — this is *not* the version the index was built from |
+| `framework_version` | The pin behind the indexed framework records, recorded verbatim — so a `latest` pin stores `latest`, not the tag it resolved to, and the default-branch sentinel stores `head`. Present whenever the index holds framework records, since an unspecified pin defaults to `latest` rather than to no pin — this is *not* the version the index was built from |
 | `repo:<org>/<repo>:commit_sha` | Indexed commit for each source repo |
 | `content_type_counts` | JSON object of record counts by content type |
 
-`indexed_framework_version` is a **floor, not an identity**: an unpinned refresh
+`indexed_framework_version` is a **floor, not an identity**: a `head` refresh
 tracks the default branch, so an index built 55 commits past `v1.6.0` still
 reports `1.6.0` with `indexed_framework_commits_ahead: 55`. Compare versions with
 that slack in mind, or every developer working from a source checkout gets a
@@ -323,12 +328,12 @@ spurious mismatch.
 
 `indexed_framework_commits_ahead` is `0` **if and only if**
 `indexed_framework_version` is a parseable release the checkout sits exactly on.
-A pin that is not a release — a branch-shaped or feature tag — is recorded under
-`framework_version` but falls back to the same git-describe floor as an unpinned
-refresh, so the pair never claims exactness for a value that is not a version.
+A pin that is not a release — `head`, or a branch-shaped or feature tag — is
+recorded under `framework_version` but falls back to git-describe floor
+semantics, so the pair never claims exactness for a value that is not a version.
 
 `check_deprecation` uses `indexed_framework_version` as its default `version`
-only when `indexed_framework_commits_ahead` is `0`. For a floor — a default-branch
+only when `indexed_framework_commits_ahead` is `0`. For a floor — a `head`
 refresh, or an index built before this contract — it evaluates symbols at their
 intrinsic registry status instead, rather than answering as though the index were
 the older release the floor names.
@@ -351,7 +356,7 @@ works immediately; version comparison starts working after the next refresh.
 |----------|---------|-------------|
 | `PIPECAT_HUB_DATA_DIR` | `~/.pipecat-context-hub` | Index, clones, and metadata location. Consumers of the metadata contract must honour it |
 | `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
-| `PIPECAT_HUB_FRAMEWORK_VERSION` | *(empty)* | Pin framework repo to a specific git tag (e.g. `v0.0.96`), or `latest` for its newest release tag |
+| `PIPECAT_HUB_FRAMEWORK_VERSION` | `latest` | Pin the framework repo to a specific git tag (e.g. `v0.0.96`), `latest` for its newest release tag, or `head` (or `main`) for its default branch |
 | `PIPECAT_HUB_TAINTED_REPOS` | *(empty)* | Comma-separated repo slugs to skip entirely |
 | `PIPECAT_HUB_TAINTED_REFS` | *(empty)* | Comma-separated `org/repo@ref` entries to skip |
 | `PIPECAT_HUB_STALE_AFTER_DAYS` | `7` | Index age (days) after which tool responses carry an `index_staleness` field with a refresh hint. `0` disables |
