@@ -39,6 +39,21 @@ This project uses [Semantic Versioning](https://semver.org/).
   mismatch for every existing registration; running `install` again repairs
   it (`claude mcp list`/`codex mcp list` only report the mismatch, they don't
   fix it).
+- **Restrict cwd `.env` loading to `PIPECAT_HUB_*` keys.** `load_cwd_dotenv()`
+  previously set any key from `./.env` into the process environment with no
+  allowlist, unlike the machine-global `config.toml` loader. The same
+  scope-broadening logic as the `-P` fix above applies: at `user` scope this
+  loader now runs from every directory a coding agent is launched from, so an
+  untrusted cwd's `.env` could inject arbitrary env into the server process
+  (e.g. `HF_ENDPOINT`/`HF_HOME` to steer model loading). Non-`PIPECAT_HUB_*`
+  keys are now silently skipped; `PIPECAT_HUB_*` keys, including
+  invocation-scoped ones like `PIPECAT_HUB_PRUNE`, are unaffected.
+- **Ignore three additional chromadb pip-audit advisories**
+  (`CVE-2026-45830`, `CVE-2026-45831`, `CVE-2026-45833`) alongside the
+  existing `CVE-2026-45829` — all four are HTTP-server-mode auth/RBAC bypasses
+  or code-injection paths with no fixed chromadb release yet (1.5.9 remains
+  latest); unreachable here since the hub only ever runs the embedded
+  `PersistentClient`, with no HTTP server and no `trust_remote_code` usage.
 
 ## [0.5.3] - 2026-08-19
 

@@ -56,13 +56,23 @@ audit-deps:
     # Enforced by tests/unit/test_audit_sync.py (drift fails the suite).
     #   CVE-2026-45829: chromadb HTTP-server pre-auth RCE — unreachable (embedded
     #                   PersistentClient only, no server/endpoint).
+    #   CVE-2026-45830: chromadb HTTP-server cross-tenant collection read/write —
+    #                   unreachable (no HTTP server, no multi-tenant auth surface).
+    #   CVE-2026-45831: chromadb SimpleRBACAuthorizationProvider cross-tenant
+    #                   action bypass — unreachable (no HTTP server, no RBAC
+    #                   provider in play in embedded mode).
+    #   CVE-2026-45833: chromadb HTTP-server code injection via
+    #                   trust_remote_code — unreachable (no server, we never set
+    #                   trust_remote_code).
     #   PYSEC-2026-3721: pip <=26.1.2 doubly-encoded package-URL install to an
     #                   arbitrary path — only reachable via `pip download
     #                   --only-binary` against an untrusted index; we only run
     #                   `uv sync --frozen` against locked, trusted PyPI.
+    # All four chromadb CVEs affect every release through 1.5.9 (the latest);
+    # no fixed version exists yet as of this writing.
     # The two torch advisories (PYSEC-2026-139, CVE-2025-3000) were dropped when
     # torch left the tree — embedding and reranking now run on ONNX Runtime.
-    uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-45829 --ignore-vuln PYSEC-2026-3721
+    uv run pip-audit --local --progress-spinner off --ignore-vuln CVE-2026-45829 --ignore-vuln CVE-2026-45830 --ignore-vuln CVE-2026-45831 --ignore-vuln CVE-2026-45833 --ignore-vuln PYSEC-2026-3721
 
 # Static security scan for Python code
 audit-security:
