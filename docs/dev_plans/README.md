@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-08-27 | feature | `install` registers Claude Code at `user` scope so the server covers every directory (an existing entry is still repaired at its current scope) | In review (PR #121) | markbackman | `mb/register-claude-at-user-scope` | `20260803-fix-mcp-server-command-pinning.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

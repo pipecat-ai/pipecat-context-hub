@@ -5,6 +5,56 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **`install` registers with Claude Code for every directory.** A fresh
+  registration is made at Claude's `user` scope rather than its default `local`,
+  which keys the entry on the directory `install` happened to run in and leaves
+  every other project without the server — silently, since an agent without the
+  tools answers from training data instead of failing. Nothing about the hub is
+  per-project: one index serves the machine, and the registered command is an
+  absolute path to a global install. An entry that already exists is still
+  repaired at whatever scope it holds, so a deliberate `local` or `project`
+  registration is left where it is. Codex is unaffected; its single config is
+  already machine-wide.
+
+  Existing per-directory registrations keep working and are not migrated. To
+  move one, remove it and re-run `install`:
+
+  ```
+  claude mcp remove pipecat-context-hub -s local
+  pipecat-context-hub install --no-refresh
+  ```
+
+### Security
+- **Isolate the registered server's module resolution from its launch
+  directory.** The registered command (`python -m pipecat_context_hub`) let a
+  directory on the launch path prepend itself to `sys.path`, so a same-named
+  local package could shadow the installed one. This mattered little at the
+  old `local`-scoped default, since the server only ever launched from the one
+  directory `install` ran in — but the `user`-scope change above launches it
+  from every directory the user opens, turning it into a real cwd-shadowing
+  exposure. Fixed by adding `-P` to the registered command, which is a
+  mismatch for every existing registration; running `install` again repairs
+  it (`claude mcp list`/`codex mcp list` only report the mismatch, they don't
+  fix it).
+- **Restrict cwd `.env` loading to `PIPECAT_HUB_*` keys.** `load_cwd_dotenv()`
+  previously set any key from `./.env` into the process environment with no
+  allowlist, unlike the machine-global `config.toml` loader. The same
+  scope-broadening logic as the `-P` fix above applies: at `user` scope this
+  loader now runs from every directory a coding agent is launched from, so an
+  untrusted cwd's `.env` could inject arbitrary env into the server process
+  (e.g. `HF_ENDPOINT`/`HF_HOME` to steer model loading). Non-`PIPECAT_HUB_*`
+  keys are now silently skipped; `PIPECAT_HUB_*` keys, including
+  invocation-scoped ones like `PIPECAT_HUB_PRUNE`, are unaffected.
+- **Ignore three additional chromadb pip-audit advisories**
+  (`CVE-2026-45830`, `CVE-2026-45831`, `CVE-2026-45833`) alongside the
+  existing `CVE-2026-45829` — all four are HTTP-server-mode auth/RBAC bypasses
+  or code-injection paths with no fixed chromadb release yet (1.5.9 remains
+  latest); unreachable here since the hub only ever runs the embedded
+  `PersistentClient`, with no HTTP server and no `trust_remote_code` usage.
+
 ## [0.5.3] - 2026-08-19
 
 ### Added

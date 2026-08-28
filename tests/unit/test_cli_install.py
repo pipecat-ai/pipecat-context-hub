@@ -55,7 +55,24 @@ class TestServerCommand:
         that wrote it, and failed with ENOENT everywhere else.
         """
         with patch("pipecat_context_hub.cli_install.shutil.which", return_value="/usr/bin/x"):
-            assert _server_command() == [sys.executable, "-m", "pipecat_context_hub", "serve"]
+            assert _server_command() == [
+                sys.executable,
+                "-P",
+                "-m",
+                "pipecat_context_hub",
+                "serve",
+            ]
+
+    def test_isolates_module_resolution_from_launch_cwd(self):
+        """`-P` must be present so a client launched from an untrusted directory
+        (e.g. one containing its own `pipecat_context_hub/` package) can't have
+        that directory's copy shadow the real installed one via `sys.path[0]`.
+        This matters most now that a fresh registration is `user`-scoped and can
+        be launched from any directory, not just the one `install` ran in."""
+        command = _server_command()
+        assert command[0] == sys.executable
+        assert command[1] == "-P"
+        assert command[2:] == ["-m", "pipecat_context_hub", "serve"]
 
     def test_is_independent_of_the_environment(self):
         """What gets registered must not depend on where install happened to run."""
@@ -164,14 +181,14 @@ class TestRegisterWithCli:
     def test_a_matching_entry_is_left_alone(self):
         """Removing a correct registration to rewrite it risks losing it for nothing."""
         recorded = (
-            f"Command: {sys.executable}\n  Args: -m pipecat_context_hub serve\n"
+            f"Command: {sys.executable}\n  Args: -P -m pipecat_context_hub serve\n"
             "To remove this server, run: claude mcp remove pipecat-context-hub -s local"
         )
         calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
         existing = {
             "type": "stdio",
             "command": sys.executable,
-            "args": ["-m", "pipecat_context_hub", "serve"],
+            "args": ["-P", "-m", "pipecat_context_hub", "serve"],
             "env": {},
         }
         with (
@@ -195,6 +212,27 @@ class TestRegisterWithCli:
         ):
             assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert self._subcommands(calls) == ["get", "remove", "add"]
+
+    @pytest.mark.parametrize("scope", ["local", "project"])
+    def test_mismatched_entry_is_repaired_at_its_own_scope_not_promoted_to_user(self, scope):
+        """A mismatched entry that already exists at `local` or `project` scope must
+        be replaced at that SAME scope, not silently promoted to the fresh-registration
+        `user` scope -- that would override a deliberate prior scoping choice."""
+        recorded = (
+            "Command: pipecat-context-hub\n  Args: serve\n"
+            f"To remove this server, run: claude mcp remove pipecat-context-hub -s {scope}"
+        )
+        calls, fake_run = self._fake_client(get_code=0, get_stdout=recorded)
+        existing = {"type": "stdio", "command": "pipecat-context-hub", "args": ["serve"]}
+        with (
+            patch("pipecat_context_hub.cli_install.subprocess.run", fake_run),
+            patch("pipecat_context_hub.cli_install._claude_config", return_value=existing),
+        ):
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
+        remove = next(c for c in calls if c[2] == "remove")
+        add = next(c for c in calls if c[2] == "add")
+        assert remove[3:6] == ["pipecat-context-hub", "-s", scope]
+        assert add[2:5] == ["add", "-s", scope]
 
     def test_unparseable_get_failure_fails_closed_without_attempting_repair(self):
         """`mcp get` failing with an unrecognized error (not a clean "not found")
@@ -230,6 +268,26 @@ class TestRegisterWithCli:
         with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
             assert _register_with_cli("claude-code", _server_command()) == "ok"
         assert "add" in self._subcommands(calls)
+
+    def test_a_fresh_claude_entry_is_registered_for_every_directory(self):
+        """A directory-scoped entry leaves every other project without the server."""
+        calls, fake_run = self._fake_client(
+            get_code=1, get_stderr='No MCP server named "pipecat-context-hub".'
+        )
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
+        add = next(c for c in calls if c[2] == "add")
+        assert add[2:5] == ["add", "-s", "user"]
+
+    def test_codex_is_registered_without_a_scope(self):
+        """Codex has no scope concept; a `-s` would be rejected."""
+        calls, fake_run = self._fake_client(
+            get_code=1, get_stderr='No MCP server named "pipecat-context-hub".'
+        )
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("codex", _server_command()) == "ok"
+        add = next(c for c in calls if c[2] == "add")
+        assert "-s" not in add
 
     def test_a_failed_add_is_reported(self):
         calls, fake_run = self._fake_client(
@@ -292,6 +350,27 @@ class TestRegisterWithCli:
             assert _register_with_cli("claude-code", _server_command()) == "ok"
 
         assert self._subcommands(calls) == ["get", "add"]
+        add = next(c for c in calls if c[2] == "add")
+        assert "-s" not in add
+
+    def test_unknown_registration_state_is_not_treated_as_fresh(self):
+        """`mcp get` failing to run at all (e.g. a timeout) means `unknown`, not
+        `absent` -- an entry may already exist at some uninspected scope. Applying
+        the fresh-registration `-s user` here would risk creating a stray duplicate
+        instead of leaving a possibly-existing registration alone."""
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[2] == "get":
+                raise subprocess.TimeoutExpired(argv, timeout=60)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("pipecat_context_hub.cli_install.subprocess.run", fake_run):
+            assert _register_with_cli("claude-code", _server_command()) == "ok"
+
+        add = next(c for c in calls if c[2] == "add")
+        assert "-s" not in add
 
     def test_failed_replacement_with_failed_rollback_is_reported_as_corrupted(self):
         """When both the replacement add and the rollback fail, the previous
@@ -497,10 +576,10 @@ class TestInstallCommand:
 
         assert result.exit_code == 0
         argv = run.call_args.args[0]
-        assert argv[:4] == ["claude", "mcp", "add", "pipecat-context-hub"]
+        assert argv[:6] == ["claude", "mcp", "add", "-s", "user", "pipecat-context-hub"]
         # The `--` separator keeps the server's own args out of claude's parser.
-        assert argv[4] == "--"
-        assert argv[5:] == [sys.executable, "-m", "pipecat_context_hub", "serve"]
+        assert argv[6] == "--"
+        assert argv[7:] == [sys.executable, "-P", "-m", "pipecat_context_hub", "serve"]
 
     def test_client_cli_failure_is_reported_as_error_exit(self):
         """A failed client registration is surfaced via a nonzero exit, not silently ignored."""

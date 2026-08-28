@@ -169,11 +169,33 @@ jobs:
         # project dependency (nothing to bump in pyproject.toml/uv.lock); it's
         # whatever setup-python/uv bundles into the runner's venv.
         #
-        # The unfiltered biweekly security-audit.yml job re-surfaces both of
+        # CVE-2026-45830 (GHSA-...): SimpleRBACAuthorizationProvider-adjacent
+        # cross-tenant read/write/update/delete in chromadb's HTTP SERVER mode —
+        # any authenticated user can act on another tenant's collection. Affects
+        # 0.4.17-1.5.9 with no fixed release yet. Unreachable here: same reason
+        # as CVE-2026-45829 — embedded PersistentClient only, no HTTP server, no
+        # multi-tenant auth surface exists to bypass.
+        #
+        # CVE-2026-45831: SimpleRBACAuthorizationProvider checks *whether* a user
+        # holds a permission but never *which* tenant/database/collection it
+        # applies to, allowing cross-tenant actions. Affects 0.5.0-1.5.9, no
+        # fixed release yet. Unreachable here for the same reason: no HTTP
+        # server, no RBAC provider in play in embedded mode.
+        #
+        # CVE-2026-45833: code injection via a malicious model repository with
+        # trust_remote_code=true on chromadb's HTTP server collection endpoint —
+        # the same vulnerability class as CVE-2026-45829 (likely the same
+        # upstream fix). Affects 0.4.17-1.5.9, no fixed release yet. Unreachable
+        # here: no server, and this codebase never sets trust_remote_code.
+        #
+        # The unfiltered biweekly security-audit.yml job re-surfaces all of
         # these so the ignores cannot silently outlive their upstream patches.
         run: >-
           uv run pip-audit --local --progress-spinner off
           --ignore-vuln CVE-2026-45829
+          --ignore-vuln CVE-2026-45830
+          --ignore-vuln CVE-2026-45831
+          --ignore-vuln CVE-2026-45833
           --ignore-vuln PYSEC-2026-3721
 
       - name: Bandit
