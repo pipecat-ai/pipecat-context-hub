@@ -6,6 +6,7 @@ import os
 import re
 import sys
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,7 +31,7 @@ from pipecat_context_hub.cli import (
     main,
 )
 from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
-from pipecat_context_hub.services.ingest.github_ingest import CloneResult
+from pipecat_context_hub.services.ingest.github_ingest import CloneResult, TagNotFoundError
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_global_config
@@ -1219,6 +1220,132 @@ class TestRefreshCommand:
         }
         assert tags_by_repo["pipecat-ai/pipecat"] is None
 
+    # ---- Invalid framework pin: invalid input, not a transient failure ----
+
+    _PIN_PATCHES = (
+        patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester"),
+        patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted"),
+        patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester"),
+        patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler"),
+        patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter"),
+        patch("pipecat_context_hub.services.embedding.EmbeddingService"),
+        patch("pipecat_context_hub.services.index.store.IndexStore"),
+    )
+
+    def _run_with_framework_failure(self, exc, argv, tmp_path, monkeypatch):
+        """Invoke `refresh` with the framework repo's clone raising *exc*."""
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._PIN_PATCHES]
+            mock_si_cls, mock_ref_tainted, mock_gh_cls, mock_dc_cls = (
+                mocks[0],
+                mocks[1],
+                mocks[2],
+                mocks[3],
+            )
+            mock_is_cls = mocks[6]
+            mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+            mock_is_cls.return_value = mock_store
+            mock_dc_cls.return_value = mock_crawler
+            mock_gh_cls.return_value = mock_github
+            mock_si_cls.return_value = mock_source
+            mock_ref_tainted.return_value = False
+
+            def _clone(slug, checkout=True, tag=None):
+                if slug == _FRAMEWORK_REPO:
+                    raise exc
+                return CloneResult(Path("/tmp/repo"), "abc123", None)
+
+            mock_github.clone_or_fetch = MagicMock(side_effect=_clone)
+
+            monkeypatch.delenv("PIPECAT_HUB_FRAMEWORK_VERSION", raising=False)
+            monkeypatch.chdir(tmp_path)
+            result = CliRunner().invoke(main, ["refresh", *argv])
+            return result, mock_store, mock_crawler
+
+    def test_nonexistent_pin_fails_before_any_indexing_work(self, tmp_path, monkeypatch):
+        """A typo'd `--framework-version` is invalid input, so it must abort.
+
+        Regression: this used to be caught as a per-repo clone failure —
+        logged as a warning, with the run finishing at exit 0 and the
+        framework repo silently left at its previously indexed revision.
+        """
+        exc = TagNotFoundError(
+            "Tag 'nope-xyz' not found in repository. Available tags (latest 5): ['v1.8.1']"
+        )
+        result, mock_store, mock_crawler = self._run_with_framework_failure(
+            exc, ["--framework-version", "nope-xyz"], tmp_path, monkeypatch
+        )
+
+        assert result.exit_code == 1, result.output
+        assert "nope-xyz" in result.output
+        assert "not found" in result.output
+        assert "v1.8.1" in result.output, "the available-tags hint must survive"
+        # Fail *fast*: the abort precedes the docs crawl, so a typo costs one
+        # fetch rather than a full crawl the run then throws away.
+        mock_crawler.ingest.assert_not_called()
+        mock_store.set_metadata_batch.assert_not_called()
+
+    def test_malformed_pin_is_also_invalid_input(self, tmp_path, monkeypatch):
+        """A pin that cannot be a tag at all fails the same way."""
+        result, _store, _crawler = self._run_with_framework_failure(
+            TagNotFoundError("Invalid tag format: 'bad tag!!'"),
+            ["--framework-version", "bad tag!!"],
+            tmp_path,
+            monkeypatch,
+        )
+        assert result.exit_code == 1, result.output
+        assert "Invalid tag format" in result.output
+
+    def test_transient_framework_failure_stays_tolerant(self, tmp_path, monkeypatch):
+        """A network-shaped failure keeps the old behaviour: warn and carry on.
+
+        The point of separating `TagNotFoundError` is that only *invalid input*
+        became fatal — a flaky fetch must still leave the other repos indexed.
+        """
+        result, mock_store, mock_crawler = self._run_with_framework_failure(
+            OSError("Connection reset by peer"),
+            ["--framework-version", "v1.2.0"],
+            tmp_path,
+            monkeypatch,
+        )
+
+        assert result.exit_code == 0, result.output
+        mock_crawler.ingest.assert_called()
+        written = mock_store.set_metadata_batch.call_args_list[-1].args[0]
+        assert written["last_refresh_error_count"] == "1"
+        # ...and the pin is NOT recorded, because it never took effect: the
+        # framework records still describe whatever the last good run indexed.
+        assert "framework_version" not in written
+
+    def test_default_pin_costs_no_extra_fetch(self, tmp_path, monkeypatch):
+        """`latest` skips the pre-flight — it cannot be typo'd.
+
+        Guards the cost of the fail-fast check: the default path (every plain
+        `refresh`) must still fetch the framework repo exactly once.
+        """
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._PIN_PATCHES]
+            mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+            mocks[6].return_value = mock_store
+            mocks[3].return_value = mock_crawler
+            mocks[2].return_value = mock_github
+            mocks[0].return_value = mock_source
+            mocks[1].return_value = False
+
+            monkeypatch.delenv("PIPECAT_HUB_FRAMEWORK_VERSION", raising=False)
+            monkeypatch.chdir(tmp_path)
+            result = CliRunner().invoke(main, ["refresh"])
+
+            assert result.exit_code == 0, result.output
+            framework_calls = [
+                c for c in mock_github.clone_or_fetch.call_args_list if c.args[0] == _FRAMEWORK_REPO
+            ]
+            assert len(framework_calls) == 1, framework_calls
+
 
 class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
     """`refresh --reset-index` through the real (unmocked) code path for
@@ -2202,6 +2329,18 @@ class TestRefreshProvenanceMetadata:
         deleted = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
         assert "indexed_framework_version" in deleted
         assert "indexed_framework_commits_ahead" in deleted
+        # The pin describes those same records, so it goes with them —
+        # otherwise `resolve_framework_version`, which falls back to the pin
+        # exactly when no indexed revision is recorded, would answer with a
+        # version for an index holding no framework records at all.
+        assert "framework_version" in deleted
+        # ...and the end-of-run pass must not write it straight back: the
+        # framework repo was cloned this run, but its records were purged
+        # rather than indexed at the pin.
+        rewritten: set[str] = set()
+        for batch_call in mock_store.set_metadata_batch.call_args_list:
+            rewritten.update(batch_call.args[0])
+        assert "framework_version" not in rewritten
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")

@@ -208,9 +208,16 @@ the indexed pipecat version; re-verify against the current registry if they drif
     must yield `("1.6.0", 55)`. Confirms the index records the revision it was
     actually built from, not just an operator's pin — a `null`
     `indexed_framework_version` after a successful pipecat ingest is the regression.
-39. `refresh --framework-version nonexistent-tag-xyz` — fails with a clear
-    `ValueError` mentioning "not found" and listing available tags (confirms
-    tag validation rejects invalid input)
+39. `refresh --framework-version nonexistent-tag-xyz` — exits **1** in ~1s
+    with `Error: --framework-version 'nonexistent-tag-xyz': Tag '…' not found
+    in repository. Available tags (latest 5): [...]`. The pin is validated
+    before the docs crawl, so nothing is indexed and no metadata is written —
+    read `index_metadata` and confirm `framework_version` and
+    `last_refresh_at` still hold their previous values. `--framework-version
+    'bad tag!!'` exits 1 the same way with `Invalid tag format`. The tolerant
+    path must stay tolerant: a *transient* clone failure (network/auth/disk)
+    is still a warning with exit 0 and the other repos still indexed — the
+    split is `TagNotFoundError` (invalid input) vs everything else.
 40. `uv run pipecat-context-hub serve` — startup `INFO` log line
     `pipecat-context-hub vX.Y.Z starting: data_dir=<path> total=N counts_by_type={code=N,doc=N,source=N}`
     appears with non-zero `total` (confirms version banner, index-populated

@@ -35,6 +35,7 @@ from pipecat_context_hub.shared.versioning import (
     canonicalize_framework_pin,
     exact_release_version,
     is_head_sentinel,
+    is_latest_sentinel,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -340,7 +341,11 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     try:
         index_store.delete_metadata(meta_key)
         if slug == _FRAMEWORK_REPO:
-            # No framework records left to describe.
+            # No framework records left for the pin or the provenance pair to
+            # describe. The pin goes first: an absent `indexed_framework_version`
+            # is what sends `resolve_framework_version` to the pin, so a reader
+            # between the deletes must never find the pin standing alone.
+            index_store.delete_metadata("framework_version")
             index_store.delete_metadata("indexed_framework_version")
             index_store.delete_metadata("indexed_framework_commits_ahead")
     except Exception:
@@ -861,6 +866,7 @@ def refresh(
     from pipecat_context_hub.services.ingest.github_ingest import (
         _FRAMEWORK_REPO,
         GitHubRepoIngester,
+        TagNotFoundError,
         describe_framework_checkout,
         repo_ref_is_tainted,
     )
@@ -875,6 +881,10 @@ def refresh(
 
     fw_version = config.effective_framework_version
     fw_at_head = is_head_sentinel(fw_version)
+    # A pin only an operator could have typo'd. Both sentinels resolve against
+    # whatever the repo actually has, so neither can be "not found"; only a
+    # literal tag can, and that is invalid input rather than a bad-luck fetch.
+    fw_pin_is_concrete = not fw_at_head and not is_latest_sentinel(fw_version)
     prune_enabled = prune or _prune_enabled()
     logger.info(
         "Starting index refresh (force=%s reset_index=%s framework_version=%s prune=%s)",
@@ -936,6 +946,13 @@ def refresh(
     # pass below can record which pipecat revision the index reflects. None when
     # the framework repo was not cloned (unconfigured, tainted, or clone failed).
     framework_checkout: Path | None = None
+    # True once this run's framework repo is represented in the index at the
+    # resolved pin: the clone succeeded and its ref was not tainted, so the
+    # records are either re-ingested below or already present and skipped as
+    # unchanged. Narrower than `framework_checkout`, which also encodes ingest
+    # coherence; this answers only "does the recorded pin describe what the
+    # index holds?".
+    framework_pin_applies = False
     # True only once the framework checkout's records are known-coherent with
     # the index (error-free ingest, per the `ingested_repos` gate) — a
     # separate bool from `framework_checkout` being non-None so a type
@@ -993,9 +1010,32 @@ def refresh(
         nonlocal total_upserted, all_errors, framework_checkout, framework_provenance_ready
         nonlocal unpruned_repo_count, checked_out_framework_tag, deprecation_map_published
         nonlocal dep_map_commit_sha, framework_records_replaced_this_run
+        nonlocal framework_pin_applies
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
+
+        # ----- 0. Validate an explicit framework pin -----
+        # Resolve a concrete pin before any indexing work, so a typo costs one
+        # fetch rather than a full docs crawl followed by a warning the run
+        # then exits 0 on. Only concrete pins are checked, so the default
+        # (`latest`) path pays no extra fetch.
+        if fw_pin_is_concrete and _FRAMEWORK_REPO in config.sources.effective_repos:
+            try:
+                await asyncio.to_thread(
+                    github.clone_or_fetch, _FRAMEWORK_REPO, False, tag=fw_version
+                )
+            except TagNotFoundError as exc:
+                raise click.ClickException(f"--framework-version {fw_version!r}: {exc}") from exc
+            except Exception:
+                # Everything else — network, auth, disk — stays tolerant: the
+                # repo loop below records it as a per-repo error and the rest
+                # of the refresh still runs. Re-raising here would turn a
+                # transient blip into a hard failure.
+                logger.debug(
+                    "Framework pin pre-flight could not complete; deferring to repo loop",
+                    exc_info=True,
+                )
 
         # ----- 1. Docs -----
         crawler = DocsCrawler(writer, config.sources, config.chunking)
@@ -1169,6 +1209,16 @@ def refresh(
                 repo_shas[repo_slug] = commit_sha
                 prefetched[repo_slug] = (repo_path, commit_sha)
             except Exception as exc:
+                if (
+                    isinstance(exc, TagNotFoundError)
+                    and repo_slug == framework_slug
+                    and fw_pin_is_concrete
+                ):
+                    # Backstop for a tag that vanished between the pre-flight
+                    # above and here. Same verdict: invalid input, not bad luck.
+                    raise click.ClickException(
+                        f"--framework-version {fw_version!r}: {exc}"
+                    ) from exc
                 all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
                 source_status[repo_slug] = {
                     "status": "error",
@@ -1219,6 +1269,9 @@ def refresh(
                 # repo is ingested successfully at a non-tainted ref.
                 frozen_sha_repos.add(repo_slug)
                 continue
+
+            if repo_slug == framework_slug:
+                framework_pin_applies = True
 
             # The stored SHA is bookkeeping, not proof that the records it
             # describes are still in the index — the two diverge whenever a
@@ -1528,12 +1581,17 @@ def refresh(
         stats = index_store.get_index_stats()
         metadata_to_set["content_type_counts"] = json.dumps(stats["counts_by_type"])
 
-        # Persist the framework pin for get_hub_status. Always present, since
-        # an unspecified pin resolves to a default rather than to "no pin".
-        # Normalize a sentinel's case/whitespace so a pin like " Latest " is
-        # recorded as the canonical "latest", matching what
-        # `is_latest_sentinel` / `is_head_sentinel` accept everywhere else.
-        metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
+        # Persist the framework pin for get_hub_status. Written only when the
+        # pin describes what the index holds; a clone failure or a tainted ref
+        # leaves it untouched, for the same reason `indexed_framework_version`
+        # is left untouched — the records still describe whatever revision the
+        # last good run indexed, and the last known-good answer beats a false
+        # one. (When those records are purged outright, `_delete_repo_index_data`
+        # clears this key with them.) Normalize a sentinel's case/whitespace so
+        # a pin like " Latest " is recorded as the canonical "latest", matching
+        # what `is_latest_sentinel` / `is_head_sentinel` accept everywhere else.
+        if framework_pin_applies:
+            metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
 
         # Record the pipecat revision the index was actually built from.
         # `framework_version` above is the pin that was requested; this is

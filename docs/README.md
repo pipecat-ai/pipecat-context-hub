@@ -268,6 +268,12 @@ PIPECAT_HUB_FRAMEWORK_VERSION=v0.0.96 uvx pipecat-ai-context-hub refresh
 Use `head` when you are working against unreleased framework code — developing
 Pipecat itself, or building on a feature that has not shipped yet.
 
+A tag that does not exist fails the refresh immediately with exit 1, listing
+the newest tags that do — the pin is resolved before any indexing work, so a
+typo costs a second rather than a full crawl. A *transient* clone failure is
+treated differently: it is logged as a warning and the remaining repos are
+still indexed, so one flaky source cannot fail the whole refresh.
+
 Note that a pin applies only to the framework repo (`pipecat-ai/pipecat`).
 The examples, flows, and client SDK repos always track their default branch,
 and docs come from the live `docs.pipecat.ai`, which is unversioned.

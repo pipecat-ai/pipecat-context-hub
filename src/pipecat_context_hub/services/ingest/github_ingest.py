@@ -109,6 +109,19 @@ _TAG_INPUT_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 _ZERO_VERSION = Version("0")
 
+
+class TagNotFoundError(ValueError):
+    """A requested git tag does not exist in the repo, or is malformed.
+
+    Subclasses ``ValueError`` so the pre-existing ``except ValueError``
+    callers keep working unchanged; the distinct type is what lets ``refresh``
+    tell an operator's bad ``--framework-version`` (invalid input — abort with
+    a non-zero exit) apart from a transient clone/fetch failure (warn, keep
+    the other repos, carry on). Conflating the two is how a typo'd pin used to
+    finish with exit 0 and a silently un-reindexed framework repo.
+    """
+
+
 class CloneResult(NamedTuple):
     """Outcome of one clone/fetch: where, at what commit, and — when a tag was
     requested — the concrete tag that commit was resolved from.
@@ -1528,11 +1541,12 @@ class GitHubRepoIngester:
         ``latest`` sentinel — every production caller resolves it via
         ``_resolve_latest_tag``/``_latest_version_tag`` first, so a caller
         passing the literal string ``"latest"`` here gets the same
-        not-found error as any other nonexistent tag. Raises ``ValueError``
-        if the tag does not exist or has an invalid format.
+        not-found error as any other nonexistent tag. Raises
+        :class:`TagNotFoundError` if the tag does not exist or has an invalid
+        format.
         """
         if not _TAG_INPUT_RE.fullmatch(tag):
-            raise ValueError(f"Invalid tag format: {tag!r}")
+            raise TagNotFoundError(f"Invalid tag format: {tag!r}")
         # Normalise: accept "v0.0.96", "V0.0.96", and "0.0.96" alike. Mirrors
         # the case-insensitive guard in `shared/versioning.parse_release_version`
         # — deliberately NOT routed through `strip_v_prefix`, which is
@@ -1551,7 +1565,7 @@ class GitHubRepoIngester:
                 continue
 
         newest = sorted((str(t) for t in git_repo.tags), key=_version_sort_key, reverse=True)[:5]
-        raise ValueError(
+        raise TagNotFoundError(
             f"Tag '{tag}' not found in repository. Available tags (latest 5): {newest}"
         )
 

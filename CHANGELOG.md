@@ -40,6 +40,30 @@ This project uses [Semantic Versioning](https://semver.org/).
   records to attribute a pin to. `check_deprecation` never returns either
   sentinel as a version.
 
+### Fixed
+- **A nonexistent `--framework-version` tag now fails the refresh.** A typo'd
+  pin was caught as an ordinary per-repo clone failure: `refresh` logged a
+  warning, finished with **exit 0**, and left the framework repo at whatever
+  revision it had last indexed — so a scripted refresh reported success while
+  silently indexing nothing new. An unresolvable (or malformed) tag is invalid
+  input, and is now validated *before* the docs crawl: the run aborts with
+  exit 1 and the available-tags hint in about a second, rather than after a
+  full crawl it then throws away. Transient clone failures — network, auth,
+  disk — are deliberately unchanged: still a warning, still non-fatal, so one
+  flaky repo cannot fail an otherwise good refresh. The `latest` and `head`
+  sentinels skip the check, since neither can be typo'd, so a plain `refresh`
+  pays no extra fetch.
+
+- **`framework_version` index metadata no longer records a pin that never took
+  effect.** When the framework clone fails or its ref is tainted, the key keeps
+  its previous value rather than advertising a pin the index does not reflect —
+  the same last-known-good treatment `indexed_framework_version` already had.
+  When the framework repo's records are purged outright, the key is cleared
+  alongside the provenance pair it sits with: `check_deprecation` falls back to
+  the pin exactly when no indexed revision is recorded, so a pin left behind by
+  a purge would answer with a version for an index holding no framework records
+  at all.
+
 ## [0.6.0] - 2026-08-28
 
 ### Changed
