@@ -141,6 +141,21 @@ def load_cwd_dotenv() -> None:
         KEY="value" # note   # inline comment stripped
         KEY=value # note     # inline comment stripped
 
+    Only ``PIPECAT_HUB_*``-prefixed keys are read from this file — any other key
+    is silently skipped, not set into ``os.environ``. This file can live in any
+    directory a coding agent is launched from (e.g. a user-scope MCP
+    registration invokes this hub's ``serve``/``refresh`` from whatever cwd the
+    agent happens to have), so a cwd ``.env`` is a much broader attack/leak
+    surface than the machine-global ``config.toml``: it is frequently a
+    project's *own* dotenv, shared with unrelated tools and holding secrets
+    (``OPENAI_API_KEY``, database URLs, etc.) that this loader has no business
+    promoting into its own process environment. The prefix filter is this
+    module's existing allowlist discipline (see ``_KNOWN_KEYS``'s comment)
+    applied at the file level rather than the per-key level — no warning is
+    emitted for a skipped non-prefixed key, since the overwhelming majority of
+    keys in a real-world ``.env`` are for other tools, and warning on every one
+    would be noise on the common case.
+
     Never raises — neither the cwd lookup nor the file read. ``Path.cwd()`` is
     not infallible — it raises
     ``FileNotFoundError`` when the process's working directory has been
@@ -186,6 +201,11 @@ def load_cwd_dotenv() -> None:
         key, _, value = line.partition("=")
         key = key.strip()
         if not key:
+            continue
+        # Allowlist by prefix, not by key: a cwd `.env` is a shared, multi-tool
+        # file (see docstring) — only PIPECAT_HUB_* is this loader's business.
+        # Silent skip, not a warning: non-prefixed keys are the expected majority.
+        if not key.startswith(_ENV_PREFIX):
             continue
         value = value.strip()
         # Quoted value: extract content between matching quotes.

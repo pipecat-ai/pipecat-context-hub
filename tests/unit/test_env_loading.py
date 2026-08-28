@@ -54,68 +54,68 @@ class TestLoadCwdDotenv:
     """
 
     def test_basic_unquoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("FOO=bar\n")
+        (tmp_path / ".env").write_text("PIPECAT_HUB_FOO=bar\n")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("FOO", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_FOO", raising=False)
         load_cwd_dotenv()
-        assert os.environ["FOO"] == "bar"
+        assert os.environ["PIPECAT_HUB_FOO"] == "bar"
 
     def test_double_quoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text('KEY="hello world"\n')
+        (tmp_path / ".env").write_text('PIPECAT_HUB_KEY="hello world"\n')
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_KEY", raising=False)
         load_cwd_dotenv()
-        assert os.environ["KEY"] == "hello world"
+        assert os.environ["PIPECAT_HUB_KEY"] == "hello world"
 
     def test_single_quoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("KEY='hello world'\n")
+        (tmp_path / ".env").write_text("PIPECAT_HUB_KEY='hello world'\n")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_KEY", raising=False)
         load_cwd_dotenv()
-        assert os.environ["KEY"] == "hello world"
+        assert os.environ["PIPECAT_HUB_KEY"] == "hello world"
 
     def test_inline_comment_stripped_unquoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("KEY=value # this is a comment\n")
+        (tmp_path / ".env").write_text("PIPECAT_HUB_KEY=value # this is a comment\n")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_KEY", raising=False)
         load_cwd_dotenv()
-        assert os.environ["KEY"] == "value"
+        assert os.environ["PIPECAT_HUB_KEY"] == "value"
 
     def test_inline_comment_stripped_quoted(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text('KEY="org/a,org/b" # note\n')
+        (tmp_path / ".env").write_text('PIPECAT_HUB_KEY="org/a,org/b" # note\n')
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_KEY", raising=False)
         load_cwd_dotenv()
-        assert os.environ["KEY"] == "org/a,org/b"
+        assert os.environ["PIPECAT_HUB_KEY"] == "org/a,org/b"
 
     def test_hash_inside_quotes_preserved(self, tmp_path: Path, monkeypatch):
         """Hash inside quotes is NOT treated as a comment."""
-        (tmp_path / ".env").write_text('KEY="color #fff"\n')
+        (tmp_path / ".env").write_text('PIPECAT_HUB_KEY="color #fff"\n')
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_KEY", raising=False)
         load_cwd_dotenv()
-        assert os.environ["KEY"] == "color #fff"
+        assert os.environ["PIPECAT_HUB_KEY"] == "color #fff"
 
     def test_comment_lines_skipped(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("# comment\nKEY=val\n")
+        (tmp_path / ".env").write_text("# comment\nPIPECAT_HUB_KEY=val\n")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_KEY", raising=False)
         load_cwd_dotenv()
-        assert os.environ["KEY"] == "val"
+        assert os.environ["PIPECAT_HUB_KEY"] == "val"
 
     def test_empty_lines_skipped(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("\n\nKEY=val\n\n")
+        (tmp_path / ".env").write_text("\n\nPIPECAT_HUB_KEY=val\n\n")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_KEY", raising=False)
         load_cwd_dotenv()
-        assert os.environ["KEY"] == "val"
+        assert os.environ["PIPECAT_HUB_KEY"] == "val"
 
     def test_existing_env_not_overwritten(self, tmp_path: Path, monkeypatch):
-        (tmp_path / ".env").write_text("KEY=from_file\n")
+        (tmp_path / ".env").write_text("PIPECAT_HUB_KEY=from_file\n")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("KEY", "from_shell")
+        monkeypatch.setenv("PIPECAT_HUB_KEY", "from_shell")
         load_cwd_dotenv()
-        assert os.environ["KEY"] == "from_shell"
+        assert os.environ["PIPECAT_HUB_KEY"] == "from_shell"
 
     def test_no_env_file(self, tmp_path: Path, monkeypatch):
         """No .env file is fine — no error raised."""
@@ -131,6 +131,35 @@ class TestLoadCwdDotenv:
         monkeypatch.delenv("PIPECAT_HUB_EXTRA_REPOS", raising=False)
         load_cwd_dotenv()
         assert os.environ["PIPECAT_HUB_EXTRA_REPOS"] == "org/repo-a,org/repo-b"
+
+
+class TestLoadCwdDotenvPrefixFilter:
+    """A cwd `.env` is a shared, multi-tool file — only PIPECAT_HUB_* keys are
+    this loader's business (see `load_cwd_dotenv`'s docstring)."""
+
+    def test_non_prefixed_key_skipped_silently(self, tmp_path: Path, monkeypatch, caplog):
+        (tmp_path / ".env").write_text("OPENAI_API_KEY=secret\nPIPECAT_HUB_FOO=bar\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_FOO", raising=False)
+        with caplog.at_level("WARNING"):
+            load_cwd_dotenv()
+        assert "OPENAI_API_KEY" not in os.environ
+        assert caplog.records == []
+        assert os.environ["PIPECAT_HUB_FOO"] == "bar"
+
+    def test_invocation_scoped_key_still_settable_from_cwd_dotenv(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Deliberate divergence from `load_global_config`, which excludes
+        `_INVOCATION_SCOPED_KEYS` members: a cwd `.env` is per-invocation by
+        nature (unlike the machine-global config.toml), so PIPECAT_HUB_PRUNE
+        remains settable from it."""
+        (tmp_path / ".env").write_text(f"{PRUNE_ENV_VAR}=1\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(PRUNE_ENV_VAR, raising=False)
+        load_cwd_dotenv()
+        assert os.environ[PRUNE_ENV_VAR] == "1"
 
 
 class TestResolveGlobalConfigPath:
@@ -1787,16 +1816,16 @@ class TestLoadCwdDotenvNeverCrashesEntryPoints:
     def test_embedded_nul_value_is_skipped_not_fatal(self, tmp_path: Path, monkeypatch, caplog):
         """`os.environ[k] = v` raises ValueError for an embedded NUL. One bad
         line must skip, not abort the loader (and with it the process)."""
-        (tmp_path / ".env").write_text("BAD_KEY=a\x00b\nGOOD_KEY=fine\n")
+        (tmp_path / ".env").write_text("PIPECAT_HUB_BAD_KEY=a\x00b\nPIPECAT_HUB_GOOD_KEY=fine\n")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("BAD_KEY", raising=False)
-        monkeypatch.delenv("GOOD_KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_BAD_KEY", raising=False)
+        monkeypatch.delenv("PIPECAT_HUB_GOOD_KEY", raising=False)
         with caplog.at_level("WARNING"):
             load_cwd_dotenv()  # must not raise
-        assert "BAD_KEY" not in os.environ
+        assert "PIPECAT_HUB_BAD_KEY" not in os.environ
         # The loader keeps going: a later, valid line is still applied.
-        assert os.environ["GOOD_KEY"] == "fine"
-        assert "BAD_KEY" in caplog.text
+        assert os.environ["PIPECAT_HUB_GOOD_KEY"] == "fine"
+        assert "PIPECAT_HUB_BAD_KEY" in caplog.text
 
 
 class TestLoadCwdDotenvUnreadableFile:
