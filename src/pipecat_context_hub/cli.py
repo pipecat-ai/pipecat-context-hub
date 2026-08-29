@@ -35,11 +35,12 @@ from pipecat_context_hub.shared.versioning import (
     canonicalize_framework_pin,
     exact_release_version,
     is_head_sentinel,
-    is_latest_sentinel,
+    is_sentinel_pin,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.shared.types import ChunkedRecord
 
 # Back-compat alias: tests/unit/test_cli.py imports the underscored name and
 # the banner call sites below reference it. The redaction helper itself now
@@ -817,6 +818,24 @@ def start(ctx: click.Context) -> None:
     ctx.invoke(serve)
 
 
+class _PinPreflightWriter:
+    """Stand-in ``IndexWriter`` for the framework-pin pre-flight.
+
+    The pre-flight has to run before ``--reset-index`` deletes the data dir,
+    which is before any real ``IndexStore``/``EmbeddingIndexWriter`` exists.
+    ``GitHubRepoIngester.clone_or_fetch`` — the only method the pre-flight
+    calls — never touches the writer, so these methods exist solely to satisfy
+    the constructor's contract and to fail loudly rather than silently write
+    somewhere unexpected if that ever changes.
+    """
+
+    async def upsert(self, records: list[ChunkedRecord]) -> int:
+        raise AssertionError("framework-pin pre-flight must not write to the index")
+
+    async def delete_by_source(self, source_url: str) -> int:
+        raise AssertionError("framework-pin pre-flight must not write to the index")
+
+
 @main.command()
 @click.option("--force", is_flag=True, help="Force full refresh, ignoring cached state.")
 @click.option(
@@ -884,7 +903,7 @@ def refresh(
     # A pin only an operator could have typo'd. Both sentinels resolve against
     # whatever the repo actually has, so neither can be "not found"; only a
     # literal tag can, and that is invalid input rather than a bad-luck fetch.
-    fw_pin_is_concrete = not fw_at_head and not is_latest_sentinel(fw_version)
+    fw_pin_is_concrete = not is_sentinel_pin(fw_version)
     prune_enabled = prune or _prune_enabled()
     logger.info(
         "Starting index refresh (force=%s reset_index=%s framework_version=%s prune=%s)",
@@ -894,6 +913,36 @@ def refresh(
         prune_enabled,
     )
     start = time.monotonic()
+
+    # ----- 0. Validate an explicit framework pin -----
+    # Resolve a concrete pin before any indexing work, so a typo costs one
+    # fetch rather than a full docs crawl followed by a warning the run then
+    # exits 0 on. Only concrete pins are checked, so the default (`latest`)
+    # path pays no extra fetch.
+    #
+    # Deliberately ahead of the `--reset-index` deletion below: validating
+    # after it meant a typo'd pin aborted the run *having already destroyed*
+    # the existing index, leaving nothing usable behind. The cost is that a
+    # `--reset-index` + concrete-pin run clones the framework repo once here
+    # and again after the reset wipes `data_dir/repos` — paid only by that
+    # rare flag combination, and cheaper than an index an operator has to
+    # rebuild from scratch after a typo.
+    if fw_pin_is_concrete and _FRAMEWORK_REPO in config.sources.effective_repos:
+        try:
+            GitHubRepoIngester(config, _PinPreflightWriter()).clone_or_fetch(
+                _FRAMEWORK_REPO, False, tag=fw_version
+            )
+        except TagNotFoundError as exc:
+            raise click.ClickException(f"--framework-version {fw_version!r}: {exc}") from exc
+        except Exception:
+            # Everything else — network, auth, disk — stays tolerant: the
+            # repo loop below records it as a per-repo error and the rest
+            # of the refresh still runs. Re-raising here would turn a
+            # transient blip into a hard failure.
+            logger.debug(
+                "Framework pin pre-flight could not complete; deferring to repo loop",
+                exc_info=True,
+            )
 
     if reset_index:
         logger.warning("Deleting local index storage before refresh")
@@ -947,12 +996,21 @@ def refresh(
     # the framework repo was not cloned (unconfigured, tainted, or clone failed).
     framework_checkout: Path | None = None
     # True once this run's framework repo is represented in the index at the
-    # resolved pin: the clone succeeded and its ref was not tainted, so the
-    # records are either re-ingested below or already present and skipped as
-    # unchanged. Narrower than `framework_checkout`, which also encodes ingest
-    # coherence; this answers only "does the recorded pin describe what the
-    # index holds?".
+    # resolved pin: the clone succeeded, its ref was not tainted, and its
+    # records were either re-ingested error-free or left untouched because the
+    # repo was unchanged. Answers exactly "does the recorded pin describe what
+    # the index holds?", so it is set from the *same* gate as
+    # `framework_provenance_ready` — after the ingest loop, never before it. A
+    # failed checkout (index still holds the previous revision) or a failed
+    # ingest (records purged) must not leave `framework_version` claiming a pin
+    # the index does not reflect.
     framework_pin_applies = False
+    # True when the framework repo's records were deleted this run but its
+    # re-ingest did not complete cleanly, so the index now holds zero (or
+    # partial, if the purge itself failed) framework records. The previously
+    # recorded pin described records that no longer exist, so the key is
+    # actively cleared rather than merely left in place.
+    framework_records_purged_this_run = False
     # True only once the framework checkout's records are known-coherent with
     # the index (error-free ingest, per the `ingested_repos` gate) — a
     # separate bool from `framework_checkout` being non-None so a type
@@ -1010,32 +1068,10 @@ def refresh(
         nonlocal total_upserted, all_errors, framework_checkout, framework_provenance_ready
         nonlocal unpruned_repo_count, checked_out_framework_tag, deprecation_map_published
         nonlocal dep_map_commit_sha, framework_records_replaced_this_run
-        nonlocal framework_pin_applies
+        nonlocal framework_pin_applies, framework_records_purged_this_run
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
-
-        # ----- 0. Validate an explicit framework pin -----
-        # Resolve a concrete pin before any indexing work, so a typo costs one
-        # fetch rather than a full docs crawl followed by a warning the run
-        # then exits 0 on. Only concrete pins are checked, so the default
-        # (`latest`) path pays no extra fetch.
-        if fw_pin_is_concrete and _FRAMEWORK_REPO in config.sources.effective_repos:
-            try:
-                await asyncio.to_thread(
-                    github.clone_or_fetch, _FRAMEWORK_REPO, False, tag=fw_version
-                )
-            except TagNotFoundError as exc:
-                raise click.ClickException(f"--framework-version {fw_version!r}: {exc}") from exc
-            except Exception:
-                # Everything else — network, auth, disk — stays tolerant: the
-                # repo loop below records it as a per-repo error and the rest
-                # of the refresh still runs. Re-raising here would turn a
-                # transient blip into a hard failure.
-                logger.debug(
-                    "Framework pin pre-flight could not complete; deferring to repo loop",
-                    exc_info=True,
-                )
 
         # ----- 1. Docs -----
         crawler = DocsCrawler(writer, config.sources, config.chunking)
@@ -1270,9 +1306,6 @@ def refresh(
                 frozen_sha_repos.add(repo_slug)
                 continue
 
-            if repo_slug == framework_slug:
-                framework_pin_applies = True
-
             # The stored SHA is bookkeeping, not proof that the records it
             # describes are still in the index — the two diverge whenever a
             # repo's records are removed without its metadata key going with
@@ -1447,6 +1480,15 @@ def refresh(
                         repo_slug,
                     )
 
+            if repo_slug == framework_slug and repo_has_errors:
+                # Reaching here means `delete_by_repo` above succeeded (its
+                # failure path `continue`s), so the framework repo's old
+                # records are gone and the replacement ingest errored — the
+                # purge above dropped whatever partial records it produced.
+                # Whatever the index holds for the framework now, it is not
+                # the pinned revision.
+                framework_records_purged_this_run = True
+
             if not repo_has_errors:
                 # Repo fully re-ingested — any earlier cleanup-failure flag
                 # for it is now moot: the index is coherent again, so the
@@ -1483,6 +1525,9 @@ def refresh(
             and (framework_slug not in changed_repos or framework_slug in ingested_repos)
         ):
             framework_provenance_ready = True
+            # Same gate, deliberately: the pin describes what the index holds
+            # exactly when the framework records are coherent with it.
+            framework_pin_applies = True
             framework_checkout = prefetched[framework_slug][0]
             framework_records_replaced_this_run = (
                 framework_slug in changed_repos and framework_slug in ingested_repos
@@ -1592,6 +1637,13 @@ def refresh(
         # what `is_latest_sentinel` / `is_head_sentinel` accept everywhere else.
         if framework_pin_applies:
             metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
+        elif framework_records_purged_this_run:
+            # The framework records this key described were deleted this run
+            # and their replacement never landed. Leaving the old pin in place
+            # would advertise a framework version the index no longer holds
+            # any records for, so drop it and let `get_hub_status` /
+            # `resolve_framework_version` fall back to intrinsic state.
+            metadata_to_delete.append("framework_version")
 
         # Record the pipecat revision the index was actually built from.
         # `framework_version` above is the pin that was requested; this is

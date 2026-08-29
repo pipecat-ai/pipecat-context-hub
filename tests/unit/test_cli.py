@@ -1346,6 +1346,152 @@ class TestRefreshCommand:
             ]
             assert len(framework_calls) == 1, framework_calls
 
+    def _run_reset_index_with_pin(self, pin_exc, pin, tmp_path, monkeypatch):
+        """Invoke `refresh --reset-index --framework-version <pin>`.
+
+        ``pin_exc`` is raised by the framework repo's ``clone_or_fetch`` (or
+        ``None`` for a pin that resolves fine). Returns the result and the
+        patched ``_delete_local_index_storage`` mock.
+        """
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._PIN_PATCHES]
+            mock_delete = stack.enter_context(
+                patch("pipecat_context_hub.cli._delete_local_index_storage")
+            )
+            mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+            mocks[6].return_value = mock_store
+            mocks[3].return_value = mock_crawler
+            mocks[2].return_value = mock_github
+            mocks[0].return_value = mock_source
+            mocks[1].return_value = False
+
+            def _clone(slug, checkout=True, tag=None):
+                if slug == _FRAMEWORK_REPO and pin_exc is not None:
+                    raise pin_exc
+                return CloneResult(Path("/tmp/repo"), "abc123", tag)
+
+            mock_github.clone_or_fetch = MagicMock(side_effect=_clone)
+
+            monkeypatch.delenv("PIPECAT_HUB_FRAMEWORK_VERSION", raising=False)
+            monkeypatch.chdir(tmp_path)
+            result = CliRunner().invoke(
+                main, ["refresh", "--reset-index", "--framework-version", pin]
+            )
+            return result, mock_delete
+
+    def test_invalid_pin_with_reset_index_leaves_the_index_intact(self, tmp_path, monkeypatch):
+        """A typo'd pin must abort *before* --reset-index destroys the index.
+
+        Regression: the pin pre-flight used to run inside `_run_refresh`, long
+        after `_delete_local_index_storage` had already wiped the data dir — so
+        `refresh --reset-index --framework-version <typo>` exited 1 having left
+        the operator with a completely empty index rather than the one they
+        started with.
+        """
+        result, mock_delete = self._run_reset_index_with_pin(
+            TagNotFoundError(
+                "Tag 'nope-xyz' not found in repository. Available tags (latest 5): ['v1.8.1']"
+            ),
+            "nope-xyz",
+            tmp_path,
+            monkeypatch,
+        )
+
+        assert result.exit_code == 1, result.output
+        assert "nope-xyz" in result.output
+        mock_delete.assert_not_called()
+
+    def test_valid_pin_with_reset_index_still_deletes(self, tmp_path, monkeypatch):
+        """Positive control: moving the pre-flight earlier must not disable the reset."""
+        result, mock_delete = self._run_reset_index_with_pin(None, "v1.2.0", tmp_path, monkeypatch)
+
+        assert result.exit_code == 0, result.output
+        mock_delete.assert_called_once()
+
+    # ---- The recorded pin must describe what the index actually holds ----
+
+    def _run_pinned_refresh(
+        self, tmp_path, monkeypatch, *, fail_checkout=False, fail_framework_ingest=False
+    ):
+        """Run a concrete-pinned refresh, optionally breaking the framework repo.
+
+        Returns ``(written, deleted)`` from the final ``set_metadata_batch``.
+        """
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._PIN_PATCHES]
+            mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+            mocks[6].return_value = mock_store
+            mocks[3].return_value = mock_crawler
+            mocks[2].return_value = mock_github
+            mocks[0].return_value = mock_source
+            mocks[1].return_value = False
+
+            mock_github.clone_or_fetch = MagicMock(
+                side_effect=lambda slug, checkout=True, tag=None: CloneResult(
+                    Path("/tmp/repo"), "abc123", tag
+                )
+            )
+            if fail_checkout:
+                mock_github.checkout_commit = MagicMock(
+                    side_effect=OSError("cannot reset working tree")
+                )
+            if fail_framework_ingest:
+
+                async def _ingest(repos=None, prefetched=None, framework_checkout_version=None):
+                    if repos == [_FRAMEWORK_REPO]:
+                        return MagicMock(records_upserted=0, errors=["framework ingest exploded"])
+                    return MagicMock(records_upserted=20, errors=[])
+
+                mock_github.ingest = AsyncMock(side_effect=_ingest)
+
+            monkeypatch.delenv("PIPECAT_HUB_FRAMEWORK_VERSION", raising=False)
+            monkeypatch.chdir(tmp_path)
+            result = CliRunner().invoke(main, ["refresh", "--framework-version", "v1.2.0"])
+
+            assert result.exit_code == 0, result.output
+            last = mock_store.set_metadata_batch.call_args_list[-1]
+            return last.args[0], list(last.kwargs.get("delete_keys") or [])
+
+    def test_failed_framework_checkout_does_not_record_the_pin(self, tmp_path, monkeypatch):
+        """A checkout that never happened must not stamp `framework_version`.
+
+        Regression: `framework_pin_applies` was set in the clone loop, before
+        checkout/delete/ingest — so a checkout failure (which leaves the index
+        holding the PREVIOUS revision's framework records) still overwrote
+        `framework_version` with the new pin. The old records, and therefore
+        the old pin, are still what the index holds, so the key is left
+        untouched: neither written nor deleted.
+        """
+        written, deleted = self._run_pinned_refresh(tmp_path, monkeypatch, fail_checkout=True)
+
+        assert "framework_version" not in written
+        assert "framework_version" not in deleted
+
+    def test_failed_framework_ingest_clears_the_pin(self, tmp_path, monkeypatch):
+        """An errored framework ingest purges its records, so the pin must go.
+
+        Regression: the pin was recorded even though the partial-purge branch
+        had just left the framework repo with zero records in the index —
+        `framework_version` claimed a revision nothing was indexed at.
+        """
+        written, deleted = self._run_pinned_refresh(
+            tmp_path, monkeypatch, fail_framework_ingest=True
+        )
+
+        assert "framework_version" not in written
+        assert "framework_version" in deleted
+
+    def test_healthy_pinned_refresh_still_records_the_pin(self, tmp_path, monkeypatch):
+        """Positive control: the tightened gate must not withhold a valid pin."""
+        written, deleted = self._run_pinned_refresh(tmp_path, monkeypatch)
+
+        assert written["framework_version"] == "v1.2.0"
+        assert "framework_version" not in deleted
+
 
 class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
     """`refresh --reset-index` through the real (unmocked) code path for
