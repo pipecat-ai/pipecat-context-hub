@@ -7,6 +7,14 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **PR template with a required "Not run" section.** Forces a PR author to
+  either run a skipped test/scenario before merge or explicitly accept the
+  gap with a stated reason, instead of leaving it as easy-to-miss prose in
+  the test plan. Motivated by PR #116's test plan noting a live
+  `refresh --framework-version latest` run as not run — the exact gap
+  PR #122 later hit.
+
 ## [0.6.0] - 2026-08-28
 
 ### Changed

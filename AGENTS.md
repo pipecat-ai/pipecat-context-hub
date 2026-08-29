@@ -472,6 +472,11 @@ uv run mypy src/ tests/
 uv run pytest tests/ -q
 ```
 
+The PR template's **Not run** section is part of this gate: resolve every
+item listed there — run it, or accept the gap with a stated reason — before
+merging. A skipped check left unresolved is the highest-signal predictor of
+a bug in the next PR (see PR #116 → PR #122).
+
 ## Review Checklist
 
 Findings that have been reviewed and deliberately accepted. Do not re-flag these
