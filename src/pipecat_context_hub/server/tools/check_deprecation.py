@@ -6,7 +6,7 @@ from typing import Any
 
 from pipecat_context_hub.services.ingest.deprecation_map import status_for
 from pipecat_context_hub.shared.types import CheckDeprecationInput, CheckDeprecationOutput
-from pipecat_context_hub.shared.versioning import is_head_sentinel, is_latest_sentinel
+from pipecat_context_hub.shared.versioning import is_sentinel_pin
 
 
 def resolve_framework_version(index_store: Any, deprecation_map: Any = None) -> str | None:
@@ -54,7 +54,7 @@ def resolve_framework_version(index_store: Any, deprecation_map: Any = None) -> 
             return str(indexed)
         return None
     version = metadata.get("framework_version")
-    if version is None or is_latest_sentinel(str(version)) or is_head_sentinel(str(version)):
+    if version is None or is_sentinel_pin(str(version)):
         return None
     return str(version)
 

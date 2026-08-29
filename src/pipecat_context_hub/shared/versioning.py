@@ -57,6 +57,17 @@ def is_head_sentinel(tag: str | None) -> bool:
     return tag is not None and tag.strip().lower() in _HEAD_SPELLINGS
 
 
+def is_sentinel_pin(tag: str | None) -> bool:
+    """True when *tag* is any sentinel spelling rather than a concrete tag.
+
+    The single derived "is this a pin rather than a version?" predicate, so
+    callers don't open-code ``is_latest_sentinel(x) or is_head_sentinel(x)`` —
+    which would have to be found and edited again if a third sentinel is ever
+    added. Same case- and whitespace-insensitivity as its constituents.
+    """
+    return is_latest_sentinel(tag) or is_head_sentinel(tag)
+
+
 def canonicalize_framework_pin(pin: str) -> str:
     """The canonical spelling of an operator's framework pin.
 

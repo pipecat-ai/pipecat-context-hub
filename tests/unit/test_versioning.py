@@ -13,6 +13,7 @@ from pipecat_context_hub.shared.versioning import (
     exact_release_version,
     is_head_sentinel,
     is_latest_sentinel,
+    is_sentinel_pin,
     parse_release_version,
     strip_v_prefix,
 )
@@ -53,6 +54,25 @@ class TestIsHeadSentinel:
     @pytest.mark.parametrize("value", [None, "", "v1.2.0", "latest", "heads", "mainline"])
     def test_rejects_everything_else(self, value: str | None):
         assert is_head_sentinel(value) is False
+
+
+class TestIsSentinelPin:
+    """The derived "pin, not a concrete version" predicate."""
+
+    @pytest.mark.parametrize("value", ["latest", "LATEST", "head", "main", "  Main  "])
+    def test_accepts_either_sentinel(self, value: str):
+        assert is_sentinel_pin(value) is True
+
+    @pytest.mark.parametrize("value", [None, "", "v1.2.0", "1.2.0", "some-feature-tag"])
+    def test_rejects_concrete_tags(self, value: str | None):
+        assert is_sentinel_pin(value) is False
+
+    @pytest.mark.parametrize(
+        "value", [None, "", "latest", "LATEST", "head", "main", "v1.2.0", "heads", "latest-rc"]
+    )
+    def test_is_exactly_the_disjunction_it_replaces(self, value: str | None):
+        """Pins the refactor: callers that open-coded the `or` see no change."""
+        assert is_sentinel_pin(value) == (is_latest_sentinel(value) or is_head_sentinel(value))
 
 
 class TestDefaultFrameworkPin:
