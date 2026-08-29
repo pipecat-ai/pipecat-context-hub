@@ -927,11 +927,21 @@ def refresh(
     # and again after the reset wipes `data_dir/repos` — paid only by that
     # rare flag combination, and cheaper than an index an operator has to
     # rebuild from scratch after a typo.
+    #
+    # The pre-flight needs its own ingester instance because the real one
+    # cannot exist yet (its writer needs an IndexStore, which `--reset-index`
+    # has not finished clearing the way for). `clone_or_fetch` is destructive
+    # on a corrupt clone — it rmtree's and re-clones — and records that on the
+    # *instance* it ran on, so the recovery is carried across to the shared
+    # ingester below (`preflight_recovered_repos`). Without that hand-off the
+    # main loop sees an already-healthy clone, `github.recovered_repos` stays
+    # empty, and both the unchanged-SHA re-ingest guard and the summary's
+    # "Recovered N corrupt clone(s)" line silently lose the event.
+    preflight_recovered_repos: set[str] = set()
     if fw_pin_is_concrete and _FRAMEWORK_REPO in config.sources.effective_repos:
+        preflight_github = GitHubRepoIngester(config, _PinPreflightWriter())
         try:
-            GitHubRepoIngester(config, _PinPreflightWriter()).clone_or_fetch(
-                _FRAMEWORK_REPO, False, tag=fw_version
-            )
+            preflight_github.clone_or_fetch(_FRAMEWORK_REPO, False, tag=fw_version)
         except TagNotFoundError as exc:
             raise click.ClickException(f"--framework-version {fw_version!r}: {exc}") from exc
         except Exception:
@@ -943,6 +953,7 @@ def refresh(
                 "Framework pin pre-flight could not complete; deferring to repo loop",
                 exc_info=True,
             )
+        preflight_recovered_repos = set(preflight_github.recovered_repos)
 
     if reset_index:
         logger.warning("Deleting local index storage before refresh")
@@ -990,6 +1001,14 @@ def refresh(
     # Built inside _run_refresh; read later by the summary pass. Created
     # once per refresh invocation, so no cross-run state leakage.
     github = GitHubRepoIngester(config, writer)
+    # Carry the pre-flight's corrupt-clone recovery onto the shared instance:
+    # it repaired the clone, so the main loop's `clone_or_fetch` will see a
+    # healthy one and record nothing. Skipped after `--reset-index`, which
+    # deleted `data_dir/repos` (and with it that repaired clone) between the
+    # two — the main loop clones from scratch there, so nothing was recovered
+    # as far as this run's final state is concerned.
+    if preflight_recovered_repos and not reset_index:
+        github.recovered_repos.update(preflight_recovered_repos)
 
     # Framework checkout used this run, captured by _run_refresh so the metadata
     # pass below can record which pipecat revision the index reflects. None when
@@ -1643,7 +1662,25 @@ def refresh(
             # would advertise a framework version the index no longer holds
             # any records for, so drop it and let `get_hub_status` /
             # `resolve_framework_version` fall back to intrinsic state.
+            #
+            # The provenance stamp goes with it, and for a stronger reason:
+            # `resolve_framework_version` reads `indexed_framework_version`
+            # FIRST and returns it outright when `commits_ahead == 0`, so a
+            # surviving stamp is never even reached past — dropping only the
+            # pin would leave `check_deprecation` confidently reporting a
+            # release for an index holding zero framework records. That is
+            # also the exact inversion of the ordering invariant
+            # `_delete_repo_index_data` documents (the pin must never be the
+            # key left standing alone); here the same set is cleared in one
+            # batched commit, so no reader can observe a partial state.
+            # Neither branch below can also *set* these keys: this branch runs
+            # only when the framework ingest errored, which withholds both
+            # `deprecation_map_published` and
+            # `framework_records_replaced_this_run`.
             metadata_to_delete.append("framework_version")
+            metadata_to_delete.append("indexed_framework_version")
+            metadata_to_delete.append("indexed_framework_commits_ahead")
+            metadata_to_delete.append("deprecation_map_commit_sha")
 
         # Record the pipecat revision the index was actually built from.
         # `framework_version` above is the pin that was requested; this is

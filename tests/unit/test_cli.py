@@ -1492,6 +1492,128 @@ class TestRefreshCommand:
         assert written["framework_version"] == "v1.2.0"
         assert "framework_version" not in deleted
 
+    def test_failed_framework_ingest_clears_the_provenance_stamp_too(self, tmp_path, monkeypatch):
+        """A framework purge must clear the whole framework key set, not the pin alone.
+
+        Regression: only `framework_version` was dropped, leaving
+        `indexed_framework_version` / `indexed_framework_commits_ahead` /
+        `deprecation_map_commit_sha` standing. `resolve_framework_version`
+        reads `indexed_framework_version` FIRST and returns it whenever
+        `commits_ahead == 0`, so it never reached the (now absent) pin —
+        `check_deprecation` kept confidently reporting a release version for
+        an index holding zero framework records. It also inverted
+        `_delete_repo_index_data`'s ordering invariant, which exists to stop
+        exactly the *pin* being the key left standing alone.
+        """
+        written, deleted = self._run_pinned_refresh(
+            tmp_path, monkeypatch, fail_framework_ingest=True
+        )
+
+        for key in (
+            "framework_version",
+            "indexed_framework_version",
+            "indexed_framework_commits_ahead",
+            "deprecation_map_commit_sha",
+        ):
+            assert key in deleted, f"{key} must be cleared alongside the purged records"
+            assert key not in written, f"{key} must not be re-stamped after a purge"
+
+    # ---- The pin pre-flight's corrupt-clone recovery must reach the run ----
+
+    def _run_preflight_recovery(self, tmp_path, monkeypatch, *, reset_index=False):
+        """Run a concrete-pinned refresh where the PRE-FLIGHT recovers the clone.
+
+        The pre-flight and the main loop legitimately use two different
+        ``GitHubRepoIngester`` instances (the shared one needs a writer, hence
+        an ``IndexStore``, which cannot exist before ``--reset-index`` runs).
+        The class mock therefore hands out two *distinct* instances — matching
+        the real code shape — with the corrupt-clone recovery recorded only on
+        the pre-flight's, exactly as ``clone_or_fetch``'s per-instance
+        ``_recovered_repos`` would do it.
+
+        Returns ``(result, main_github)``.
+        """
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._PIN_PATCHES]
+            if reset_index:
+                stack.enter_context(patch("pipecat_context_hub.cli._delete_local_index_storage"))
+            mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+            mocks[6].return_value = mock_store
+            mocks[3].return_value = mock_crawler
+            mocks[0].return_value = mock_source
+            mocks[1].return_value = False
+
+            preflight_github = MagicMock()
+            # Only the pre-flight instance sees the corrupt clone and repairs
+            # it; the main loop's later fetch finds a healthy clone.
+            preflight_github.recovered_repos = {_FRAMEWORK_REPO}
+            preflight_github.clone_or_fetch = MagicMock(
+                return_value=CloneResult(Path("/tmp/repo"), "abc123", "v1.2.0")
+            )
+            mock_github.recovered_repos = set()
+            mock_github.clone_or_fetch = MagicMock(
+                side_effect=lambda slug, checkout=True, tag=None: CloneResult(
+                    Path("/tmp/repo"), "abc123", tag
+                )
+            )
+            mocks[2].side_effect = [preflight_github, mock_github]
+
+            # Every repo unchanged + docs hash unchanged: without the recovery
+            # reaching the shared instance, the framework repo is skipped.
+            import hashlib
+
+            content = "# Page\nSource: https://example.com\nContent here"
+            meta = {
+                "docs:content_hash": hashlib.sha256(content.encode()).hexdigest(),
+                **_sha_metadata("abc123"),
+            }
+            mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+            monkeypatch.delenv("PIPECAT_HUB_FRAMEWORK_VERSION", raising=False)
+            monkeypatch.chdir(tmp_path)
+            argv = ["refresh", "--framework-version", "v1.2.0"]
+            if reset_index:
+                argv.insert(1, "--reset-index")
+            result = CliRunner().invoke(main, argv)
+            return result, mock_github
+
+    def test_preflight_clone_recovery_reaches_the_shared_ingester(self, tmp_path, monkeypatch):
+        """A clone repaired by the pre-flight must not vanish from the run.
+
+        Regression: the pre-flight built a throwaway ``GitHubRepoIngester``,
+        and ``_recovered_repos`` is per-instance. A corrupt framework clone
+        repaired there left ``github.recovered_repos`` empty, so (a) the
+        unchanged-SHA skip guard no longer forced the re-ingest it exists to
+        force, and (b) the summary's "Recovered N corrupt clone(s)" line —
+        the documented Windows corrupt-clone remedy — never printed.
+        """
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        result, main_github = self._run_preflight_recovery(tmp_path, monkeypatch)
+
+        assert result.exit_code == 0, result.output
+        assert _FRAMEWORK_REPO in main_github.recovered_repos
+        assert "Recovered 1 corrupt clone(s)" in result.output
+        # ...and the recovery forces the re-ingest the skip guard exists for.
+        ingested = [c.kwargs["repos"] for c in main_github.ingest.call_args_list]
+        assert [_FRAMEWORK_REPO] in ingested, ingested
+
+    def test_reset_index_does_not_inherit_the_preflight_recovery(self, tmp_path, monkeypatch):
+        """`--reset-index` deletes the repaired clone, so nothing was recovered.
+
+        Guards the hand-off from over-reporting: the reset wipes
+        `data_dir/repos` between the pre-flight and the main loop, which then
+        clones from scratch — carrying the flag across would print a
+        "Recovered …" line describing a clone that no longer exists.
+        """
+        result, main_github = self._run_preflight_recovery(tmp_path, monkeypatch, reset_index=True)
+
+        assert result.exit_code == 0, result.output
+        assert main_github.recovered_repos == set()
+        assert "corrupt clone(s)" not in result.output
+
 
 class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
     """`refresh --reset-index` through the real (unmocked) code path for
