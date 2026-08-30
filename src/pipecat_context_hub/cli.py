@@ -81,6 +81,27 @@ _EXIT_INDEX_UNREADY = 2
 _module_logger = logging.getLogger(__name__)
 
 
+def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> IndexStore:
+    """Open the on-disk index store, or exit with `_EXIT_INDEX_UNREADY`.
+
+    Shared by both `refresh` call sites (pre-`--reset-index` fail-fast path
+    and the post-delete rebuild) so the `IncompatibleIndexFormatError`
+    handling — including the redacted, front-door-consistent error message —
+    cannot drift between them.
+    """
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+    from pipecat_context_hub.services.index.store import IndexStore
+
+    try:
+        return IndexStore(config.storage)
+    except IncompatibleIndexFormatError as exc:
+        # A pre-1.0 Chroma dir cannot be opened by 1.x. exc.__str__ embeds
+        # the absolute chroma_path; redact for front-door parity with the
+        # serve / cli_query error sites.
+        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+
+
 # Values of PIPECAT_HUB_WARMUP that disable pre-warm. Anything else
 # (including unset, "1", "true", or garbage like "yes") enables it — the
 # default is "warm unless explicitly told not to".
@@ -899,9 +920,7 @@ def refresh(
         EmbeddingIndexWriter,
         EmbeddingService,
     )
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
-    from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
     from pipecat_context_hub.services.ingest.github_ingest import (
         _FRAMEWORK_REPO,
@@ -934,6 +953,16 @@ def refresh(
         prune_enabled,
     )
     start = time.monotonic()
+
+    # Fail fast on an incompatible on-disk index before spending a network
+    # round-trip on the framework-pin pre-flight below. Skipped when
+    # --reset-index will delete storage anyway — that branch opens the index
+    # store after the delete, further down, preserving today's order where
+    # the pin pre-flight validates the pin before destroying the existing
+    # index (deliberate — see the pre-flight's own comment above).
+    index_store: IndexStore
+    if not reset_index:
+        index_store = _open_index_store_or_exit(config, logger)
 
     # ----- 0. Validate an explicit framework pin -----
     # Resolve a concrete pin before any indexing work, so a typo costs one
@@ -980,18 +1009,11 @@ def refresh(
         logger.warning("Deleting local index storage before refresh")
         _delete_local_index_storage(config.storage.data_dir)
         force = True
+        # Storage was just deleted, so this always opens a fresh index — the
+        # IncompatibleIndexFormatError this guards against can't fire here,
+        # but the same helper is reused for one open call site either way.
+        index_store = _open_index_store_or_exit(config, logger)
 
-    # Build the ingestion pipeline
-    try:
-        index_store = IndexStore(config.storage)
-    except IncompatibleIndexFormatError as exc:
-        # A pre-1.0 Chroma dir cannot be opened by 1.x. --reset-index deletes
-        # storage above before this point, so this only fires on a plain
-        # refresh against a stale 0.6 index — point the user at the rebuild.
-        # exc.__str__ embeds the absolute chroma_path; redact for front-door
-        # parity with the serve / cli_query error sites.
-        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
 
