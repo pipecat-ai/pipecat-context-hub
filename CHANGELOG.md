@@ -47,9 +47,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   revision it had last indexed — so a scripted refresh reported success while
   silently indexing nothing new. An unresolvable (or malformed) tag is invalid
   input, and is now validated *before* the docs crawl: the run aborts with
-  exit 1 and the available-tags hint in about a second, rather than after a
-  full crawl it then throws away. Transient clone failures — network, auth,
-  disk — are deliberately unchanged: still a warning, still non-fatal, so one
+  exit 1 in about a second. Syntactically valid but missing tags include the
+  available-tags hint; malformed tags return an immediate format error, so
+  neither path waits for a full crawl that it then throws away. Transient clone
+  failures — network, auth, disk — are deliberately unchanged: still a
+  warning, still non-fatal, so one
   flaky repo cannot fail an otherwise good refresh. The `latest` and `head`
   sentinels skip the check, since neither can be typo'd, so a plain `refresh`
   pays no extra fetch.

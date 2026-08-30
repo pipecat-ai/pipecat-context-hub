@@ -15,6 +15,7 @@ from pipecat_context_hub.services.ingest.github_ingest import (
     _ROOT_FALLBACK_SKIP_ROOT_DIRS,
     CloneResult,
     GitHubRepoIngester,
+    TagNotFoundError,
     _chunk_by_boundaries,
     _chunk_by_lines,
     _chunk_code,
@@ -304,6 +305,16 @@ class TestCloneOrFetchCheckoutControl:
 
         with pytest.raises(ValueError, match="Invalid repo slug"):
             ingester.clone_or_fetch("../evil")
+
+    def test_malformed_tag_error_does_not_claim_available_tags(self, tmp_path: Path):
+        from git import Repo as GitRepo
+
+        repo_dir = _create_fake_repo(tmp_path, "test-repo", {"README.md": "# Test\n"})
+
+        with pytest.raises(TagNotFoundError, match="Invalid tag format") as exc_info:
+            GitHubRepoIngester._resolve_tag(GitRepo(str(repo_dir)), "bad tag!!")
+
+        assert "Available tags" not in str(exc_info.value)
 
     @pytest.mark.skipif(
         sys.platform == "win32",
