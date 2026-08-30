@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +41,7 @@ from pipecat_context_hub.shared.versioning import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.services.ingest.github_ingest import TagNotFoundError
     from pipecat_context_hub.shared.types import ChunkedRecord
 
 # Back-compat alias: tests/unit/test_cli.py imports the underscored name and
@@ -1029,84 +1031,70 @@ def refresh(
     if preflight_recovered_repos and not reset_index:
         github.recovered_repos.update(preflight_recovered_repos)
 
-    # Framework checkout used this run, captured by _run_refresh so the metadata
-    # pass below can record which pipecat revision the index reflects. None when
-    # the framework repo was not cloned (unconfigured, tainted, or clone failed).
-    framework_checkout: Path | None = None
-    # True once this run's framework repo is represented in the index at the
-    # resolved pin: the clone succeeded, its ref was not tainted, and its
-    # records were either re-ingested error-free or left untouched because the
-    # repo was unchanged. Answers exactly "does the recorded pin describe what
-    # the index holds?", so it is set from the *same* gate as
-    # `framework_provenance_ready` — after the ingest loop, never before it. A
-    # failed checkout (index still holds the previous revision) or a failed
-    # ingest (records purged) must not leave `framework_version` claiming a pin
-    # the index does not reflect.
-    framework_pin_applies = False
-    # True when the framework repo's records were deleted this run but its
-    # re-ingest did not complete cleanly, so the index now holds zero (or
-    # partial, if the purge itself failed) framework records. The previously
-    # recorded pin described records that no longer exist, so the key is
-    # actively cleared rather than merely left in place.
-    framework_records_purged_this_run = False
-    # True only once the framework checkout's records are known-coherent with
-    # the index (error-free ingest, per the `ingested_repos` gate) — a
-    # separate bool from `framework_checkout` being non-None so a type
-    # checker can't mistake "we have a path" for "that path's provenance is
-    # safe to stamp"; the two conditions differ exactly in the partial-ingest
-    # case this gate exists to guard against.
-    framework_provenance_ready = False
+    @dataclass
+    class _FrameworkProvenance:
+        """Tracks whether this run's framework repo state is safe to stamp.
 
-    # True only once the deprecation map derived from this run's framework
-    # checkout has actually been written to disk (`dep_map.save()` returned
-    # without raising). Separate from `framework_provenance_ready`: that flag
-    # says the framework *records* are coherent with the index, but building
-    # or saving the deprecation map is a further step that can independently
-    # fail (corrupt/malformed registry, disk/permission error on save). The
-    # provenance stamp below must describe the same revision as the published
-    # map, so it is gated on this flag rather than reused from the records
-    # gate.
-    deprecation_map_published = False
+        `checkout`: the framework checkout used this run, so the metadata
+        pass below can record which pipecat revision the index reflects.
+        None when the framework repo was not cloned (unconfigured, tainted,
+        or clone failed).
 
-    # The framework commit SHA whose registry produced the deprecation map
-    # just published (set alongside `deprecation_map_published = True`, from
-    # the same `fw_sha` used to build it). Stamped into metadata below so a
-    # reader can detect map/provenance divergence — a crash between the map
-    # write and the metadata write would otherwise leave a stale
-    # `indexed_framework_version` describing a checkout the on-disk map
-    # doesn't match.
-    dep_map_commit_sha: str | None = None
+        `ready` answers "does the recorded pin/stamp describe what the index
+        holds" — previously two identical booleans (`framework_pin_applies`
+        and `framework_provenance_ready`) were set together and read once
+        each; they are now one field. True once this run's framework repo is
+        represented in the index at the resolved pin: the clone succeeded,
+        its ref was not tainted, and its records were either re-ingested
+        error-free or left untouched because the repo was unchanged.
 
-    # The tag of the commit actually checked out for a pinned framework
-    # refresh, as returned (and origin-verified) by `clone_or_fetch` itself —
-    # not re-derived afterwards, so the tag and the commit can never come from
-    # two different resolutions. Both chunk metadata and the metadata pass below
-    # read it, so they share one release identity. None for a `head`
-    # (default-branch) refresh or a failed clone.
-    checked_out_framework_tag: str | None = None
+        `checked_out_tag`: the tag of the commit actually checked out for a
+        pinned framework refresh, as returned (and origin-verified) by
+        `clone_or_fetch` itself. None for a `head` (default-branch) refresh
+        or a failed clone.
+
+        `records_purged_this_run`: True when the framework repo's records
+        were deleted this run but its re-ingest did not complete cleanly, so
+        the previously recorded pin describes records that no longer exist.
+
+        `records_replaced_this_run`: True when the framework repo's records
+        were actually deleted and re-ingested (successfully) *this run*.
+        Distinct from `ready`, which is also True when the framework repo
+        simply didn't change this run.
+
+        `deprecation_map_published`: True only once the deprecation map
+        derived from this run's framework checkout has actually been
+        written to disk. Separate from `ready`: building/saving the map is a
+        further step that can independently fail.
+
+        `dep_map_commit_sha`: the framework commit SHA whose registry
+        produced the deprecation map just published, stamped into metadata
+        so a reader can detect map/provenance divergence.
+
+        `clone_or_fetch_failed`: True when this run's clone/fetch of the
+        framework repo raised (network, auth, disk, etc.) for a concrete
+        pin — used only to log a clearer signal, not to change what gets
+        written to metadata.
+        """
+
+        checkout: Path | None = None
+        ready: bool = False
+        checked_out_tag: str | None = None
+        records_purged_this_run: bool = False
+        records_replaced_this_run: bool = False
+        deprecation_map_published: bool = False
+        dep_map_commit_sha: str | None = None
+        clone_or_fetch_failed: bool = False
+
+    fw_state = _FrameworkProvenance()
 
     # Count of repos left un-pruned this run (not configured here, but not
     # deleted because --prune/PIPECAT_HUB_PRUNE wasn't set). Read later by
     # the summary pass.
     unpruned_repo_count = 0
 
-    # True when the framework repo's records were actually deleted and
-    # re-ingested (successfully) *this run* — i.e. `framework_slug` is both
-    # in `changed_repos` (SHA moved, so a delete+ingest was attempted) and in
-    # `ingested_repos` (that ingest completed error-free). Distinct from
-    # `framework_provenance_ready`, which is also True when the framework
-    # repo simply didn't change this run (records untouched, old stamp still
-    # correct). Read after `_run_refresh` returns to decide whether a failed
-    # deprecation-map build/save this run left the provenance stamp
-    # describing stale (pre-replacement) records rather than merely an
-    # unpublished-but-still-accurate one.
-    framework_records_replaced_this_run = False
-
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, framework_checkout, framework_provenance_ready
-        nonlocal unpruned_repo_count, checked_out_framework_tag, deprecation_map_published
-        nonlocal dep_map_commit_sha, framework_records_replaced_this_run
-        nonlocal framework_pin_applies, framework_records_purged_this_run
+        nonlocal total_upserted, all_errors, unpruned_repo_count
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -1279,7 +1267,7 @@ def refresh(
                 if repo_slug == framework_slug:
                     # Already concrete for both a `latest` pin and a literal one;
                     # None at `head`, which carries no release identity.
-                    checked_out_framework_tag = clone.resolved_tag
+                    fw_state.checked_out_tag = clone.resolved_tag
                 repo_shas[repo_slug] = commit_sha
                 prefetched[repo_slug] = (repo_path, commit_sha)
             except Exception as exc:
@@ -1459,7 +1447,7 @@ def refresh(
                 repos=[repo_slug],
                 prefetched=prefetched,
                 framework_checkout_version=(
-                    exact_release_version(checked_out_framework_tag)
+                    exact_release_version(fw_state.checked_out_tag)
                     if repo_slug == framework_slug
                     else None
                 ),
@@ -1497,7 +1485,7 @@ def refresh(
             # the partial new records in place would silently mix stale-empty
             # state with a partial re-index. Purge them so the repo ends the
             # run with zero records rather than a misleading partial count;
-            # `ingested_repos`/`framework_provenance_ready` gating already
+            # `ingested_repos`/`fw_state.ready` gating already
             # correctly withholds itself on `repo_has_errors`, independent of
             # this record-level cleanup.
             if repo_has_errors:
@@ -1523,7 +1511,7 @@ def refresh(
                 # purge above dropped whatever partial records it produced.
                 # Whatever the index holds for the framework now, it is not
                 # the pinned revision.
-                framework_records_purged_this_run = True
+                fw_state.records_purged_this_run = True
 
             if not repo_has_errors:
                 # Repo fully re-ingested — any earlier cleanup-failure flag
@@ -1560,12 +1548,12 @@ def refresh(
             and framework_slug not in frozen_sha_repos
             and (framework_slug not in changed_repos or framework_slug in ingested_repos)
         ):
-            framework_provenance_ready = True
-            # Same gate, deliberately: the pin describes what the index holds
-            # exactly when the framework records are coherent with it.
-            framework_pin_applies = True
-            framework_checkout = prefetched[framework_slug][0]
-            framework_records_replaced_this_run = (
+            # `ready` covers both "the pin describes what the index holds"
+            # and "the framework records are coherent with it" — previously
+            # two identically-set booleans, now one field.
+            fw_state.ready = True
+            fw_state.checkout = prefetched[framework_slug][0]
+            fw_state.records_replaced_this_run = (
                 framework_slug in changed_repos and framework_slug in ingested_repos
             )
 
@@ -1601,7 +1589,7 @@ def refresh(
         # contain a new checkout whose records were never swapped in (tainted
         # ref, or a failed checkout); publishing its registry would then pair a
         # new deprecation map with old indexed framework records.
-        if framework_provenance_ready:
+        if fw_state.ready:
             fw_path, fw_sha = prefetched[framework_slug]
             registry_path = fw_path / REGISTRY_RELATIVE_PATH
             try:
@@ -1615,7 +1603,7 @@ def refresh(
                 # shape) or the save itself failed (disk/permission). Both
                 # leave `deprecation_map_published` False, so the provenance
                 # stamp below — gated on that flag, not on
-                # `framework_provenance_ready` alone — is not advanced to
+                # `fw_state.ready` alone — is not advanced to
                 # describe a checkout the on-disk map doesn't match. Do NOT
                 # publish here — an empty/partial map would silently overwrite
                 # (and thus hide) a previously-good deprecation map.
@@ -1623,8 +1611,8 @@ def refresh(
                 all_errors.append(msg)
                 logger.warning(msg)
             else:
-                deprecation_map_published = True
-                dep_map_commit_sha = fw_sha
+                fw_state.deprecation_map_published = True
+                fw_state.dep_map_commit_sha = fw_sha
         else:
             logger.debug(
                 "Framework repo %s not cloned or tainted — preserving existing deprecation map",
@@ -1671,11 +1659,11 @@ def refresh(
         # clears this key with them.) Normalize a sentinel's case/whitespace so
         # a pin like " Latest " is recorded as the canonical "latest", matching
         # what `is_latest_sentinel` / `is_head_sentinel` accept everywhere else.
-        if framework_pin_applies and (
-            deprecation_map_published or not framework_records_replaced_this_run
+        if fw_state.ready and (
+            fw_state.deprecation_map_published or not fw_state.records_replaced_this_run
         ):
             metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
-        elif framework_records_purged_this_run:
+        elif fw_state.records_purged_this_run:
             # The framework records this key described were deleted this run
             # and their replacement never landed. Leaving the old pin in place
             # would advertise a framework version the index no longer holds
@@ -1694,8 +1682,8 @@ def refresh(
             # batched commit, so no reader can observe a partial state.
             # Neither branch below can also *set* these keys: this branch runs
             # only when the framework ingest errored, which withholds both
-            # `deprecation_map_published` and
-            # `framework_records_replaced_this_run`.
+            # `fw_state.deprecation_map_published` and
+            # `fw_state.records_replaced_this_run`.
             metadata_to_delete.extend(_FRAMEWORK_PROVENANCE_METADATA_KEYS)
 
         # Record the pipecat revision the index was actually built from.
@@ -1705,11 +1693,11 @@ def refresh(
         # project builds against. Left untouched when the framework repo was
         # not cloned this run, so a transient clone failure keeps the last
         # known-good stamp rather than erasing it.
-        if deprecation_map_published:
+        if fw_state.deprecation_map_published:
             # Gated on the deprecation map having actually been published
-            # (not just `framework_provenance_ready`) so the stamp and the
+            # (not just `fw_state.ready`) so the stamp and the
             # on-disk map always describe the same revision — see the
-            # `deprecation_map_published` declaration above.
+            # `deprecation_map_published` field docstring above.
             #
             # A pinned refresh already knows the verified tag its commit was
             # resolved from (returned by `clone_or_fetch`) — trust that over
@@ -1722,31 +1710,31 @@ def refresh(
             # semantics, exactly like a `head` refresh.
             # nosec B101 - invariant, not a runtime check: this branch only runs
             # when deprecation_map_published is True, which is set only after
-            # dep_map_commit_sha is assigned alongside it (see its declaration
-            # above). AssertionError would mean a caller-contract bug, not
-            # untrusted input.
-            assert dep_map_commit_sha is not None  # nosec B101
-            metadata_to_set["deprecation_map_commit_sha"] = dep_map_commit_sha
+            # dep_map_commit_sha is assigned alongside it (see its field
+            # docstring above). AssertionError would mean a caller-contract
+            # bug, not untrusted input.
+            assert fw_state.dep_map_commit_sha is not None  # nosec B101
+            metadata_to_set["deprecation_map_commit_sha"] = fw_state.dep_map_commit_sha
 
-            exact_version = exact_release_version(checked_out_framework_tag)
+            exact_version = exact_release_version(fw_state.checked_out_tag)
             if exact_version is not None:
                 metadata_to_set["indexed_framework_version"] = exact_version
                 metadata_to_set["indexed_framework_commits_ahead"] = "0"
             else:
                 # nosec B101 - invariant, not a runtime check: this branch only
-                # runs when framework_provenance_ready is True, which is set
-                # only after framework_checkout is assigned a Path (see the
-                # framework_provenance_ready declaration above). AssertionError
-                # would mean a caller-contract bug, not untrusted input.
-                assert framework_checkout is not None  # nosec B101
-                indexed_version, commits_ahead = describe_framework_checkout(framework_checkout)
+                # runs when fw_state.ready is True, which is set only after
+                # fw_state.checkout is assigned a Path (see the `ready` field
+                # docstring above). AssertionError would mean a caller-contract
+                # bug, not untrusted input.
+                assert fw_state.checkout is not None  # nosec B101
+                indexed_version, commits_ahead = describe_framework_checkout(fw_state.checkout)
                 if indexed_version is not None and commits_ahead is not None:
                     metadata_to_set["indexed_framework_version"] = indexed_version
                     metadata_to_set["indexed_framework_commits_ahead"] = str(commits_ahead)
                 else:
                     metadata_to_delete.append("indexed_framework_version")
                     metadata_to_delete.append("indexed_framework_commits_ahead")
-        elif framework_records_replaced_this_run:
+        elif fw_state.records_replaced_this_run:
             # The framework repo's records were deleted and re-ingested this
             # run, but the deprecation-map build/save failed (else
             # `deprecation_map_published` would be True) — the *old* stamp on
