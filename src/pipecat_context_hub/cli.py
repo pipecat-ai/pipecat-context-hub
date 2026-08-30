@@ -924,6 +924,7 @@ def refresh(
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
     from pipecat_context_hub.services.ingest.github_ingest import (
         _FRAMEWORK_REPO,
+        CloneResult,
         GitHubRepoIngester,
         TagNotFoundError,
         describe_framework_checkout,
@@ -988,10 +989,17 @@ def refresh(
     # empty, and both the unchanged-SHA re-ingest guard and the summary's
     # "Recovered N corrupt clone(s)" line silently lose the event.
     preflight_recovered_repos: set[str] = set()
+    # Captured on success so the main clone loop below can reuse it for the
+    # framework repo instead of repeating an identical clone_or_fetch call —
+    # see the reuse site further down. None when the pre-flight didn't run,
+    # didn't complete, or --reset-index will invalidate the checkout anyway.
+    preflight_clone_result: CloneResult | None = None
     if fw_pin_is_concrete and _FRAMEWORK_REPO in config.sources.effective_repos:
         preflight_github = GitHubRepoIngester(config, _PinPreflightWriter())
         try:
-            preflight_github.clone_or_fetch(_FRAMEWORK_REPO, False, tag=fw_version)
+            preflight_clone_result = preflight_github.clone_or_fetch(
+                _FRAMEWORK_REPO, False, tag=fw_version
+            )
         except TagNotFoundError as exc:
             raise _framework_pin_not_found(fw_version, exc) from exc
         except Exception:
@@ -1282,9 +1290,20 @@ def refresh(
             # default branch, which `clone_or_fetch` expresses as no tag at all.
             repo_tag = fw_version if repo_slug == framework_slug and not fw_at_head else None
             try:
-                clone = await asyncio.to_thread(
-                    github.clone_or_fetch, repo_slug, False, tag=repo_tag
-                )
+                if (
+                    repo_slug == framework_slug
+                    and preflight_clone_result is not None
+                    and not reset_index
+                ):
+                    # The pre-flight above already cloned/fetched and resolved
+                    # this exact tag; --reset-index invalidates that checkout
+                    # (storage was deleted since), so it only reuses it here
+                    # when the index wasn't reset.
+                    clone = preflight_clone_result
+                else:
+                    clone = await asyncio.to_thread(
+                        github.clone_or_fetch, repo_slug, False, tag=repo_tag
+                    )
                 repo_path, commit_sha = clone.path, clone.commit_sha
                 if repo_slug == framework_slug:
                     # Already concrete for both a `latest` pin and a literal one;

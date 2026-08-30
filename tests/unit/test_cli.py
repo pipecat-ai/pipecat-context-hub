@@ -1649,6 +1649,57 @@ class TestRefreshCommand:
         assert main_github.recovered_repos == set()
         assert "corrupt clone(s)" not in result.output
 
+    def test_preflight_clone_result_is_reused_not_repeated(self, tmp_path, monkeypatch):
+        """Finding #2: a concrete-pin, non-reset refresh must reuse the
+        pre-flight's `clone_or_fetch` result for the framework repo instead
+        of calling it again — the pre-flight already cloned/fetched and
+        resolved that exact tag."""
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._PIN_PATCHES]
+            mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+            mocks[6].return_value = mock_store
+            mocks[3].return_value = mock_crawler
+            mocks[0].return_value = mock_source
+            mocks[1].return_value = False
+
+            preflight_github = MagicMock()
+            preflight_github.recovered_repos = set()
+            preflight_github.clone_or_fetch = MagicMock(
+                return_value=CloneResult(Path("/tmp/repo"), "abc123", "v1.2.0")
+            )
+            mock_github.recovered_repos = set()
+            mock_github.clone_or_fetch = MagicMock(
+                side_effect=lambda slug, checkout=True, tag=None: CloneResult(
+                    Path("/tmp/repo"), "abc123", tag
+                )
+            )
+            mocks[2].side_effect = [preflight_github, mock_github]
+
+            import hashlib
+
+            content = "# Page\nSource: https://example.com\nContent here"
+            meta = {
+                "docs:content_hash": hashlib.sha256(content.encode()).hexdigest(),
+                **_sha_metadata("abc123"),
+            }
+            mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+
+            monkeypatch.delenv("PIPECAT_HUB_FRAMEWORK_VERSION", raising=False)
+            monkeypatch.chdir(tmp_path)
+            result = CliRunner().invoke(main, ["refresh", "--framework-version", "v1.2.0"])
+
+            assert result.exit_code == 0, result.output
+            preflight_github.clone_or_fetch.assert_called_once()
+            framework_calls = [
+                c for c in mock_github.clone_or_fetch.call_args_list if c.args[0] == _FRAMEWORK_REPO
+            ]
+            assert framework_calls == [], (
+                "the shared ingester's clone_or_fetch must not be called "
+                f"again for the framework repo; got {framework_calls}"
+            )
+
 
 class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
     """`refresh --reset-index` through the real (unmocked) code path for
