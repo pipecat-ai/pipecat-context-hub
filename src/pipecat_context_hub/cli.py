@@ -313,9 +313,10 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     ``False`` return through ``all_errors`` so the failure is visible in the
     refresh summary, not just a log line.
 
-    Returns ``True`` on success, ``False`` if the delete failed (metadata is
-    left untouched in that case) — callers use this to surface the failure
-    through the refresh summary rather than only a log line.
+    Returns ``True`` on success, ``False`` if the record or bookkeeping delete
+    failed — callers use this to surface the failure through the refresh
+    summary rather than only a log line. On a bookkeeping failure, the repo
+    commit marker is deleted last so the cleanup scan can retry the repo.
     """
     from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
@@ -340,15 +341,16 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
     try:
-        index_store.delete_metadata(meta_key)
         if slug == _FRAMEWORK_REPO:
-            # No framework records left for the pin or the provenance pair to
-            # describe. The pin goes first: an absent `indexed_framework_version`
-            # is what sends `resolve_framework_version` to the pin, so a reader
-            # between the deletes must never find the pin standing alone.
+            # No framework records left for the pin or provenance to describe.
+            # Clear every framework provenance key before deleting the repo
+            # commit marker. The cleanup scan keys off that marker, so keeping
+            # it until the end lets a later refresh retry if any clear fails.
             index_store.delete_metadata("framework_version")
             index_store.delete_metadata("indexed_framework_version")
             index_store.delete_metadata("indexed_framework_commits_ahead")
+            index_store.delete_metadata("deprecation_map_commit_sha")
+        index_store.delete_metadata(meta_key)
     except Exception:
         _module_logger.exception(
             "Failed to clear bookkeeping metadata for %s after a successful "

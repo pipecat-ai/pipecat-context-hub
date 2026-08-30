@@ -5851,10 +5851,12 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
         assert result is False
         store.set_metadata.assert_any_call("repo:some-org/some-repo:cleanup_failed", "1")
 
-    async def test_framework_repo_third_delete_metadata_failure_returns_false(self):
-        """The framework-repo branch makes three `delete_metadata` calls
-        (meta_key, indexed_framework_version, indexed_framework_commits_ahead).
-        A failure on the third must also be caught.
+    async def test_framework_repo_fourth_delete_metadata_failure_returns_false(self):
+        """A failure while clearing framework provenance must be caught.
+
+        The framework-repo branch clears four provenance keys before the repo
+        commit marker. A failure on the fourth must still return ``False`` and
+        leave the marker available for a retry scan.
         """
         from pipecat_context_hub.cli import _delete_repo_index_data
         from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
@@ -5865,8 +5867,8 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
 
         def flaky_delete_metadata(key: str) -> None:
             calls["count"] += 1
-            if calls["count"] == 3:
-                raise RuntimeError("boom on third call")
+            if calls["count"] == 4:
+                raise RuntimeError("boom on fourth call")
 
         store.delete_metadata = MagicMock(side_effect=flaky_delete_metadata)
         store.set_metadata = MagicMock()
@@ -5874,8 +5876,32 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
         result = await _delete_repo_index_data(store, _FRAMEWORK_REPO, "repo:framework:commit_sha")
 
         assert result is False
-        assert calls["count"] == 3
+        assert calls["count"] == 4
         store.set_metadata.assert_any_call(f"repo:{_FRAMEWORK_REPO}:cleanup_failed", "1")
+
+    async def test_framework_repo_deletes_commit_marker_last(self):
+        from pipecat_context_hub.cli import _delete_repo_index_data
+        from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
+
+        store = MagicMock()
+        store.delete_by_repo = AsyncMock(return_value=None)
+        deleted_keys: list[str] = []
+        store.delete_metadata = MagicMock(side_effect=deleted_keys.append)
+
+        result = await _delete_repo_index_data(
+            store,
+            _FRAMEWORK_REPO,
+            f"repo:{_FRAMEWORK_REPO}:commit_sha",
+        )
+
+        assert result is True
+        assert deleted_keys == [
+            "framework_version",
+            "indexed_framework_version",
+            "indexed_framework_commits_ahead",
+            "deprecation_map_commit_sha",
+            f"repo:{_FRAMEWORK_REPO}:commit_sha",
+        ]
 
 
 class TestDeleteRepoIndexDataDeleteByRepoGuard:
