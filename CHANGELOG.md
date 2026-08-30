@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-31
+
 ### Added
 - **PR template with a required "Not run" section.** Forces a PR author to
   either run a skipped test/scenario before merge or explicitly accept the
