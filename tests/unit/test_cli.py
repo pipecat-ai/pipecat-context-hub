@@ -1333,6 +1333,27 @@ class TestRefreshCommand:
         # framework records still describe whatever the last good run indexed.
         assert "framework_version" not in written
 
+    def test_transient_framework_failure_warns_pin_not_applied(self, tmp_path, monkeypatch, caplog):
+        """Finding #1: a clone/fetch failure for a concrete pin must warn that
+        `framework_version` metadata still reports the previous pin, not the
+        one just requested -- giving the operator an explicit signal instead
+        of silently leaving a stale pin in place."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result, _store, _crawler = self._run_with_framework_failure(
+                OSError("Connection reset by peer"),
+                ["--framework-version", "v1.2.0"],
+                tmp_path,
+                monkeypatch,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert any(
+            "clone/fetch failed" in record.message and "v1.2.0" in record.message
+            for record in caplog.records
+        )
+
     def test_default_pin_costs_no_extra_fetch(self, tmp_path, monkeypatch):
         """`latest` skips the pre-flight — it cannot be typo'd.
 

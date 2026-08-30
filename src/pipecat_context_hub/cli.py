@@ -1279,6 +1279,8 @@ def refresh(
                     # Backstop for a tag that vanished between the pre-flight
                     # above and here. Same verdict: invalid input, not bad luck.
                     raise _framework_pin_not_found(fw_version, exc) from exc
+                if repo_slug == framework_slug:
+                    fw_state.clone_or_fetch_failed = True
                 all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
                 source_status[repo_slug] = {
                     "status": "error",
@@ -1685,6 +1687,13 @@ def refresh(
             # `fw_state.deprecation_map_published` and
             # `fw_state.records_replaced_this_run`.
             metadata_to_delete.extend(_FRAMEWORK_PROVENANCE_METADATA_KEYS)
+        elif fw_state.clone_or_fetch_failed and fw_pin_is_concrete:
+            logger.warning(
+                "Framework repo clone/fetch failed this run; framework_version "
+                "metadata still reports the previous pin, not the requested "
+                "%r. Re-run refresh once the clone/fetch error above is resolved.",
+                fw_version,
+            )
 
         # Record the pipecat revision the index was actually built from.
         # `framework_version` above is the pin that was requested; this is
