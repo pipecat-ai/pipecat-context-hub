@@ -15,6 +15,79 @@ This project uses [Semantic Versioning](https://semver.org/).
   `refresh --framework-version latest` run as not run — the exact gap
   PR #122 later hit.
 
+### Changed
+- **`refresh` indexes the framework at its newest release tag by default.** With
+  no `--framework-version`, the framework repo (`pipecat-ai/pipecat`) is pinned
+  to `latest` instead of tracking its default branch. Every other indexed source
+  is already release-aligned — the docs site publishes from a release-time
+  promotion, and the example repos depend on released wheels — so a
+  default-branch framework checkout was the one source contributing unreleased
+  APIs. Since `indexed_framework_version` is a git-describe *floor*, those APIs
+  were stamped with the previous release's number, which `version_compatibility`
+  reports as `compatible` to a caller running that release, and
+  `version_filter="compatible_only"` did not exclude them.
+
+  Pass `--framework-version head` (or `main`) for the default branch — the right
+  choice when developing Pipecat itself or building against unreleased code.
+  Both spellings are accepted wherever a pin is, including
+  `PIPECAT_HUB_FRAMEWORK_VERSION`, and both are recorded as `head`.
+
+- **`framework_version` index metadata records the pin behind the indexed
+  framework records.** An unspecified pin resolves to `latest` rather than to no
+  pin, so every refresh that indexes the framework repo records one. A
+  metadata-contract reader that treated the key's absence as "default branch"
+  should look for `head` instead; absent now means the index holds no framework
+  records to attribute a pin to. `check_deprecation` never returns either
+  sentinel as a version.
+
+### Fixed
+- **A nonexistent `--framework-version` tag now fails the refresh.** A typo'd
+  pin was caught as an ordinary per-repo clone failure: `refresh` logged a
+  warning, finished with **exit 0**, and left the framework repo at whatever
+  revision it had last indexed — so a scripted refresh reported success while
+  silently indexing nothing new. An unresolvable (or malformed) tag is invalid
+  input, and is now validated *before* the docs crawl: the run aborts with
+  exit 1 in about a second. Syntactically valid but missing tags include the
+  available-tags hint; malformed tags return an immediate format error, so
+  neither path waits for a full crawl that it then throws away. Transient clone
+  failures — network, auth, disk — are deliberately unchanged: still a
+  warning, still non-fatal, so one
+  flaky repo cannot fail an otherwise good refresh. The `latest` and `head`
+  sentinels skip the check, since neither can be typo'd, so a plain `refresh`
+  pays no extra fetch.
+
+- **`framework_version` index metadata no longer records a pin that never took
+  effect.** When the framework clone fails or its ref is tainted, the key keeps
+  its previous value rather than advertising a pin the index does not reflect —
+  the same last-known-good treatment `indexed_framework_version` already had.
+  When the framework repo's records are purged outright, the key is cleared
+  alongside the provenance pair it sits with: `check_deprecation` falls back to
+  the pin exactly when no indexed revision is recorded, so a pin left behind by
+  a purge would answer with a version for an index holding no framework records
+  at all. When the deprecation map fails to publish after the framework records
+  were already replaced, the pin is cleared the same way, so it never survives
+  paired with a map it doesn't describe.
+
+- **An empty `--framework-version` no longer silently resolves to the default
+  branch.** `--framework-version ""` — e.g. a script interpolating an unset
+  shell variable — was treated as a concrete pin, but the empty string is falsy
+  wherever the clone step checks `if tag:`, so it resolved `head` instead of
+  failing the fast-path validation above. It now falls through exactly like an
+  unset flag: to the env var, then to the default pin.
+
+- **A framework clone/fetch failure with a concrete pin now says so.** If
+  `--framework-version vX.Y.Z` is requested but the clone/fetch fails for a
+  reason other than a missing tag (network, auth, disk), the refresh already
+  left the previous `framework_version` in place — but silently, blending into
+  the generic per-repo failure log. It's now called out with its own warning
+  naming the pin that was requested and never applied.
+
+- **`metadata_contract_version` is now `3`.** `framework_version` changed from
+  "present only for an explicit pin" to "present for every refresh that indexes
+  the framework repo, including the default `latest`" (see **Changed** above);
+  the contract version bump signals that meaning change to a reader that cached
+  the old contract.
+
 ## [0.6.0] - 2026-08-28
 
 ### Changed

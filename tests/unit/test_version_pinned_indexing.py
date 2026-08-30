@@ -21,6 +21,7 @@ from pipecat_context_hub.shared.config import (
     HubConfig,
     StorageConfig,
 )
+from pipecat_context_hub.shared.versioning import LATEST_SENTINEL
 
 # ---------------------------------------------------------------------------
 # Config tests
@@ -30,10 +31,10 @@ from pipecat_context_hub.shared.config import (
 class TestFrameworkVersionConfig:
     """Tests for the framework_version config field and env var."""
 
-    def test_default_is_none(self):
+    def test_default_is_latest(self):
         config = HubConfig()
         assert config.framework_version is None
-        assert config.effective_framework_version is None
+        assert config.effective_framework_version == LATEST_SENTINEL
 
     def test_explicit_field_value(self):
         config = HubConfig(framework_version="v0.0.96")
@@ -51,16 +52,32 @@ class TestFrameworkVersionConfig:
             config = HubConfig(framework_version="v0.0.96")
             assert config.effective_framework_version == "v0.0.96"
 
-    def test_empty_env_var_returns_none(self):
+    def test_empty_env_var_falls_back_to_default(self):
         with patch.dict(os.environ, {_FRAMEWORK_VERSION_ENV: "  "}):
             config = HubConfig()
-            assert config.effective_framework_version is None
+            assert config.effective_framework_version == LATEST_SENTINEL
+
+    @pytest.mark.parametrize("empty_value", ["", "  "])
+    def test_empty_field_falls_back_to_env_var(self, empty_value, monkeypatch):
+        monkeypatch.setenv(_FRAMEWORK_VERSION_ENV, "v0.0.95")
+        config = HubConfig(framework_version=empty_value)
+        assert config.effective_framework_version == "v0.0.95"
+
+    @pytest.mark.parametrize("empty_value", ["", "  "])
+    def test_empty_field_falls_back_to_default(self, empty_value, monkeypatch):
+        monkeypatch.delenv(_FRAMEWORK_VERSION_ENV, raising=False)
+        config = HubConfig(framework_version=empty_value)
+        assert config.effective_framework_version == LATEST_SENTINEL
+
+    def test_head_sentinel_is_a_pin_like_any_other(self):
+        config = HubConfig(framework_version="head")
+        assert config.effective_framework_version == "head"
 
     def test_model_copy_propagates_version(self):
         config = HubConfig()
         updated = config.model_copy(update={"framework_version": "v0.0.96"})
         assert updated.effective_framework_version == "v0.0.96"
-        assert config.effective_framework_version is None  # original unchanged
+        assert config.effective_framework_version == LATEST_SENTINEL  # original unchanged
 
 
 # ---------------------------------------------------------------------------

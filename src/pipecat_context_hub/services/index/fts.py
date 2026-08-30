@@ -31,7 +31,10 @@ logger = logging.getLogger(__name__)
 # v2: `framework_version` can now hold the literal sentinel "latest" in
 # addition to a concrete tag — a value consumers doing their own version
 # comparison need to special-case.
-METADATA_CONTRACT_VERSION = 2
+# v3: successful default refreshes now record the `latest` sentinel in
+# `framework_version`; absence means the index has no framework records to
+# attribute a pin to.
+METADATA_CONTRACT_VERSION = 3
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS chunks (

@@ -6,10 +6,14 @@ import pytest
 from packaging.version import InvalidVersion, Version
 
 from pipecat_context_hub.shared.versioning import (
+    DEFAULT_FRAMEWORK_PIN,
+    HEAD_SENTINEL,
     LATEST_SENTINEL,
     canonicalize_framework_pin,
     exact_release_version,
+    is_head_sentinel,
     is_latest_sentinel,
+    is_sentinel_pin,
     parse_release_version,
     strip_v_prefix,
 )
@@ -42,10 +46,50 @@ class TestIsLatestSentinel:
         assert is_latest_sentinel(value) is False
 
 
+class TestIsHeadSentinel:
+    @pytest.mark.parametrize("value", ["head", "HEAD", "main", "  Main  ", "\tHeAd\n"])
+    def test_accepts_either_spelling_in_any_casing(self, value: str):
+        assert is_head_sentinel(value) is True
+
+    @pytest.mark.parametrize("value", [None, "", "v1.2.0", "latest", "heads", "mainline"])
+    def test_rejects_everything_else(self, value: str | None):
+        assert is_head_sentinel(value) is False
+
+
+class TestIsSentinelPin:
+    """The derived "pin, not a concrete version" predicate."""
+
+    @pytest.mark.parametrize("value", ["latest", "LATEST", "head", "main", "  Main  "])
+    def test_accepts_either_sentinel(self, value: str):
+        assert is_sentinel_pin(value) is True
+
+    @pytest.mark.parametrize("value", [None, "", "v1.2.0", "1.2.0", "some-feature-tag"])
+    def test_rejects_concrete_tags(self, value: str | None):
+        assert is_sentinel_pin(value) is False
+
+    @pytest.mark.parametrize(
+        "value", [None, "", "latest", "LATEST", "head", "main", "v1.2.0", "heads", "latest-rc"]
+    )
+    def test_is_exactly_the_disjunction_it_replaces(self, value: str | None):
+        """Pins the refactor: callers that open-coded the `or` see no change."""
+        assert is_sentinel_pin(value) == (is_latest_sentinel(value) or is_head_sentinel(value))
+
+
+class TestDefaultFrameworkPin:
+    def test_default_is_the_latest_sentinel(self):
+        """An operator who names no pin gets the newest release, not the default branch."""
+        assert DEFAULT_FRAMEWORK_PIN == LATEST_SENTINEL
+        assert is_latest_sentinel(DEFAULT_FRAMEWORK_PIN) is True
+
+
 class TestCanonicalizeFrameworkPin:
     @pytest.mark.parametrize("value", ["latest", "  LATEST  ", "Latest"])
     def test_sentinel_collapses_to_canonical_spelling(self, value: str):
         assert canonicalize_framework_pin(value) == LATEST_SENTINEL
+
+    @pytest.mark.parametrize("value", ["head", "  MAIN  ", "Main"])
+    def test_head_spellings_collapse_to_one(self, value: str):
+        assert canonicalize_framework_pin(value) == HEAD_SENTINEL
 
     @pytest.mark.parametrize("value", ["v0.0.96", " v0.0.96 ", "some-feature-tag", ""])
     def test_non_sentinel_returned_verbatim(self, value: str):

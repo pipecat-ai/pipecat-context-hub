@@ -18,6 +18,23 @@ from packaging.version import InvalidVersion, Version
 # publishes one, and an escape syntax would cost more than it buys.
 LATEST_SENTINEL: Final[str] = "latest"
 
+# Sentinel meaning "the framework repo's default branch", spelled either
+# ``head`` or ``main``. A pin is otherwise validated as a version-like tag, and
+# an operator who names no pin gets :data:`DEFAULT_FRAMEWORK_PIN`, so the
+# default branch needs a spelling of its own to be reachable at all. Neither
+# spelling shadows a real tag in any pipecat-ai repo.
+HEAD_SENTINEL: Final[str] = "head"
+_HEAD_SPELLINGS: Final[frozenset[str]] = frozenset({HEAD_SENTINEL, "main"})
+
+# The framework pin applied when an operator names none. ``latest`` keeps the
+# framework aligned with every other indexed source: the docs site publishes
+# from a release-time promotion and the example repos depend on released
+# wheels, so a default-branch framework checkout would be the only source
+# contributing unreleased APIs — and git-describe floor semantics would stamp
+# them with the previous release's number, which reads as "compatible" to a
+# caller running that release.
+DEFAULT_FRAMEWORK_PIN: Final[str] = LATEST_SENTINEL
+
 
 def strip_v_prefix(tag: str) -> str:
     """Strip a single leading literal 'v', not the character set {'v'}.
@@ -35,14 +52,35 @@ def is_latest_sentinel(tag: str | None) -> bool:
     return tag is not None and tag.strip().lower() == LATEST_SENTINEL
 
 
+def is_head_sentinel(tag: str | None) -> bool:
+    """True when *tag* is a ``head`` sentinel spelling, case- and whitespace-insensitive."""
+    return tag is not None and tag.strip().lower() in _HEAD_SPELLINGS
+
+
+def is_sentinel_pin(tag: str | None) -> bool:
+    """True when *tag* is any sentinel spelling rather than a concrete tag.
+
+    The single derived "is this a pin rather than a version?" predicate, so
+    callers don't open-code ``is_latest_sentinel(x) or is_head_sentinel(x)`` —
+    which would have to be found and edited again if a third sentinel is ever
+    added. Same case- and whitespace-insensitivity as its constituents.
+    """
+    return is_latest_sentinel(tag) or is_head_sentinel(tag)
+
+
 def canonicalize_framework_pin(pin: str) -> str:
     """The canonical spelling of an operator's framework pin.
 
-    Returns the canonical ``latest`` for the sentinel in any casing or
-    surrounding whitespace, and the pin verbatim otherwise — so a pin recorded
-    in index metadata compares equal to what :func:`is_latest_sentinel` accepts.
+    Returns the canonical spelling for either sentinel in any casing or
+    surrounding whitespace (``main`` canonicalizes to ``head``), and the pin
+    verbatim otherwise — so a pin recorded in index metadata compares equal to
+    what :func:`is_latest_sentinel` / :func:`is_head_sentinel` accept.
     """
-    return LATEST_SENTINEL if is_latest_sentinel(pin) else pin
+    if is_latest_sentinel(pin):
+        return LATEST_SENTINEL
+    if is_head_sentinel(pin):
+        return HEAD_SENTINEL
+    return pin
 
 
 def parse_release_version(tag: str) -> Version:

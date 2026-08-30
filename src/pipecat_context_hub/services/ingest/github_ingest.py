@@ -26,6 +26,7 @@ from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, Taxono
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
     exact_release_version,
+    is_head_sentinel,
     is_latest_sentinel,
     parse_release_version,
 )
@@ -108,6 +109,18 @@ _REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._
 _TAG_INPUT_RE = re.compile(r"^v?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 _ZERO_VERSION = Version("0")
+
+
+class TagNotFoundError(ValueError):
+    """A requested git tag does not exist in the repo, or is malformed.
+
+    Subclasses ``ValueError`` so the pre-existing ``except ValueError``
+    callers keep working unchanged; the distinct type is what lets ``refresh``
+    tell an operator's bad ``--framework-version`` (invalid input — abort with
+    a non-zero exit) apart from a transient clone/fetch failure (warn, keep
+    the other repos, carry on). Conflating the two is how a typo'd pin used to
+    finish with exit 0 and a silently un-reindexed framework repo.
+    """
 
 
 class CloneResult(NamedTuple):
@@ -839,7 +852,7 @@ def _extract_pipecat_version(example_dir: Path, repo_root: Path) -> str | None:
 def describe_framework_checkout(repo_path: Path) -> tuple[str | None, int | None]:
     """Describe a checkout as (nearest release tag, commits ahead of that tag).
 
-    An unpinned refresh tracks the default branch, where the nearest tag is a
+    A ``head`` refresh tracks the default branch, where the nearest tag is a
     floor rather than an identity — a checkout eighty commits past ``v1.5.0``
     still describes as ``v1.5.0``. Anything comparing the index against a
     project's installed pipecat needs the distance to tell "this index *is*
@@ -1334,6 +1347,8 @@ class GitHubRepoIngester:
             checkout: Whether to checkout the resolved commit.
             tag: Optional git tag to resolve instead of HEAD (e.g. ``"v0.0.96"``).
                  Only used for the framework repo to support version-pinned indexing.
+                 Pass ``tag=None`` (not the ``"head"`` sentinel string) to request
+                 a default-branch checkout — the ``"head"`` sentinel is rejected.
 
         Returns:
             A :class:`CloneResult`. ``resolved_tag`` is ``None`` only when no tag
@@ -1342,6 +1357,11 @@ class GitHubRepoIngester:
         """
         if not _REPO_SLUG_RE.fullmatch(repo_slug):
             raise ValueError(f"Invalid repo slug: {repo_slug}")
+        if tag is not None and is_head_sentinel(tag):
+            raise ValueError(
+                "clone_or_fetch: tag must not be the 'head' sentinel; "
+                "pass tag=None for a default-branch checkout"
+            )
         # Sanitize slug to prevent path traversal
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", repo_slug)
         repo_path = self._repos_dir / safe_name
@@ -1529,11 +1549,17 @@ class GitHubRepoIngester:
         ``latest`` sentinel — every production caller resolves it via
         ``_resolve_latest_tag``/``_latest_version_tag`` first, so a caller
         passing the literal string ``"latest"`` here gets the same
-        not-found error as any other nonexistent tag. Raises ``ValueError``
-        if the tag does not exist or has an invalid format.
+        not-found error as any other nonexistent tag. Raises
+        :class:`TagNotFoundError` if the tag does not exist or has an invalid
+        format.
         """
+        if is_head_sentinel(tag):
+            raise ValueError(
+                "_resolve_tag: tag must not be the 'head' sentinel; "
+                "pass tag=None to clone_or_fetch for a default-branch checkout"
+            )
         if not _TAG_INPUT_RE.fullmatch(tag):
-            raise ValueError(f"Invalid tag format: {tag!r}")
+            raise TagNotFoundError(f"Invalid tag format: {tag!r}")
         # Normalise: accept "v0.0.96", "V0.0.96", and "0.0.96" alike. Mirrors
         # the case-insensitive guard in `shared/versioning.parse_release_version`
         # — deliberately NOT routed through `strip_v_prefix`, which is
@@ -1552,7 +1578,7 @@ class GitHubRepoIngester:
                 continue
 
         newest = sorted((str(t) for t in git_repo.tags), key=_version_sort_key, reverse=True)[:5]
-        raise ValueError(
+        raise TagNotFoundError(
             f"Tag '{tag}' not found in repository. Available tags (latest 5): {newest}"
         )
 
