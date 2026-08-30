@@ -53,6 +53,14 @@ _redact_home = redact_home
 # renderer and the producers cannot drift.
 _MISSING_SENTINEL = "\u2014"
 
+
+def _framework_pin_not_found(fw_version: str, exc: TagNotFoundError) -> click.ClickException:
+    """Translate a `TagNotFoundError` for `--framework-version` into the
+    user-facing `ClickException`. Shared by the pre-flight check and the
+    clone-loop backstop so the message can't drift between the two sites."""
+    return click.ClickException(f"--framework-version {fw_version!r}: {exc}")
+
+
 # Exit code for `serve` when the index cannot be used (unopenable or empty).
 # Documented in CHANGELOG 0.0.17 "Changed" section.
 _EXIT_INDEX_UNREADY = 2
@@ -945,7 +953,7 @@ def refresh(
         try:
             preflight_github.clone_or_fetch(_FRAMEWORK_REPO, False, tag=fw_version)
         except TagNotFoundError as exc:
-            raise click.ClickException(f"--framework-version {fw_version!r}: {exc}") from exc
+            raise _framework_pin_not_found(fw_version, exc) from exc
         except Exception:
             # Everything else — network, auth, disk — stays tolerant: the
             # repo loop below records it as a per-repo error and the rest
@@ -1273,9 +1281,7 @@ def refresh(
                 ):
                     # Backstop for a tag that vanished between the pre-flight
                     # above and here. Same verdict: invalid input, not bad luck.
-                    raise click.ClickException(
-                        f"--framework-version {fw_version!r}: {exc}"
-                    ) from exc
+                    raise _framework_pin_not_found(fw_version, exc) from exc
                 all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
                 source_status[repo_slug] = {
                     "status": "error",
