@@ -1126,6 +1126,7 @@ class TestRefreshCommand:
         [
             ([], "latest", "latest"),
             (["--framework-version", "latest"], "latest", "latest"),
+            (["--framework-version", ""], "latest", "latest"),
             (["--framework-version", "head"], None, "head"),
             (["--framework-version", "MAIN"], None, "head"),
             (["--framework-version", "v1.2.0"], "v1.2.0", "v1.2.0"),

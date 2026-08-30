@@ -514,6 +514,8 @@ class HubConfig(BaseModel):
         the ``head`` sentinel, not by leaving this unset.
         """
         if self.framework_version is not None:
-            return self.framework_version
+            stripped = self.framework_version.strip()
+            if stripped:
+                return stripped
         env = os.environ.get(_FRAMEWORK_VERSION_ENV, "").strip()
         return env or DEFAULT_FRAMEWORK_PIN

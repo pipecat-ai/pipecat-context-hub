@@ -57,6 +57,18 @@ class TestFrameworkVersionConfig:
             config = HubConfig()
             assert config.effective_framework_version == LATEST_SENTINEL
 
+    @pytest.mark.parametrize("empty_value", ["", "  "])
+    def test_empty_field_falls_back_to_env_var(self, empty_value, monkeypatch):
+        monkeypatch.setenv(_FRAMEWORK_VERSION_ENV, "v0.0.95")
+        config = HubConfig(framework_version=empty_value)
+        assert config.effective_framework_version == "v0.0.95"
+
+    @pytest.mark.parametrize("empty_value", ["", "  "])
+    def test_empty_field_falls_back_to_default(self, empty_value, monkeypatch):
+        monkeypatch.delenv(_FRAMEWORK_VERSION_ENV, raising=False)
+        config = HubConfig(framework_version=empty_value)
+        assert config.effective_framework_version == LATEST_SENTINEL
+
     def test_head_sentinel_is_a_pin_like_any_other(self):
         config = HubConfig(framework_version="head")
         assert config.effective_framework_version == "head"
