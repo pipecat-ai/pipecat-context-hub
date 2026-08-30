@@ -3755,7 +3755,7 @@ class TestFinding1StaleStampClearedAfterFailedMapPublish(TestRefreshRecordReplac
             ),
             patch.object(DeprecationMap, "save", side_effect=OSError("disk full")),
         ):
-            result = CliRunner().invoke(main, ["refresh"])
+            result = CliRunner().invoke(main, ["refresh", "--framework-version", "v1.6.0"])
 
         assert result.exit_code == 0, result.output
 
@@ -3764,6 +3764,8 @@ class TestFinding1StaleStampClearedAfterFailedMapPublish(TestRefreshRecordReplac
 
         batch_call = mock_store.set_metadata_batch.call_args
         delete_keys = set(batch_call.kwargs["delete_keys"])
+        assert "framework_version" not in batch_call.args[0]
+        assert "framework_version" in delete_keys
         assert "indexed_framework_version" in delete_keys
         assert "indexed_framework_commits_ahead" in delete_keys
         assert "deprecation_map_commit_sha" in delete_keys
@@ -3771,6 +3773,7 @@ class TestFinding1StaleStampClearedAfterFailedMapPublish(TestRefreshRecordReplac
         # Simulate the deletion applied to the store's metadata, then confirm
         # the reader-facing contract: no confident exact-version answer.
         remaining_metadata = {
+            "framework_version": "v1.6.0",
             "indexed_framework_version": "1.5.0",
             "indexed_framework_commits_ahead": "0",
             "deprecation_map_commit_sha": "old-framework-sha",

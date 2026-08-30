@@ -1654,7 +1654,9 @@ def refresh(
         # clears this key with them.) Normalize a sentinel's case/whitespace so
         # a pin like " Latest " is recorded as the canonical "latest", matching
         # what `is_latest_sentinel` / `is_head_sentinel` accept everywhere else.
-        if framework_pin_applies:
+        if framework_pin_applies and (
+            deprecation_map_published or not framework_records_replaced_this_run
+        ):
             metadata_to_set["framework_version"] = canonicalize_framework_pin(fw_version)
         elif framework_records_purged_this_run:
             # The framework records this key described were deleted this run
@@ -1738,7 +1740,11 @@ def refresh(
             # stale relative to the NEW records the index actually holds.
             # Clear them so `resolve_framework_version` falls back to
             # intrinsic status instead of confidently reporting a version the
-            # newly-indexed records may no longer match.
+            # newly-indexed records may no longer match. The pin is cleared as
+            # well: otherwise the reader would fall through to the new
+            # concrete pin after the indexed-version stamp is removed, pairing
+            # it with the preserved map from the old records.
+            metadata_to_delete.append("framework_version")
             metadata_to_delete.append("indexed_framework_version")
             metadata_to_delete.append("indexed_framework_commits_ahead")
             metadata_to_delete.append("deprecation_map_commit_sha")
