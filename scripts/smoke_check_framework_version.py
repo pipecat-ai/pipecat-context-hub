@@ -114,6 +114,12 @@ def _pick_pin_tags() -> tuple[str, str]:
     Resolved live via ``git ls-remote`` rather than hardcoded, so the script
     doesn't go stale as pipecat cuts new releases. Raises RuntimeError if
     fewer than two release tags are reachable.
+
+    Mirrors the hub's own ``_latest_version_tag`` preference for final
+    releases over prereleases (``github_ingest.py``): pipecat publishes no
+    prerelease tags today, but if it ever cuts one, picking the bare
+    highest-``Version`` tag here could pick a newer prerelease while the hub
+    correctly resolves ``latest`` to the newest final — a spurious mismatch.
     """
     result = subprocess.run(  # nosec B603 B607 — hardcoded args, no user input
         ["git", "ls-remote", "--tags", f"https://github.com/{_FRAMEWORK_REPO}.git"],
@@ -139,8 +145,12 @@ def _pick_pin_tags() -> tuple[str, str]:
         by_version.setdefault(version, name)
     if len(by_version) < 2:
         raise RuntimeError(f"Fewer than 2 distinct release tags found for {_FRAMEWORK_REPO}")
+    finals = [version for version in by_version if not version.is_prerelease]
     ordered = sorted(by_version.items(), key=lambda pair: pair[0], reverse=True)
-    return ordered[0][1], ordered[1][1]
+    newest = max(finals) if finals else ordered[0][0]
+    newest_name = by_version[newest]
+    older_name = next(name for version, name in ordered if version != newest)
+    return newest_name, older_name
 
 
 def _run_refresh(
@@ -263,10 +273,14 @@ def run_checks(config: HubConfig, data_dir: Path, tainted_repos: str) -> int:
         meta.get("indexed_framework_version") in (older_tag, older_tag.removeprefix("v")),
         detail=str(meta.get("indexed_framework_version")),
     )
-    verdict = _check_deprecation_at_version(
-        data_dir, "PipelineTask", older_tag.removeprefix("v"), tainted_repos=tainted_repos
-    )
-    print(f"  check-deprecation PipelineTask --at-version {older_tag}: {verdict.get('status')}")
+    try:
+        verdict = _check_deprecation_at_version(
+            data_dir, "PipelineTask", older_tag.removeprefix("v"), tainted_repos=tainted_repos
+        )
+    except RuntimeError as exc:
+        _record(failures, "check-deprecation PipelineTask succeeded", False, detail=str(exc))
+    else:
+        print(f"  check-deprecation PipelineTask --at-version {older_tag}: {verdict.get('status')}")
 
     # ----- 3. `--framework-version <malformed>` -----
     print("\n== refresh --framework-version 'bad tag!!' (malformed) ==")
