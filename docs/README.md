@@ -316,7 +316,7 @@ set — e.g. a new `indexed_framework_version` can never be paired with a stale
 
 | Key | Meaning |
 |-----|---------|
-| `metadata_contract_version` | Version of this contract (currently `2`). Absent on indexes built before it was published |
+| `metadata_contract_version` | Version of this contract (currently `3`). Absent on indexes built before it was published |
 | `last_refresh_at` | UTC ISO-8601 timestamp of the last completed refresh |
 | `last_refresh_error_count` | Errors in that refresh; `last_refresh_errored_at` is present only when non-zero |
 | `indexed_framework_version` | Nearest pipecat release tag the index was built from, e.g. `1.6.0` |
