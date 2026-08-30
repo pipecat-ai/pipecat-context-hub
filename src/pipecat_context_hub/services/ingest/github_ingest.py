@@ -26,6 +26,7 @@ from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, Taxono
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
     exact_release_version,
+    is_head_sentinel,
     is_latest_sentinel,
     parse_release_version,
 )
@@ -1346,6 +1347,8 @@ class GitHubRepoIngester:
             checkout: Whether to checkout the resolved commit.
             tag: Optional git tag to resolve instead of HEAD (e.g. ``"v0.0.96"``).
                  Only used for the framework repo to support version-pinned indexing.
+                 Pass ``tag=None`` (not the ``"head"`` sentinel string) to request
+                 a default-branch checkout — the ``"head"`` sentinel is rejected.
 
         Returns:
             A :class:`CloneResult`. ``resolved_tag`` is ``None`` only when no tag
@@ -1354,6 +1357,11 @@ class GitHubRepoIngester:
         """
         if not _REPO_SLUG_RE.fullmatch(repo_slug):
             raise ValueError(f"Invalid repo slug: {repo_slug}")
+        if tag is not None and is_head_sentinel(tag):
+            raise ValueError(
+                "clone_or_fetch: tag must not be the 'head' sentinel; "
+                "pass tag=None for a default-branch checkout"
+            )
         # Sanitize slug to prevent path traversal
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", repo_slug)
         repo_path = self._repos_dir / safe_name
@@ -1545,6 +1553,11 @@ class GitHubRepoIngester:
         :class:`TagNotFoundError` if the tag does not exist or has an invalid
         format.
         """
+        if is_head_sentinel(tag):
+            raise ValueError(
+                "_resolve_tag: tag must not be the 'head' sentinel; "
+                "pass tag=None to clone_or_fetch for a default-branch checkout"
+            )
         if not _TAG_INPUT_RE.fullmatch(tag):
             raise TagNotFoundError(f"Invalid tag format: {tag!r}")
         # Normalise: accept "v0.0.96", "V0.0.96", and "0.0.96" alike. Mirrors

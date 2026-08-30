@@ -306,6 +306,16 @@ class TestCloneOrFetchCheckoutControl:
         with pytest.raises(ValueError, match="Invalid repo slug"):
             ingester.clone_or_fetch("../evil")
 
+    def test_head_sentinel_tag_rejected(self, tmp_path: Path):
+        """Regression: `tag="head"` must be rejected up front rather than
+        attempted as a literal (nonexistent) tag lookup — callers requesting
+        a default-branch checkout must pass `tag=None`."""
+        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+
+        with pytest.raises(ValueError, match="must not be the 'head' sentinel"):
+            ingester.clone_or_fetch("pipecat-ai/pipecat", tag="head")
+
     def test_malformed_tag_error_does_not_claim_available_tags(self, tmp_path: Path):
         from git import Repo as GitRepo
 
