@@ -53,6 +53,17 @@ _redact_home = redact_home
 # renderer and the producers cannot drift.
 _MISSING_SENTINEL = "\u2014"
 
+# Metadata keys describing the framework repo's version provenance. Cleared
+# together whenever the framework repo's records are purged, replaced, or
+# fail to re-ingest \u2014 centralised so the three call sites that clear them
+# (`_delete_repo_index_data` and two branches in `refresh`) can't drift.
+_FRAMEWORK_PROVENANCE_METADATA_KEYS: tuple[str, ...] = (
+    "framework_version",
+    "indexed_framework_version",
+    "indexed_framework_commits_ahead",
+    "deprecation_map_commit_sha",
+)
+
 
 def _framework_pin_not_found(fw_version: str, exc: TagNotFoundError) -> click.ClickException:
     """Translate a `TagNotFoundError` for `--framework-version` into the
@@ -323,8 +334,9 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
 
     Returns ``True`` on success, ``False`` if the record or bookkeeping delete
     failed — callers use this to surface the failure through the refresh
-    summary rather than only a log line. On a bookkeeping failure, the repo
-    commit marker is deleted last so the cleanup scan can retry the repo.
+    summary rather than only a log line. The framework provenance keys and the
+    repo commit marker are cleared in one atomic batch (a batch call can't
+    leave partial state, so there is no ordering concern between them).
     """
     from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
@@ -349,16 +361,13 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
     try:
-        if slug == _FRAMEWORK_REPO:
-            # No framework records left for the pin or provenance to describe.
-            # Clear every framework provenance key before deleting the repo
-            # commit marker. The cleanup scan keys off that marker, so keeping
-            # it until the end lets a later refresh retry if any clear fails.
-            index_store.delete_metadata("framework_version")
-            index_store.delete_metadata("indexed_framework_version")
-            index_store.delete_metadata("indexed_framework_commits_ahead")
-            index_store.delete_metadata("deprecation_map_commit_sha")
-        index_store.delete_metadata(meta_key)
+        # No framework records left for the pin or provenance to describe.
+        delete_keys = (
+            [*_FRAMEWORK_PROVENANCE_METADATA_KEYS, meta_key]
+            if slug == _FRAMEWORK_REPO
+            else [meta_key]
+        )
+        index_store.set_metadata_batch({}, delete_keys=delete_keys)
     except Exception:
         _module_logger.exception(
             "Failed to clear bookkeeping metadata for %s after a successful "
@@ -1687,10 +1696,7 @@ def refresh(
             # only when the framework ingest errored, which withholds both
             # `deprecation_map_published` and
             # `framework_records_replaced_this_run`.
-            metadata_to_delete.append("framework_version")
-            metadata_to_delete.append("indexed_framework_version")
-            metadata_to_delete.append("indexed_framework_commits_ahead")
-            metadata_to_delete.append("deprecation_map_commit_sha")
+            metadata_to_delete.extend(_FRAMEWORK_PROVENANCE_METADATA_KEYS)
 
         # Record the pipecat revision the index was actually built from.
         # `framework_version` above is the pin that was requested; this is
@@ -1752,10 +1758,7 @@ def refresh(
             # well: otherwise the reader would fall through to the new
             # concrete pin after the indexed-version stamp is removed, pairing
             # it with the preserved map from the old records.
-            metadata_to_delete.append("framework_version")
-            metadata_to_delete.append("indexed_framework_version")
-            metadata_to_delete.append("indexed_framework_commits_ahead")
-            metadata_to_delete.append("deprecation_map_commit_sha")
+            metadata_to_delete.extend(_FRAMEWORK_PROVENANCE_METADATA_KEYS)
 
         metadata_to_set["last_refresh_at"] = now
         if all_errors:

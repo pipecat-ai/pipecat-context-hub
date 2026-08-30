@@ -174,6 +174,19 @@ def _sha_metadata(sha: str = "abc123", repos: list[str] | None = None) -> dict[s
     return {f"repo:{r}:commit_sha": sha for r in repos}
 
 
+def _batched_delete_keys(mock_store) -> set[str]:
+    """Every key ever passed as `delete_keys=` to `set_metadata_batch`.
+
+    `_delete_repo_index_data` clears its bookkeeping keys via one atomic
+    `set_metadata_batch({}, delete_keys=[...])` call rather than sequential
+    `delete_metadata` calls, so tests assert against this instead."""
+    return {
+        key
+        for call in mock_store.set_metadata_batch.call_args_list
+        for key in call.kwargs.get("delete_keys", ())
+    }
+
+
 class TestRefreshCommand:
     """Tests for the refresh command's incremental skip logic."""
 
@@ -675,7 +688,7 @@ class TestRefreshCommand:
         assert result.exit_code == 0
         # The removed repo should be cleaned up
         mock_store.delete_by_repo.assert_any_call("old-org/removed-repo")
-        mock_store.delete_metadata.assert_any_call("repo:old-org/removed-repo:commit_sha")
+        assert "repo:old-org/removed-repo:commit_sha" in _batched_delete_keys(mock_store)
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -843,7 +856,7 @@ class TestRefreshCommand:
 
         assert result.exit_code == 0
         mock_store.delete_by_repo.assert_any_call("pipecat-ai/pipecat")
-        mock_store.delete_metadata.assert_any_call("repo:pipecat-ai/pipecat:commit_sha")
+        assert "repo:pipecat-ai/pipecat:commit_sha" in _batched_delete_keys(mock_store)
         mock_github.ingest.assert_not_called()
         mock_source.ingest.assert_not_called()
         set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
@@ -2595,7 +2608,7 @@ class TestRefreshProvenanceMetadata:
         result = CliRunner().invoke(main, ["refresh"])
 
         assert result.exit_code == 0, result.output
-        deleted = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        deleted = _batched_delete_keys(mock_store)
         assert "indexed_framework_version" in deleted
         assert "indexed_framework_commits_ahead" in deleted
         # The pin describes those same records, so it goes with them —
@@ -4149,7 +4162,7 @@ class TestPruneSafety(TestRefreshCommand):
 
         assert result.exit_code == 0, result.output
         mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
-        mock_store.delete_metadata.assert_any_call(f"repo:{self._REMOVED_REPO}:commit_sha")
+        assert f"repo:{self._REMOVED_REPO}:commit_sha" in _batched_delete_keys(mock_store)
 
     @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "Yes", "YES"])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
@@ -4195,7 +4208,7 @@ class TestPruneSafety(TestRefreshCommand):
 
         assert result.exit_code == 0, result.output
         mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
-        mock_store.delete_metadata.assert_any_call(f"repo:{self._REMOVED_REPO}:commit_sha")
+        assert f"repo:{self._REMOVED_REPO}:commit_sha" in _batched_delete_keys(mock_store)
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -4238,7 +4251,7 @@ class TestPruneSafety(TestRefreshCommand):
 
         assert result.exit_code == 0, result.output
         mock_store.delete_by_repo.assert_any_call(tainted_slug)
-        mock_store.delete_metadata.assert_any_call(f"repo:{tainted_slug}:commit_sha")
+        assert f"repo:{tainted_slug}:commit_sha" in _batched_delete_keys(mock_store)
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -4281,7 +4294,13 @@ class TestPruneSafety(TestRefreshCommand):
         def _delete_metadata(key: str) -> None:
             all_meta.pop(key, None)
 
+        def _set_metadata_batch(pairs: dict[str, str], *, delete_keys=()) -> None:
+            all_meta.update(pairs)
+            for key in delete_keys:
+                all_meta.pop(key, None)
+
         mock_store.delete_metadata = MagicMock(side_effect=_delete_metadata)
+        mock_store.set_metadata_batch = MagicMock(side_effect=_set_metadata_batch)
 
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
@@ -4293,11 +4312,13 @@ class TestPruneSafety(TestRefreshCommand):
         mock_store.delete_by_repo.reset_mock()
         mock_store.delete_metadata.reset_mock(side_effect=False)
         mock_store.delete_metadata.side_effect = _delete_metadata
+        mock_store.set_metadata_batch.reset_mock(side_effect=False)
+        mock_store.set_metadata_batch.side_effect = _set_metadata_batch
 
         result_2 = runner.invoke(main, ["refresh", "--prune"])
         assert result_2.exit_code == 0, result_2.output
         mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
-        mock_store.delete_metadata.assert_any_call(f"repo:{self._REMOVED_REPO}:commit_sha")
+        assert f"repo:{self._REMOVED_REPO}:commit_sha" in _batched_delete_keys(mock_store)
         assert f"repo:{self._REMOVED_REPO}:commit_sha" not in all_meta
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
@@ -5831,18 +5852,21 @@ class TestDebugProbeSymlinkHardening:
 
 
 class TestDeleteRepoIndexDataBookkeepingGuard:
-    """Round 10 Finding #3: `_delete_repo_index_data`'s bookkeeping
-    `delete_metadata` calls (run only after a successful `delete_by_repo`)
-    must themselves be guarded -- an exception there should return `False`
-    and record the `cleanup_failed` marker, not propagate uncaught.
+    """Round 10 Finding #3 (updated for the atomic-batch rewrite):
+    `_delete_repo_index_data`'s bookkeeping `set_metadata_batch` call (run
+    only after a successful `delete_by_repo`) must itself be guarded -- an
+    exception there should return `False` and record the `cleanup_failed`
+    marker, not propagate uncaught. The batch call replaced the previous
+    sequential `delete_metadata` calls, so a failure can no longer leave a
+    partial set of keys cleared -- it's all-or-nothing.
     """
 
-    async def test_delete_metadata_failure_returns_false_and_sets_cleanup_marker(self):
+    async def test_batch_metadata_failure_returns_false_and_sets_cleanup_marker(self):
         from pipecat_context_hub.cli import _delete_repo_index_data
 
         store = MagicMock()
         store.delete_by_repo = AsyncMock(return_value=None)
-        store.delete_metadata = MagicMock(side_effect=RuntimeError("boom"))
+        store.set_metadata_batch = MagicMock(side_effect=RuntimeError("boom"))
         store.set_metadata = MagicMock()
 
         result = await _delete_repo_index_data(
@@ -5852,42 +5876,33 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
         assert result is False
         store.set_metadata.assert_any_call("repo:some-org/some-repo:cleanup_failed", "1")
 
-    async def test_framework_repo_fourth_delete_metadata_failure_returns_false(self):
+    async def test_framework_repo_batch_failure_returns_false(self):
         """A failure while clearing framework provenance must be caught.
 
-        The framework-repo branch clears four provenance keys before the repo
-        commit marker. A failure on the fourth must still return ``False`` and
-        leave the marker available for a retry scan.
-        """
+        The framework-repo branch clears all provenance keys plus the repo
+        commit marker in one `set_metadata_batch` call. A failure there must
+        still return ``False`` and leave the marker available for a retry
+        scan (the batch never partially applied)."""
         from pipecat_context_hub.cli import _delete_repo_index_data
         from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
         store = MagicMock()
         store.delete_by_repo = AsyncMock(return_value=None)
-        calls = {"count": 0}
-
-        def flaky_delete_metadata(key: str) -> None:
-            calls["count"] += 1
-            if calls["count"] == 4:
-                raise RuntimeError("boom on fourth call")
-
-        store.delete_metadata = MagicMock(side_effect=flaky_delete_metadata)
+        store.set_metadata_batch = MagicMock(side_effect=RuntimeError("boom"))
         store.set_metadata = MagicMock()
 
         result = await _delete_repo_index_data(store, _FRAMEWORK_REPO, "repo:framework:commit_sha")
 
         assert result is False
-        assert calls["count"] == 4
         store.set_metadata.assert_any_call(f"repo:{_FRAMEWORK_REPO}:cleanup_failed", "1")
 
-    async def test_framework_repo_deletes_commit_marker_last(self):
+    async def test_framework_repo_clears_provenance_and_commit_marker_atomically(self):
         from pipecat_context_hub.cli import _delete_repo_index_data
         from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
         store = MagicMock()
         store.delete_by_repo = AsyncMock(return_value=None)
-        deleted_keys: list[str] = []
-        store.delete_metadata = MagicMock(side_effect=deleted_keys.append)
+        store.set_metadata_batch = MagicMock()
 
         result = await _delete_repo_index_data(
             store,
@@ -5896,13 +5911,16 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
         )
 
         assert result is True
-        assert deleted_keys == [
+        store.set_metadata_batch.assert_called_once()
+        call = store.set_metadata_batch.call_args
+        assert call.args[0] == {}
+        assert set(call.kwargs["delete_keys"]) == {
             "framework_version",
             "indexed_framework_version",
             "indexed_framework_commits_ahead",
             "deprecation_map_commit_sha",
             f"repo:{_FRAMEWORK_REPO}:commit_sha",
-        ]
+        }
 
 
 class TestDeleteRepoIndexDataDeleteByRepoGuard:
