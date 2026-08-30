@@ -64,7 +64,29 @@ This project uses [Semantic Versioning](https://semver.org/).
   alongside the provenance pair it sits with: `check_deprecation` falls back to
   the pin exactly when no indexed revision is recorded, so a pin left behind by
   a purge would answer with a version for an index holding no framework records
-  at all.
+  at all. When the deprecation map fails to publish after the framework records
+  were already replaced, the pin is cleared the same way, so it never survives
+  paired with a map it doesn't describe.
+
+- **An empty `--framework-version` no longer silently resolves to the default
+  branch.** `--framework-version ""` — e.g. a script interpolating an unset
+  shell variable — was treated as a concrete pin, but the empty string is falsy
+  wherever the clone step checks `if tag:`, so it resolved `head` instead of
+  failing the fast-path validation above. It now falls through exactly like an
+  unset flag: to the env var, then to the default pin.
+
+- **A framework clone/fetch failure with a concrete pin now says so.** If
+  `--framework-version vX.Y.Z` is requested but the clone/fetch fails for a
+  reason other than a missing tag (network, auth, disk), the refresh already
+  left the previous `framework_version` in place — but silently, blending into
+  the generic per-repo failure log. It's now called out with its own warning
+  naming the pin that was requested and never applied.
+
+- **`metadata_contract_version` is now `3`.** `framework_version` changed from
+  "present only for an explicit pin" to "present for every refresh that indexes
+  the framework repo, including the default `latest`" (see **Changed** above);
+  the contract version bump signals that meaning change to a reader that cached
+  the old contract.
 
 ## [0.6.0] - 2026-08-28
 
