@@ -423,6 +423,12 @@ class SourceConfig(BaseModel):
       ``search_api`` without improving CLI usage answers. Enable via
       ``PIPECAT_HUB_EXTRA_REPOS`` if you need to read the CLI's internals.
 
+    ``pipecat-ai/voice-ui-kit`` is superseded by ``pipecat-ai/pipecat-ui``, a
+    shadcn-registry rebuild of the same components (installed as source via
+    the shadcn CLI instead of the ``@pipecat-ai/voice-ui-kit`` npm package).
+    ``pipecat-ui`` is the default; the legacy kit can be re-added via
+    ``PIPECAT_HUB_EXTRA_REPOS`` while a project still depends on it.
+
     Only Python (``.py``/``.pyi``), TypeScript (``.ts``/``.tsx``), and RST
     (``docs/**.rst``) are parsed. Swift, Kotlin, and C++ client SDKs
     (``pipecat-client-ios``, ``pipecat-client-android``, ``pipecat-client-cxx``,
@@ -456,7 +462,7 @@ class SourceConfig(BaseModel):
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
             "pipecat-ai/pipecat-client-react-native-transports",
-            "pipecat-ai/voice-ui-kit",
+            "pipecat-ai/pipecat-ui",
             "pipecat-ai/pipecat-prebuilt",
         ],
         description="GitHub repos to ingest.",

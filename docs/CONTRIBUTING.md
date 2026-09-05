@@ -68,7 +68,7 @@ Retrieval:
 - **TypeScript SDK repos** (default since v0.0.12):
   - `pipecat-ai/pipecat-client-web`, `pipecat-ai/pipecat-client-web-transports`,
     `pipecat-ai/pipecat-client-react-native-transports`,
-    `pipecat-ai/voice-ui-kit`, `pipecat-ai/pipecat-prebuilt`
+    `pipecat-ai/pipecat-ui`, `pipecat-ai/pipecat-prebuilt`
   - Tree-sitter-extracted: interfaces, classes, types, functions, enums, const exports
     with individual method chunks and full signatures
 - Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var
