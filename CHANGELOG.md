@@ -7,6 +7,18 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Dropped `pipecat-ai/pipecat-flows` from the default sources.** The repo is
+  archived upstream: since pipecat 1.5.0 the flows framework ships inside
+  `pipecat-ai/pipecat` as `pipecat.flows` (examples under `examples/flows/`),
+  which the framework source is already indexed from. Indexing the archived
+  repo alongside it produced duplicate hits — `search_api("FlowsFunctionSchema")`
+  returned both `pipecat.flows.types` and the legacy `pipecat_flows.types`
+  module path. `refresh` warns about the now-unconfigured repo's records but
+  leaves them in place by default; run `refresh --prune` once to delete them.
+  Anyone who still needs the archived source can re-add it via
+  `PIPECAT_HUB_EXTRA_REPOS`.
+
 ## [0.7.0] - 2026-08-31
 
 ### Added

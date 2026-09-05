@@ -62,8 +62,9 @@ Retrieval:
 - `https://docs.pipecat.ai/llms-full.txt` — primary documentation
 - `pipecat-ai/pipecat` — framework repo (Python AST-indexed)
   - Supports flat file layout and subdirectory layout in `examples/`
+  - Includes Pipecat Flows (`pipecat.flows`, examples under `examples/flows/`);
+    the standalone `pipecat-ai/pipecat-flows` repo is archived and not indexed
 - `pipecat-ai/pipecat-examples` — project-level examples
-- `pipecat-ai/pipecat-flows` — conversation flow framework (Python AST-indexed)
 - `daily-co/daily-python` — Daily Python SDK (`.pyi` stubs + RST type definitions)
 - **TypeScript SDK repos** (default since v0.0.12):
   - `pipecat-ai/pipecat-client-web`, `pipecat-ai/pipecat-client-web-transports`,

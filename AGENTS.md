@@ -138,17 +138,20 @@ New-source coverage (repos added in PR #67 — guards against a future
 re-index silently dropping them):
 
 33a. `search_api("FlowsFunctionSchema")` — top hit is from
-    `module_path: pipecat_flows.types` with `is_dataclass: true` (confirms the
-    `pipecat-ai/pipecat-flows` source is indexed and its Python AST /
-    dataclass extraction works)
+    `module_path: pipecat.flows.types` with `is_dataclass: true` (confirms the
+    in-framework flows package is indexed and its Python AST / dataclass
+    extraction works). No hit should come from the legacy `pipecat_flows.*`
+    module path: the standalone `pipecat-ai/pipecat-flows` repo is archived
+    (flows merged into `pipecat-ai/pipecat` in 1.5.0) and was dropped from
+    the default sources, so a `pipecat_flows` hit means stale records survive
+    from before the drop — run `refresh --prune` to remove them.
 33b. `search_api("set_node", class_name="FlowManager")` — returns
-    `FlowManager.set_node_from_config` from `pipecat_flows.manager` (verifies
-    `class_name` prefix filtering against a pipecat-flows class)
+    `FlowManager.set_node_from_config` from `pipecat.flows.manager` (verifies
+    `class_name` prefix filtering against a flows class)
 33c. `search_examples("flow manager conversation node", domain="backend")` —
-    top hits come from `repo: pipecat-ai/pipecat-flows` (e.g.
-    `examples/warm_transfer.py`, with a 1.x `pipecat_version_pin` such as
-    `"<2,>=1.3.0"`),
-    confirming the flows example set is indexed and domain-filtered
+    top hits come from `repo: pipecat-ai/pipecat` under `examples/flows/`
+    (e.g. `examples/flows/warm_transfer.py`), confirming the flows example
+    set is indexed from the framework repo and domain-filtered
 
 New-source coverage (repo added in PR #74 — guards against a future re-index
 silently dropping it):

@@ -251,7 +251,6 @@ class TestSourceConfig:
         assert s.repos == [
             "pipecat-ai/pipecat",
             "pipecat-ai/pipecat-examples",
-            "pipecat-ai/pipecat-flows",
             "daily-co/daily-python",
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
@@ -278,6 +277,8 @@ class TestSourceConfig:
         ):
             assert slug in repos
         assert "pipecat-ai/pipecat-cli" not in repos
+        # Archived upstream; flows now ships in pipecat-ai/pipecat as `pipecat.flows`.
+        assert "pipecat-ai/pipecat-flows" not in repos
 
     def test_custom_llms_txt_url(self):
         s = SourceConfig(docs_llms_txt_url="https://example.com/docs.txt")
