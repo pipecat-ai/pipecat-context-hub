@@ -256,7 +256,7 @@ class TestSourceConfig:
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
             "pipecat-ai/pipecat-client-react-native-transports",
-            "pipecat-ai/voice-ui-kit",
+            "pipecat-ai/pipecat-ui",
             "pipecat-ai/pipecat-prebuilt",
         ]
 
@@ -275,9 +275,12 @@ class TestSourceConfig:
         for slug in (
             "pipecat-ai/pipecat",
             "pipecat-ai/pipecat-client-react-native-transports",
+            "pipecat-ai/pipecat-ui",
         ):
             assert slug in repos
         assert "pipecat-ai/pipecat-cli" not in repos
+        # Superseded by pipecat-ai/pipecat-ui (shadcn rebuild); legacy kit is opt-in.
+        assert "pipecat-ai/voice-ui-kit" not in repos
 
     def test_custom_llms_txt_url(self):
         s = SourceConfig(docs_llms_txt_url="https://example.com/docs.txt")

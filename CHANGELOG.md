@@ -7,6 +7,16 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **`pipecat-ai/pipecat-ui` replaces `pipecat-ai/voice-ui-kit` in the default
+  sources.** Pipecat UI is the shadcn-registry rebuild of the Voice UI Kit
+  (components install as source through the shadcn CLI instead of the
+  `@pipecat-ai/voice-ui-kit` npm package), and the kit is slated for
+  deprecation. `refresh` warns about the legacy repo's records but leaves them
+  in place by default; run `refresh --prune` once to delete them. Projects
+  still on the npm kit can keep it indexed via
+  `PIPECAT_HUB_EXTRA_REPOS="pipecat-ai/voice-ui-kit"`.
+
 ## [0.7.0] - 2026-08-31
 
 ### Added
