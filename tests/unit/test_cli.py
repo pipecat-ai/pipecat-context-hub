@@ -998,7 +998,7 @@ class TestRefreshCommand:
         mock_si_cls.return_value = mock_source
         mock_ref_tainted.return_value = False
 
-        target_repo = "pipecat-ai/pipecat-flows"
+        target_repo = "daily-co/daily-python"
 
         import hashlib
 
@@ -2114,7 +2114,7 @@ class TestRefreshFtsFaultInjection:
         for it), is recorded as errored, and the error is reflected in the
         persisted `last_refresh_error_count`.
         """
-        target_repo = "pipecat-ai/pipecat-flows"
+        target_repo = "daily-co/daily-python"
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
             TestRefreshCommand()
         )
@@ -2182,7 +2182,7 @@ class TestRefreshFtsFaultInjection:
         on any failure path — but the marker should be set anyway for
         consistency with the sibling pattern.
         """
-        target_repo = "pipecat-ai/pipecat-flows"
+        target_repo = "daily-co/daily-python"
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
             TestRefreshCommand()
         )
@@ -2229,7 +2229,7 @@ class TestRefreshFtsFaultInjection:
         behavior, unrelated to this fix) — confirms the marker set on
         failure isn't permanently stuck.
         """
-        target_repo = "pipecat-ai/pipecat-flows"
+        target_repo = "daily-co/daily-python"
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
             TestRefreshCommand()
         )
