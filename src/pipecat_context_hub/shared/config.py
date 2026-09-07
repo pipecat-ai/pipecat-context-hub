@@ -423,6 +423,11 @@ class SourceConfig(BaseModel):
       ``search_api`` without improving CLI usage answers. Enable via
       ``PIPECAT_HUB_EXTRA_REPOS`` if you need to read the CLI's internals.
 
+    ``pipecat-ai/pipecat-flows`` is archived: as of pipecat 1.5.0 the flows
+    framework ships inside ``pipecat-ai/pipecat`` as the ``pipecat.flows``
+    package (with its examples under ``examples/flows/``), so it is indexed
+    from the framework repo and the standalone repo is no longer a default.
+
     Only Python (``.py``/``.pyi``), TypeScript (``.ts``/``.tsx``), and RST
     (``docs/**.rst``) are parsed. Swift, Kotlin, and C++ client SDKs
     (``pipecat-client-ios``, ``pipecat-client-android``, ``pipecat-client-cxx``,
@@ -450,7 +455,6 @@ class SourceConfig(BaseModel):
             # Core Python framework & SDKs
             "pipecat-ai/pipecat",
             "pipecat-ai/pipecat-examples",
-            "pipecat-ai/pipecat-flows",
             "daily-co/daily-python",
             # Core TypeScript SDKs
             "pipecat-ai/pipecat-client-web",
