@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from pipecat_context_hub.services.ingest.github_ingest import (
     _chunk_code,
     _discover_root_level_examples,
     _find_example_dirs,
+    _force_rmtree,
     _infer_domain,
     _is_valid_clone,
     _iter_code_files,
@@ -420,6 +422,30 @@ class TestIsValidClone:
         assert _is_valid_clone(tmp_path / "good_repo") is True
 
 
+class TestForceRmtree:
+    def test_removes_tree_containing_read_only_files(self, tmp_path: Path):
+        """Git marks loose object files read-only on every platform; a plain
+        shutil.rmtree over a real clone's .git/objects raises PermissionError
+        on Windows even though the caller owns the whole tree (this is the
+        exact failure _force_rmtree exists to avoid — see
+        TestCloneOrFetchCorruptRecovery, which hit it for real via a genuine
+        clone before this helper existed)."""
+        target = tmp_path / "repo"
+        obj_dir = target / ".git" / "objects" / "ab"
+        obj_dir.mkdir(parents=True)
+        obj_file = obj_dir / "deadbeef"
+        obj_file.write_bytes(b"blob")
+        obj_file.chmod(stat.S_IREAD)  # read-only, as git leaves loose objects
+
+        _force_rmtree(target)
+
+        assert not target.exists()
+
+    def test_missing_path_still_raises(self, tmp_path: Path):
+        with pytest.raises(FileNotFoundError):
+            _force_rmtree(tmp_path / "does_not_exist")
+
+
 class TestCloneOrFetchCorruptRecovery:
     def test_corrupt_clone_is_removed_and_recloned(self, tmp_path: Path):
         repo_slug = "test-org/test-repo"
@@ -428,10 +454,11 @@ class TestCloneOrFetchCorruptRecovery:
             repo_slug,
             {"main.py": "print('hi')\n"},
         )
-        # Corrupt the clone: drop HEAD/config/refs, keep only pack/.
-        import shutil as _shutil
-
-        _shutil.rmtree(clone_dir / ".git")
+        # Corrupt the clone: drop HEAD/config/refs, keep only pack/. Git
+        # marks loose object files read-only, so a plain rmtree of a real
+        # clone's .git raises PermissionError on Windows — use the same
+        # read-only-clearing helper production code uses for this.
+        _force_rmtree(clone_dir / ".git")
         pack_dir = clone_dir / ".git" / "objects" / "pack"
         pack_dir.mkdir(parents=True)
         assert _is_valid_clone(clone_dir) is False
@@ -473,9 +500,7 @@ class TestCloneOrFetchCorruptRecovery:
             {"main.py": "print('hi')\n"},
         )
         # Corrupt the clone so the recovery path triggers.
-        import shutil as _shutil
-
-        _shutil.rmtree(clone_dir / ".git")
+        _force_rmtree(clone_dir / ".git")
         (clone_dir / ".git" / "objects" / "pack").mkdir(parents=True)
 
         config = HubConfig(

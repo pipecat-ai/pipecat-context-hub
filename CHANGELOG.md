@@ -7,6 +7,24 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- **Bumped `pip` to `26.2`** in `uv.lock` (transitive via `pip-audit`; no
+  top-level constraint required) to address PYSEC-2026-3721 (a doubly-encoded
+  package-URL could install to an unintended path). Closed via Dependabot
+  PR #125.
+- **Bumped `gitpython` floor to `3.1.59`** (`>=3.1.58,<4.0` →
+  `>=3.1.59,<4.0`; `uv lock` resolves to `3.1.62`) to address
+  PYSEC-2026-3785/-3786/-3787/-3788 (unsafe git-config options, cross-repo
+  directory traversal on clone, config-parsing boundary issues), surfaced by
+  the biweekly pip-audit (#126). Also hardens the corrupt-clone-removal path
+  in `clone_or_fetch` against a Windows-only regression this bump (or a
+  concurrent `windows-latest` runner update) surfaced: git marks loose
+  object files read-only on every platform, and Windows — unlike POSIX —
+  refuses to `shutil.rmtree` a directory containing read-only files. A real
+  Windows user hitting a corrupt clone would previously crash instead of
+  recovering; `_force_rmtree` now clears the read-only bit across the tree
+  first.
+
 ## [0.7.0] - 2026-08-31
 
 ### Added

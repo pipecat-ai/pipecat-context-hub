@@ -9,8 +9,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import shutil
+import stat
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -198,6 +200,31 @@ def _is_valid_clone(repo_path: Path) -> bool:
     except (InvalidGitRepositoryError, NoSuchPathError):
         return False
     return True
+
+
+def _force_rmtree(path: Path) -> None:
+    """Remove a directory tree, clearing read-only attributes first.
+
+    Git marks loose object files read-only on every platform. POSIX's
+    ``os.unlink`` can still remove a read-only file as long as the containing
+    directory is writable, but Windows refuses to delete a read-only-flagged
+    file outright — a plain ``shutil.rmtree`` over a real (non-bare) clone's
+    ``.git/objects`` raises ``PermissionError`` there even though the caller
+    owns the whole tree. Walk it first and clear the read-only bit so the
+    subsequent ``rmtree`` can't hit that wall.
+    """
+
+    def _add_owner_write(target: str | Path) -> None:
+        try:
+            os.chmod(target, os.stat(target).st_mode | stat.S_IWRITE)
+        except OSError:
+            pass  # best-effort; rmtree below still raises on real failures
+
+    _add_owner_write(path)
+    for root, dirs, files in os.walk(path):
+        for name in dirs + files:
+            _add_owner_write(os.path.join(root, name))
+    shutil.rmtree(path)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -1379,7 +1406,7 @@ class GitHubRepoIngester:
                 repo_slug,
                 repo_path,
             )
-            shutil.rmtree(repo_path, ignore_errors=False)
+            _force_rmtree(repo_path)
             was_corrupt = True
 
         resolved_tag: str | None = None

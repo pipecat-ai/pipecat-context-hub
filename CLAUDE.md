@@ -268,6 +268,10 @@ pre-download the new model before the first MCP query.
   be half-initialized from an interrupted run. The hub now detects this on the
   next `refresh` and re-clones; look for `Recovered N corrupt clone(s)` in the
   summary. As a manual remedy you can delete `%LOCALAPPDATA%\pipecat-context-hub\repos\`.
+  Removing the corrupt clone is itself hardened against git's read-only loose
+  object files (`.git/objects/…`), which Windows — unlike POSIX — refuses to
+  delete without first clearing the read-only attribute; a plain `rmtree`
+  used to crash the recovery instead of completing it.
 - On `serve` boot the hub pre-warms the embedding model (and cross-encoder when
   enabled) so the first MCP query doesn't hang. This used to matter a great
   deal: loading through `sentence-transformers` dragged in `torch` and Windows
