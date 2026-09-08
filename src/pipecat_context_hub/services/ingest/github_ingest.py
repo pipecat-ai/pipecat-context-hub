@@ -23,6 +23,10 @@ from git import TagReference
 from git.exc import BadObject, GitCommandError, InvalidGitRepositoryError, NoSuchPathError
 from packaging.version import InvalidVersion, Version
 
+from pipecat_context_hub.services.ingest.ingest_filters import (
+    hash_source,
+    is_storybook_file,
+)
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
 from pipecat_context_hub.shared.versioning import (
@@ -597,6 +601,11 @@ def _iter_code_files(
                 continue
         if p.suffix not in _CODE_EXTENSIONS:
             continue
+        # Storybook CSF fixtures: shared with source_ingest.py's TS walk via
+        # is_storybook_file() -- see ingest_filters.py for why this can't be
+        # a check local to just one ingester.
+        if is_storybook_file(p):
+            continue
         if p.stat().st_size > _MAX_FILE_BYTES:
             continue
         files.append(p)
@@ -614,6 +623,8 @@ def _iter_root_level_code_files(directory: Path) -> list[Path]:
         if not p.is_file():
             continue
         if p.suffix not in _CODE_EXTENSIONS:
+            continue
+        if is_storybook_file(p):
             continue
         if p.stat().st_size > _MAX_FILE_BYTES:
             continue
@@ -1158,6 +1169,7 @@ class GitHubRepoIngester:
                 logger.debug("Framework version from git tag: %s", chunk_version)
 
         is_root_fallback = repo_path in example_dirs
+        duplicate_files_skipped = 0
 
         for ex_dir in example_dirs:
             # Look up taxonomy entry at the directory level.
@@ -1192,6 +1204,20 @@ class GitHubRepoIngester:
                 code_files = _iter_code_files(ex_dir, skip_root_dirs=_ROOT_FALLBACK_SKIP_ROOT_DIRS)
             else:
                 code_files = _iter_code_files(ex_dir)
+
+            # Process shallower paths first: when byte-identical content is
+            # later found at a deeper path (e.g. a registry component also
+            # vendored into a demo app's src tree), the shallower/more-likely
+            # canonical location is the one kept below, not whichever
+            # happened to sort alphabetically first. Scoped to this one
+            # ex_dir (not across every example_dir in the repo): distinct
+            # examples legitimately share boilerplate, and deduping across
+            # them would silently drop content from one example's chunk set.
+            code_files = sorted(
+                code_files, key=lambda p: (len(p.relative_to(ex_dir).parts), p.as_posix())
+            )
+            seen_source_hashes: set[str] = set()
+
             for code_file in code_files:
                 # Skip symlinks to prevent reading files outside the repo
                 if code_file.is_symlink():
@@ -1203,6 +1229,15 @@ class GitHubRepoIngester:
                 except Exception as exc:
                     errors.append(f"Error reading {code_file.relative_to(repo_path)}: {exc}")
                     continue
+
+                # Skip files byte-identical to one already processed for this
+                # ex_dir (e.g. a shadcn-style registry component vendored,
+                # byte-for-byte, into a demo app under the same repo).
+                source_hash = hash_source(content)
+                if source_hash in seen_source_hashes:
+                    duplicate_files_skipped += 1
+                    continue
+                seen_source_hashes.add(source_hash)
 
                 rel_path = code_file.relative_to(repo_path).as_posix()
                 # Try per-file taxonomy lookup first (flat files like a
@@ -1252,6 +1287,13 @@ class GitHubRepoIngester:
                             metadata=meta,
                         )
                     )
+
+        if duplicate_files_skipped:
+            logger.info(
+                "Skipped %d byte-identical duplicate file(s) during example ingest (%s)",
+                duplicate_files_skipped,
+                repo_slug,
+            )
 
         # For Layout B repos (no examples/ dir) where subdirectory examples
         # were found, also capture root-level code files (e.g. entry-point

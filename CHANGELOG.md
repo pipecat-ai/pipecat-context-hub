@@ -48,6 +48,22 @@ This project uses [Semantic Versioning](https://semver.org/).
   keep whichever path is discovered first in the existing per-package
   traversal order, which is not depth-based. Applies to any indexed repo
   with vendored/copy-pasted source, not just `pipecat-ui`.
+- **The Storybook exclusion and byte-identical-file dedup above now also
+  apply to the `search_examples` corpus, not just `search_api`/
+  `get_code_snippet`.** Found while verifying the previous two fixes
+  end-to-end against `pipecat-ai/pipecat-ui` after it went public:
+  `GitHubRepoIngester`'s independent example-directory file walk (which
+  builds `content_type="code"` chunks, the `search_examples` corpus) has no
+  relationship to `SourceIngester`'s file walk, so both fixes — added there
+  only — left `.stories.tsx` fixtures and the vendored `apps/example`
+  duplicate still surfacing through `search_examples`. `is_storybook_file`
+  and `hash_source` are now shared between the two ingesters (new
+  `services/ingest/ingest_filters.py`) so a future per-file rule can't drift
+  the same way again. The dedup here is scoped per example directory rather
+  than repo-wide, unlike `SourceIngester`'s: independent examples
+  legitimately share boilerplate, and repo-wide dedup would silently drop
+  content from one example's chunk set because another example happened to
+  vendor the same file.
 
 ### Security
 - **Bumped `pip` to `26.2`** in `uv.lock` (transitive via `pip-audit`; no

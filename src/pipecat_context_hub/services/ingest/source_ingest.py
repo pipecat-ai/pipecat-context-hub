@@ -12,17 +12,12 @@ import hashlib
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from git import Repo as GitRepo
 
-from pipecat_context_hub.services.ingest.rst_type_parser import parse_rst_types
-from pipecat_context_hub.services.ingest.ts_tree_sitter_parser import (
-    TsDeclaration,
-    parse_ts_source,
-)
 from pipecat_context_hub.services.ingest.ast_extractor import (
     ClassInfo,
     FunctionInfo,
@@ -30,6 +25,17 @@ from pipecat_context_hub.services.ingest.ast_extractor import (
     ModuleInfo,
     build_signature,
     extract_module_info,
+)
+from pipecat_context_hub.services.ingest.ingest_filters import (
+    hash_source as _hash_source,
+)
+from pipecat_context_hub.services.ingest.ingest_filters import (
+    is_storybook_file,
+)
+from pipecat_context_hub.services.ingest.rst_type_parser import parse_rst_types
+from pipecat_context_hub.services.ingest.ts_tree_sitter_parser import (
+    TsDeclaration,
+    parse_ts_source,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult
 
@@ -183,7 +189,7 @@ class SourceIngester:
         # 3. Get commit SHA
         commit_sha = _get_commit_sha(clone_dir)
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
 
         # 4. Walk each package directory
         total_files = 0
@@ -523,21 +529,13 @@ def _find_ts_files(clone_dir: Path) -> list[Path]:
             # Skip Storybook CSF files (*.stories.ts / *.stories.tsx) — they're
             # fixture/demo code co-located next to the real component, not
             # excludable by directory like the examples/tests skip above.
-            if p.name.endswith((".stories.ts", ".stories.tsx")):
+            # Shared with github_ingest.py's independent file walk via
+            # is_storybook_file() -- see ingest_filters.py's module docstring
+            # for why this can't live as a local check in just one ingester.
+            if is_storybook_file(p):
                 continue
             files.append(p)
     return files
-
-
-def _hash_source(text: str) -> str:
-    """Content hash used to detect byte-identical files vendored at multiple
-    paths within the same repo (e.g. a shadcn-style registry component also
-    copied into a demo app). Hashed on raw file text, before any chunk
-    rendering -- rendered chunk ``content`` always embeds the file's own
-    path (a "Module: <path>" header), so it differs even between
-    byte-identical files and can't be used for this comparison.
-    """
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _make_chunk_id(
