@@ -107,6 +107,17 @@ async def test_pipecat_ui_pnpm_monorepo_yields_chunks(tmp_path: Path) -> None:
         "apps/example/src/App.tsx": (
             "export function App(): JSX.Element {\n  return <div />;\n}\n"
         ),
+        # shadcn's registry model vendors components byte-for-byte into
+        # consuming apps (apps/example has its own components.json pointing
+        # at the @pipecat registry) -- this is the real pipecat-ui shape, not
+        # a contrived edge case. Same content as the registry component above,
+        # at a different path: exercises the byte-identical-file dedup in
+        # SourceIngester.ingest().
+        "apps/example/src/components/pipecat/connect-button.tsx": (
+            "export function ConnectButton(): JSX.Element {\n"
+            "  return <button>Connect</button>;\n"
+            "}\n"
+        ),
     }
     create_git_repo(clone_dir, files)
 
@@ -132,4 +143,12 @@ async def test_pipecat_ui_pnpm_monorepo_yields_chunks(tmp_path: Path) -> None:
     assert not any(p.endswith(".stories.tsx") for p in paths), (
         "Storybook *.stories.tsx fixtures should be excluded from source "
         f"chunking; got paths: {sorted(paths)}"
+    )
+    connect_button_paths = [
+        p for p in paths if "connect-button" in p and not p.endswith(".stories.tsx")
+    ]
+    assert connect_button_paths == ["packages/registry/src/components/connect-button.tsx"], (
+        "the vendored apps/example copy of connect-button.tsx is byte-identical "
+        "to the packages/registry original — expected it to be skipped as a "
+        f"duplicate file; got paths: {sorted(connect_button_paths)}"
     )

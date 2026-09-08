@@ -127,6 +127,12 @@ class SourceIngester:
         start = time.monotonic()
         errors: list[str] = []
         records: list[ChunkedRecord] = []
+        # Content hashes of files already processed this run, keyed by raw
+        # source text (not rendered chunk content, which always differs by
+        # path via its "Module: <path>" header even for byte-identical
+        # files) -- see _hash_source.
+        seen_source_hashes: set[str] = set()
+        duplicate_files_skipped = 0
 
         # 1. Locate the repo clone
         clone_dir = self._repos_dir / _sanitize_slug(self._repo_slug)
@@ -202,6 +208,15 @@ class SourceIngester:
                     rel = py_file.relative_to(clone_dir).as_posix()
                     errors.append(f"Error reading {rel}: {exc}")
                     continue
+
+                # Skip files byte-identical to one already processed this run
+                # (e.g. a vendored copy of a shared module under a different
+                # package path).
+                source_hash = _hash_source(source)
+                if source_hash in seen_source_hashes:
+                    duplicate_files_skipped += 1
+                    continue
+                seen_source_hashes.add(source_hash)
 
                 rel_path_from_src = py_file.relative_to(src_dir).as_posix()
                 rel_path = f"src/{rel_path_from_src}"
@@ -358,7 +373,14 @@ class SourceIngester:
                 self._repo_slug,
             )
             total_files += len(ts_files)
-            for ts_file in ts_files:
+            # Process shallower paths first: when byte-identical content is
+            # later found at a deeper path (e.g. a registry component also
+            # vendored into a demo app's src tree), the shallower/more-likely
+            # canonical location is the one kept by the dedup check below,
+            # not whichever happened to sort alphabetically first.
+            for ts_file in sorted(
+                ts_files, key=lambda p: (len(p.relative_to(clone_dir).parts), p.as_posix())
+            ):
                 try:
                     ts_file.resolve().relative_to(clone_dir.resolve())
                     # Skip oversized files (e.g. generated bundles)
@@ -369,6 +391,15 @@ class SourceIngester:
                     rel = ts_file.relative_to(clone_dir).as_posix()
                     errors.append(f"Error reading TS file {rel}: {exc}")
                     continue
+
+                # Skip files byte-identical to one already processed this run
+                # (e.g. a shadcn-style registry component vendored,
+                # byte-for-byte, into a demo app under the same repo).
+                source_hash = _hash_source(ts_source)
+                if source_hash in seen_source_hashes:
+                    duplicate_files_skipped += 1
+                    continue
+                seen_source_hashes.add(source_hash)
 
                 declarations = parse_ts_source(
                     ts_source,
@@ -397,6 +428,13 @@ class SourceIngester:
                 self._repo_slug,
                 len(ts_files),
                 sum(1 for r in records if r.metadata.get("language") == "typescript"),
+            )
+
+        if duplicate_files_skipped:
+            logger.info(
+                "Skipped %d byte-identical duplicate file(s) during source ingest (%s)",
+                duplicate_files_skipped,
+                self._repo_slug,
             )
 
         # 5. Batch upsert
@@ -489,6 +527,17 @@ def _find_ts_files(clone_dir: Path) -> list[Path]:
                 continue
             files.append(p)
     return files
+
+
+def _hash_source(text: str) -> str:
+    """Content hash used to detect byte-identical files vendored at multiple
+    paths within the same repo (e.g. a shadcn-style registry component also
+    copied into a demo app). Hashed on raw file text, before any chunk
+    rendering -- rendered chunk ``content`` always embeds the file's own
+    path (a "Module: <path>" header), so it differs even between
+    byte-identical files and can't be used for this comparison.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _make_chunk_id(

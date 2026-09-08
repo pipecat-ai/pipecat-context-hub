@@ -13,6 +13,7 @@ from pipecat_context_hub.services.ingest.source_ingest import (
     _build_chunks,
     _find_python_files,
     _find_ts_files,
+    _hash_source,
     _make_chunk_id,
     _make_source_url,
     _sanitize_slug,
@@ -146,6 +147,21 @@ class TestFindTsFiles:
         result = _find_ts_files(tmp_path)
         assert len(result) == 1
         assert result[0].name == "good.ts"
+
+
+# ---------------------------------------------------------------------------
+# _hash_source tests
+# ---------------------------------------------------------------------------
+
+
+class TestHashSource:
+    """Tests for _hash_source."""
+
+    def test_identical_text_hashes_equal(self):
+        assert _hash_source("export const x = 1;\n") == _hash_source("export const x = 1;\n")
+
+    def test_different_text_hashes_differ(self):
+        assert _hash_source("export const x = 1;\n") != _hash_source("export const x = 2;\n")
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +567,42 @@ class TestSourceIngester:
         chunk_types = {rec.metadata["chunk_type"] for rec in records}
         assert "module_overview" in chunk_types
         assert "class_overview" in chunk_types
+
+    async def test_ingest_dedupes_byte_identical_vendored_python_file(self, tmp_path: Path):
+        """A byte-identical file vendored under a second package path is only
+        chunked once (e.g. a shared module copy-pasted into two packages,
+        mirroring shadcn's registry-vendoring pattern seen for TS repos)."""
+        clone_dir = tmp_path / "repos" / "pipecat-ai_pipecat"
+        shared_source = (
+            '"""Shared helper."""\n\n\ndef helper():\n    """Do the thing."""\n    return 1\n'
+        )
+        files = {
+            "src/pkg_a/__init__.py": "",
+            "src/pkg_a/helper.py": shared_source,
+            "src/pkg_b/__init__.py": "",
+            # Byte-identical vendored copy at a different path.
+            "src/pkg_b/helper.py": shared_source,
+        }
+        _create_git_repo(clone_dir, files)
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
+
+        result = await ingester.ingest()
+
+        assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        helper_chunks = [
+            r
+            for r in records
+            if r.metadata.get("chunk_type") == "function"
+            and r.metadata.get("method_name") == "helper"
+        ]
+        assert len(helper_chunks) == 1, (
+            "expected the byte-identical vendored copy to be skipped during "
+            f"ingest; got paths: {[r.path for r in helper_chunks]}"
+        )
 
     async def test_ingest_skips_test_dirs(self, tmp_path: Path):
         """Test directories inside pipecat source are skipped."""

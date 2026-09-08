@@ -33,6 +33,18 @@ This project uses [Semantic Versioning](https://semver.org/).
   being chunked and surfacing in `search_api`/`get_code_snippet` results
   alongside — and sometimes ranked above — the actual component definition.
   Applies to any indexed TS repo using Storybook, not just `pipecat-ui`.
+- **Byte-identical files vendored at multiple paths within a repo are now
+  chunked once, not once per path.** Found the same way: `pipecat-ui`'s
+  `apps/example` is a shadcn registry consumer (its own `components.json`
+  points at the `@pipecat` registry), so every component it demos is a
+  byte-for-byte copy of the one in `packages/registry`. Chunk IDs are
+  derived from file path, not content, so both copies were upserted as
+  separate records sitting at an identical point in embedding space —
+  doubling up redundant hits in search results. `SourceIngester` now hashes
+  raw file content per ingest run (Python and TypeScript) and skips a file
+  whose content was already seen; when duplicates are found, the
+  shallower/less-nested path is kept. Applies to any indexed repo with
+  vendored/copy-pasted source, not just `pipecat-ui`.
 
 ### Security
 - **Bumped `pip` to `26.2`** in `uv.lock` (transitive via `pip-audit`; no
