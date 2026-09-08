@@ -26,6 +26,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   in place by default; run `refresh --prune` once to delete them. Projects
   still on the npm kit can keep it indexed via
   `PIPECAT_HUB_EXTRA_REPOS="pipecat-ai/voice-ui-kit"`.
+- **Storybook `*.stories.ts`/`*.stories.tsx` files are no longer indexed as
+  TypeScript source.** Found while smoke-testing `pipecat-ai/pipecat-ui`'s
+  ingest: CSF3 story files (`export const X: Story = {...}`) are co-located
+  next to the real component, not under a skippable directory, so they were
+  being chunked and surfacing in `search_api`/`get_code_snippet` results
+  alongside — and sometimes ranked above — the actual component definition.
+  Applies to any indexed TS repo using Storybook, not just `pipecat-ui`.
 
 ### Security
 - **Bumped `pip` to `26.2`** in `uv.lock` (transitive via `pip-audit`; no

@@ -466,8 +466,10 @@ def _find_ts_files(clone_dir: Path) -> list[Path]:
     """Find TypeScript source files in a repo, skipping non-source dirs.
 
     Discovers ``.ts`` and ``.tsx`` files, excluding node_modules, dist,
-    build, tests, and examples directories.  Only returns files that
-    contain at least one ``export`` statement.
+    build, tests, and examples directories.  Also excludes ``.d.ts`` type
+    declarations and ``*.stories.ts(x)`` Storybook fixtures, which are
+    typically co-located next to the real component rather than under a
+    skippable directory.
     """
     files: list[Path] = []
     for ext in (".ts", ".tsx"):
@@ -479,6 +481,11 @@ def _find_ts_files(clone_dir: Path) -> list[Path]:
                 continue
             # Skip .d.ts files (type declarations — usually boilerplate)
             if p.name.endswith(".d.ts"):
+                continue
+            # Skip Storybook CSF files (*.stories.ts / *.stories.tsx) — they're
+            # fixture/demo code co-located next to the real component, not
+            # excludable by directory like the examples/tests skip above.
+            if p.name.endswith((".stories.ts", ".stories.tsx")):
                 continue
             files.append(p)
     return files
