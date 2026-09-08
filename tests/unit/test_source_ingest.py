@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from pipecat_context_hub.services.ingest.ast_extractor import extract_module_info
 from pipecat_context_hub.services.ingest.source_ingest import (
+    _SKIP_DIRS,
+    _TS_SKIP_DIRS,
     SourceIngester,
     _build_chunks,
     _find_python_files,
+    _find_ts_files,
     _make_chunk_id,
     _make_source_url,
     _sanitize_slug,
-    _SKIP_DIRS,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord
 
@@ -23,6 +25,8 @@ from pipecat_context_hub.shared.types import ChunkedRecord
 # (tests/smoke/test_new_repo_layouts.py); see tests/_ingest_helpers.py.
 from tests._ingest_helpers import (
     create_git_repo as _create_git_repo,
+)
+from tests._ingest_helpers import (
     make_mock_writer as _make_mock_writer,
 )
 
@@ -82,6 +86,68 @@ class TestFindPythonFiles:
         result = _find_python_files(tmp_path)
         assert len(result) == 1
         assert result[0].name == "good.py"
+
+
+# ---------------------------------------------------------------------------
+# _find_ts_files tests
+# ---------------------------------------------------------------------------
+
+
+class TestFindTsFiles:
+    """Tests for _find_ts_files."""
+
+    def test_includes_ts_and_tsx_files(self, tmp_path: Path):
+        """Normal .ts and .tsx files are included."""
+        (tmp_path / "foo.ts").write_text("export const foo = 1;")
+        (tmp_path / "bar.tsx").write_text("export function Bar() { return null; }")
+
+        result = _find_ts_files(tmp_path)
+        names = {p.name for p in result}
+        assert "foo.ts" in names
+        assert "bar.tsx" in names
+
+    def test_skips_d_ts_declarations(self, tmp_path: Path):
+        """.d.ts type-declaration files are skipped."""
+        (tmp_path / "types.d.ts").write_text("export type Foo = string;")
+        (tmp_path / "real.ts").write_text("export const real = 1;")
+
+        result = _find_ts_files(tmp_path)
+        names = {p.name for p in result}
+        assert "types.d.ts" not in names
+        assert "real.ts" in names
+
+    def test_skips_storybook_csf_files(self, tmp_path: Path):
+        """*.stories.ts / *.stories.tsx Storybook fixtures are skipped, even
+        when co-located next to the real component they demo (not under a
+        skippable directory)."""
+        (tmp_path / "connect-button.tsx").write_text(
+            "export function ConnectButton() { return null; }"
+        )
+        (tmp_path / "connect-button.stories.tsx").write_text(
+            "import type { Meta, StoryObj } from '@storybook/react';\n"
+            "import { ConnectButton } from './connect-button';\n"
+            "type Story = StoryObj<typeof ConnectButton>;\n"
+            "export const Default: Story = { render: () => ConnectButton() };\n"
+        )
+        (tmp_path / "index.stories.ts").write_text("export const meta = {};")
+
+        result = _find_ts_files(tmp_path)
+        names = {p.name for p in result}
+        assert "connect-button.stories.tsx" not in names
+        assert "index.stories.ts" not in names
+        assert "connect-button.tsx" in names
+
+    def test_skips_all_ts_skip_dirs(self, tmp_path: Path):
+        """All directories in _TS_SKIP_DIRS are skipped."""
+        for dirname in _TS_SKIP_DIRS:
+            d = tmp_path / dirname
+            d.mkdir(exist_ok=True)
+            (d / "file.ts").write_text("export const x = 1;")
+
+        (tmp_path / "good.ts").write_text("export const good = 1;")
+        result = _find_ts_files(tmp_path)
+        assert len(result) == 1
+        assert result[0].name == "good.ts"
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +309,7 @@ class TestBuildChunks:
             source=_SIMPLE_MODULE_SOURCE,
             rel_path="src/pipecat/processors/my.py",
             commit_sha="deadbeef",
-            now=datetime(2026, 2, 21, tzinfo=timezone.utc),
+            now=datetime(2026, 2, 21, tzinfo=UTC),
             repo_slug=_TEST_REPO_SLUG,
         )
 
@@ -343,7 +409,7 @@ class TestBuildChunks:
             source="x = 1\n",
             rel_path="pipecat\\services\\tts.py",  # Windows-style
             commit_sha="abc",
-            now=datetime(2026, 2, 21, tzinfo=timezone.utc),
+            now=datetime(2026, 2, 21, tzinfo=UTC),
             repo_slug=_TEST_REPO_SLUG,
         )
         # Source URLs should still work (backslashes are fine in URL path)
@@ -487,6 +553,42 @@ class TestSourceIngester:
         chunk_types = {rec.metadata["chunk_type"] for rec in records}
         assert "module_overview" in chunk_types
         assert "class_overview" in chunk_types
+
+    async def test_ingest_dedupes_byte_identical_vendored_python_file(self, tmp_path: Path):
+        """A byte-identical file vendored under a second package path is only
+        chunked once (e.g. a shared module copy-pasted into two packages,
+        mirroring shadcn's registry-vendoring pattern seen for TS repos)."""
+        clone_dir = tmp_path / "repos" / "pipecat-ai_pipecat"
+        shared_source = (
+            '"""Shared helper."""\n\n\ndef helper():\n    """Do the thing."""\n    return 1\n'
+        )
+        files = {
+            "src/pkg_a/__init__.py": "",
+            "src/pkg_a/helper.py": shared_source,
+            "src/pkg_b/__init__.py": "",
+            # Byte-identical vendored copy at a different path.
+            "src/pkg_b/helper.py": shared_source,
+        }
+        _create_git_repo(clone_dir, files)
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
+
+        result = await ingester.ingest()
+
+        assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        helper_chunks = [
+            r
+            for r in records
+            if r.metadata.get("chunk_type") == "function"
+            and r.metadata.get("method_name") == "helper"
+        ]
+        assert len(helper_chunks) == 1, (
+            "expected the byte-identical vendored copy to be skipped during "
+            f"ingest; got paths: {[r.path for r in helper_chunks]}"
+        )
 
     async def test_ingest_skips_test_dirs(self, tmp_path: Path):
         """Test directories inside pipecat source are skipped."""
@@ -742,7 +844,7 @@ class TestCallGraphMetadata:
             source=_CALLGRAPH_MODULE_SOURCE,
             rel_path="src/pipecat/services/tts.py",
             commit_sha="abc123",
-            now=datetime(2026, 3, 16, tzinfo=timezone.utc),
+            now=datetime(2026, 3, 16, tzinfo=UTC),
             repo_slug=_TEST_REPO_SLUG,
         )
 

@@ -18,6 +18,52 @@ This project uses [Semantic Versioning](https://semver.org/).
   leaves them in place by default; run `refresh --prune` once to delete them.
   Anyone who still needs the archived source can re-add it via
   `PIPECAT_HUB_EXTRA_REPOS`.
+- **`pipecat-ai/pipecat-ui` replaces `pipecat-ai/voice-ui-kit` in the default
+  sources.** Pipecat UI is the shadcn-registry rebuild of the Voice UI Kit
+  (components install as source through the shadcn CLI instead of the
+  `@pipecat-ai/voice-ui-kit` npm package), and the kit is slated for
+  deprecation. `refresh` warns about the legacy repo's records but leaves them
+  in place by default; run `refresh --prune` once to delete them. Projects
+  still on the npm kit can keep it indexed via
+  `PIPECAT_HUB_EXTRA_REPOS="pipecat-ai/voice-ui-kit"`.
+- **Storybook `*.stories.ts`/`*.stories.tsx` files are no longer indexed as
+  TypeScript source.** Found while smoke-testing `pipecat-ai/pipecat-ui`'s
+  ingest: CSF3 story files (`export const X: Story = {...}`) are co-located
+  next to the real component, not under a skippable directory, so they were
+  being chunked and surfacing in `search_api`/`get_code_snippet` results
+  alongside — and sometimes ranked above — the actual component definition.
+  Applies to any indexed TS repo using Storybook, not just `pipecat-ui`.
+- **Byte-identical files vendored at multiple paths within a repo are now
+  chunked once, not once per path.** Found the same way: `pipecat-ui`'s
+  `apps/example` is a shadcn registry consumer (its own `components.json`
+  points at the `@pipecat` registry), so every component it demos is a
+  byte-for-byte copy of the one in `packages/registry`. Chunk IDs are
+  derived from file path, not content, so both copies were upserted as
+  separate records sitting at an identical point in embedding space —
+  doubling up redundant hits in search results. `SourceIngester` now hashes
+  raw file content per ingest run (Python and TypeScript) and skips a file
+  whose content was already seen. For TypeScript, files are processed
+  shallowest-path-first, so a duplicate found later in a deeper directory
+  (e.g. a demo app's vendored copy) is the one dropped; Python duplicates
+  keep whichever path is discovered first in the existing per-package
+  traversal order, which is not depth-based. Applies to any indexed repo
+  with vendored/copy-pasted source, not just `pipecat-ui`.
+- **The Storybook exclusion and byte-identical-file dedup above now also
+  apply to the `search_examples` corpus, not just `search_api`/
+  `get_code_snippet`.** Found while verifying the previous two fixes
+  end-to-end against `pipecat-ai/pipecat-ui` after it went public:
+  `GitHubRepoIngester`'s independent example-directory file walk (which
+  builds `content_type="code"` chunks, the `search_examples` corpus) has no
+  relationship to `SourceIngester`'s file walk, so both fixes — added there
+  only — left `.stories.tsx` fixtures and the vendored `apps/example`
+  duplicate still surfacing through `search_examples`. `is_storybook_file`
+  and `hash_source` are now shared between the two ingesters (new
+  `services/ingest/ingest_filters.py`) so a future per-file rule can't drift
+  the same way again. The dedup here is scoped per example directory rather
+  than repo-wide, unlike `SourceIngester`'s: independent examples
+  legitimately share boilerplate, and repo-wide dedup would silently drop
+  content from one example's chunk set because another example happened to
+  vendor the same file.
 
 ### Security
 - **Bumped `pip` to `26.2`** in `uv.lock` (transitive via `pip-audit`; no

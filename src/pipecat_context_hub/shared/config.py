@@ -244,7 +244,7 @@ class RerankerConfig(BaseModel):
         return os.environ.get(_RERANKER_MODEL_ENV, "").strip() or self.cross_encoder_model
 
     @model_validator(mode="after")
-    def _warn_on_invalid_model(self) -> "RerankerConfig":
+    def _warn_on_invalid_model(self) -> RerankerConfig:
         """Emit configuration warnings exactly once, at construction time.
 
         Keeps ``effective_model`` free of side effects so the property is
@@ -428,6 +428,12 @@ class SourceConfig(BaseModel):
     package (with its examples under ``examples/flows/``), so it is indexed
     from the framework repo and the standalone repo is no longer a default.
 
+    ``pipecat-ai/voice-ui-kit`` is superseded by ``pipecat-ai/pipecat-ui``, a
+    shadcn-registry rebuild of the same components (installed as source via
+    the shadcn CLI instead of the ``@pipecat-ai/voice-ui-kit`` npm package).
+    ``pipecat-ui`` is the default; the legacy kit can be re-added via
+    ``PIPECAT_HUB_EXTRA_REPOS`` while a project still depends on it.
+
     Only Python (``.py``/``.pyi``), TypeScript (``.ts``/``.tsx``), and RST
     (``docs/**.rst``) are parsed. Swift, Kotlin, and C++ client SDKs
     (``pipecat-client-ios``, ``pipecat-client-android``, ``pipecat-client-cxx``,
@@ -460,7 +466,7 @@ class SourceConfig(BaseModel):
             "pipecat-ai/pipecat-client-web",
             "pipecat-ai/pipecat-client-web-transports",
             "pipecat-ai/pipecat-client-react-native-transports",
-            "pipecat-ai/voice-ui-kit",
+            "pipecat-ai/pipecat-ui",
             "pipecat-ai/pipecat-prebuilt",
         ],
         description="GitHub repos to ingest.",

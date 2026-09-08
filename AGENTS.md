@@ -51,7 +51,9 @@ harness gets re-checked against the exact query that once broke.
 16. `search_api("RTVIEvent")` — returns TS type/enum from
     `pipecat-ai/pipecat-client-web`
 17. `search_api("VoiceVisualizer React component typescript")` — returns TS
-    React component from `pipecat-ai/voice-ui-kit` or `pipecat-ai/pipecat-client-web`.
+    React component from `pipecat-ai/pipecat-ui` or `pipecat-ai/pipecat-client-web`
+    (pipecat-ui's equivalents are `audio-visualizer-radial` /
+    `audio-visualizer-wave` under `packages/registry/src/components/`).
     Also try bare `search_api("VoiceVisualizer")` — currently requires the
     qualifier to rank above Python hits, but should improve as retrieval
     quality improves (cross-encoder, corpus weighting). If the bare query
@@ -65,7 +67,7 @@ harness gets re-checked against the exact query that once broke.
     is indexed. (Note: `search_api` hits don't carry a `language` field —
     that's only on `get_code_snippet`/`get_example` results.)
 19. `search_api("SmallWebRTCTransport")` — returns TS hits from
-    `pipecat-ai/pipecat-client-web-transports` or `pipecat-ai/voice-ui-kit`
+    `pipecat-ai/pipecat-client-web-transports` or `pipecat-ai/pipecat-ui`
 20. `search_docs("pipecat-client-ios")` — returns at least one hit from an
     iOS SDK repo (README fallback for zero-code-chunk repos)
 21. `search_api("PipecatClientProvider")` — a bare query may rank other

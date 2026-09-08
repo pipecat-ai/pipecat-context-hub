@@ -25,7 +25,6 @@ from pipecat_context_hub.services.ingest.source_ingest import (
     _sanitize_slug,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord
-
 from tests._ingest_helpers import create_git_repo, make_config, make_mock_writer
 
 
@@ -70,3 +69,86 @@ async def test_react_native_transports_ts_monorepo_yields_chunks(tmp_path: Path)
     records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
     assert all(rec.content_type == "source" for rec in records)
     assert all(rec.repo == slug for rec in records)
+
+
+async def test_pipecat_ui_pnpm_monorepo_yields_chunks(tmp_path: Path) -> None:
+    """``pipecat-ui`` shape: pnpm/turborepo monorepo with a root package.json
+    and TypeScript source nested two levels down, under
+    ``packages/<name>/src/<category>/``, plus a sibling ``apps/`` tree.
+
+    Mirrors the verified upstream layout (shadcn-registry components under
+    ``packages/registry/src/components/``). Distinct from the
+    react-native-transports case above: source lives under ``packages/``, not
+    ``transports/``, and nests one directory deeper (``src/components/`` vs.
+    ``src/``) — a shape the root/immediate-subdir marker check in
+    ``_has_ts_markers`` and the recursive ``rglob`` in ``_find_ts_files`` must
+    both still traverse into.
+    """
+    slug = "pipecat-ai/pipecat-ui"
+    clone_dir = tmp_path / "repos" / _sanitize_slug(slug)
+    files = {
+        "package.json": '{"name": "pipecat-ui", "private": true}\n',
+        "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n  - 'apps/*'\n",
+        "packages/registry/src/components/connect-button.tsx": (
+            "export function ConnectButton(): JSX.Element {\n"
+            "  return <button>Connect</button>;\n"
+            "}\n"
+        ),
+        # Storybook fixtures are co-located with real components, not under a
+        # skippable directory. Typed const export mirrors the real CSF3
+        # shape pipecat-ui uses (`export const X: Story = {...}`); _find_ts_files
+        # excludes *.stories.ts(x) by filename regardless of content shape.
+        "packages/registry/src/components/connect-button.stories.tsx": (
+            "import type { Meta, StoryObj } from '@storybook/react';\n"
+            "import { ConnectButton } from './connect-button';\n"
+            "type Story = StoryObj<typeof ConnectButton>;\n"
+            "export const Default: Story = { render: () => <ConnectButton /> };\n"
+        ),
+        "apps/example/src/App.tsx": (
+            "export function App(): JSX.Element {\n  return <div />;\n}\n"
+        ),
+        # shadcn's registry model vendors components byte-for-byte into
+        # consuming apps (apps/example has its own components.json pointing
+        # at the @pipecat registry) -- this is the real pipecat-ui shape, not
+        # a contrived edge case. Same content as the registry component above,
+        # at a different path: exercises the byte-identical-file dedup in
+        # SourceIngester.ingest().
+        "apps/example/src/components/pipecat/connect-button.tsx": (
+            "export function ConnectButton(): JSX.Element {\n"
+            "  return <button>Connect</button>;\n"
+            "}\n"
+        ),
+    }
+    create_git_repo(clone_dir, files)
+
+    config = make_config(tmp_path)
+    writer = make_mock_writer()
+    ingester = SourceIngester(config, writer, slug)
+
+    result = await ingester.ingest()
+
+    assert result.errors == []
+    assert result.records_upserted > 0, (
+        "pnpm/turborepo monorepo yielded zero chunks — discovery dispatch "
+        "likely no longer traverses nested packages/<name>/src/ layouts"
+    )
+    records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+    assert all(rec.content_type == "source" for rec in records)
+    assert all(rec.repo == slug for rec in records)
+    paths = {rec.path for rec in records}
+    assert any("components/connect-button" in p for p in paths), (
+        "expected a chunk from the nested packages/registry/src/components/ "
+        f"path; got paths: {sorted(paths)}"
+    )
+    assert not any(p.endswith(".stories.tsx") for p in paths), (
+        "Storybook *.stories.tsx fixtures should be excluded from source "
+        f"chunking; got paths: {sorted(paths)}"
+    )
+    connect_button_paths = [
+        p for p in paths if "connect-button" in p and not p.endswith(".stories.tsx")
+    ]
+    assert connect_button_paths == ["packages/registry/src/components/connect-button.tsx"], (
+        "the vendored apps/example copy of connect-button.tsx is byte-identical "
+        "to the packages/registry original — expected it to be skipped as a "
+        f"duplicate file; got paths: {sorted(connect_button_paths)}"
+    )

@@ -634,6 +634,24 @@ class TestIterCodeFiles:
         result = _iter_code_files(tmp_path)
         assert len(result) == 0
 
+    def test_skips_storybook_files(self, tmp_path: Path):
+        """*.stories.ts / *.stories.tsx Storybook fixtures are skipped, even
+        though they carry a code extension -- mirrors source_ingest.py's
+        _find_ts_files exclusion (ingest_filters.is_storybook_file) so the
+        search_examples corpus doesn't surface fixture/demo code alongside
+        the real component it documents."""
+        (tmp_path / "button.tsx").write_text("export const Button = () => null;")
+        (tmp_path / "button.stories.tsx").write_text(
+            "import type { Meta } from '@storybook/react';\nexport const meta: Meta = {};\n"
+        )
+        (tmp_path / "index.stories.ts").write_text("export const meta = {};")
+
+        result = _iter_code_files(tmp_path)
+        names = {p.name for p in result}
+        assert "button.tsx" in names
+        assert "button.stories.tsx" not in names
+        assert "index.stories.ts" not in names
+
     def test_skip_root_dirs_excludes_top_level_tests_and_docs(self, tmp_path: Path):
         """With skip_root_dirs, top-level tests/ and docs/ are excluded."""
         (tmp_path / "src" / "pkg").mkdir(parents=True)
@@ -742,6 +760,53 @@ class TestGitHubRepoIngester:
             assert rec.metadata["repo"] == "test-org/test-repo"
             assert rec.metadata["commit_sha"] == commit_sha
             assert isinstance(rec.indexed_at, datetime)
+
+    async def test_ingest_dedupes_byte_identical_vendored_file(self, tmp_path: Path):
+        """A byte-identical file vendored at two paths within the same
+        (root-fallback) example dir is only chunked once, keeping the
+        shallower path -- mirrors source_ingest.py's dedup so a shadcn-style
+        registry component also vendored into a demo app doesn't surface
+        twice in search_examples results.
+
+        No top-level examples/ dir and neither ``apps/`` nor ``packages/``
+        has a code file *directly* in it (both are nested), so this repo
+        hits the root-fallback path (the same layout as pipecat-ai/pipecat-ui)
+        rather than being split into separate per-directory examples.
+        """
+        shared_source = "export function Widget() {\n  return null;\n}\n"
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {
+                "package.json": "{}",
+                # Deeper, vendored-into-a-demo-app copy.
+                "apps/example/src/components/pipecat/widget.tsx": shared_source,
+                # Shallower, canonical registry copy.
+                "packages/registry/src/components/widget.tsx": shared_source,
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        git_repo = GitRepo(str(repo_dir))
+        commit_sha = git_repo.head.commit.hexsha
+
+        with patch.object(
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
+        ):
+            result = await ingester.ingest()
+
+        assert result.errors == []
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0]
+        widget_paths = {r.path for r in records if "widget.tsx" in r.path}
+        assert widget_paths == {"packages/registry/src/components/widget.tsx"}, (
+            "expected only the shallower, canonical path to survive dedup; "
+            f"got: {sorted(widget_paths)}"
+        )
 
     async def test_pinned_framework_ingest_uses_resolved_tag_for_chunks(self, tmp_path: Path):
         """A same-commit tag alias must retain the selected release identity.
