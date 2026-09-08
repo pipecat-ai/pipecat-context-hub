@@ -42,9 +42,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   separate records sitting at an identical point in embedding space —
   doubling up redundant hits in search results. `SourceIngester` now hashes
   raw file content per ingest run (Python and TypeScript) and skips a file
-  whose content was already seen; when duplicates are found, the
-  shallower/less-nested path is kept. Applies to any indexed repo with
-  vendored/copy-pasted source, not just `pipecat-ui`.
+  whose content was already seen. For TypeScript, files are processed
+  shallowest-path-first, so a duplicate found later in a deeper directory
+  (e.g. a demo app's vendored copy) is the one dropped; Python duplicates
+  keep whichever path is discovered first in the existing per-package
+  traversal order, which is not depth-based. Applies to any indexed repo
+  with vendored/copy-pasted source, not just `pipecat-ui`.
 
 ### Security
 - **Bumped `pip` to `26.2`** in `uv.lock` (transitive via `pip-audit`; no
