@@ -40,17 +40,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Directories to skip when walking the pipecat source tree.
-_SKIP_DIRS: frozenset[str] = frozenset({
-    "__pycache__", ".git", "tests", "test", ".mypy_cache",
-    ".pytest_cache", ".ruff_cache",
-})
+_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        "__pycache__",
+        ".git",
+        "tests",
+        "test",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
 
 # Directories to skip when walking TypeScript repos.
-_TS_SKIP_DIRS: frozenset[str] = frozenset({
-    "node_modules", "dist", "build", ".git", "tests", "test",
-    "__tests__", "__mocks__", "examples", ".next", ".turbo",
-    "coverage",
-})
+_TS_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        "node_modules",
+        "dist",
+        "build",
+        ".git",
+        "tests",
+        "test",
+        "__tests__",
+        "__mocks__",
+        "examples",
+        ".next",
+        ".turbo",
+        "coverage",
+    }
+)
 
 # File extensions treated as TypeScript source.
 _TS_EXTENSIONS: frozenset[str] = frozenset({".ts", ".tsx"})
@@ -79,6 +97,7 @@ def _load_type_map(repo_slug: str) -> dict[str, list[str]] | None:
         return None
     mod_path, attr = entry
     import importlib
+
     mod = importlib.import_module(mod_path)
     result = getattr(mod, attr)
     if not isinstance(result, dict):
@@ -93,6 +112,7 @@ def _sanitize_slug(slug: str) -> str:
     so source ingest finds the same clone directory.
     """
     return re.sub(r"[^a-zA-Z0-9_-]", "_", slug)
+
 
 class SourceIngester:
     """Ingests source code from a single repository as API reference chunks."""
@@ -116,8 +136,7 @@ class SourceIngester:
         # targets like daily-python. .pyi files are NOT in _CODE_EXTENSIONS
         # to avoid duplicate indexing by GitHubRepoIngester.
         pyi_files: list[Path] = sorted(
-            f for f in clone_dir.glob("*.pyi")
-            if f.is_file() and not f.is_symlink()
+            f for f in clone_dir.glob("*.pyi") if f.is_file() and not f.is_symlink()
         )
 
         # 3. Discover Python packages under src/
@@ -125,8 +144,7 @@ class SourceIngester:
         pkg_dirs: list[Path] = []
         if src_dir.is_dir():
             pkg_dirs = sorted(
-                d for d in src_dir.iterdir()
-                if d.is_dir() and (d / "__init__.py").is_file()
+                d for d in src_dir.iterdir() if d.is_dir() and (d / "__init__.py").is_file()
             )
 
         # 2b. Check for RST type docs in docs/
@@ -134,8 +152,7 @@ class SourceIngester:
         docs_dir = clone_dir / "docs"
         if docs_dir.is_dir() and not docs_dir.is_symlink():
             rst_files = sorted(
-                f for f in docs_dir.rglob("*.rst")
-                if f.is_file() and not f.is_symlink()
+                f for f in docs_dir.rglob("*.rst") if f.is_file() and not f.is_symlink()
             )
 
         # 2c. Detect TypeScript repo (package.json or tsconfig.json at root
@@ -153,7 +170,8 @@ class SourceIngester:
         if pyi_files and not pkg_dirs:
             logger.info(
                 "No Python packages in src/, found %d .pyi stubs at root (%s)",
-                len(pyi_files), self._repo_slug,
+                len(pyi_files),
+                self._repo_slug,
             )
 
         # 3. Get commit SHA
@@ -168,7 +186,9 @@ class SourceIngester:
             total_files += len(py_files)
             logger.info(
                 "Found %d Python files in %s (%s)",
-                len(py_files), pkg_dir.name, self._repo_slug,
+                len(py_files),
+                pkg_dir.name,
+                self._repo_slug,
             )
 
             for py_file in py_files:
@@ -277,8 +297,11 @@ class SourceIngester:
                 ).hexdigest()[:24]
 
                 source_url = _make_source_url(
-                    self._repo_slug, rel_path, commit_sha,
-                    typedef.line_start, typedef.line_end,
+                    self._repo_slug,
+                    rel_path,
+                    commit_sha,
+                    typedef.line_start,
+                    typedef.line_end,
                 )
 
                 content = typedef.render_content(module_path)
@@ -292,8 +315,7 @@ class SourceIngester:
                 }
                 if typedef.fields:
                     metadata["fields"] = [
-                        {"key": f.key, "value_type": f.value_type}
-                        for f in typedef.fields
+                        {"key": f.key, "value_type": f.value_type} for f in typedef.fields
                     ]
                 elif typedef.alternatives:
                     # Flatten all alternative fields into a single list for search.
@@ -302,36 +324,38 @@ class SourceIngester:
                     # Flatten all alternative fields for search
                     all_fields: list[dict[str, str]] = []
                     for alt in typedef.alternatives:
-                        all_fields.extend(
-                            {"key": f.key, "value_type": f.value_type}
-                            for f in alt
-                        )
+                        all_fields.extend({"key": f.key, "value_type": f.value_type} for f in alt)
                     metadata["fields"] = all_fields
                 if typedef.rst_refs:
                     metadata["rst_refs"] = typedef.rst_refs
 
-                records.append(ChunkedRecord(
-                    chunk_id=chunk_id,
-                    content=content,
-                    content_type="source",
-                    source_url=source_url,
-                    repo=self._repo_slug,
-                    path=rel_path,
-                    commit_sha=commit_sha,
-                    indexed_at=now,
-                    metadata=metadata,
-                ))
+                records.append(
+                    ChunkedRecord(
+                        chunk_id=chunk_id,
+                        content=content,
+                        content_type="source",
+                        source_url=source_url,
+                        repo=self._repo_slug,
+                        path=rel_path,
+                        commit_sha=commit_sha,
+                        indexed_at=now,
+                        metadata=metadata,
+                    )
+                )
 
             logger.info(
                 "RST type ingest (%s): file=%s types=%d",
-                self._repo_slug, rel_path, len(type_defs),
+                self._repo_slug,
+                rel_path,
+                len(type_defs),
             )
 
         # 4d. Index TypeScript source files
         if ts_files:
             logger.info(
                 "Found %d TypeScript files in %s",
-                len(ts_files), self._repo_slug,
+                len(ts_files),
+                self._repo_slug,
             )
             total_files += len(ts_files)
             for ts_file in ts_files:
@@ -347,7 +371,8 @@ class SourceIngester:
                     continue
 
                 declarations = parse_ts_source(
-                    ts_source, is_tsx=ts_file.suffix == ".tsx",
+                    ts_source,
+                    is_tsx=ts_file.suffix == ".tsx",
                 )
                 if not declarations:
                     continue
@@ -369,7 +394,8 @@ class SourceIngester:
 
             logger.info(
                 "TypeScript source ingest (%s): files=%d chunks=%d",
-                self._repo_slug, len(ts_files),
+                self._repo_slug,
+                len(ts_files),
                 sum(1 for r in records if r.metadata.get("language") == "typescript"),
             )
 
@@ -384,7 +410,12 @@ class SourceIngester:
         duration = round(time.monotonic() - start, 3)
         logger.info(
             "Source ingest (%s): files=%d chunks=%d upserted=%d errors=%d duration=%.1fs",
-            self._repo_slug, total_files, len(records), upserted, len(errors), duration,
+            self._repo_slug,
+            total_files,
+            len(records),
+            upserted,
+            len(errors),
+            duration,
         )
         return IngestResult(
             source=f"source:{self._repo_slug}",
@@ -454,15 +485,22 @@ def _find_ts_files(clone_dir: Path) -> list[Path]:
 
 
 def _make_chunk_id(
-    repo_slug: str, module_path: str, chunk_type: str, class_name: str,
-    method_name: str, commit_sha: str, line_start: int = 0,
+    repo_slug: str,
+    module_path: str,
+    chunk_type: str,
+    class_name: str,
+    method_name: str,
+    commit_sha: str,
+    line_start: int = 0,
 ) -> str:
     """Deterministic chunk ID scoped to repo."""
     key = f"source:{repo_slug}:{module_path}:{chunk_type}:{class_name}:{method_name}:{commit_sha}:{line_start}"
     return hashlib.sha256(key.encode()).hexdigest()[:24]
 
 
-def _make_source_url(repo_slug: str, rel_path: str, commit_sha: str, line_start: int, line_end: int) -> str:
+def _make_source_url(
+    repo_slug: str, rel_path: str, commit_sha: str, line_start: int, line_end: int
+) -> str:
     """Build GitHub source URL with line range.
 
     ``rel_path`` must be relative to the repo root (e.g. ``src/pipecat/foo.py``
@@ -493,66 +531,81 @@ def _build_chunks(
     # Module overview retains the full imports list unchanged.
     # Include both absolute pipecat imports and relative imports (from . / from ..)
     # since relative imports within pipecat packages are also pipecat-internal.
-    pipecat_imports = [
-        i for i in module_info.imports
-        if "pipecat" in i or i.startswith("from .")
-    ]
+    pipecat_imports = [i for i in module_info.imports if "pipecat" in i or i.startswith("from .")]
 
     # --- Module overview chunk ---
     module_content = _build_module_overview(module_info)
-    records.append(ChunkedRecord(
-        chunk_id=_make_chunk_id(repo_slug, mp, "module_overview", "", "", commit_sha, line_start=1),
-        content=module_content,
-        content_type="source",
-        source_url=_make_source_url(repo_slug, rel_path, commit_sha, 1, len(source.splitlines())),
-        repo=repo_slug,
-        path=rel_path,
-        commit_sha=commit_sha,
-        indexed_at=now,
-        metadata={
-            "module_path": mp,
-            "chunk_type": "module_overview",
-            "class_name": "",
-            "method_name": "",
-            "base_classes": [],
-            "method_signature": "",
-            "is_dataclass": False,
-            "is_abstract": False,
-            "language": "python",
-            "line_start": 1,
-            "line_end": len(source.splitlines()),
-            "imports": module_info.imports,
-        },
-    ))
-
-    # --- Class chunks ---
-    for cls in module_info.classes:
-        # Class overview
-        class_content = _build_class_overview(cls, mp)
-        records.append(ChunkedRecord(
-            chunk_id=_make_chunk_id(repo_slug, mp, "class_overview", cls.name, "", commit_sha, line_start=cls.line_start),
-            content=class_content,
+    records.append(
+        ChunkedRecord(
+            chunk_id=_make_chunk_id(
+                repo_slug, mp, "module_overview", "", "", commit_sha, line_start=1
+            ),
+            content=module_content,
             content_type="source",
-            source_url=_make_source_url(repo_slug, rel_path, commit_sha, cls.line_start, cls.line_end),
+            source_url=_make_source_url(
+                repo_slug, rel_path, commit_sha, 1, len(source.splitlines())
+            ),
             repo=repo_slug,
             path=rel_path,
             commit_sha=commit_sha,
             indexed_at=now,
             metadata={
                 "module_path": mp,
-                "chunk_type": "class_overview",
-                "class_name": cls.name,
+                "chunk_type": "module_overview",
+                "class_name": "",
                 "method_name": "",
-                "base_classes": cls.base_classes,
+                "base_classes": [],
                 "method_signature": "",
-                "is_dataclass": cls.is_dataclass,
-                "is_abstract": any(m.is_abstract for m in cls.methods),
+                "is_dataclass": False,
+                "is_abstract": False,
                 "language": "python",
-                "line_start": cls.line_start,
-                "line_end": cls.line_end,
-                "imports": pipecat_imports,
+                "line_start": 1,
+                "line_end": len(source.splitlines()),
+                "imports": module_info.imports,
             },
-        ))
+        )
+    )
+
+    # --- Class chunks ---
+    for cls in module_info.classes:
+        # Class overview
+        class_content = _build_class_overview(cls, mp)
+        records.append(
+            ChunkedRecord(
+                chunk_id=_make_chunk_id(
+                    repo_slug,
+                    mp,
+                    "class_overview",
+                    cls.name,
+                    "",
+                    commit_sha,
+                    line_start=cls.line_start,
+                ),
+                content=class_content,
+                content_type="source",
+                source_url=_make_source_url(
+                    repo_slug, rel_path, commit_sha, cls.line_start, cls.line_end
+                ),
+                repo=repo_slug,
+                path=rel_path,
+                commit_sha=commit_sha,
+                indexed_at=now,
+                metadata={
+                    "module_path": mp,
+                    "chunk_type": "class_overview",
+                    "class_name": cls.name,
+                    "method_name": "",
+                    "base_classes": cls.base_classes,
+                    "method_signature": "",
+                    "is_dataclass": cls.is_dataclass,
+                    "is_abstract": any(m.is_abstract for m in cls.methods),
+                    "language": "python",
+                    "line_start": cls.line_start,
+                    "line_end": cls.line_end,
+                    "imports": pipecat_imports,
+                },
+            )
+        )
 
         # Method chunks (only for non-trivial methods; .pyi stubs are
         # always single-line and must be indexed for related_types linkage)
@@ -562,37 +615,50 @@ def _build_chunks(
                 continue
             method_content = _build_method_chunk(cls, method, mp)
             sig = build_signature(method.name, method.parameters, method.return_type)
-            records.append(ChunkedRecord(
-                chunk_id=_make_chunk_id(repo_slug, mp, "method", cls.name, method.name, commit_sha, line_start=method.line_start),
-                content=method_content,
-                content_type="source",
-                source_url=_make_source_url(
-                    repo_slug, rel_path, commit_sha, method.line_start, method.line_end
-                ),
-                repo=repo_slug,
-                path=rel_path,
-                commit_sha=commit_sha,
-                indexed_at=now,
-                metadata={
-                    "module_path": mp,
-                    "chunk_type": "method",
-                    "class_name": cls.name,
-                    "method_name": method.name,
-                    "base_classes": cls.base_classes,
-                    "method_signature": sig,
-                    "return_type": method.return_type or "",
-                    "is_dataclass": cls.is_dataclass,
-                    "is_abstract": method.is_abstract,
-                    "language": "python",
-                    "line_start": method.line_start,
-                    "line_end": method.line_end,
-                    "yields": method.yields,
-                    "calls": method.calls,
-                    "imports": method.imports,
-                    **({"related_types": type_map[method.name]}
-                       if type_map and method.name in type_map else {}),
-                },
-            ))
+            records.append(
+                ChunkedRecord(
+                    chunk_id=_make_chunk_id(
+                        repo_slug,
+                        mp,
+                        "method",
+                        cls.name,
+                        method.name,
+                        commit_sha,
+                        line_start=method.line_start,
+                    ),
+                    content=method_content,
+                    content_type="source",
+                    source_url=_make_source_url(
+                        repo_slug, rel_path, commit_sha, method.line_start, method.line_end
+                    ),
+                    repo=repo_slug,
+                    path=rel_path,
+                    commit_sha=commit_sha,
+                    indexed_at=now,
+                    metadata={
+                        "module_path": mp,
+                        "chunk_type": "method",
+                        "class_name": cls.name,
+                        "method_name": method.name,
+                        "base_classes": cls.base_classes,
+                        "method_signature": sig,
+                        "return_type": method.return_type or "",
+                        "is_dataclass": cls.is_dataclass,
+                        "is_abstract": method.is_abstract,
+                        "language": "python",
+                        "line_start": method.line_start,
+                        "line_end": method.line_end,
+                        "yields": method.yields,
+                        "calls": method.calls,
+                        "imports": method.imports,
+                        **(
+                            {"related_types": type_map[method.name]}
+                            if type_map and method.name in type_map
+                            else {}
+                        ),
+                    },
+                )
+            )
 
     # --- Top-level function chunks ---
     for func in module_info.functions:
@@ -601,35 +667,44 @@ def _build_chunks(
             continue
         func_content = _build_function_chunk(func, mp)
         sig = build_signature(func.name, func.parameters, func.return_type)
-        records.append(ChunkedRecord(
-            chunk_id=_make_chunk_id(repo_slug, mp, "function", "", func.name, commit_sha, line_start=func.line_start),
-            content=func_content,
-            content_type="source",
-            source_url=_make_source_url(repo_slug, rel_path, commit_sha, func.line_start, func.line_end),
-            repo=repo_slug,
-            path=rel_path,
-            commit_sha=commit_sha,
-            indexed_at=now,
-            metadata={
-                "module_path": mp,
-                "chunk_type": "function",
-                "class_name": "",
-                "method_name": func.name,
-                "base_classes": [],
-                "method_signature": sig,
-                "return_type": func.return_type or "",
-                "is_dataclass": False,
-                "is_abstract": False,
-                "language": "python",
-                "line_start": func.line_start,
-                "line_end": func.line_end,
-                "yields": func.yields,
-                "calls": func.calls,
-                "imports": func.imports,
-                **({"related_types": type_map[func.name]}
-                   if type_map and func.name in type_map else {}),
-            },
-        ))
+        records.append(
+            ChunkedRecord(
+                chunk_id=_make_chunk_id(
+                    repo_slug, mp, "function", "", func.name, commit_sha, line_start=func.line_start
+                ),
+                content=func_content,
+                content_type="source",
+                source_url=_make_source_url(
+                    repo_slug, rel_path, commit_sha, func.line_start, func.line_end
+                ),
+                repo=repo_slug,
+                path=rel_path,
+                commit_sha=commit_sha,
+                indexed_at=now,
+                metadata={
+                    "module_path": mp,
+                    "chunk_type": "function",
+                    "class_name": "",
+                    "method_name": func.name,
+                    "base_classes": [],
+                    "method_signature": sig,
+                    "return_type": func.return_type or "",
+                    "is_dataclass": False,
+                    "is_abstract": False,
+                    "language": "python",
+                    "line_start": func.line_start,
+                    "line_end": func.line_end,
+                    "yields": func.yields,
+                    "calls": func.calls,
+                    "imports": func.imports,
+                    **(
+                        {"related_types": type_map[func.name]}
+                        if type_map and func.name in type_map
+                        else {}
+                    ),
+                },
+            )
+        )
 
     return records
 
@@ -668,7 +743,9 @@ def _build_class_overview(cls: ClassInfo, module_path: str) -> str:
     init_method = next((m for m in cls.methods if m.name == "__init__"), None)
     if init_method:
         sig = build_signature("__init__", init_method.parameters, init_method.return_type)
-        parts.append(f"\n## Constructor\n```python\ndef __init__{sig}\n```")  # sig is (params) -> ret
+        parts.append(
+            f"\n## Constructor\n```python\ndef __init__{sig}\n```"
+        )  # sig is (params) -> ret
         if init_method.docstring:
             parts.append(init_method.docstring)
 
@@ -817,41 +894,50 @@ def _build_ts_chunks(
             method_name = decl.name
 
         chunk_id = _make_chunk_id(
-            repo_slug, module_path, chunk_type,
-            class_name, method_name, commit_sha,
+            repo_slug,
+            module_path,
+            chunk_type,
+            class_name,
+            method_name,
+            commit_sha,
             line_start=decl.line_start,
         )
         source_url = _make_source_url(
-            repo_slug, rel_path, commit_sha,
-            decl.line_start, decl.line_end,
+            repo_slug,
+            rel_path,
+            commit_sha,
+            decl.line_start,
+            decl.line_end,
         )
 
-        records.append(ChunkedRecord(
-            chunk_id=chunk_id,
-            content=content,
-            content_type="source",
-            source_url=source_url,
-            repo=repo_slug,
-            path=rel_path,
-            commit_sha=commit_sha,
-            indexed_at=now,
-            metadata={
-                "module_path": module_path,
-                "chunk_type": chunk_type,
-                "class_name": class_name,
-                "method_name": method_name,
-                "base_classes": decl.base_classes,
-                "method_signature": decl.method_signature,
-                "return_type": decl.return_type,
-                "is_dataclass": False,
-                "is_abstract": decl.is_abstract,
-                "language": "typescript",
-                "line_start": decl.line_start,
-                "line_end": decl.line_end,
-                "imports": decl.imports,
-                "yields": [],
-                "calls": decl.calls,
-            },
-        ))
+        records.append(
+            ChunkedRecord(
+                chunk_id=chunk_id,
+                content=content,
+                content_type="source",
+                source_url=source_url,
+                repo=repo_slug,
+                path=rel_path,
+                commit_sha=commit_sha,
+                indexed_at=now,
+                metadata={
+                    "module_path": module_path,
+                    "chunk_type": chunk_type,
+                    "class_name": class_name,
+                    "method_name": method_name,
+                    "base_classes": decl.base_classes,
+                    "method_signature": decl.method_signature,
+                    "return_type": decl.return_type,
+                    "is_dataclass": False,
+                    "is_abstract": decl.is_abstract,
+                    "language": "typescript",
+                    "line_start": decl.line_start,
+                    "line_end": decl.line_end,
+                    "imports": decl.imports,
+                    "yields": [],
+                    "calls": decl.calls,
+                },
+            )
+        )
 
     return records
