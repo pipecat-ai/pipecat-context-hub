@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from pipecat_context_hub.services.ingest.ast_extractor import extract_module_info
 from pipecat_context_hub.services.ingest.source_ingest import (
+    _SKIP_DIRS,
+    _TS_SKIP_DIRS,
     SourceIngester,
     _build_chunks,
     _find_python_files,
     _find_ts_files,
-    _hash_source,
     _make_chunk_id,
     _make_source_url,
     _sanitize_slug,
-    _SKIP_DIRS,
-    _TS_SKIP_DIRS,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord
 
@@ -26,6 +25,8 @@ from pipecat_context_hub.shared.types import ChunkedRecord
 # (tests/smoke/test_new_repo_layouts.py); see tests/_ingest_helpers.py.
 from tests._ingest_helpers import (
     create_git_repo as _create_git_repo,
+)
+from tests._ingest_helpers import (
     make_mock_writer as _make_mock_writer,
 )
 
@@ -147,21 +148,6 @@ class TestFindTsFiles:
         result = _find_ts_files(tmp_path)
         assert len(result) == 1
         assert result[0].name == "good.ts"
-
-
-# ---------------------------------------------------------------------------
-# _hash_source tests
-# ---------------------------------------------------------------------------
-
-
-class TestHashSource:
-    """Tests for _hash_source."""
-
-    def test_identical_text_hashes_equal(self):
-        assert _hash_source("export const x = 1;\n") == _hash_source("export const x = 1;\n")
-
-    def test_different_text_hashes_differ(self):
-        assert _hash_source("export const x = 1;\n") != _hash_source("export const x = 2;\n")
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +309,7 @@ class TestBuildChunks:
             source=_SIMPLE_MODULE_SOURCE,
             rel_path="src/pipecat/processors/my.py",
             commit_sha="deadbeef",
-            now=datetime(2026, 2, 21, tzinfo=timezone.utc),
+            now=datetime(2026, 2, 21, tzinfo=UTC),
             repo_slug=_TEST_REPO_SLUG,
         )
 
@@ -423,7 +409,7 @@ class TestBuildChunks:
             source="x = 1\n",
             rel_path="pipecat\\services\\tts.py",  # Windows-style
             commit_sha="abc",
-            now=datetime(2026, 2, 21, tzinfo=timezone.utc),
+            now=datetime(2026, 2, 21, tzinfo=UTC),
             repo_slug=_TEST_REPO_SLUG,
         )
         # Source URLs should still work (backslashes are fine in URL path)
@@ -858,7 +844,7 @@ class TestCallGraphMetadata:
             source=_CALLGRAPH_MODULE_SOURCE,
             rel_path="src/pipecat/services/tts.py",
             commit_sha="abc123",
-            now=datetime(2026, 3, 16, tzinfo=timezone.utc),
+            now=datetime(2026, 3, 16, tzinfo=UTC),
             repo_slug=_TEST_REPO_SLUG,
         )
 

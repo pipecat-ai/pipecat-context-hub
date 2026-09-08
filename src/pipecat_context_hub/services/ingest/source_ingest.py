@@ -27,9 +27,7 @@ from pipecat_context_hub.services.ingest.ast_extractor import (
     extract_module_info,
 )
 from pipecat_context_hub.services.ingest.ingest_filters import (
-    hash_source as _hash_source,
-)
-from pipecat_context_hub.services.ingest.ingest_filters import (
+    hash_source,
     is_storybook_file,
 )
 from pipecat_context_hub.services.ingest.rst_type_parser import parse_rst_types
@@ -136,7 +134,7 @@ class SourceIngester:
         # Content hashes of files already processed this run, keyed by raw
         # source text (not rendered chunk content, which always differs by
         # path via its "Module: <path>" header even for byte-identical
-        # files) -- see _hash_source.
+        # files) -- see ingest_filters.hash_source.
         seen_source_hashes: set[str] = set()
         duplicate_files_skipped = 0
 
@@ -218,7 +216,7 @@ class SourceIngester:
                 # Skip files byte-identical to one already processed this run
                 # (e.g. a vendored copy of a shared module under a different
                 # package path).
-                source_hash = _hash_source(source)
+                source_hash = hash_source(source)
                 if source_hash in seen_source_hashes:
                     duplicate_files_skipped += 1
                     continue
@@ -401,7 +399,7 @@ class SourceIngester:
                 # Skip files byte-identical to one already processed this run
                 # (e.g. a shadcn-style registry component vendored,
                 # byte-for-byte, into a demo app under the same repo).
-                source_hash = _hash_source(ts_source)
+                source_hash = hash_source(ts_source)
                 if source_hash in seen_source_hashes:
                     duplicate_files_skipped += 1
                     continue
