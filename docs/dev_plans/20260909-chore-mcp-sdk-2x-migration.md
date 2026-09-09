@@ -77,10 +77,13 @@ Small surface — this is a contained migration, not a rewrite.
 
 ## Architecture & Call Flow
 
-Three components change independently here, plus the external MCP client:
-`cli.py` (`cli.py:815`, `serve_stdio(...)` entry point) → `transport.py`
+Four components change independently here, plus the external MCP client:
+`cli.py` (`cli.py:843`, `serve_stdio(...)` entry point) → `transport.py`
 (stdio loop, fd/watchdog threads, hard-exit timer) → `main.py`
-(`create_server()`'s handlers). fd/stream ownership during `serve`:
+(`create_server()`'s handlers), plus `cli_query.py`'s independent
+`_dispatch` table, which hand-mirrors `main.py`'s call_tool dispatch for
+the one-shot CLI subcommands and must be re-verified in step with it (see
+Files to Modify). fd/stream ownership during `serve`:
 
 ```
 cli.py: serve_stdio()
@@ -91,6 +94,11 @@ cli.py: serve_stdio()
        -> Server.run(read_stream, write_stream, ...)
             -> on_list_tools / on_call_tool / on_ping   # main.py handlers
        -> watchdog threads (parent-death, idle) -> hard-exit timer (2.5s)
+
+cli_query.py: one-shot subcommands (search-api, status, ...)
+  -> cli_query.py: _dispatch(...)   # independent hand-mirrored table,
+                                     # in-process — no stdio_server(),
+                                     # no watchdogs; see Files to Modify
 ```
 
 Request/error path for a `tools/call` (see What changes in 2.x, Risks):
@@ -169,10 +177,13 @@ them.
   any other handler exception) already reaches the client with its full
   message intact via the legacy dispatch's `code=0` path.
 - Every test in `test_server.py` and the one in `test_staleness.py` that
-  reads `server.request_handlers[...]` (6 sites total) — must move to
-  `get_request_handler(method_string)`, and however we end up invoking the
-  handler in tests (see **Unknown**, below) will also need to change
-  because the callable's own signature changed from `(request)` to
+  reads `server.request_handlers[...]` (7 sites total, confirmed — includes
+  `test_server.py`'s two ping tests, not only `test_staleness.py`) — must
+  move to `get_request_handler(method_string)`, which returns a
+  `HandlerEntry`, not a bare callable (call `.handler` on it, and note it's
+  keyed by method string, not by request type); and however we end up
+  invoking the handler in tests (see **Unknown**, below) will also need to
+  change because the callable's own signature changed from `(request)` to
   `(ctx, params)`.
 
 ### Likely
@@ -215,9 +226,12 @@ them.
 - `mcp.types` moved to a standalone `mcp-types` PyPI distribution
   (version-locked to `mcp`) — new transitive dependency, should show up
   cleanly in `uv lock`; no code impact expected. The lock-diff checklist
-  should expect `mcp-types`, `httpx2`, `httpcore2`, `truststore` (and
-  `pywin32` on Windows) as the actually-new packages — `opentelemetry-api`/
-  `sdk`/`exporter-otlp-proto-grpc` are already in `uv.lock` today via
+  should expect `mcp-types`, `httpx2`, `httpcore2`, `truststore` as the
+  actually-new packages (`pywin32` is already present in `uv.lock` on every
+  host today via an existing dependency, not newly added by this bump, and
+  not Windows-only in the lock file) — `opentelemetry-api` is the only
+  piece of `opentelemetry-*` that `mcp` 2.2.0 declares directly; `sdk`/
+  `exporter-otlp-proto-grpc` are already in `uv.lock` today via
   `chromadb`, so they add no new weight even though `mcp` now also depends
   on them directly.
 - `opentelemetry-api` becomes a hard dependency of `mcp` 2.x (`Server`
@@ -238,16 +252,20 @@ them.
 
 ### Unknown — a design decision, not a fact to look up
 - How to invoke the new `(ctx, params)`-shaped handlers directly from unit
-  tests. `ServerRequestContext` (`mcp/server/context.py`) is a plain
-  dataclass — constructing a minimal one sufficient for `ctx` is a ~5-line
-  fixture, not a mock of `mcp.*` internals, so it's compliant with the
-  Acceptance Criteria's "no mocking of `mcp.*` internals" bullet either
-  way. Two paths: (a) that small `ServerRequestContext` fixture, keeping
-  today's "call the handler function directly" test style, or (b) drive
-  tests through `server.run()` end-to-end against an in-memory `anyio`
-  stream pair instead, which is more faithful but a bigger rewrite of
-  `test_server.py`. **Decide in Phase 0**, informed by which one actually
-  lets the existing assertions (idle-tracker touch on list/call, ping
+  tests. `ServerRequestContext` (`mcp/server/context.py`) is a `kw_only`
+  dataclass that requires a real `ServerSession` to construct — **not
+  confirmed to be a trivial ~5-line fixture**; Phase 0 needs to spike
+  whether a minimal `ctx` is actually cheap to build or needs a
+  stand-in/mock `ServerSession`. Either way it's compliant with the
+  Acceptance Criteria's "no mocking of `mcp.*` internals" bullet as long as
+  any stand-in mocks `ServerSession`, not the handler-dispatch machinery
+  itself. Two paths: (a) that `ServerRequestContext` fixture (however heavy
+  it turns out to be), keeping today's "call the handler function
+  directly" test style, or (b) drive tests through `server.run()`
+  end-to-end against an in-memory `anyio` stream pair instead, which is
+  more faithful but a bigger rewrite of `test_server.py`. **Decide in
+  Phase 0**, informed by which one actually lets the existing assertions
+  (idle-tracker touch on list/call, ping
   passthrough) survive with the least structural change.
 
 ## Compatibility policy — decision needed before Phase 1
@@ -295,28 +313,67 @@ running Phases 0-4 are unaffected either way.
   unchanged per the table above); adopt explicit `stdin`/`stdout` streams
   for `stdio_server()` per the Phase 0 spike (see Risks), rewriting the
   `os.close(sys.stdin.fileno())` comment blocks to describe whichever
-  mechanism Phase 0 actually lands on.
+  mechanism Phase 0 actually lands on. Build the explicit streams as
+  `TextIOWrapper(sys.stdin.buffer/sys.stdout.buffer, encoding="utf-8", ...)`,
+  mirroring 1.x — explicit streams skip 2.x's default UTF-8 re-wrapping of
+  the raw buffers, so omitting this risks a `UnicodeEncodeError` regression
+  on Windows cp1252 consoles. Explicit streams also forgo 2.x's default
+  stdout→stderr diversion, which exists to protect the wire from stray
+  `print()`/library output; **decision: no `dup2(2,1)` (or similar)
+  fallback is added to compensate** — stderr-only logging discipline is the
+  sole wire-cleanliness guarantee going forward (a fd-level fallback here
+  would silently reroute the JSON-RPC wire onto stderr if ever combined
+  with the explicit-stream wrapping above, so the two are intentionally
+  never combined). Add a non-ASCII round-trip test under a non-UTF-8 locale,
+  gated on the Windows smoke leg.
+- `tests/unit/test_transport.py` — the four `TestRunStdioWatchdogWiring`
+  tests (`test_transport.py:354,395,436,491`) patch `transport.stdio_server`
+  with a zero-arg `fake_stdio_server()`; once `run_stdio` passes
+  `stdin=`/`stdout=` these fakes need to accept those kwargs (a
+  `_stdio_streams()` factory seam is one way to keep this to a single
+  patch point) — this file was missing from Files to Modify.
 - `src/pipecat_context_hub/cli_query.py` (`cli_query.py:403`) — hand-mirrors
   `create_server()`'s call_tool dispatch table; re-verify it still matches
   after `main.py`'s dispatch is rewritten, so the two don't silently drift.
+  Add a small parity test comparing `cli_query._dispatch`'s table against
+  `create_server()`'s so future drift isn't silent.
 - `tests/unit/test_server.py` — `TestToolRegistration`,
-  `TestToolDispatch` classes (6+ assertions reading the old
-  `request_handlers` dict), plus a docstring claim ("Unknown tool name
-  raises ValueError") that currently has no backing test — add one pinning
-  the verified `code=0` shape (see table above).
+  `TestToolDispatch` classes (7 sites reading the old `request_handlers`
+  dict — includes the two ping tests, not only `test_staleness.py`), plus
+  a docstring claim ("Unknown tool name raises ValueError") that currently
+  has no backing test — add one pinning the verified `code=0` shape via a
+  dispatcher-level test (direct handler calls only raise a bare
+  `ValueError`; the `code=0` wire shape only appears through
+  `server.run()`'s dispatcher, so both the unknown-tool and the
+  `pydantic.ValidationError` → `INVALID_PARAMS` wire-shape pins must be
+  dispatcher-level tests regardless of which path Phase 0 picks for (a)/(b)
+  above). Also add cheap assertions for `get_hub_status` presence/absence
+  in the listed tools, and that `idle_tracker.end()` still runs when
+  `on_call_tool` raises for an unknown tool.
 - `tests/unit/test_staleness.py` — one site at `test_staleness.py:161-170`
   using the same pattern plus `result.root` accessor (also gone in 2.x —
-  "union types no longer RootModel" per the migration guide).
+  "union types no longer RootModel" per the migration guide; treat this as
+  an assumption to verify against the installed 2.2.0 source directly, not
+  the migration guide alone, since the guide is elsewhere flagged as
+  unreliable in this plan).
 - `tests/integration/test_serve_lifetime.py` — no code changes expected
   (it drives the process externally via pipes), but it's the
   primary regression gate for the fd-diversion **startup-crash** risk (see
   Acceptance Criteria for why it's scoped to that, not the graceful-vs-
-  hard-exit question too).
+  hard-exit question too). Make the graceful-unwind-vs-hard-exit assertion
+  unconditional (capture stderr and assert the graceful log line is present
+  / hard-exit marker absent, or bound exit time well under the 2.5s
+  hard-exit timer) rather than conditional on how Phase 0/2 land.
 - `.github/workflows/ci.yml` — Windows smoke job's explicit test file list
   (`ci.yml:112-124`) excludes `test_server.py` and all of
-  `tests/integration/`; add `test_server.py` (and the 2.x-safe parts of
-  `test_transport.py`) so this migration's platform-sensitive fd handling
-  is actually exercised on Windows, not just assumed safe.
+  `tests/integration/`; add `test_server.py` (which exercises `main.py`
+  handler registration — the fd/stream handling this migration actually
+  touches lives entirely in `transport.py`, so this addition verifies
+  registration correctness on Windows, not fd handling) and the 2.x-safe
+  parts of `test_transport.py`. This file edit belongs to Phase 3 (the
+  commit that also updates `ci.yml` for the version bump); land it there,
+  and verify the Windows smoke legs by eye at Phase 4 sign-off since only
+  `Quality` is a required status check today.
 - `pyproject.toml` — `"mcp>=1.0,<2.0"` → `"mcp>=2.0,<3.0"` (Option A). Do
   this as the **first** commit on this branch, not deferred to Phase 4 —
   see Testing strategy.
@@ -388,26 +445,36 @@ running Phases 0-4 are unaffected either way.
 - Add the invalid-arguments test pinning the `on_call_tool` catch's output
   (client-visible remediation text preserved, not the SDK's generic
   "Invalid request parameters").
-- Promote the Phase 0 raw-stdio round trip (`initialize` → `tools/list` →
-  `tools/call`) into a permanent test asserting response shape, rather
-  than leaving it a manual/throwaway spike — today's only wire-level
-  coverage is a manual Phase 4 smoke step.
 - `uv run mypy src/` clean under the new handler signatures (the
   `(ctx, params)` shape will need real type annotations, not
   `# type: ignore` — the old decorators carried `# type: ignore[no-untyped-call, untyped-decorator]` comments that should no longer be needed once we're calling documented, typed constructor kwargs). Scoped to `src/`
   only here — `tests/` still references the old `request_handlers`/`.root`
   attributes until Phase 3 migrates them, so a full `mypy src/ tests/` gate
-  belongs in Phase 3, not here.
+  belongs in Phase 1, not here.
+- **Exit criterion note:** the raw-stdio round trip (`initialize` →
+  `tools/list` → `tools/call`) stays a manual/throwaway Phase 0 spike at
+  this point, not a permanent test — `transport.py`/`run_stdio` isn't
+  migrated (or bootable under real mcp 2.x) until Phase 2, so a permanent
+  wire-level test can't actually pass here yet. Promoting it is Phase 2's
+  job (see below).
 
 ### Phase 2: `transport.py` migration
 - Apply the Phase 0 spike's resolution for `stdio_server()` stream
   handling and the stdin-unblock trick.
+- Promote the Phase 0 raw-stdio round trip (`initialize` → `tools/list` →
+  `tools/call`) into a permanent test asserting response shape, now that
+  `transport.py` is migrated and can actually boot under real mcp 2.x —
+  today's only wire-level coverage is a manual Phase 4 smoke step.
+  Regression list for this promotion: `test_end_to_end.py`,
+  `test_report_hint_e2e.py`, `test_concurrent_model_load.py` alongside
+  `test_serve_lifetime.py`.
 - Re-run `test_orphaned_serve_exits_via_watchdog` and the rest of
   `test_serve_lifetime.py` until green under real mcp 2.x (not mocked).
 
 ### Phase 3: Test suite migration
-- `test_server.py`, `test_staleness.py` per Phase 0's chosen invocation
-  strategy.
+- `test_server.py`, `test_staleness.py`, `test_transport.py` (the four
+  `TestRunStdioWatchdogWiring` fakes, see Files to Modify) per Phase 0's
+  chosen invocation strategy.
 - `uv run mypy src/ tests/` clean (the full gate deferred from Phase 1).
 - Full local suite: `uv run pytest tests/` — must match or exceed today's
   pass count (1804 passed, 7 skipped as of `da72d0f` on `main`); any new
@@ -422,15 +489,31 @@ running Phases 0-4 are unaffected either way.
   and confirm tool listing + at least one real tool call + `get_hub_status`
   all work end-to-end, not just under test mocks.
 - Full CI matrix (`Quality` ×3, `Windows smoke` ×2, `CodeQL`, `Security`,
-  `Analyze` ×2) green — this migration touches process lifecycle and
-  platform-sensitive fd handling, so the Windows smoke legs matter more
-  than usual here (see Files to Modify for the ci.yml test-list fix
-  needed for that leg to actually exercise this code at all); don't treat
-  a green macOS/Linux run alone as sufficient.
-- Confirm the `OpenTelemetryMiddleware` runtime-egress test (see Risks)
-  passes under the real bumped dependency, not just in isolation.
+  `Analyze` ×2) green — this migration touches process lifecycle, and the
+  Windows smoke legs matter more than usual here: `test_server.py`
+  verifies handler registration correctness on Windows (see Files to
+  Modify), which is what this migration actually changes in `main.py`; the
+  fd/stream handling itself lives entirely in `transport.py` and is
+  exercised by the promoted round-trip test's regression list (Phase 2)
+  instead. Don't treat a green macOS/Linux run alone as sufficient, and
+  don't read the Windows smoke legs as fd-handling coverage.
+- Confirm the `OpenTelemetryMiddleware` runtime-egress test (see Risks) —
+  `tests/integration/test_no_telemetry_egress.sh` — passes under the real
+  bumped dependency, not just in isolation. This script is not currently
+  wired into `just`/CI, so run it explicitly by name and record the output
+  in this plan's Findings section; treat it as a manual release-gate check
+  until it's wired into `just ci`, not an enforced CI gate.
+- Bump `pyproject.toml`'s `[project].version` and
+  `main.py::_SERVER_VERSION` together in this phase's release commit (both
+  must move together — `TestVersionConsistency` enforces it, and the
+  Release workflow refuses to publish to PyPI on a mismatch); add the
+  `CHANGELOG.md` `### Changed` entry under `[Unreleased]` in the same PR,
+  not deferred to "once merged" (branch protection requires the bump to
+  ride a PR).
 - Release ahead of `pipecat-ai` 1.9.0 is fine (see Compatibility policy) —
-  no extra release-timing gate here.
+  no extra release-timing gate here. Note: pipecat-ai#5624 is an open,
+  unmerged PR as of this writing, not a confirmed 1.9.0 date; this
+  timing note doesn't block anything in this plan either way.
 
 ### What we are NOT testing (and why)
 - HTTP/streamable transport, resources, prompts, elicitation, roots,
@@ -461,25 +544,32 @@ running Phases 0-4 are unaffected either way.
 - [ ] `test_orphaned_serve_exits_via_watchdog` passes for real (not
       skipped, not weakened) — this is the test that caught the original
       startup crash and is the regression gate for **that** failure mode.
-      It does not, by itself, distinguish a graceful shutdown from the
-      2.5s hard-exit fallback; if Phase 0/2 lands a stream-level
-      graceful-unwind assertion too, name that test here as well.
+      The graceful-shutdown-vs-2.5s-hard-exit distinction is asserted
+      unconditionally (not gated on how Phase 0/2 land) — see Phase 2's
+      promoted round-trip test / `test_serve_lifetime.py` changes.
 - [ ] Live `serve` smoke test (real process, real stdio round trip)
       confirmed working, not just unit-tested.
 - [ ] All 9 CI checks green (Quality ×3, Windows smoke ×2, CodeQL,
-      Security, Analyze ×2), with the Windows smoke legs actually
-      exercising `test_server.py` (see Files to Modify).
+      Security, Analyze ×2), with the Windows smoke legs exercising
+      `test_server.py`'s handler-registration coverage (see Files to
+      Modify — this verifies registration correctness on Windows, not
+      fd/stream handling, which lives in `transport.py` and is covered by
+      Phase 2's promoted round-trip test instead).
 - [ ] `uv.lock` diff reviewed for new transitive deps (`mcp-types`,
-      `httpx2`, `httpcore2`, `truststore`, `pywin32` on Windows) — no
-      unexpected surprises. (`opentelemetry-*` is already in the lock via
-      `chromadb`, not new.)
+      `httpx2`, `httpcore2`, `truststore`) — no unexpected surprises.
+      (`opentelemetry-*` is already in the lock via `chromadb`, not new;
+      `pywin32` is already present on every host today, not Windows-only.)
 - [ ] `pip-audit` (`just audit`) clean or explicitly triaged against the
       bumped lock; `starlette>=1.0.1` constraint confirmed still holding.
-- [ ] `CHANGELOG.md` entry added.
+- [ ] `pyproject.toml`'s `[project].version` and `main.py::_SERVER_VERSION`
+      bumped together in the release commit; `TestVersionConsistency` green.
+- [ ] `CHANGELOG.md` entry added under `[Unreleased]` in the migration PR.
 - [ ] Issue #127 closed by the merged PR, referencing this plan.
 - [ ] PyPI release does not need to wait on `pipecat-ai` 1.9.0 (decided
       during `/review-plan` — see Compatibility policy's release-timing
       note); no extra release gate to satisfy here.
+
+<!-- reviewed: 2026-09-09 @ 3dd45616b8dc97ad06718d391f5e9bc2816eeec8 -->
 
 ## Progress
 
