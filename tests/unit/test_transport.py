@@ -302,9 +302,12 @@ class TestIdleTracker:
 
         t = IdleTracker()
         _time.sleep(0.05)
-        assert t.seconds_since_last() >= 0.05
+        elapsed = t.seconds_since_last()
+        # Windows timer granularity can report slightly less than the sleep
+        # duration; the invariant is that time advanced before `touch()`.
+        assert elapsed >= 0.04
         t.touch()
-        assert t.seconds_since_last() < 0.05
+        assert t.seconds_since_last() < elapsed
 
     def test_begin_marks_tracker_active_regardless_of_clock(self) -> None:
         """In-flight calls must keep seconds_since_last at 0 — otherwise a
