@@ -612,6 +612,8 @@ class TestExplicitStdioStreams:
         """
         from collections.abc import AsyncIterator
         from contextlib import asynccontextmanager
+        import io
+        import sys
 
         captured: dict[str, object] = {}
 
@@ -627,7 +629,16 @@ class TestExplicitStdioStreams:
             async def run(self, *_args: object, **_kwargs: object) -> None:
                 return None
 
-        with patch.object(transport, "stdio_server", fake_stdio_server):
+        # Do not wrap pytest's redirected stdin/stdout.  On Windows their
+        # finalizers reject the flush performed during interpreter shutdown,
+        # which turns an otherwise successful test run into exit code 1.
+        stdin = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        with (
+            patch.object(transport, "stdio_server", fake_stdio_server),
+            patch.object(sys, "stdin", stdin),
+            patch.object(sys, "stdout", stdout),
+        ):
             result = await transport.run_stdio(cast(Any, FakeServer()))
 
         assert result is None
