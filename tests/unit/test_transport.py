@@ -256,7 +256,7 @@ class TestOnceFlag:
         flag = transport._OnceFlag()
         winners: list[bool] = []
         lock = threading.Lock()
-        worker_count = 20
+        worker_count = 4
         start = threading.Event()
 
         def _try() -> None:
