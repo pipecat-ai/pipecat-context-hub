@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # with a runtime lookup, the PyPI distribution name is "pipecat-ai-context-hub"
 # (not "pipecat-context-hub", which is only the command / server name) —
 # importlib.metadata.version() must use the former.
-_SERVER_VERSION = "0.7.0"
+_SERVER_VERSION = "0.8.0"
 
 # Tool name → (description, input schema, handler)
 _BASE_TOOLS = BASE_TOOLS
@@ -207,14 +207,16 @@ def create_server(
         # positive.
         if idle_tracker is not None:
             idle_tracker.touch()
-        return types.ListToolsResult(tools=[
-            types.Tool(
-                name=definition.name,
-                description=definition.description,
-                input_schema=definition.input_schema,
-            )
-            for definition in tool_registry
-        ])
+        return types.ListToolsResult(
+            tools=[
+                types.Tool(
+                    name=definition.name,
+                    description=definition.description,
+                    input_schema=definition.input_schema,
+                )
+                for definition in tool_registry
+            ]
+        )
 
     def _annotate(result_json: str) -> str:
         """Attach the index_staleness footer when the index is old.
@@ -245,7 +247,9 @@ def create_server(
             if name == "get_hub_status" and index_store is not None:
                 status = reranker_status_provider() if reranker_status_provider else None
                 result_json = await handle_get_hub_status(args, index_store, status)
-                return types.CallToolResult(content=[types.TextContent(type="text", text=result_json)])
+                return types.CallToolResult(
+                    content=[types.TextContent(type="text", text=result_json)]
+                )
 
             # check_deprecation dispatches via retriever.deprecation_map, with the
             # indexed framework version as the default for version-relative status.
@@ -253,14 +257,18 @@ def create_server(
                 dep_map = getattr(retriever, "deprecation_map", None)
                 fw_version = resolve_framework_version(index_store, dep_map)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
-                return types.CallToolResult(content=[types.TextContent(type="text", text=_annotate(result_json))])
+                return types.CallToolResult(
+                    content=[types.TextContent(type="text", text=_annotate(result_json))]
+                )
 
             handler = get_tool_handler(name)
             if handler is None:
                 raise ValueError(f"Unknown tool: {name}")
 
             result_json = await handler(args, retriever)
-            return types.CallToolResult(content=[types.TextContent(type="text", text=_annotate(result_json))])
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=_annotate(result_json))]
+            )
         except ValidationError as exc:
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=str(exc))],
@@ -273,7 +281,9 @@ def create_server(
     if idle_tracker is not None:
         _tracker = idle_tracker
 
-        async def ping_with_idle_touch(_ctx: Any, _params: types.RequestParams | None) -> types.EmptyResult:
+        async def ping_with_idle_touch(
+            _ctx: Any, _params: types.RequestParams | None
+        ) -> types.EmptyResult:
             _tracker.touch()
             return types.EmptyResult()
 

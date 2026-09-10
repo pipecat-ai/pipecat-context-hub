@@ -707,9 +707,35 @@ probe passes the locked, floor, and newest in-range SDK environments.
 - [x] Phase 1: `main.py` migration
 - [x] Phase 2: `transport.py` migration
 - [x] Phase 3: Test suite migration
-- [ ] Phase 4: Live verification + release
+- [x] Phase 4: Live verification + release
 
 ## Findings
+
+**2026-09-10, during Phase 4 live verification + release** — the release
+metadata, final lock, live stdio path, and CI-shaped gates were revalidated
+after the separate baseline-format cleanup PR was merged:
+
+- `pyproject.toml` and `server/main.py` now both report `0.8.0`, the
+  `[Unreleased]` changelog entry is present, and the lock resolves `mcp` and
+  `mcp-types` `2.2.0`, `httpx2`/`httpcore2` `2.12.0`, `truststore` `0.10.4`,
+  and `starlette` `1.3.1` under the existing `>=1.0.1` constraint.
+- The exact requested gate, `just check && just test && just audit`, passed:
+  Ruff and mypy passed, the full suite collected 1826 items with 1819 passed
+  and 7 skipped, and the dependency/security audit completed successfully
+  (the local package itself is not published on PyPI, so pip-audit reports it
+  as not auditable while scanning the locked dependencies).
+- `tests/integration/test_no_telemetry_egress.sh` passed all three windows:
+  refresh observed only allowlisted fetch peers, serve plus query observed no
+  non-loopback egress, and dashboard extraction observed no non-loopback
+  egress. The refresh rebuilt 42,470 records with 0 errors.
+- `uv run python scripts/probe_mcp_2x.py --matrix` passed the locked 2.2.0,
+  floor 2.0.1, and newest in-range 2.2.0 environments. Its intentional
+  unknown-tool and generic-error tracebacks are expected; the command exited
+  0 and captured the required JSON-RPC error frames, UTF-8 bytes, and stream
+  ownership evidence.
+- The unrelated Ruff baseline drift was isolated into PR #131, merged as
+  `23a1d50`; this branch was rebased onto the merged `origin/main`, leaving
+  only six migration-owned files to format before the final gate.
 
 **2026-09-09, during `/review-plan`** — pre-verified two of Phase 0's
 open questions empirically, against a real throwaway `mcp==2.2.0` install

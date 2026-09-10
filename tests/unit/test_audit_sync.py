@@ -75,18 +75,14 @@ def test_lock_freezes_one_in_range_mcp_sdk_and_matching_types_package() -> None:
     project = _project_data()["project"]
     dependencies = project["dependencies"]
     mcp_requirement = next(
-        Requirement(value)
-        for value in dependencies
-        if Requirement(value).name == "mcp"
+        Requirement(value) for value in dependencies if Requirement(value).name == "mcp"
     )
     supported_range = SpecifierSet(str(mcp_requirement.specifier))
 
     lock = _lock_data()
     packages = lock["package"]
     mcp_packages = [package for package in packages if package["name"] == "mcp"]
-    mcp_types_packages = [
-        package for package in packages if package["name"] == "mcp-types"
-    ]
+    mcp_types_packages = [package for package in packages if package["name"] == "mcp-types"]
 
     assert len(mcp_packages) == 1
     assert len(mcp_types_packages) == 1
@@ -95,7 +91,9 @@ def test_lock_freezes_one_in_range_mcp_sdk_and_matching_types_package() -> None:
     assert mcp_version in supported_range
     assert mcp_types_version == mcp_version
 
-    root_package = next(package for package in packages if package.get("source") == {"editable": "."})
+    root_package = next(
+        package for package in packages if package.get("source") == {"editable": "."}
+    )
     root_dependency_names = {dependency["name"] for dependency in root_package["dependencies"]}
     assert "mcp" in root_dependency_names
 
@@ -109,9 +107,7 @@ def test_lock_keeps_mcp_2x_transitives_and_starlette_security_floor() -> None:
     assert starlette_requirement == Requirement("starlette>=1.0.1")
 
     lock = _lock_data()
-    assert lock["manifest"]["constraints"] == [
-        {"name": "starlette", "specifier": ">=1.0.1"}
-    ]
+    assert lock["manifest"]["constraints"] == [{"name": "starlette", "specifier": ">=1.0.1"}]
 
     packages_by_name = {package["name"]: package for package in lock["package"]}
     assert Version(packages_by_name["starlette"]["version"]) in starlette_requirement.specifier

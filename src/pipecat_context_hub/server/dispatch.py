@@ -178,10 +178,16 @@ def iter_tool_definitions(*, include_hub_status: bool = False) -> Iterator[ToolD
 
 
 def get_tool_handler(name: str) -> ToolHandler | None:
-    return next((definition.handler for definition in _TOOL_DEFINITIONS if definition.name == name), None)
+    return next(
+        (definition.handler for definition in _TOOL_DEFINITIONS if definition.name == name), None
+    )
 
 
 # Compatibility views for callers/tests that inspect the registration surface.
 BASE_TOOLS = [(d.name, d.description, d.input_schema) for d in _TOOL_DEFINITIONS]
-HUB_STATUS_TOOL_TUPLE = (HUB_STATUS_TOOL.name, HUB_STATUS_TOOL.description, HUB_STATUS_TOOL.input_schema)
+HUB_STATUS_TOOL_TUPLE = (
+    HUB_STATUS_TOOL.name,
+    HUB_STATUS_TOOL.description,
+    HUB_STATUS_TOOL.input_schema,
+)
 TOOL_REGISTRY = _TOOL_DEFINITIONS

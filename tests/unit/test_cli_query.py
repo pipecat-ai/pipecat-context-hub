@@ -74,9 +74,7 @@ class TestToolCommandParity:
         assert registry
         assert all(spec.name for spec in registry)
         assert all(spec.input_schema["type"] == "object" for spec in registry)
-        assert all(
-            callable(spec.handler) or spec.name == "check_deprecation" for spec in registry
-        )
+        assert all(callable(spec.handler) or spec.name == "check_deprecation" for spec in registry)
 
         server = create_server(MagicMock())
         list_entry = server.get_request_handler("tools/list")
@@ -90,9 +88,9 @@ class TestToolCommandParity:
         mcp_tools = asyncio.run(_list_tools()).tools
         mcp_by_name = {tool.name: tool for tool in mcp_tools}
         assert set(mcp_by_name) == {spec.name for spec in registry}
-        assert {
-            name: tool.input_schema for name, tool in mcp_by_name.items()
-        } == {spec.name: spec.input_schema for spec in registry}
+        assert {name: tool.input_schema for name, tool in mcp_by_name.items()} == {
+            spec.name: spec.input_schema for spec in registry
+        }
         assert {spec.name for spec in registry} == set(_TOOL_TO_COMMAND) - {"get_hub_status"}
 
     def test_every_mcp_tool_has_a_cli_command(self):

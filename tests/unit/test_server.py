@@ -512,6 +512,27 @@ class TestCLI:
 class TestVersionConsistency:
     """Ensure pyproject.toml version and _SERVER_VERSION stay in sync."""
 
+    def test_mcp_dependency_bound_matches_frozen_lock(self):
+        """The release metadata and lock must both stay on the supported 2.x line."""
+        import tomllib
+        from pathlib import Path
+
+        from packaging.specifiers import SpecifierSet
+
+        repo_root = Path(__file__).resolve().parents[2]
+        with (repo_root / "pyproject.toml").open("rb") as f:
+            project = tomllib.load(f)["project"]
+        with (repo_root / "uv.lock").open("rb") as f:
+            lock = tomllib.load(f)
+
+        declared = next(
+            dependency for dependency in project["dependencies"] if dependency.startswith("mcp")
+        )
+        assert declared == "mcp>=2.0,<3.0"
+
+        locked = next(package for package in lock["package"] if package["name"] == "mcp")
+        assert locked["version"] in SpecifierSet(">=2.0,<3.0")
+
     def test_server_version_matches_pyproject(self):
         """_SERVER_VERSION in server/main.py must match pyproject.toml [project].version."""
         import tomllib

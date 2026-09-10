@@ -8,6 +8,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **Migrated the MCP server to the `mcp` 2.x SDK**, including typed tool
+  callbacks, explicit UTF-8 stdio streams, and shared MCP/CLI tool dispatch.
 - **Dropped `pipecat-ai/pipecat-flows` from the default sources.** The repo is
   archived upstream: since pipecat 1.5.0 the flows framework ships inside
   `pipecat-ai/pipecat` as `pipecat.flows` (examples under `examples/flows/`),

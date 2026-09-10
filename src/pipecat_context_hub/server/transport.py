@@ -281,9 +281,7 @@ async def _explicit_stdio_server() -> AsyncIterator[tuple[Any, Any]]:
     detaching them afterwards prevents their finalizers from closing the
     caller-owned buffers.
     """
-    stdin_wrapper = io.TextIOWrapper(
-        sys.stdin.buffer, encoding="utf-8", errors="replace"
-    )
+    stdin_wrapper = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
     stdout_wrapper = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     try:
         async with stdio_server(
