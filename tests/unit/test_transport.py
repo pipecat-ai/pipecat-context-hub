@@ -167,15 +167,33 @@ class TestRunAtexitBounded:
         tearing down logging/multiprocessing) and corrupt the run.
         """
         import atexit
+        import threading
         import time
 
+        release = threading.Event()
+        started = threading.Event()
+        finished = threading.Event()
+
         def _blocking_run_exitfuncs() -> None:
-            time.sleep(5.0)
+            started.set()
+            try:
+                release.wait(5.0)
+            finally:
+                finished.set()
 
         with patch.object(atexit, "_run_exitfuncs", _blocking_run_exitfuncs):
-            start = time.monotonic()
-            transport._run_atexit_bounded(0.2)
-            elapsed = time.monotonic() - start
+            try:
+                start = time.monotonic()
+                transport._run_atexit_bounded(0.2)
+                elapsed = time.monotonic() - start
+                assert started.wait(1.0), "atexit worker did not start"
+            finally:
+                # Let the worker finish while the patch is still active. A
+                # sleeping daemon thread that outlives this test can race
+                # pytest's Windows thread/atexit cleanup and interrupt the
+                # rest of the suite.
+                release.set()
+                assert finished.wait(1.0), "atexit worker did not finish"
         assert elapsed < 1.0, f"bounded atexit took too long: {elapsed:.2f}s"
 
     def test_runs_registered_handlers(self) -> None:
