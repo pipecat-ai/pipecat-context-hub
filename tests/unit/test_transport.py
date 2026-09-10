@@ -170,43 +170,62 @@ class TestRunAtexitBounded:
         import threading
         import time
 
-        release = threading.Event()
-        started = threading.Event()
-        finished = threading.Event()
+        wait_timeouts: list[float | None] = []
+        threads: list[Any] = []
 
         def _blocking_run_exitfuncs() -> None:
-            started.set()
-            try:
-                release.wait(5.0)
-            finally:
-                finished.set()
+            raise AssertionError("blocking atexit handler ran on the caller thread")
 
-        with patch.object(atexit, "_run_exitfuncs", _blocking_run_exitfuncs):
-            try:
-                start = time.monotonic()
-                transport._run_atexit_bounded(0.2)
-                elapsed = time.monotonic() - start
-                assert started.wait(1.0), "atexit worker did not start"
-            finally:
-                # Let the worker finish while the patch is still active. A
-                # sleeping daemon thread that outlives this test can race
-                # pytest's Windows thread/atexit cleanup and interrupt the
-                # rest of the suite.
-                release.set()
-                assert finished.wait(1.0), "atexit worker did not finish"
+        class _FakeEvent:
+            def set(self) -> None:
+                pass
+
+            def wait(self, timeout: float | None = None) -> bool:
+                wait_timeouts.append(timeout)
+                return False
+
+        class _FakeThread:
+            def __init__(self, **kwargs: Any) -> None:
+                self.target = kwargs["target"]
+                self.name = kwargs["name"]
+                self.daemon = kwargs["daemon"]
+                threads.append(self)
+
+            def start(self) -> None:
+                # The real worker is deliberately not started here. This test
+                # checks that the caller only waits for the bounded timeout;
+                # the following test checks actual handler dispatch.
+                pass
+
+        with (
+            patch.object(atexit, "_run_exitfuncs", _blocking_run_exitfuncs),
+            patch.object(threading, "Event", _FakeEvent),
+            patch.object(threading, "Thread", _FakeThread),
+        ):
+            start = time.monotonic()
+            transport._run_atexit_bounded(0.2)
+            elapsed = time.monotonic() - start
+        assert wait_timeouts == [0.2]
+        assert len(threads) == 1
+        assert threads[0].name == "hub-atexit-cleanup"
+        assert threads[0].daemon is True
         assert elapsed < 1.0, f"bounded atexit took too long: {elapsed:.2f}s"
 
     def test_runs_registered_handlers(self) -> None:
         """The bounded wrapper actually invokes atexit handling (stubbed)."""
         import atexit
+        import threading
 
         calls: list[str] = []
+        finished = threading.Event()
 
         def _fake_run_exitfuncs() -> None:
             calls.append("ran")
+            finished.set()
 
         with patch.object(atexit, "_run_exitfuncs", _fake_run_exitfuncs):
             transport._run_atexit_bounded(1.0)
+            assert finished.wait(1.0), "atexit worker did not finish"
         assert calls == ["ran"]
 
 
