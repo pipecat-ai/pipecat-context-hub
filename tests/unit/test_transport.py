@@ -255,20 +255,33 @@ class TestOnceFlag:
         flag = transport._OnceFlag()
         winners: list[bool] = []
         lock = threading.Lock()
-        start = threading.Event()
+        worker_count = 20
+        start = threading.Barrier(worker_count + 1)
 
         def _try() -> None:
-            start.wait()
+            try:
+                start.wait(timeout=5.0)
+            except threading.BrokenBarrierError:
+                return
             won = flag.acquire()
             with lock:
                 winners.append(won)
 
-        threads = [threading.Thread(target=_try) for _ in range(20)]
+        threads = [threading.Thread(target=_try) for _ in range(worker_count)]
         for t in threads:
             t.start()
-        start.set()
+
+        main_released = True
+        try:
+            start.wait(timeout=5.0)
+        except threading.BrokenBarrierError:
+            main_released = False
+
         for t in threads:
-            t.join()
+            t.join(timeout=5.0)
+        assert all(not t.is_alive() for t in threads), "worker thread did not exit"
+        assert main_released, "contention workers did not reach the start gate"
+        assert len(winners) == worker_count
         assert sum(winners) == 1, f"expected exactly one winner, got {sum(winners)}"
 
 
