@@ -217,15 +217,22 @@ class TestRunAtexitBounded:
         import threading
 
         calls: list[str] = []
-        finished = threading.Event()
 
         def _fake_run_exitfuncs() -> None:
             calls.append("ran")
-            finished.set()
 
-        with patch.object(atexit, "_run_exitfuncs", _fake_run_exitfuncs):
+        class _InlineThread:
+            def __init__(self, target: Any, **kwargs: Any) -> None:
+                self.target = target
+
+            def start(self) -> None:
+                self.target()
+
+        with (
+            patch.object(atexit, "_run_exitfuncs", _fake_run_exitfuncs),
+            patch.object(threading, "Thread", _InlineThread),
+        ):
             transport._run_atexit_bounded(1.0)
-            assert finished.wait(1.0), "atexit worker did not finish"
         assert calls == ["ran"]
 
 
