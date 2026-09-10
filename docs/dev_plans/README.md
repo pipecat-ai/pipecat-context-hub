@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-09-09 | chore | Migrate `mcp` Python SDK 1.x → 2.x (lowlevel `Server` API rewrite; issue #127) | Not Started | Claude | `chore/mcp-sdk-2x-migration` | `20260909-chore-mcp-sdk-2x-migration.md` |
+| 2026-09-09 | chore | Migrate `mcp` Python SDK 1.x → 2.x (lowlevel `Server` API rewrite; issue #127) | In Review | Claude | `chore/mcp-sdk-2x-migration` | `20260909-chore-mcp-sdk-2x-migration.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

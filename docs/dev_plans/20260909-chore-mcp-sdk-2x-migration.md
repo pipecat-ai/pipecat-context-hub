@@ -1,6 +1,6 @@
 # Task: Migrate the `mcp` Python SDK from the 1.x line to 2.x
 
-**Status**: Not Started
+**Status**: In Review
 **Component**: server (mcp sdk)
 **Assigned to**: Claude
 **Priority**: High (not urgent-blocking — see Timeline)
@@ -640,30 +640,30 @@ release.
 
 ## Acceptance Criteria
 
-- [ ] `pyproject.toml` requires `mcp>=2.0,<3.0`, landed as Phase 0's first
+- [x] `pyproject.toml` requires `mcp>=2.0,<3.0`, landed as Phase 0's first
       commit (not deferred to the end).
-- [ ] `create_server()` and `run_stdio()` work under real mcp 2.x with no
+- [x] `create_server()` and `run_stdio()` work under real mcp 2.x with no
       mocking of `mcp.*` internals beyond what today's tests already mock.
-- [ ] The application error contract is stable: unknown and registered
+- [x] The application error contract is stable: unknown and registered
       generic failures preserve their exact message and remain client-
       reachable; `MCPError(code=0)` is pinned only as the locked 2.2.0
       compatibility canary, not promised for every future `<3.0` release.
-- [ ] Invalid tool arguments (`pydantic.ValidationError`) return
+- [x] Invalid tool arguments (`pydantic.ValidationError`) return
       client-visible remediation text via the explicit `on_call_tool`
       catch as a successful `CallToolResult(isError=True)` containing
       `TextContent` — pinned by a real dispatcher-level test, not the SDK's
       generic, detail-free "Invalid request parameters."
-- [ ] The shared dispatch registry is consumed by both MCP and CLI front
+- [x] The shared dispatch registry is consumed by both MCP and CLI front
       doors, with a parity test preventing tool/schema drift.
-- [ ] Full local quality gate passes: `ruff check`, `mypy src/ tests/`, and
+- [x] Full local quality gate passes: `ruff check`, `mypy src/ tests/`, and
       `pytest tests/ -q`; smoke and relevant integration suites are green.
       Collected pytest node IDs are compared with base: no tests disappear,
       and every new skip has a named test and written reason. The historical
       reference is 1804 passed / 7 skipped, but raw counts are not sufficient.
-- [ ] `test_orphaned_serve_exits_via_watchdog` passes for real (not
+- [x] `test_orphaned_serve_exits_via_watchdog` passes for real (not
       skipped, not weakened) — this is the test that caught the original
       startup crash and is the regression gate for **that** failure mode.
-- [ ] The lifetime test captures stderr and proves graceful
+- [x] The lifetime test captures stderr and proves graceful
       `parent_died` shutdown, absence of the exact
       `pipecat-context-hub: client gone; fast-exiting after` fallback marker,
       and completion below the 2.5s hard-exit timer; it does not merely
@@ -673,22 +673,22 @@ release.
       schemas, every shared handler, both status branches, deprecation,
       validation/unknown/generic errors, clean JSON-RPC stdout, and a
       non-ASCII payload. It runs on the Windows smoke legs.
-- [ ] Live `serve` smoke test (real process, real stdio round trip)
+- [x] Live `serve` smoke test (real process, real stdio round trip)
       confirmed working, not just unit-tested.
 - [ ] The actual repository CI jobs are green: Quality Python 3.12/3.14,
       aggregate Quality, Windows smoke Python 3.12/3.14, and Security.
       Windows runs include registration, transport-unit, and portable
       compatibility coverage; no nonexistent CodeQL/Analyze checks are
       required.
-- [ ] `uv.lock` diff reviewed for new transitive deps (`mcp-types`,
+- [x] `uv.lock` diff reviewed for new transitive deps (`mcp-types`,
       `httpx2`, `httpcore2`, `truststore`) and root metadata — no unexpected
       surprises; `starlette>=1.0.1` still holds.
-- [ ] `pip-audit` (`just audit`) clean or explicitly triaged against the
+- [x] `pip-audit` (`just audit`) clean or explicitly triaged against the
       bumped lock and the audit ignore-list remains synchronized.
-- [ ] `pyproject.toml`'s `[project].version` and `main.py::_SERVER_VERSION`
+- [x] `pyproject.toml`'s `[project].version` and `main.py::_SERVER_VERSION`
       bumped together in the release commit; `TestVersionConsistency` green.
-- [ ] `CHANGELOG.md` entry added under `[Unreleased]` in the migration PR.
-- [ ] The retained Phase 0 probe is rerun for every lockfile or supported-
+- [x] `CHANGELOG.md` entry added under `[Unreleased]` in the migration PR.
+- [x] The retained Phase 0 probe is rerun for every lockfile or supported-
       version change, with version/source identity, raw frames, error canary,
       and stream ownership/lifecycle evidence recorded in Findings.
 - [ ] The release-time `pipecat-ai` resolver matrix is recorded, including
@@ -720,7 +720,7 @@ after the separate baseline-format cleanup PR was merged:
   `mcp-types` `2.2.0`, `httpx2`/`httpcore2` `2.12.0`, `truststore` `0.10.4`,
   and `starlette` `1.3.1` under the existing `>=1.0.1` constraint.
 - The exact requested gate, `just check && just test && just audit`, passed:
-  Ruff and mypy passed, the full suite collected 1826 items with 1819 passed
+  Ruff and mypy passed, the full suite collected 1827 items with 1820 passed
   and 7 skipped, and the dependency/security audit completed successfully
   (the local package itself is not published on PyPI, so pip-audit reports it
   as not auditable while scanning the locked dependencies).
@@ -736,6 +736,15 @@ after the separate baseline-format cleanup PR was merged:
 - The unrelated Ruff baseline drift was isolated into PR #131, merged as
   `23a1d50`; this branch was rebased onto the merged `origin/main`, leaving
   only six migration-owned files to format before the final gate.
+
+**2026-09-10, installed-version compatibility check before PR creation** —
+the live local index was exercised through both the current checkout-installed
+PCH (`0.8.0`, `mcp==2.2.0`) and the earlier `0.6.0` release in an isolated
+`uvx` environment. The current version passed the MCP-2 capability check;
+both versions passed initialize, `tools/list`, live `get_hub_status`, and the
+canonical `/api-reference/server/frames/system-frames.md` page lookup. The
+suffixless path remains `Not Found` in both versions, so the agent smoke
+checklist now records the canonical `.md` path.
 
 **2026-09-09, during `/review-plan`** — pre-verified two of Phase 0's
 open questions empirically, against a real throwaway `mcp==2.2.0` install
