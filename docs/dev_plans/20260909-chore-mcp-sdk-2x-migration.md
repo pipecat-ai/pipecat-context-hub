@@ -33,8 +33,8 @@ assertion, the actual server process dying). Loosening the pyproject bound
 today would let any fresh install whose resolver lands on 2.x ship a server
 that doesn't start. There is no version of "bump the toml, support v2
 later" that doesn't first require making the code work under v2 — the two
-steps aren't actually separable, which is why Testing strategy below folds
-the bump into Phase 0 itself rather than deferring it to the end.
+steps aren't actually separable, which is why the implementation checklist
+below folds the bump into Phase 0 itself rather than deferring it to the end.
 
 **Version note (added during `/review-plan`, 2026-09-09):** PyPI's actual
 latest was `mcp` 2.2.0, not the 2.1.1 used by the initial probe — `uv lock`
@@ -269,7 +269,7 @@ open `<3.0` range make unverified version drift unsafe.
   strategy) and only touch middleware if that gate actually fails.
 - Bumping the lock introduces new/changed transitive packages with no
   automatic pre-push CVE check today. Run `just audit` as part of Phase
-  0's bump step (see Testing strategy) — the ignore-list parity test
+  0's bump step (see Implementation Checklist) — the ignore-list parity test
   (`tests/unit/test_audit_sync.py`) and the `starlette>=1.0.1` constraint
   in `pyproject.toml` both need to keep holding under the new resolve,
   not be discovered broken by CI after the fact.
@@ -408,7 +408,7 @@ can be removed when upstream's metadata changes.
   this repository.
 - `pyproject.toml` — `"mcp>=1.0,<2.0"` → `"mcp>=2.0,<3.0"` (Option A). Do
   this as the **first** commit on this branch, not deferred to Phase 4 —
-  see Testing strategy.
+  see the Implementation Checklist.
 - `uv.lock` — regenerate in that same first commit; review the diff for
   `mcp-types`/`httpx2`/`httpcore2`/`truststore` additions or changes, and
   confirm `starlette>=1.0.1` still holds under the new resolve.
@@ -416,9 +416,26 @@ can be removed when upstream's metadata changes.
   in the migration PR, before the final CI/release verification; do not defer
   it until after merge.
 
-## Testing strategy
+## Implementation Checklist
+
+The phase blocks below are the conduct execution contract. The detailed
+design rationale and acceptance criteria remain part of the same reviewed
+plan; each phase declares its write scope, test scope, test command, and
+validation command so autonomous conduct can route workers and failures
+deterministically.
 
 ### Phase 0: Bump the dependency now, then spike the two open questions
+**Goal:** Establish the frozen 2.x dependency and capture reproducible SDK,
+stdio, encoding, and watchdog evidence before implementation begins.
+
+**Impl files:** pyproject.toml, uv.lock, scripts/probe_mcp_2x.py
+
+**Test files:** tests/unit/test_audit_sync.py
+
+**Test command:** `just audit`
+
+**Validation cmd:** `uv run python scripts/probe_mcp_2x.py --matrix`
+
 1. Bump `pyproject.toml` to `mcp>=2.0,<3.0` and regenerate `uv.lock` as the
    **first commit** on this branch — not deferred to Phase 4. Every
    subsequent phase's local dev and CI runs use `uv sync --frozen`
@@ -468,6 +485,18 @@ can be removed when upstream's metadata changes.
    to add a dual implementation.
 
 ### Phase 1: `main.py` migration
+**Goal:** Replace the 1.x registration surface with typed 2.x callbacks and
+make MCP and CLI dispatch consume one explicit registry while preserving
+application-level error semantics.
+
+**Impl files:** src/pipecat_context_hub/server/main.py, src/pipecat_context_hub/server/dispatch.py, src/pipecat_context_hub/cli_query.py
+
+**Test files:** tests/unit/test_server.py, tests/unit/test_cli_query.py, tests/unit/test_staleness.py
+
+**Test command:** `uv run pytest tests/unit/test_server.py tests/unit/test_cli_query.py tests/unit/test_staleness.py -q`
+
+**Validation cmd:** `uv run mypy src/`
+
 - Rewrite `create_server()` per the mapping table, including the `on_ping`
   registration and the explicit `pydantic.ValidationError` catch in
   `on_call_tool` (see Risks).
@@ -496,6 +525,17 @@ can be removed when upstream's metadata changes.
   Phase 2 after `transport.py` is bootable.
 
 ### Phase 2: `transport.py` migration
+**Goal:** Make real mcp 2.x stdio transport and watchdog shutdown reliable,
+portable, and observable through a permanent wire-level regression test.
+
+**Impl files:** src/pipecat_context_hub/server/transport.py
+
+**Test files:** tests/unit/test_transport.py, tests/integration/test_mcp_v2_compat.py, tests/integration/test_serve_lifetime.py
+
+**Test command:** `uv run pytest tests/unit/test_transport.py tests/integration/test_mcp_v2_compat.py tests/integration/test_serve_lifetime.py -q`
+
+**Validation cmd:** `uv run ruff check src/pipecat_context_hub/server/transport.py tests/`
+
 - Apply the Phase 0 resolution for `stdio_server()` stream handling and the
   stdin-unblock trick. The preferred implementation is explicit UTF-8
   `TextIOWrapper` streams wrapped with `anyio.wrap_file()`, kept alive for
@@ -522,6 +562,17 @@ can be removed when upstream's metadata changes.
   `test_concurrent_model_load.py`.
 
 ### Phase 3: Test suite migration
+**Goal:** Finish all 2.x test and CI wiring, then prove the complete local
+quality gate and test-collection invariant against the base revision.
+
+**Impl files:** tests/unit/test_server.py, tests/unit/test_staleness.py, tests/unit/test_transport.py, .github/workflows/ci.yml
+
+**Test files:** tests/unit/test_server.py, tests/unit/test_staleness.py, tests/unit/test_transport.py
+
+**Test command:** `uv run pytest tests/ -q`
+
+**Validation cmd:** `uv run ruff check src/ tests/ && uv run mypy src/ tests/`
+
 - Finish `test_server.py`, `test_staleness.py`, and `test_transport.py`
   migration, including the four `TestRunStdioWatchdogWiring` fakes and the
   selected public 2.x callback/context seam.
@@ -537,6 +588,18 @@ can be removed when upstream's metadata changes.
   `test_report_hint_e2e.py`, and `test_concurrent_model_load.py`.
 
 ### Phase 4: Live verification + release
+**Goal:** Verify the final packaged dependency, version metadata, live stdio
+smoke path, security checks, resolver matrix, and actual repository CI before
+release.
+
+**Impl files:** pyproject.toml, src/pipecat_context_hub/server/main.py, uv.lock, CHANGELOG.md
+
+**Test files:** tests/unit/test_server.py, tests/integration/test_no_telemetry_egress.sh
+
+**Test command:** `uv run pytest tests/unit/test_server.py -q`
+
+**Validation cmd:** `just check && just test && just audit && bash tests/integration/test_no_telemetry_egress.sh`
+
 - Live `serve` smoke test: run the actual CLI (`uv run pipecat-context-hub serve`)
   against a real client (or the raw JSON-RPC round trip used in Phase 0)
   and confirm tool listing + at least one real tool call + `get_hub_status`
@@ -555,7 +618,7 @@ can be removed when upstream's metadata changes.
   bumped dependency, not just in isolation. This script is not currently
   wired into `just`/CI, so run it explicitly by name and record the output
   in this plan's Findings section; treat it as a manual release-gate check
-  until it's wired into `just ci`, not an enforced CI gate.
+  until it is wired into a local CI recipe, not an enforced CI gate.
 - Verify the version consistency test and run a package-resolver matrix
   against the actual supported `pipecat-ai` metadata. Record whether the
   temporary `<2.0`/`>=2.0` conflict remains; it is accepted and documented,
@@ -633,12 +696,18 @@ can be removed when upstream's metadata changes.
       Pipecat 1.9.0 schedule.
 - [ ] Issue #127 closed by the merged PR, referencing this plan.
 
-<!-- reviewed: 2026-09-10 @ 56cf8a4d4d515e13263da904a81d62ddd4fb2021 -->
+<!-- reviewed: 2026-09-10 @ 5a6b0c1001a1a36808a85432dedf739778181bd9 -->
 
 ## Progress
 
 Not started — this plan captures pre-implementation research only. Phase 0
 (spike) is the next action.
+
+- [ ] Phase 0: Bump the dependency now, then spike the two open questions
+- [ ] Phase 1: `main.py` migration
+- [ ] Phase 2: `transport.py` migration
+- [ ] Phase 3: Test suite migration
+- [ ] Phase 4: Live verification + release
 
 ## Findings
 
