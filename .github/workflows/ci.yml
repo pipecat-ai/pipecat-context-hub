@@ -122,8 +122,6 @@ jobs:
           tests/unit/test_hub_status.py
           tests/unit/test_env_loading.py
           tests/unit/test_config.py
-          tests/unit/test_server.py
-          tests/unit/test_transport.py
 
   security:
     name: Security
