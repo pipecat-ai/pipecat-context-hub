@@ -700,10 +700,10 @@ release.
 
 ## Progress
 
-Not started — this plan captures pre-implementation research only. Phase 0
-(spike) is the next action.
+Phase 0 complete — the dependency is locked to the 2.x line and the retained
+probe passes the locked, floor, and newest in-range SDK environments.
 
-- [ ] Phase 0: Bump the dependency now, then spike the two open questions
+- [x] Phase 0: Bump the dependency now, then spike the two open questions
 - [ ] Phase 1: `main.py` migration
 - [ ] Phase 2: `transport.py` migration
 - [ ] Phase 3: Test suite migration
@@ -760,3 +760,17 @@ test, and makes graceful watchdog evidence deterministic. Release edits now
 precede the final gate; the CI list reflects the workflows actually present
 in this repository, and the Pipecat resolver relationship is recorded as a
 release-time matrix rather than an unverified schedule assumption.
+
+**2026-09-10, Phase 0 conduct run:** `pyproject.toml` now requires
+`mcp>=2.0,<3.0`, with the lock resolving `mcp==2.2.0` and matching
+`mcp-types`. `scripts/probe_mcp_2x.py --matrix` passed in the locked
+environment, the supported floor (`mcp==2.0.1`), and the newest available
+in-range 2.x environment (`mcp==2.2.0`). The probe records package/source
+identity and real `Server.run` frames for initialize, initialized, tools/list,
+tools/call, ping, unknown-tool, generic-exception, and validation-error paths;
+the locked error canaries were code `0` for unknown/generic exceptions and
+`-32602` with the SDK's generic message for validation. Its explicit-stdio
+round trip preserved UTF-8 `é 東京`, reported `c3a920e69db1e4baac`, left caller
+stdio objects unchanged, and returned cleanly on EOF. `just audit` and Ruff
+passed. The final unit-test invocation seam and hub watchdog evidence remain
+Phase 1/2 work; the retained probe covers SDK transport lifecycle only.
