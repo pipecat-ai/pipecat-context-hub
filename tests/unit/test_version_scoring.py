@@ -265,9 +265,7 @@ class TestVersionFilterValidation:
         from pipecat_context_hub.shared.types import SearchExamplesInput
 
         with pytest.raises(ValueError, match="version_filter requires pipecat_version"):
-            SearchExamplesInput(
-                query="test", version_filter="compatible_only"
-            )
+            SearchExamplesInput(query="test", version_filter="compatible_only")
 
     def test_filter_with_version_ok(self) -> None:
         from pipecat_context_hub.shared.types import SearchExamplesInput
@@ -281,6 +279,4 @@ class TestVersionFilterValidation:
         from pipecat_context_hub.shared.types import SearchApiInput
 
         with pytest.raises(ValueError, match="version_filter requires pipecat_version"):
-            SearchApiInput(
-                query="test", version_filter="compatible_only"
-            )
+            SearchApiInput(query="test", version_filter="compatible_only")

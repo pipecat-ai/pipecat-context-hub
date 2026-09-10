@@ -70,9 +70,7 @@ def test_rebuild_fixture_root_layout_preserves_top_level_examples(
     fixtures_root = tmp_path / "fixtures"
     monkeypatch.setattr(refresh_fixtures, "_FIXTURES_ROOT", fixtures_root)
 
-    refresh_fixtures._rebuild_fixture(
-        "pipecat-ai/pipecat-examples", "pipecat-examples", clone_root
-    )
+    refresh_fixtures._rebuild_fixture("pipecat-ai/pipecat-examples", "pipecat-examples", clone_root)
 
     fixture_dir = fixtures_root / "pipecat-examples"
     assert (fixture_dir / "pyproject.toml").is_file()
@@ -124,9 +122,7 @@ class _FakeCompleted:
         self.returncode = 0
 
 
-def _capture_subprocess(
-    monkeypatch: pytest.MonkeyPatch, module_path: str
-) -> list[list[str]]:
+def _capture_subprocess(monkeypatch: pytest.MonkeyPatch, module_path: str) -> list[list[str]]:
     """Replace ``<module_path>.subprocess.run`` with a recorder. Returns the call log."""
     calls: list[list[str]] = []
 
@@ -188,9 +184,7 @@ def test_clone_repo_rejects_ref_starting_with_dash(
     assert calls == []
 
 
-def test_clone_repo_rejects_malformed_slug(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_clone_repo_rejects_malformed_slug(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _capture_subprocess(monkeypatch, "scripts.check_pipecat_drift")
     with pytest.raises(ValueError, match="Invalid repo slug"):
         check_pipecat_drift._clone_repo("not-a-valid-slug", "main", tmp_path / "c")
@@ -202,9 +196,7 @@ def test_shallow_clone_sha_branches_identically(
 ) -> None:
     calls: list[list[str]] = []
 
-    def _fake_run(
-        cmd: list[str], cwd: Path | None = None, timeout: int | None = None
-    ) -> str:
+    def _fake_run(cmd: list[str], cwd: Path | None = None, timeout: int | None = None) -> str:
         calls.append(list(cmd))
         if cmd[:2] == ["git", "rev-parse"]:
             return "deadbeef" * 5
@@ -289,16 +281,12 @@ def test_scan_topic_tree_skips_symlinked_example_dirs(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_check_repo_reports_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_check_repo_reports_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*args: object, **kwargs: object) -> None:
         raise subprocess.TimeoutExpired(cmd="git clone", timeout=300)
 
     monkeypatch.setattr("scripts.check_pipecat_drift.subprocess.run", _boom)
-    result = check_pipecat_drift._check_repo(
-        "pipecat-ai/pipecat", "main", dry_run=False
-    )
+    result = check_pipecat_drift._check_repo("pipecat-ai/pipecat", "main", dry_run=False)
     assert not result.ok
     (name, passed, message) = result.checks[0]
     assert name == "git_clone"

@@ -211,8 +211,7 @@ def _walk_body_shallow(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast
     # Seed with body statements only — skip decorators, args, returns annotation.
     # Also filter scope types from the seed to exclude nested def/class at body level.
     stack: list[ast.AST] = [
-        stmt for stmt in reversed(node.body)
-        if not isinstance(stmt, _SCOPE_TYPES)
+        stmt for stmt in reversed(node.body) if not isinstance(stmt, _SCOPE_TYPES)
     ]
     while stack:
         current = stack.pop()

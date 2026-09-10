@@ -85,7 +85,10 @@ def _find_children_by_type(node: Node, *types: str) -> list[Node]:
 def _extract_name(node: Node) -> str:
     """Extract the identifier name from a declaration node."""
     name_node = _find_child_by_type(
-        node, "type_identifier", "identifier", "property_identifier",
+        node,
+        "type_identifier",
+        "identifier",
+        "property_identifier",
     )
     return _node_text(name_node) if name_node else ""
 
@@ -147,7 +150,9 @@ def _extract_bases_from_heritage(node: Node) -> list[str]:
                     bases.append(_node_text(type_node))
                 elif type_node.type == "generic_type":
                     name_node = _find_child_by_type(
-                        type_node, "type_identifier", "identifier",
+                        type_node,
+                        "type_identifier",
+                        "identifier",
                     )
                     if name_node:
                         bases.append(_node_text(name_node))
@@ -157,7 +162,9 @@ def _extract_bases_from_heritage(node: Node) -> list[str]:
                     bases.append(_node_text(type_node))
                 elif type_node.type == "generic_type":
                     name_node = _find_child_by_type(
-                        type_node, "type_identifier", "identifier",
+                        type_node,
+                        "type_identifier",
+                        "identifier",
                     )
                     if name_node:
                         bases.append(_node_text(name_node))
@@ -346,8 +353,11 @@ def _extract_const(node: Node, source: str) -> TsDeclaration | None:
 
 
 def _extract_class_methods(
-    class_node: Node, class_name: str, base_classes: list[str],
-    is_abstract_class: bool, source: str,
+    class_node: Node,
+    class_name: str,
+    base_classes: list[str],
+    is_abstract_class: bool,
+    source: str,
 ) -> list[TsDeclaration]:
     """Extract methods from a class body."""
     methods: list[TsDeclaration] = []
@@ -358,13 +368,19 @@ def _extract_class_methods(
     for child in body.children:
         if child.type == "method_definition":
             method = _extract_method_definition(
-                child, class_name, base_classes, source,
+                child,
+                class_name,
+                base_classes,
+                source,
             )
             if method:
                 methods.append(method)
         elif child.type == "abstract_method_signature":
             method = _extract_abstract_method(
-                child, class_name, base_classes, source,
+                child,
+                class_name,
+                base_classes,
+                source,
             )
             if method:
                 methods.append(method)
@@ -380,11 +396,16 @@ def _extract_class_methods(
 
 
 def _extract_method_definition(
-    node: Node, class_name: str, base_classes: list[str], source: str,
+    node: Node,
+    class_name: str,
+    base_classes: list[str],
+    source: str,
 ) -> TsDeclaration | None:
     """Extract a concrete method from a method_definition node."""
     name_node = _find_child_by_type(
-        node, "property_identifier", "identifier",
+        node,
+        "property_identifier",
+        "identifier",
     )
     if not name_node:
         return None
@@ -438,11 +459,16 @@ def _extract_method_definition(
 
 
 def _extract_abstract_method(
-    node: Node, class_name: str, base_classes: list[str], source: str,
+    node: Node,
+    class_name: str,
+    base_classes: list[str],
+    source: str,
 ) -> TsDeclaration | None:
     """Extract an abstract method from abstract_method_signature node."""
     name_node = _find_child_by_type(
-        node, "property_identifier", "identifier",
+        node,
+        "property_identifier",
+        "identifier",
     )
     if not name_node:
         return None
@@ -467,7 +493,10 @@ def _extract_abstract_method(
 
 
 def _extract_interface_methods(
-    iface_node: Node, iface_name: str, base_classes: list[str], source: str,
+    iface_node: Node,
+    iface_name: str,
+    base_classes: list[str],
+    source: str,
 ) -> list[TsDeclaration]:
     """Extract callable members from an interface body.
 
@@ -482,7 +511,9 @@ def _extract_interface_methods(
     for child in body.children:
         if child.type == "method_signature":
             name_node = _find_child_by_type(
-                child, "property_identifier", "identifier",
+                child,
+                "property_identifier",
+                "identifier",
             )
             if not name_node:
                 continue
@@ -490,22 +521,26 @@ def _extract_interface_methods(
             sig = _build_signature(child)
             ret = _build_return_type(child)
             jsdoc = _extract_jsdoc(child, source)
-            methods.append(TsDeclaration(
-                name=name,
-                kind="method",
-                line_start=child.start_point[0] + 1,
-                line_end=child.end_point[0] + 1,
-                body=_node_text(child),
-                jsdoc=jsdoc,
-                base_classes=base_classes,
-                is_abstract=False,
-                class_name=iface_name,
-                method_signature=sig,
-                return_type=ret,
-            ))
+            methods.append(
+                TsDeclaration(
+                    name=name,
+                    kind="method",
+                    line_start=child.start_point[0] + 1,
+                    line_end=child.end_point[0] + 1,
+                    body=_node_text(child),
+                    jsdoc=jsdoc,
+                    base_classes=base_classes,
+                    is_abstract=False,
+                    class_name=iface_name,
+                    method_signature=sig,
+                    return_type=ret,
+                )
+            )
         elif child.type == "property_signature" and _is_function_typed(child):
             name_node = _find_child_by_type(
-                child, "property_identifier", "identifier",
+                child,
+                "property_identifier",
+                "identifier",
             )
             if not name_node:
                 continue
@@ -528,20 +563,22 @@ def _extract_interface_methods(
                     fn_text = fn_sig
                     arrow_idx = fn_text.find("=>")
                     if arrow_idx >= 0:
-                        fn_ret = fn_text[arrow_idx + 2:].strip()
-            methods.append(TsDeclaration(
-                name=name,
-                kind="method",
-                line_start=child.start_point[0] + 1,
-                line_end=child.end_point[0] + 1,
-                body=_node_text(child),
-                jsdoc=jsdoc,
-                base_classes=base_classes,
-                is_abstract=False,
-                class_name=iface_name,
-                method_signature=fn_sig,
-                return_type=fn_ret,
-            ))
+                        fn_ret = fn_text[arrow_idx + 2 :].strip()
+            methods.append(
+                TsDeclaration(
+                    name=name,
+                    kind="method",
+                    line_start=child.start_point[0] + 1,
+                    line_end=child.end_point[0] + 1,
+                    body=_node_text(child),
+                    jsdoc=jsdoc,
+                    base_classes=base_classes,
+                    is_abstract=False,
+                    class_name=iface_name,
+                    method_signature=fn_sig,
+                    return_type=fn_ret,
+                )
+            )
 
     return methods
 
@@ -585,20 +622,24 @@ def _extract_calls(node: Node) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # Declaration types that appear inside export_statement
-_DECLARATION_TYPES = frozenset({
-    "interface_declaration",
-    "class_declaration",
-    "abstract_class_declaration",
-    "type_alias_declaration",
-    "function_declaration",
-    "enum_declaration",
-    "lexical_declaration",
-    "ambient_declaration",
-})
+_DECLARATION_TYPES = frozenset(
+    {
+        "interface_declaration",
+        "class_declaration",
+        "abstract_class_declaration",
+        "type_alias_declaration",
+        "function_declaration",
+        "enum_declaration",
+        "lexical_declaration",
+        "ambient_declaration",
+    }
+)
 
 
 def parse_ts_source(
-    source: str, *, is_tsx: bool = False,
+    source: str,
+    *,
+    is_tsx: bool = False,
 ) -> list[TsDeclaration]:
     """Parse exported TypeScript declarations from source text.
 
@@ -651,7 +692,10 @@ def parse_ts_source(
             declarations.append(decl)
             # Extract interface methods
             methods = _extract_interface_methods(
-                decl_node, decl.name, decl.base_classes, source,
+                decl_node,
+                decl.name,
+                decl.base_classes,
+                source,
             )
             declarations.extend(methods)
 
@@ -660,8 +704,11 @@ def parse_ts_source(
             declarations.append(decl)
             # Extract class methods
             methods = _extract_class_methods(
-                decl_node, decl.name, decl.base_classes,
-                decl.is_abstract, source,
+                decl_node,
+                decl.name,
+                decl.base_classes,
+                decl.is_abstract,
+                source,
             )
             declarations.extend(methods)
 

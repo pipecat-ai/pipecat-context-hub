@@ -139,9 +139,7 @@ def _generate_next_queries(
     if results:
         top = results[0]
         if top.chunk.repo:
-            suggestions.append(
-                f"More from {top.chunk.repo}: {query}"
-            )
+            suggestions.append(f"More from {top.chunk.repo}: {query}")
 
     # Cap suggestions
     return suggestions[:5]

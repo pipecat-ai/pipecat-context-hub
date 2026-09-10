@@ -180,7 +180,8 @@ def parse_rst_types(rst_path: Path) -> list[RstTypeDefinition]:
 
         # Check for list-table(s)
         table_starts = [
-            k for k in range(section_start, section_end)
+            k
+            for k in range(section_start, section_end)
             if lines[k].strip().startswith(".. list-table::")
         ]
 
@@ -189,8 +190,7 @@ def parse_rst_types(rst_path: Path) -> list[RstTypeDefinition]:
 
             # Check for "or" pattern (multiple tables under same heading)
             has_or = any(
-                lines[k].strip().lower() == "or"
-                for k in range(section_start, section_end)
+                lines[k].strip().lower() == "or" for k in range(section_start, section_end)
             )
 
             if has_or and len(table_starts) > 1:
@@ -228,7 +228,9 @@ def parse_rst_types(rst_path: Path) -> list[RstTypeDefinition]:
             content = section_text.strip()
             stripped = _strip_rst_markup(content)
             content_lines = [ln for ln in stripped.splitlines() if ln.strip()]
-            headline = _sanitize_name(content_lines[0], _MAX_DESCRIPTION_LEN) if content_lines else ""
+            headline = (
+                _sanitize_name(content_lines[0], _MAX_DESCRIPTION_LEN) if content_lines else ""
+            )
             refs = _extract_rst_refs(raw_section_text)
 
             if "|" in headline:
@@ -258,9 +260,7 @@ def parse_rst_types(rst_path: Path) -> list[RstTypeDefinition]:
     return types
 
 
-def _parse_list_table(
-    lines: list[str], table_start: int, section_end: int
-) -> list[RstField]:
+def _parse_list_table(lines: list[str], table_start: int, section_end: int) -> list[RstField]:
     """Parse a ``.. list-table::`` directive into key-value fields."""
     fields: list[RstField] = []
     i = table_start + 1
@@ -290,10 +290,12 @@ def _parse_list_table(
                 raw_value = " ".join(current_value_lines)
                 clean_value = _strip_rst_markup(raw_value)
                 clean_value = _sanitize_name(clean_value, _MAX_VALUE_TYPE_LEN)
-                fields.append(RstField(
-                    key=_sanitize_name(current_key, _MAX_FIELD_KEY_LEN),
-                    value_type=clean_value,
-                ))
+                fields.append(
+                    RstField(
+                        key=_sanitize_name(current_key, _MAX_FIELD_KEY_LEN),
+                        value_type=clean_value,
+                    )
+                )
 
             raw_key = stripped[3:].strip().strip('"')
             if raw_key in ("Key", "Value"):  # case-sensitive to avoid collisions with data fields
@@ -323,7 +325,9 @@ def _parse_list_table(
             continue
 
         # End of table (new directive or blank section)
-        if stripped.startswith("..") or (not stripped and i + 1 < section_end and not lines[i + 1].strip()):
+        if stripped.startswith("..") or (
+            not stripped and i + 1 < section_end and not lines[i + 1].strip()
+        ):
             break
 
         i += 1
@@ -333,9 +337,11 @@ def _parse_list_table(
         raw_value = " ".join(current_value_lines)
         clean_value = _strip_rst_markup(raw_value)
         clean_value = _sanitize_name(clean_value, _MAX_VALUE_TYPE_LEN)
-        fields.append(RstField(
-            key=_sanitize_name(current_key, _MAX_FIELD_KEY_LEN),
-            value_type=clean_value,
-        ))
+        fields.append(
+            RstField(
+                key=_sanitize_name(current_key, _MAX_FIELD_KEY_LEN),
+                value_type=clean_value,
+            )
+        )
 
     return fields

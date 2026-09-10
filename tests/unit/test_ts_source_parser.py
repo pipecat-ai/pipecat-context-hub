@@ -156,7 +156,7 @@ class TestClassParsing:
 
 class TestTypeAliasParsing:
     def test_simple_type(self) -> None:
-        source = 'export type ID = string;\n'
+        source = "export type ID = string;\n"
         decls = parse_ts_source(source)
         assert len(decls) == 1
         d = decls[0]
@@ -189,7 +189,7 @@ class TestTypeAliasParsing:
         assert "timeout: number" in decls[0].body
 
     def test_generic_type(self) -> None:
-        source = 'export type Callback<T> = (data: T) => void;\n'
+        source = "export type Callback<T> = (data: T) => void;\n"
         decls = parse_ts_source(source)
         assert len(decls) == 1
         assert decls[0].name == "Callback"

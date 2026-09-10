@@ -87,17 +87,23 @@ class TestIsModelCached:
     def test_cache_with_onnx_weights_reports_cached(self, tmp_path: Path):
         repo = "cross-encoder/ms-marco-MiniLM-L-6-v2"
         _write_snapshot(tmp_path, repo, ["config.json", "tokenizer.json", ONNX_WEIGHTS])
-        with patch(
-            "pipecat_context_hub.services.onnx_backend.resolve_hf_cache_dir",
-            return_value=tmp_path,
-        ), patch.dict("sys.modules", {"huggingface_hub": None}):
+        with (
+            patch(
+                "pipecat_context_hub.services.onnx_backend.resolve_hf_cache_dir",
+                return_value=tmp_path,
+            ),
+            patch.dict("sys.modules", {"huggingface_hub": None}),
+        ):
             assert is_model_cached(repo) is True
 
     def test_missing_cache_dir_reports_not_cached(self, tmp_path: Path):
-        with patch(
-            "pipecat_context_hub.services.onnx_backend.resolve_hf_cache_dir",
-            return_value=tmp_path / "does-not-exist",
-        ), patch.dict("sys.modules", {"huggingface_hub": None}):
+        with (
+            patch(
+                "pipecat_context_hub.services.onnx_backend.resolve_hf_cache_dir",
+                return_value=tmp_path / "does-not-exist",
+            ),
+            patch.dict("sys.modules", {"huggingface_hub": None}),
+        ):
             assert is_model_cached("cross-encoder/ms-marco-MiniLM-L-6-v2") is False
 
     def test_probe_target_is_the_onnx_export(self):

@@ -86,9 +86,7 @@ class TestConcurrentCrossEncoderLoad:
         if not CrossEncoderReranker.is_model_cached(reranker._model_name):
             pytest.skip("cross-encoder model not cached; run `refresh` first")
 
-        candidates = [
-            IndexResult(chunk=sample_chunked_record, score=0.5, match_type="vector")
-        ]
+        candidates = [IndexResult(chunk=sample_chunked_record, score=0.5, match_type="vector")]
         scored: list[list[IndexResult]] = []
         lock = threading.Lock()
 

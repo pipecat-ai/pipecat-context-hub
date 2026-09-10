@@ -280,9 +280,7 @@ def _evaluate_search_examples(case: QualityCase, output: SearchExamplesOutput) -
     ]
     coverage, matched = _coverage_score(texts, case.alias_groups)
     repo_matches = [
-        hit.repo
-        for hit in hits[:5]
-        if not case.expected_repos or hit.repo in case.expected_repos
+        hit.repo for hit in hits[:5] if not case.expected_repos or hit.repo in case.expected_repos
     ]
     repo_score = (len(repo_matches) / min(len(hits), 5)) if hits else 0.0
     parts = {
@@ -318,9 +316,7 @@ def _evaluate_search_api(case: QualityCase, output: SearchApiOutput) -> dict[str
     coverage, matched = _coverage_score(texts, case.alias_groups)
     preferred = 0.0
     if case.preferred_chunk_types and hits:
-        preferred_hits = [
-            hit for hit in hits[:3] if hit.chunk_type in case.preferred_chunk_types
-        ]
+        preferred_hits = [hit for hit in hits[:3] if hit.chunk_type in case.preferred_chunk_types]
         preferred = len(preferred_hits) / min(len(hits), 3)
     parts = {
         "hits": 1.0 if hits else 0.0,
@@ -341,10 +337,7 @@ def _evaluate_search_api(case: QualityCase, output: SearchApiOutput) -> dict[str
 
 def _evaluate_get_code_snippet(case: QualityCase, output: GetCodeSnippetOutput) -> dict[str, Any]:
     snippets = output.snippets
-    texts = [
-        " ".join([snippet.path, snippet.content])
-        for snippet in snippets[:3]
-    ]
+    texts = [" ".join([snippet.path, snippet.content]) for snippet in snippets[:3]]
     coverage, matched = _coverage_score(texts, case.alias_groups)
     repo_score = 0.0
     if snippets and case.expected_repos:
@@ -355,9 +348,7 @@ def _evaluate_get_code_snippet(case: QualityCase, output: GetCodeSnippetOutput) 
     path_score = 1.0
     if snippets and case.expected_path_fragments:
         path_lower = snippets[0].path.lower()
-        path_score = float(
-            any(fragment in path_lower for fragment in case.expected_path_fragments)
-        )
+        path_score = float(any(fragment in path_lower for fragment in case.expected_path_fragments))
     elif not snippets and case.expected_path_fragments:
         path_score = 0.0
     parts = {
@@ -510,8 +501,7 @@ class TestRetrievalQuality:
         )
         if live_quality_context["extra_repos"]:
             print(
-                "  "
-                "warning: extra repos detected; thresholds are informational only for this run."
+                "  warning: extra repos detected; thresholds are informational only for this run."
             )
         print("-" * 88)
         print(f"  {'case':<36} {'tool':<18} {'score':>5}  {'status':<5}  top result")
