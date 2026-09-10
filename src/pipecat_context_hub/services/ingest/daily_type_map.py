@@ -73,5 +73,3 @@ ALL_METHOD_TYPES: dict[str, list[str]] = {
     **CALL_CLIENT_METHOD_TYPES,
     **EVENT_HANDLER_PARAM_TYPES,
 }
-
-

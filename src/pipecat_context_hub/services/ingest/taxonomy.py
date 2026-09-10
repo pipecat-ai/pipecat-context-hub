@@ -131,6 +131,7 @@ _TOPIC_TAG_OVERRIDES: dict[str, list[str]] = {
     "realtime": ["realtime", "voice-ai"],
 }
 
+
 def _infer_tags_from_topic(topic_name: str) -> list[CapabilityTag]:
     """Derive capability tags from a topic directory name.
 
@@ -325,7 +326,9 @@ class TaxonomyBuilder:
         ``_discover_root_level_examples`` falls back to repo root.
         """
         entry = self._build_entry_for_example(
-            root, repo=repo, commit_sha=commit_sha,
+            root,
+            repo=repo,
+            commit_sha=commit_sha,
         )
         entry = entry.model_copy(update={"path": "."})
         self._entries.append(entry)
@@ -460,12 +463,8 @@ class TaxonomyBuilder:
             entries.extend(sibling_entries)
             self._entries.extend(sibling_entries)
             return entries
-        if examples_dir.is_dir() and any(
-            p.is_dir() for p in examples_dir.iterdir()
-        ):
-            return self.build_from_topic_dirs(
-                examples_dir, repo=repo, commit_sha=commit_sha
-            )
+        if examples_dir.is_dir() and any(p.is_dir() for p in examples_dir.iterdir()):
+            return self.build_from_topic_dirs(examples_dir, repo=repo, commit_sha=commit_sha)
         # Root-level fallback (``pipecat-examples`` layout). When the repo
         # root also looks like a packaged project (contains ``src/`` or
         # ``pyproject.toml``), require_example_markers=True keeps junk

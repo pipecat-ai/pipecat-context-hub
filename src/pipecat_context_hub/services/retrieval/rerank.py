@@ -322,7 +322,13 @@ def apply_code_intent_heuristics(
 _MAX_SAME_SOURCE = 3
 
 # Chunk-type preference order for search_api results (lower index = higher preference).
-_CHUNK_TYPE_PREFERENCE = {"method": 0, "function": 1, "type_definition": 2, "class_overview": 3, "module_overview": 4}
+_CHUNK_TYPE_PREFERENCE = {
+    "method": 0,
+    "function": 1,
+    "type_definition": 2,
+    "class_overview": 3,
+    "module_overview": 4,
+}
 
 
 def _apply_diversity(
@@ -350,8 +356,7 @@ def _apply_diversity(
     # Apply chunk-type preference boost for source content (search_api)
     # only when chunk_type is not explicitly filtered.
     apply_chunk_pref = (
-        "chunk_type" not in effective_filters
-        and effective_filters.get("content_type") == "source"
+        "chunk_type" not in effective_filters and effective_filters.get("content_type") == "source"
     )
 
     # Phase 1: apply chunk-type preference boost
@@ -465,7 +470,11 @@ def rerank(
 
     # Apply heuristics then diversity
     heuristic_results, compat_map = apply_code_intent_heuristics(
-        merged, rrf_scores, query, dual_hit_ids=dual_hit_ids, now=now,
+        merged,
+        rrf_scores,
+        query,
+        dual_hit_ids=dual_hit_ids,
+        now=now,
         pipecat_version=pipecat_version,
     )
     return _apply_diversity(heuristic_results, filters=filters), compat_map

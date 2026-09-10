@@ -67,7 +67,5 @@ def test_no_junk_entries(fixture_repo_root: Path) -> None:
 
 def test_capability_tags_non_empty(fixture_repo_root: Path) -> None:
     builder = TaxonomyBuilder()
-    builder.build_from_directory(
-        fixture_repo_root, repo="fixture", commit_sha="SYNTHETIC"
-    )
+    builder.build_from_directory(fixture_repo_root, repo="fixture", commit_sha="SYNTHETIC")
     assert_capability_tags_non_empty(builder)

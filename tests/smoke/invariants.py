@@ -131,6 +131,4 @@ def assert_capability_tags_non_empty(builder: TaxonomyBuilder) -> None:
     entries = builder.entries
     assert entries, "Builder has no accumulated entries to check for capability tags"
     tagless = [entry.path for entry in entries if not entry.capabilities]
-    assert not tagless, (
-        f"Taxonomy entries with empty capability_tags: {tagless!r}"
-    )
+    assert not tagless, f"Taxonomy entries with empty capability_tags: {tagless!r}"

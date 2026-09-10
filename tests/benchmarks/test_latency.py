@@ -144,6 +144,7 @@ class TestComponentLatency:
 
     def test_rerank_latency(self):
         """rerank() with 20+20 results should be <10ms."""
+
         def _make_result(i: int, match_type: Literal["vector", "keyword"]) -> IndexResult:
             return IndexResult(
                 chunk=ChunkedRecord(
@@ -161,9 +162,7 @@ class TestComponentLatency:
         vector_results = [_make_result(i, "vector") for i in range(20)]
         keyword_results = [_make_result(i, "keyword") for i in range(20)]
 
-        stats = _measure(
-            lambda: rerank(vector_results, keyword_results, "pipecat Pipeline setup")
-        )
+        stats = _measure(lambda: rerank(vector_results, keyword_results, "pipecat Pipeline setup"))
         _report("rerank", stats)
         assert stats["median_ms"] < 10, f"rerank too slow: {stats['median_ms']:.1f}ms"
 
@@ -278,16 +277,29 @@ class TestLatencySummary:
         example_id = code_results[0].chunk.chunk_id if code_results else "code-missing"
 
         tools = [
-            ("search_docs", lambda: bench_retriever.search_docs(
-                SearchDocsInput(query="configure TTS", limit=5))),
-            ("search_examples", lambda: bench_retriever.search_examples(
-                SearchExamplesInput(query="voice bot ElevenLabs", limit=5))),
-            ("get_doc", lambda: bench_retriever.get_doc(
-                GetDocInput(doc_id=doc_id))),
-            ("get_example", lambda: bench_retriever.get_example(
-                GetExampleInput(example_id=example_id))),
-            ("get_code_snippet", lambda: bench_retriever.get_code_snippet(
-                GetCodeSnippetInput(intent="create pipeline with TTS"))),
+            (
+                "search_docs",
+                lambda: bench_retriever.search_docs(
+                    SearchDocsInput(query="configure TTS", limit=5)
+                ),
+            ),
+            (
+                "search_examples",
+                lambda: bench_retriever.search_examples(
+                    SearchExamplesInput(query="voice bot ElevenLabs", limit=5)
+                ),
+            ),
+            ("get_doc", lambda: bench_retriever.get_doc(GetDocInput(doc_id=doc_id))),
+            (
+                "get_example",
+                lambda: bench_retriever.get_example(GetExampleInput(example_id=example_id)),
+            ),
+            (
+                "get_code_snippet",
+                lambda: bench_retriever.get_code_snippet(
+                    GetCodeSnippetInput(intent="create pipeline with TTS")
+                ),
+            ),
         ]
 
         print("\n" + "=" * 72)

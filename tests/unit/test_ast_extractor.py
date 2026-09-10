@@ -519,7 +519,7 @@ class TestPosOnlyWithSlashSeparator:
         func = info.functions[0]
         param_names = [p.name for p in func.parameters]
         slash_idx = param_names.index("/")
-        assert "c" in param_names[slash_idx + 1:]
+        assert "c" in param_names[slash_idx + 1 :]
 
     def test_posonly_annotations(self):
         info = extract_module_info(self.SOURCE, "test_mod")
@@ -632,49 +632,49 @@ class TestYieldExtraction:
 
     def test_bare_yield_skipped(self):
         """Bare ``yield variable`` without Call wrapper is skipped."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Proc:
                 def gen(self):
                     frame = make_frame()
                     yield frame
                     yield None
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.yields == []
 
     def test_yield_from_excluded(self):
         """``yield from gen()`` is excluded — generator name is not a frame type."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Proc:
                 def gen(self):
                     yield from generate_frames()
                     yield from FrameFactory.create()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.yields == []
 
     def test_no_yields_empty_list(self):
         """Methods without yields have an empty yields list."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Proc:
                 def process(self, x):
                     return x + 1
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.yields == []
 
     def test_duplicate_yields_deduplicated(self):
         """Same frame type yielded multiple times appears once."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Proc:
                 def gen(self):
                     yield AudioFrame(data=b"a")
                     yield AudioFrame(data=b"b")
                     yield StopFrame()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.yields == ["AudioFrame", "StopFrame"]
@@ -688,14 +688,14 @@ class TestYieldExtraction:
 class TestCallExtraction:
     """Verify method call extraction from function bodies."""
 
-    SOURCE = textwrap.dedent('''\
+    SOURCE = textwrap.dedent("""\
         class MyProcessor(FrameProcessor):
             async def process_frame(self, frame):
                 await super().process_frame(frame)
                 result = self.transform(frame)
                 await self.push_frame(OutputFrame(data=result))
                 logger.info("done")
-    ''')
+    """)
 
     def test_self_calls(self):
         info = extract_module_info(self.SOURCE, "test_mod")
@@ -717,25 +717,25 @@ class TestCallExtraction:
 
     def test_class_method_call(self):
         """ClassName.method() pattern is captured."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Foo:
                 def bar(self):
                     result = Helper.convert(data)
                     return result
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert "Helper.convert" in method.calls
 
     def test_await_self_call(self):
         """``await self.method()`` is captured (ast.walk traverses into Await)."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Svc:
                 async def run(self):
                     await self.start()
                     await self.push_frame(Frame())
                     return None
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert "start" in method.calls
@@ -743,38 +743,38 @@ class TestCallExtraction:
 
     def test_no_calls_empty_list(self):
         """Methods without relevant calls have an empty list."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Foo:
                 def bar(self):
                     x = len([1, 2, 3])
                     return x
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.calls == []
 
     def test_duplicate_calls_deduplicated(self):
         """Same method called multiple times appears once."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Foo:
                 def bar(self):
                     self.push(1)
                     self.push(2)
                     self.push(3)
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.calls == ["push"]
 
     def test_private_method_call(self):
         """self._private_method() is captured."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Svc:
                 def run(self):
                     self._setup()
                     self.__internal()
                     return None
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert "_setup" in method.calls
@@ -782,11 +782,11 @@ class TestCallExtraction:
 
     def test_top_level_function_calls(self):
         """Top-level functions also extract calls."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             def helper():
                 result = Manager.process(data)
                 return result
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert "Manager.process" in func.calls
@@ -825,7 +825,7 @@ class TestNestedFunctionBoundary:
 
     def test_nested_async_excluded(self):
         """Nested async def should not leak calls to outer."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Svc:
                 async def run(self):
                     self.start()
@@ -835,7 +835,7 @@ class TestNestedFunctionBoundary:
                         yield EventFrame()
 
                     return on_event
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         run_method = info.classes[0].methods[0]
         assert run_method.name == "run"
@@ -845,13 +845,13 @@ class TestNestedFunctionBoundary:
 
     def test_lambda_calls_excluded(self):
         """Lambda body calls should not leak to the enclosing method."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Svc:
                 def setup(self):
                     self.start()
                     cb = lambda: self.push_frame(Frame())
                     return cb
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.name == "setup"
@@ -860,44 +860,44 @@ class TestNestedFunctionBoundary:
 
     def test_lambda_yields_excluded(self):
         """Lambda body yields should not leak to the enclosing function."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             def outer():
                 gen = lambda: (yield AudioFrame())
                 return gen
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert func.yields == []
 
     def test_comprehension_calls_included(self):
         """Calls inside comprehensions ARE included (intentional — part of method logic)."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Proc:
                 def run(self):
                     results = [self.transform(x) for x in items]
                     return results
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert "transform" in method.calls
 
     def test_yield_from_variable_skipped(self):
         """``yield from self._frames`` (non-Call value) is skipped."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Proc:
                 def gen(self):
                     yield from self._frames
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         assert info.classes[0].methods[0].yields == []
 
     def test_chained_attribute_call_excluded(self):
         """``self.get_transport().send()`` — the chained .send() is not captured."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Svc:
                 def run(self):
                     self.get_transport().send(data)
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         # self.get_transport() is a self.method() call — captured.
@@ -911,12 +911,12 @@ class TestDecoratorAndDefaultExclusion:
 
     def test_decorator_calls_excluded(self):
         """Calls in decorators should not appear in method calls."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Svc:
                 @Router.route("/path")
                 def handle(self):
                     self.process()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert "process" in method.calls
@@ -925,11 +925,11 @@ class TestDecoratorAndDefaultExclusion:
 
     def test_default_value_calls_excluded(self):
         """Calls in parameter defaults should not appear in method calls."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Svc:
                 def run(self, config=Config.default()):
                     self.start()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert "start" in method.calls
@@ -937,12 +937,12 @@ class TestDecoratorAndDefaultExclusion:
 
     def test_return_annotation_excluded(self):
         """Calls in return annotations should not appear in method calls."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Svc:
                 def run(self) -> Optional[Frame]:
                     self.start()
                     return None
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert "start" in method.calls
@@ -955,28 +955,28 @@ class TestCallExtractionOrder:
 
     def test_calls_in_source_order(self):
         """Calls should appear in the order they first occur in source."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Proc:
                 def run(self):
                     self.first()
                     if True:
                         self.second()
                     self.third()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.calls == ["first", "second", "third"]
 
     def test_yields_in_source_order(self):
         """Yields should appear in the order they first occur in source."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             class Gen:
                 def run(self):
                     yield AlphaFrame()
                     if True:
                         yield BetaFrame()
                     yield GammaFrame()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.yields == ["AlphaFrame", "BetaFrame", "GammaFrame"]
@@ -993,8 +993,11 @@ class TestBuildImportNameMap:
     def test_from_import_multi_name(self):
         """Multi-name from-import maps each name to its own per-alias string."""
         import ast
+
         tree = ast.parse("from pipecat.frames import A, B")
-        nodes = [n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+        nodes = [
+            n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
         result = _build_import_name_map(nodes)
         assert result["A"] == "from pipecat.frames import A"
         assert result["B"] == "from pipecat.frames import B"
@@ -1002,8 +1005,11 @@ class TestBuildImportNameMap:
     def test_from_import_alias(self):
         """Aliased import maps the alias, not the original name."""
         import ast
+
         tree = ast.parse("from pipecat.foo import Bar as Baz")
-        nodes = [n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+        nodes = [
+            n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
         result = _build_import_name_map(nodes)
         assert "Baz" in result
         assert "Bar" not in result
@@ -1012,8 +1018,11 @@ class TestBuildImportNameMap:
     def test_import_dotted(self):
         """import X.Y.Z maps the leftmost component X."""
         import ast
+
         tree = ast.parse("import pipecat.services.tts")
-        nodes = [n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+        nodes = [
+            n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
         result = _build_import_name_map(nodes)
         assert "pipecat" in result
         assert result["pipecat"] == "import pipecat.services.tts"
@@ -1021,8 +1030,11 @@ class TestBuildImportNameMap:
     def test_relative_import(self):
         """Relative imports are included in the map."""
         import ast
+
         tree = ast.parse("from .utils import helper")
-        nodes = [n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+        nodes = [
+            n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
         result = _build_import_name_map(nodes)
         assert "helper" in result
         assert result["helper"] == "from .utils import helper"
@@ -1030,8 +1042,11 @@ class TestBuildImportNameMap:
     def test_import_with_alias(self):
         """import X as Y maps Y."""
         import ast
+
         tree = ast.parse("import pipecat as pc")
-        nodes = [n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+        nodes = [
+            n for n in ast.iter_child_nodes(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
         result = _build_import_name_map(nodes)
         assert "pc" in result
         assert "pipecat" not in result
@@ -1042,7 +1057,7 @@ class TestPerMethodImports:
 
     def test_method_gets_only_used_imports(self):
         """Method imports contain only what the method body references."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame
             from pipecat.frames import VideoFrame
             from pipecat.services import TTSService
@@ -1051,7 +1066,7 @@ class TestPerMethodImports:
                 def handle_audio(self):
                     frame = AudioFrame()
                     return frame
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert len(method.imports) == 1
@@ -1062,21 +1077,21 @@ class TestPerMethodImports:
 
     def test_method_with_no_imports(self):
         """Method that references no imports gets empty list."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame
 
             class Processor:
                 def no_imports(self):
                     x = 1
                     return x
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.imports == []
 
     def test_two_methods_different_imports(self):
         """Two methods in same class get different import subsets."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame
             from pipecat.frames import VideoFrame
 
@@ -1085,7 +1100,7 @@ class TestPerMethodImports:
                     return AudioFrame()
                 def video(self):
                     return VideoFrame()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         audio = info.classes[0].methods[0]
         video = info.classes[0].methods[1]
@@ -1096,7 +1111,7 @@ class TestPerMethodImports:
 
     def test_stdlib_imports_excluded(self):
         """Non-pipecat imports are filtered out."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             import os
             from pipecat.frames import AudioFrame
 
@@ -1104,7 +1119,7 @@ class TestPerMethodImports:
                 path = os.getcwd()
                 frame = AudioFrame()
                 return frame
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert any("AudioFrame" in i for i in func.imports)
@@ -1112,25 +1127,25 @@ class TestPerMethodImports:
 
     def test_relative_import_included(self):
         """Relative pipecat imports are included."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from .utils import helper
 
             def process():
                 return helper()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert any("helper" in i for i in func.imports)
 
     def test_aliased_import_matched(self):
         """Aliased imports are matched by the alias name in the body."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame as AF
 
             class Processor:
                 def handle(self):
                     return AF()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert len(method.imports) == 1
@@ -1138,7 +1153,7 @@ class TestPerMethodImports:
 
     def test_nested_function_scope_boundary(self):
         """Imports used only in nested functions are not attributed to outer."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame
             from pipecat.frames import VideoFrame
 
@@ -1148,7 +1163,7 @@ class TestPerMethodImports:
                     def inner():
                         VideoFrame()
                     return frame
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert len(method.imports) == 1
@@ -1160,12 +1175,12 @@ class TestPerMethodImportEdgeCases:
 
     def test_multi_name_import_only_used_name(self):
         """from X import A, B where only A is used reports only A's import."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame, VideoFrame
 
             def process():
                 return AudioFrame()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert len(func.imports) == 1
@@ -1174,52 +1189,52 @@ class TestPerMethodImportEdgeCases:
 
     def test_shadowed_parameter_excluded(self):
         """Parameter that shadows an import name is not counted as import usage."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame
 
             class Processor:
                 def handle(self, AudioFrame):
                     return AudioFrame
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         method = info.classes[0].methods[0]
         assert method.imports == []
 
     def test_shadowed_assignment_excluded(self):
         """Local assignment that shadows an import is not counted."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame
 
             def process():
                 AudioFrame = "not a frame"
                 return AudioFrame
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert func.imports == []
 
     def test_local_from_import_shadows_module_import(self):
         """Local from-import inside function body shadows the module-level import."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame
 
             def process():
                 from local import AudioFrame
                 return AudioFrame()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert func.imports == []
 
     def test_local_import_as_shadows_module_import(self):
         """Local import-as inside function body shadows the module-level import."""
-        source = textwrap.dedent('''\
+        source = textwrap.dedent("""\
             from pipecat.frames import AudioFrame
 
             def process():
                 import local as AudioFrame
                 return AudioFrame()
-        ''')
+        """)
         info = extract_module_info(source, "test_mod")
         func = info.functions[0]
         assert func.imports == []
