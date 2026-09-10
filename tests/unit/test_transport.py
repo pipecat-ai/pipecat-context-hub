@@ -351,7 +351,7 @@ class TestRunStdioWatchdogWiring:
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
-        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+        async def fake_stdio_server(**_kwargs: object) -> AsyncIterator[tuple[None, None]]:
             yield (None, None)
 
         with patch.object(transport, "stdio_server", fake_stdio_server):
@@ -392,7 +392,7 @@ class TestRunStdioWatchdogWiring:
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
-        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+        async def fake_stdio_server(**_kwargs: object) -> AsyncIterator[tuple[None, None]]:
             yield (None, None)
 
         with patch.object(transport, "stdio_server", fake_stdio_server):
@@ -433,7 +433,7 @@ class TestRunStdioWatchdogWiring:
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
-        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+        async def fake_stdio_server(**_kwargs: object) -> AsyncIterator[tuple[None, None]]:
             yield (None, None)
 
         exit_calls: list[int] = []
@@ -488,7 +488,7 @@ class TestRunStdioWatchdogWiring:
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
-        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+        async def fake_stdio_server(**_kwargs: object) -> AsyncIterator[tuple[None, None]]:
             yield (None, None)
 
         exit_calls: list[int] = []

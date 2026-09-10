@@ -705,7 +705,7 @@ probe passes the locked, floor, and newest in-range SDK environments.
 
 - [x] Phase 0: Bump the dependency now, then spike the two open questions
 - [x] Phase 1: `main.py` migration
-- [ ] Phase 2: `transport.py` migration
+- [x] Phase 2: `transport.py` migration
 - [ ] Phase 3: Test suite migration
 - [ ] Phase 4: Live verification + release
 
@@ -784,3 +784,14 @@ directly with `ctx=None` because the handlers do not read request context; the
 real `Server.run` context and stdio path are reserved for Phase 2's portable
 integration test. This is a deliberate small unit seam, not a mock of MCP
 dispatch internals.
+
+**2026-09-10, Phase 2 conduct run:** `run_stdio()` now keeps caller-owned
+stdio handles, wraps explicit UTF-8 streams with `anyio.wrap_file()`, and
+removes the obsolete direct-fd close workaround. The permanent subprocess
+wire test passed with initialize/initialized, independently pinned tools/list
+names and schemas, ping, real tool calls, both `get_hub_status` branches,
+generic/unknown/validation errors, raw UTF-8 response bytes, and a bounded
+pipe reader. The graceful orphan-watchdog assertion passed with the
+`parent_died` marker and without the hard-exit fallback. The Phase 2 command
+passed 39 tests; the named end-to-end, report-hint, and concurrent-model-load
+regressions passed 47 tests; Ruff passed.

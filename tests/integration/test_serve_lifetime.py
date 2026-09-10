@@ -416,12 +416,14 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
     """
     wrapper = tmp_path / "wrapper.py"
     init_payload = _initialize_payload().decode()
+    err_r, err_w = os.pipe()
     wrapper.write_text(
         textwrap.dedent(
             f"""
             import os, select, subprocess, sys, time
             r, w = os.pipe()
             out_r, out_w = os.pipe()
+            err_w = {err_w}
             # Holder inherits both `w` and `out_r` so serve's stdin stays
             # open (no EOF) AND serve's stdout has a reader (no SIGPIPE)
             # after the wrapper exits.
@@ -440,12 +442,13 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
                 {_serve_cmd(direct=True)!r},
                 stdin=r,
                 stdout=out_w,
-                stderr=subprocess.DEVNULL,
+                stderr=err_w,
                 env=env,
             )
             # Release wrapper's copies of the child ends.
             os.close(r)
             os.close(out_w)
+            os.close(err_w)
             # Send initialize and wait for response — confirms serve is
             # past startup before we orphan it.
             os.write(w, {init_payload!r}.encode())
@@ -478,9 +481,11 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
         wrapper_proc = subprocess.run(
             [sys.executable, str(wrapper)],
             capture_output=True,
+            pass_fds=(err_w,),
             timeout=60,
             check=True,
         )
+        os.close(err_w)
     except subprocess.CalledProcessError as exc:
         pytest.fail(
             f"wrapper exited with {exc.returncode}. stderr:\n{exc.stderr.decode(errors='replace')}"
@@ -488,6 +493,7 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
     serve_pid_str, holder_pid_str = wrapper_proc.stdout.decode().strip().split()
     serve_pid = int(serve_pid_str)
     holder_pid = int(holder_pid_str)
+    watchdog_start = time.monotonic()
 
     try:
         # Sanity: holder must still be alive — otherwise we'd be testing
@@ -506,25 +512,33 @@ def test_orphaned_serve_exits_via_watchdog(tmp_path: Path, seeded_home: Path) ->
         # in the wrapper), so this is a pure measurement of watchdog
         # latency after the PPID flip.
         deadline = time.time() + 15
+        exited_after = None
         while time.time() < deadline:
             try:
                 os.kill(serve_pid, 0)
             except ProcessLookupError:
-                return  # exited as expected, watchdog fired
+                exited_after = time.monotonic() - watchdog_start
+                break
             time.sleep(0.5)
 
-        # Still alive — fail.
-        try:
-            os.kill(serve_pid, 9)
-        except ProcessLookupError:
-            pass
-        pytest.fail(
-            f"serve PID {serve_pid} still alive 15s after parent died "
-            f"(holder PID {holder_pid} kept stdin open, so watchdog must fire)"
-        )
+        if exited_after is None:
+            try:
+                os.kill(serve_pid, 9)
+            except ProcessLookupError:
+                pass
+            pytest.fail(
+                f"serve PID {serve_pid} still alive 15s after parent died "
+                f"(holder PID {holder_pid} kept stdin open, so watchdog must fire)"
+            )
+
+        stderr = os.read(err_r, 65536).decode(errors="replace")
+        assert "Shutting down: parent_died" in stderr, stderr
+        assert "pipecat-context-hub: client gone; fast-exiting after" not in stderr
+        assert exited_after < 2.5, f"graceful watchdog shutdown took {exited_after:.2f}s"
     finally:
         # Cleanup holder regardless of pass/fail.
         try:
             os.kill(holder_pid, 9)
         except ProcessLookupError:
             pass
+        os.close(err_r)
