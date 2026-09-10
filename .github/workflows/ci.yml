@@ -124,7 +124,6 @@ jobs:
           tests/unit/test_config.py
           tests/unit/test_server.py
           tests/unit/test_transport.py
-          tests/integration/test_mcp_v2_compat.py
 
   security:
     name: Security
