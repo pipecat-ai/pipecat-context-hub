@@ -313,26 +313,31 @@ async def _probe_once() -> dict[str, Any]:
     }
 
 
+def _matrix_command(script: Path, requirement: str) -> list[str]:
+    return [
+        "uv",
+        "run",
+        "--isolated",
+        "--no-project",
+        "--with",
+        requirement,
+        "--with",
+        "anyio",
+        "--with",
+        "pydantic",
+        "--with",
+        "packaging",
+        "python",
+        str(script),
+        "--single",
+    ]
+
+
 def _run_matrix(script: Path) -> int:
     specs = [("floor_2x", "mcp==2.0.*"), ("newest_2x", "mcp>=2,<3")]
     print(json.dumps({"matrix": "locked", "result": anyio.run(_probe_once)}, ensure_ascii=False))
     for label, requirement in specs:
-        command = [
-            "uv",
-            "run",
-            "--isolated",
-            "--with",
-            requirement,
-            "--with",
-            "anyio",
-            "--with",
-            "pydantic",
-            "--with",
-            "packaging",
-            "python",
-            str(script),
-            "--single",
-        ]
+        command = _matrix_command(script, requirement)
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         print(json.dumps({"matrix": label, "returncode": completed.returncode}))
         if completed.stdout:
