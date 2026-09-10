@@ -296,14 +296,10 @@ class TestOnceFlag:
         )
         result = subprocess.run(
             [sys.executable, "-c", probe],
-            capture_output=True,
-            text=True,
             timeout=15.0,
             check=False,
         )
-        assert result.returncode == 0, (
-            f"concurrency probe failed:\nstdout={result.stdout}\nstderr={result.stderr}"
-        )
+        assert result.returncode == 0, "concurrency probe failed; see child output above"
 
 
 class TestIntermediateLaunchers:
