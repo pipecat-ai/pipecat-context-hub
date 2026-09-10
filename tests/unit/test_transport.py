@@ -251,17 +251,16 @@ class TestOnceFlag:
     def test_concurrent_acquire_latches_once(self) -> None:
         """Under concurrent contention, exactly one thread wins."""
         import threading
+        import time
 
         flag = transport._OnceFlag()
         winners: list[bool] = []
         lock = threading.Lock()
         worker_count = 20
-        start = threading.Barrier(worker_count + 1)
+        start = threading.Event()
 
         def _try() -> None:
-            try:
-                start.wait(timeout=5.0)
-            except threading.BrokenBarrierError:
+            if not start.wait(timeout=5.0):
                 return
             won = flag.acquire()
             with lock:
@@ -270,17 +269,12 @@ class TestOnceFlag:
         threads = [threading.Thread(target=_try) for _ in range(worker_count)]
         for t in threads:
             t.start()
+        start.set()
 
-        main_released = True
-        try:
-            start.wait(timeout=5.0)
-        except threading.BrokenBarrierError:
-            main_released = False
-
+        deadline = time.monotonic() + 5.0
         for t in threads:
-            t.join(timeout=5.0)
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
         assert all(not t.is_alive() for t in threads), "worker thread did not exit"
-        assert main_released, "contention workers did not reach the start gate"
         assert len(winners) == worker_count
         assert sum(winners) == 1, f"expected exactly one winner, got {sum(winners)}"
 
