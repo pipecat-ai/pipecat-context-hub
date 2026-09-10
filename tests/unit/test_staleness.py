@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -161,7 +162,7 @@ class TestBothFrontDoors:
             entry = server.get_request_handler("tools/call")
             assert entry is not None
             result = await entry.handler(
-                None,
+                cast(Any, None),
                 types.CallToolRequestParams(name="check_deprecation", arguments={"symbol": "X"}),
             )
             assert isinstance(result, types.CallToolResult)

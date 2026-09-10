@@ -11,7 +11,7 @@ Tests cover:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -202,7 +202,7 @@ class TestToolRegistration:
         # Age the tracker, then fire the handler; touch() must reset it.
         tracker._last -= 1000.0
         assert tracker.seconds_since_last() >= 1000.0
-        result = await entry.handler(None, None)
+        result = await entry.handler(cast(Any, None), None)
         assert isinstance(result, types.ListToolsResult)
         assert tracker.seconds_since_last() < 1.0
 
@@ -218,7 +218,7 @@ class TestToolRegistration:
 
         tracker._last -= 1000.0
         assert tracker.seconds_since_last() >= 1000.0
-        result = await entry.handler(None, request)
+        result = await entry.handler(cast(Any, None), request)
         assert isinstance(result, types.CallToolResult)
         assert tracker.seconds_since_last() < 1.0
 
@@ -237,7 +237,8 @@ class TestToolRegistration:
 
         tracker._last -= 1000.0
         assert tracker.seconds_since_last() >= 1000.0
-        result = await entry.handler(None, None)
+        assert entry.params_type is types.RequestParams
+        result = await entry.handler(cast(Any, None), None)
         assert tracker.seconds_since_last() < 1.0
         # Built-in ping still returns an EmptyResult.
         assert isinstance(result, types.EmptyResult)
@@ -249,7 +250,7 @@ class TestToolRegistration:
         server = create_server(mock_retriever)  # no idle_tracker
         entry = server.get_request_handler("ping")
         assert entry is not None
-        result = await entry.handler(None, None)
+        result = await entry.handler(cast(Any, None), None)
         assert isinstance(result, types.EmptyResult)
 
 
@@ -269,7 +270,7 @@ class TestToolDispatch:
         server = create_server(mock_retriever)
         entry = server.get_request_handler("tools/list")
         assert entry is not None
-        result = await entry.handler(None, None)
+        result = await entry.handler(cast(Any, None), None)
         assert isinstance(result, types.ListToolsResult)
         assert {tool.name for tool in result.tools} == {name for name, _, _ in _BASE_TOOLS}
         assert all(isinstance(tool, types.Tool) for tool in result.tools)
@@ -279,7 +280,7 @@ class TestToolDispatch:
         server = create_server(mock_retriever, index_store=MagicMock())
         entry = server.get_request_handler("tools/list")
         assert entry is not None
-        result = await entry.handler(None, None)
+        result = await entry.handler(cast(Any, None), None)
         assert isinstance(result, types.ListToolsResult)
         assert {tool.name for tool in result.tools} == {
             name for name, _, _ in (*_BASE_TOOLS, _HUB_STATUS_TOOL)
@@ -291,7 +292,7 @@ class TestToolDispatch:
         assert entry is not None
         with pytest.raises(ValueError, match=r"^Unknown tool: missing_tool$"):
             await entry.handler(
-                None,
+                cast(Any, None),
                 types.CallToolRequestParams(name="missing_tool", arguments={}),
             )
 
@@ -302,7 +303,7 @@ class TestToolDispatch:
         assert entry is not None
         with pytest.raises(RuntimeError, match=r"^backend exploded$"):
             await entry.handler(
-                None,
+                cast(Any, None),
                 types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
             )
 
@@ -311,7 +312,7 @@ class TestToolDispatch:
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         result = await entry.handler(
-            None,
+            cast(Any, None),
             types.CallToolRequestParams(name="get_doc", arguments={}),
         )
         assert isinstance(result, types.CallToolResult)
@@ -330,7 +331,7 @@ class TestToolDispatch:
         assert entry is not None
         with pytest.raises(RuntimeError, match="backend exploded"):
             await entry.handler(
-                None,
+                cast(Any, None),
                 types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
             )
         tracker.begin.assert_called_once()

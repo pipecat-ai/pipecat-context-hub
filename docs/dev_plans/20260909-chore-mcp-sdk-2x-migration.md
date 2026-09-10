@@ -706,7 +706,7 @@ probe passes the locked, floor, and newest in-range SDK environments.
 - [x] Phase 0: Bump the dependency now, then spike the two open questions
 - [x] Phase 1: `main.py` migration
 - [x] Phase 2: `transport.py` migration
-- [ ] Phase 3: Test suite migration
+- [x] Phase 3: Test suite migration
 - [ ] Phase 4: Live verification + release
 
 ## Findings
@@ -795,3 +795,13 @@ pipe reader. The graceful orphan-watchdog assertion passed with the
 `parent_died` marker and without the hard-exit fallback. The Phase 2 command
 passed 39 tests; the named end-to-end, report-hint, and concurrent-model-load
 regressions passed 47 tests; Ruff passed.
+
+**2026-09-10, Phase 3 conduct run:** the Windows smoke job now includes
+`test_server.py`, transport-unit coverage, and `test_mcp_v2_compat.py`. The
+full quality gate passed with 1,818 tests and 7 skips; Ruff and mypy passed,
+and `tests/smoke/` passed 10 tests. The relevant integration set passed 12
+tests. Collection comparison against Phase 3 base `f4d7867` found 1,824 base
+nodes and 1,825 current nodes, with zero removals and one intentional new node:
+`tests/unit/test_transport.py::TestExplicitStdioStreams::test_run_stdio_passes_explicit_utf8_streams`.
+The compatibility helper's stderr diagnostics use a bounded pipe drain, so
+the timeout path cannot block on an empty child stderr stream.

@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -82,7 +83,7 @@ class TestToolCommandParity:
         assert list_entry is not None
 
         async def _list_tools():
-            return await list_entry.handler(None, None)
+            return await list_entry.handler(cast(Any, None), None)
 
         import asyncio
 

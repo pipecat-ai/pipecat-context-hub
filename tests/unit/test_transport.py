@@ -540,3 +540,39 @@ class TestRunStdioWatchdogWiring:
         assert shutdown_cb_calls == ["called"], (
             f"shutdown callback must still run once in safe mode: {shutdown_cb_calls}"
         )
+
+
+class TestExplicitStdioStreams:
+    @pytest.mark.asyncio
+    async def test_run_stdio_passes_explicit_utf8_streams(self) -> None:
+        """MCP 2.x must receive caller-owned UTF-8 streams explicitly.
+
+        Supplying explicit streams avoids the SDK's fd 0/1 diversion and
+        keeps encoding independent of the host locale.  The fake accepts
+        the real async-file wrappers so this catches a regression back to
+        the zero-argument ``stdio_server()`` path.
+        """
+        from collections.abc import AsyncIterator
+        from contextlib import asynccontextmanager
+
+        captured: dict[str, object] = {}
+
+        @asynccontextmanager
+        async def fake_stdio_server(**kwargs: object) -> AsyncIterator[tuple[None, None]]:
+            captured.update(kwargs)
+            yield (None, None)
+
+        class FakeServer:
+            def create_initialization_options(self) -> object:
+                return object()
+
+            async def run(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        with patch.object(transport, "stdio_server", fake_stdio_server):
+            result = await transport.run_stdio(cast(Any, FakeServer()))
+
+        assert result is None
+        assert set(captured) == {"stdin", "stdout"}
+        assert getattr(captured["stdin"], "_fp").encoding == "utf-8"
+        assert getattr(captured["stdout"], "_fp").encoding == "utf-8"

@@ -12,8 +12,9 @@ import textwrap
 import threading
 import time
 from datetime import datetime, timezone
+from io import BufferedReader
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -262,7 +263,8 @@ class JsonRpcProcess:
     def _stderr_tail(self) -> str:
         if self.process.stderr is None:
             return ""
-        return self.process.stderr.read1(4000).decode("utf-8", errors="replace")
+        stderr = cast(BufferedReader, self.process.stderr)
+        return stderr.read1(4000).decode("utf-8", errors="replace")
 
 
 def _result_text(response: dict[str, Any]) -> str:
