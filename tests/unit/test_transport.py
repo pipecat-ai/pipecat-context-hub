@@ -248,58 +248,39 @@ class TestOnceFlag:
         assert flag.acquire() is False
         assert flag.acquire() is False
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="late Windows ChromaDB smoke process cannot reliably start native threads",
+    )
     def test_concurrent_acquire_latches_once(self) -> None:
-        """Under concurrent contention, exactly one thread wins.
+        """Under concurrent contention, exactly one thread wins."""
+        import threading
+        import time
 
-        Run the contention probe in a fresh interpreter: the Windows smoke
-        process has already exercised ChromaDB and may have exhausted its
-        native thread-start capacity by the time this late unit test runs.
-        """
-        import subprocess
-        import textwrap
+        flag = transport._OnceFlag()
+        winners: list[bool] = []
+        lock = threading.Lock()
+        worker_count = 4
+        start = threading.Event()
 
-        probe = textwrap.dedent(
-            """
-            import threading
-            import time
+        def _try() -> None:
+            if not start.wait(timeout=5.0):
+                return
+            won = flag.acquire()
+            with lock:
+                winners.append(won)
 
-            from pipecat_context_hub.server.transport import _OnceFlag
+        threads = [threading.Thread(target=_try) for _ in range(worker_count)]
+        for t in threads:
+            t.start()
+        start.set()
 
-            flag = _OnceFlag()
-            winners = []
-            lock = threading.Lock()
-            worker_count = 4
-            start = threading.Event()
-
-            def _try():
-                if not start.wait(timeout=5.0):
-                    return
-                won = flag.acquire()
-                with lock:
-                    winners.append(won)
-
-            threads = [
-                threading.Thread(target=_try, daemon=True)
-                for _ in range(worker_count)
-            ]
-            for thread in threads:
-                thread.start()
-            start.set()
-
-            deadline = time.monotonic() + 5.0
-            for thread in threads:
-                thread.join(timeout=max(0.0, deadline - time.monotonic()))
-            assert all(not thread.is_alive() for thread in threads)
-            assert len(winners) == worker_count
-            assert sum(winners) == 1
-            """
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", probe],
-            timeout=15.0,
-            check=False,
-        )
-        assert result.returncode == 0, "concurrency probe failed; see child output above"
+        deadline = time.monotonic() + 5.0
+        for t in threads:
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        assert all(not t.is_alive() for t in threads), "worker thread did not exit"
+        assert len(winners) == worker_count
+        assert sum(winners) == 1, f"expected exactly one winner, got {sum(winners)}"
 
 
 class TestIntermediateLaunchers:
