@@ -156,18 +156,16 @@ class TestBothFrontDoors:
 
         async def run() -> str:
             server = server_main.create_server(retriever, store)
-            # call_tool is registered via decorator; reach it through the
-            # server's request handler for CallToolRequest.
             from mcp import types
 
-            req = types.CallToolRequest(
-                method="tools/call",
-                params=types.CallToolRequestParams(
-                    name="check_deprecation", arguments={"symbol": "X"}
-                ),
+            entry = server.get_request_handler("tools/call")
+            assert entry is not None
+            result = await entry.handler(
+                None,
+                types.CallToolRequestParams(name="check_deprecation", arguments={"symbol": "X"}),
             )
-            result = await server.request_handlers[types.CallToolRequest](req)
-            content = result.root.content  # type: ignore[union-attr]
+            assert isinstance(result, types.CallToolResult)
+            content = result.content
             block = content[0]
             assert isinstance(block, types.TextContent)
             return block.text

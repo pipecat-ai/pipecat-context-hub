@@ -704,7 +704,7 @@ Phase 0 complete — the dependency is locked to the 2.x line and the retained
 probe passes the locked, floor, and newest in-range SDK environments.
 
 - [x] Phase 0: Bump the dependency now, then spike the two open questions
-- [ ] Phase 1: `main.py` migration
+- [x] Phase 1: `main.py` migration
 - [ ] Phase 2: `transport.py` migration
 - [ ] Phase 3: Test suite migration
 - [ ] Phase 4: Live verification + release
@@ -774,3 +774,13 @@ round trip preserved UTF-8 `é 東京`, reported `c3a920e69db1e4baac`, left call
 stdio objects unchanged, and returned cleanly on EOF. `just audit` and Ruff
 passed. The final unit-test invocation seam and hub watchdog evidence remain
 Phase 1/2 work; the retained probe covers SDK transport lifecycle only.
+
+**2026-09-10, Phase 1 conduct run:** `create_server()` now registers typed
+2.x constructor callbacks, `ValidationError` is returned as an
+`isError=True` `CallToolResult` with field detail, and MCP plus CLI consume the
+same `TOOL_REGISTRY`. The targeted suite passed 125 tests and `mypy src/`
+passed. Unit tests invoke the public `Server.get_request_handler()` entries
+directly with `ctx=None` because the handlers do not read request context; the
+real `Server.run` context and stdio path are reserved for Phase 2's portable
+integration test. This is a deliberate small unit seam, not a mock of MCP
+dispatch internals.
