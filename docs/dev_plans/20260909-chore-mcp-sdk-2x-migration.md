@@ -1,6 +1,6 @@
 # Task: Migrate the `mcp` Python SDK from the 1.x line to 2.x
 
-**Status**: In Review
+**Status**: Complete (v0.8.0; PR #132)
 **Component**: server (mcp sdk)
 **Assigned to**: Claude
 **Priority**: High (not urgent-blocking — see Timeline)
@@ -701,7 +701,7 @@ release.
 - [x] The release-time `pipecat-ai` resolver matrix is recorded, including
       any temporary `<2.0` conflict; release is not blocked on an unverified
       Pipecat 1.9.0 schedule.
-- [ ] Issue #127 closed by the merged PR, referencing this plan.
+- [x] Issue #127 closed by the merged PR, referencing this plan.
 
 <!-- reviewed: 2026-09-10 @ 5a6b0c1001a1a36808a85432dedf739778181bd9 -->
 

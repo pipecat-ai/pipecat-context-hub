@@ -3,11 +3,11 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-09-09 | chore | Migrate `mcp` Python SDK 1.x → 2.x (lowlevel `Server` API rewrite; issue #127) | In Review (PR #132) | Claude | `chore/mcp-sdk-2x-migration` | `20260909-chore-mcp-sdk-2x-migration.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-09-09 | chore | Migrate `mcp` Python SDK 1.x → 2.x (lowlevel `Server` API rewrite; issue #127) | Complete (v0.8.0; PR #132) | Claude | `chore/mcp-sdk-2x-migration` | `20260909-chore-mcp-sdk-2x-migration.md` |
 | 2026-08-27 | feature | `install` registers Claude Code at `user` scope so the server covers every directory (an existing entry is still repaired at its current scope); hardened through a review-gauntlet pass (cwd module-shadowing RCE fix, cwd `.env` allowlist fix, `unknown`-state correctness fix) | Complete (v0.6.0; PR #121) | markbackman | `mb/register-claude-at-user-scope` | `20260803-fix-mcp-server-command-pinning.md` |
 | 2026-08-22 | docs | Clarify uv install step + generic MCP client wiring in `docs/README.md` | Complete (PR #118) | vr000m | `docs/mcp-install-clarity` | _(no plan file)_ |
 | 2026-08-18 | feature | `--framework-version latest` resolves the newest release tag; hardened through an 11-round adversarial review gauntlet (deprecation-map/provenance crash-safety, tag-resolution edge cases, cleanup bookkeeping) | Complete (PR #116) | vr000m | `feature/framework-version-latest` | `20260331-feature-version-aware-indexing.md` |
