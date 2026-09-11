@@ -11,10 +11,11 @@ Tests cover:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from mcp import types
 
 from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL, create_server
 from pipecat_context_hub.shared.types import (
@@ -183,46 +184,42 @@ class TestToolRegistration:
         assert server.name == "pipecat-context-hub"
 
     async def test_list_tools_handler_registered(self, mock_retriever):
-        from mcp import types
-
         server = create_server(mock_retriever)
-        assert types.ListToolsRequest in server.request_handlers
+        entry = server.get_request_handler("tools/list")
+        assert entry is not None
+        assert entry.params_type is types.PaginatedRequestParams
 
     async def test_list_tools_touches_idle_tracker(self, mock_retriever):
         """tools/list must reset the idle clock — clients that only poll
         capabilities (no tool calls) still represent an active session."""
-        from mcp import types
-
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
         server = create_server(mock_retriever, idle_tracker=tracker)
-        handler = server.request_handlers[types.ListToolsRequest]
-        request = types.ListToolsRequest(method="tools/list")
+        entry = server.get_request_handler("tools/list")
+        assert entry is not None
 
         # Age the tracker, then fire the handler; touch() must reset it.
         tracker._last -= 1000.0
         assert tracker.seconds_since_last() >= 1000.0
-        await handler(request)
+        result = await entry.handler(cast(Any, None), None)
+        assert isinstance(result, types.ListToolsResult)
         assert tracker.seconds_since_last() < 1.0
 
     async def test_call_tool_touches_idle_tracker(self, mock_retriever):
         """tools/call must reset the idle clock (existing behaviour, now pinned)."""
-        from mcp import types
-
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
         server = create_server(mock_retriever, idle_tracker=tracker)
-        handler = server.request_handlers[types.CallToolRequest]
-        request = types.CallToolRequest(
-            method="tools/call",
-            params=types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
-        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        request = types.CallToolRequestParams(name="search_docs", arguments={"query": "x"})
 
         tracker._last -= 1000.0
         assert tracker.seconds_since_last() >= 1000.0
-        await handler(request)
+        result = await entry.handler(cast(Any, None), request)
+        assert isinstance(result, types.CallToolResult)
         assert tracker.seconds_since_last() < 1.0
 
     async def test_ping_touches_idle_tracker(self, mock_retriever):
@@ -231,32 +228,30 @@ class TestToolRegistration:
         activity — otherwise a client keeping an idle session alive with
         periodic ping heartbeats would still be reaped as idle.
         """
-        from mcp import types
-
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
         server = create_server(mock_retriever, idle_tracker=tracker)
-        handler = server.request_handlers[types.PingRequest]
-        request = types.PingRequest(method="ping")
+        entry = server.get_request_handler("ping")
+        assert entry is not None
 
         tracker._last -= 1000.0
         assert tracker.seconds_since_last() >= 1000.0
-        result = await handler(request)
+        assert entry.params_type is types.RequestParams
+        result = await entry.handler(cast(Any, None), None)
         assert tracker.seconds_since_last() < 1.0
         # Built-in ping still returns an EmptyResult.
-        assert isinstance(result.root, types.EmptyResult)
+        assert isinstance(result, types.EmptyResult)
 
     async def test_ping_handler_noop_without_idle_tracker(self, mock_retriever):
         """Omitting idle_tracker must leave the built-in ping handler
         in place unchanged — we don't want to break ping when idle
         watchdogging is disabled."""
-        from mcp import types
-
         server = create_server(mock_retriever)  # no idle_tracker
-        handler = server.request_handlers[types.PingRequest]
-        result = await handler(types.PingRequest(method="ping"))
-        assert isinstance(result.root, types.EmptyResult)
+        entry = server.get_request_handler("ping")
+        assert entry is not None
+        result = await entry.handler(cast(Any, None), None)
+        assert isinstance(result, types.EmptyResult)
 
 
 # ---------------------------------------------------------------------------
@@ -266,10 +261,81 @@ class TestToolRegistration:
 
 class TestToolDispatch:
     async def test_call_tool_handler_registered(self, mock_retriever):
-        from mcp import types
-
         server = create_server(mock_retriever)
-        assert types.CallToolRequest in server.request_handlers
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        assert entry.params_type is types.CallToolRequestParams
+
+    async def test_tools_list_returns_typed_tools_without_store(self, mock_retriever):
+        server = create_server(mock_retriever)
+        entry = server.get_request_handler("tools/list")
+        assert entry is not None
+        result = await entry.handler(cast(Any, None), None)
+        assert isinstance(result, types.ListToolsResult)
+        assert {tool.name for tool in result.tools} == {name for name, _, _ in _BASE_TOOLS}
+        assert all(isinstance(tool, types.Tool) for tool in result.tools)
+        assert all(tool.input_schema["type"] == "object" for tool in result.tools)
+
+    async def test_tools_list_adds_hub_status_only_with_store(self, mock_retriever):
+        server = create_server(mock_retriever, index_store=MagicMock())
+        entry = server.get_request_handler("tools/list")
+        assert entry is not None
+        result = await entry.handler(cast(Any, None), None)
+        assert isinstance(result, types.ListToolsResult)
+        assert {tool.name for tool in result.tools} == {
+            name for name, _, _ in (*_BASE_TOOLS, _HUB_STATUS_TOOL)
+        }
+
+    async def test_unknown_tool_preserves_application_error(self, mock_retriever):
+        server = create_server(mock_retriever)
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        with pytest.raises(ValueError, match=r"^Unknown tool: missing_tool$"):
+            await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name="missing_tool", arguments={}),
+            )
+
+    async def test_registered_handler_exception_preserves_application_error(self, mock_retriever):
+        mock_retriever.search_docs.side_effect = RuntimeError("backend exploded")
+        server = create_server(mock_retriever)
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        with pytest.raises(RuntimeError, match=r"^backend exploded$"):
+            await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
+            )
+
+    async def test_invalid_arguments_return_error_result_with_field_detail(self, mock_retriever):
+        server = create_server(mock_retriever)
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        result = await entry.handler(
+            cast(Any, None),
+            types.CallToolRequestParams(name="get_doc", arguments={}),
+        )
+        assert isinstance(result, types.CallToolResult)
+        assert result.is_error is True
+        assert len(result.content) == 1
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        assert "doc_id" in block.text or "path" in block.text
+        assert "Either doc_id or path must be provided" in block.text
+
+    async def test_idle_tracker_ends_when_call_raises(self, mock_retriever):
+        tracker = MagicMock()
+        mock_retriever.search_docs.side_effect = RuntimeError("backend exploded")
+        server = create_server(mock_retriever, idle_tracker=tracker)
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        with pytest.raises(RuntimeError, match="backend exploded"):
+            await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
+            )
+        tracker.begin.assert_called_once()
+        tracker.end.assert_called_once()
 
     async def test_create_server_returns_server(self, mock_retriever):
         from mcp.server.lowlevel import Server
@@ -445,6 +511,27 @@ class TestCLI:
 
 class TestVersionConsistency:
     """Ensure pyproject.toml version and _SERVER_VERSION stay in sync."""
+
+    def test_mcp_dependency_bound_matches_frozen_lock(self):
+        """The release metadata and lock must both stay on the supported 2.x line."""
+        import tomllib
+        from pathlib import Path
+
+        from packaging.specifiers import SpecifierSet
+
+        repo_root = Path(__file__).resolve().parents[2]
+        with (repo_root / "pyproject.toml").open("rb") as f:
+            project = tomllib.load(f)["project"]
+        with (repo_root / "uv.lock").open("rb") as f:
+            lock = tomllib.load(f)
+
+        declared = next(
+            dependency for dependency in project["dependencies"] if dependency.startswith("mcp")
+        )
+        assert declared == "mcp>=2.0,<3.0"
+
+        locked = next(package for package in lock["package"] if package["name"] == "mcp")
+        assert locked["version"] in SpecifierSet(">=2.0,<3.0")
 
     def test_server_version_matches_pyproject(self):
         """_SERVER_VERSION in server/main.py must match pyproject.toml [project].version."""

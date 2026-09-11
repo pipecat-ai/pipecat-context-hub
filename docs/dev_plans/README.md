@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-09-09 | chore | Migrate `mcp` Python SDK 1.x → 2.x (lowlevel `Server` API rewrite; issue #127) | In Review (PR #132) | Claude | `chore/mcp-sdk-2x-migration` | `20260909-chore-mcp-sdk-2x-migration.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
@@ -16,7 +17,7 @@
 | 2026-08-03 | fix | Pin the registered MCP server command to the installed interpreter (bare console-script name fails to start outside the installing shell) | Complete (PR #109) | markbackman | `fix/mcp-server-command-pinning` | `20260803-fix-mcp-server-command-pinning.md` |
 | 2026-07-27 | chore | Release 0.4.0 — rename the CLI bridge to `pipecat context-hub` (alias `ch`) | Complete (PR #106) | markbackman | `rename/context-hub-command` | _(no plan file)_ |
 | 2026-07-26 | chore | Release 0.3.0 — `pipecat mcp` CLI bridge, `install` command, indexed-framework-version tracking, version-aware `check_deprecation` | Complete (v0.3.0) | vr000m | `release/0.3.0` | _(no plan file)_ |
-| 2026-07-25 | feature | Expose the hub as an external API and mount it in the Pipecat CLI (`pipecat mcp`) | Complete (hub side; v0.3.0; PR #101); pipecat-side work pending | markbackman | `feature/indexed-framework-version` | `20260725-feature-pipecat-cli-plugin.md` |
+| 2026-07-25 | feature | Expose the hub as an external API and mount it in the Pipecat CLI (`pipecat mcp`) | Complete (hub side; v0.3.0; PR #101 merged); pipecat-side work pending | markbackman | `feature/indexed-framework-version` | `20260725-feature-pipecat-cli-plugin.md` |
 | 2026-06-14 | chore | Release 0.2.1 — registry-backed `check_deprecation` + `get_doc` section/title fixes | Complete (v0.2.1) | vr000m | `chore/release-0-2-1` | _(no plan file)_ |
 | 2026-06-13 | feat | Consume upstream `deprecations.json` as the deprecation source (prose parser removed) | Complete (v0.2.1; PR #85) | vr000m | `feat/deprecation-registry` | `20260612-feature-deprecations-json-consumer.md` |
 | 2026-06-13 | fix | `get_doc()` sections always empty — derive from page headings (fence-aware, no re-index) | Complete (v0.2.1; PR #83) | vr000m | `fix/get-doc-sections-from-headings` | _(no plan file)_ |

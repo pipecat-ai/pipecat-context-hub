@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,7 +15,8 @@ from click.testing import CliRunner, Result
 from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY as _SERVE_EXIT_INDEX_UNREADY
 from pipecat_context_hub.cli import main
 from pipecat_context_hub.cli_query import _EXIT_BAD_INPUT, _EXIT_INDEX_UNREADY, _TOOL_TO_COMMAND
-from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL
+from pipecat_context_hub.server.dispatch import iter_tool_definitions
+from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL, create_server
 from pipecat_context_hub.services.index import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
 from pipecat_context_hub.shared.paths import redact_home_in_text as _real_redact_home_in_text
@@ -60,6 +62,36 @@ def _index_store_mock(total: int) -> MagicMock:
 
 class TestToolCommandParity:
     """Drift guards: the CLI must track the MCP tool surface exactly."""
+
+    def test_cli_and_mcp_consume_the_shared_typed_registry(self):
+        """Names, schemas, and handlers must have one registry owner.
+
+        The CLI may still apply front-door-specific formatting and exit
+        handling, but it must not grow a second hand-maintained dispatch table.
+        ``iter_tool_definitions`` is the typed source of truth used by both adapters.
+        """
+        registry = list(iter_tool_definitions())
+        assert registry
+        assert all(spec.name for spec in registry)
+        assert all(spec.input_schema["type"] == "object" for spec in registry)
+        assert all(callable(spec.handler) or spec.name == "check_deprecation" for spec in registry)
+
+        server = create_server(MagicMock())
+        list_entry = server.get_request_handler("tools/list")
+        assert list_entry is not None
+
+        async def _list_tools():
+            return await list_entry.handler(cast(Any, None), None)
+
+        import asyncio
+
+        mcp_tools = asyncio.run(_list_tools()).tools
+        mcp_by_name = {tool.name: tool for tool in mcp_tools}
+        assert set(mcp_by_name) == {spec.name for spec in registry}
+        assert {name: tool.input_schema for name, tool in mcp_by_name.items()} == {
+            spec.name: spec.input_schema for spec in registry
+        }
+        assert {spec.name for spec in registry} == set(_TOOL_TO_COMMAND) - {"get_hub_status"}
 
     def test_every_mcp_tool_has_a_cli_command(self):
         """Adding a tool to server/main.py without a CLI command fails here."""

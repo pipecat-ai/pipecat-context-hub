@@ -18,14 +18,14 @@ harness gets re-checked against the exact query that once broke.
 1. `get_hub_status()` — returns a non-empty index and a recent
    `last_refresh_at`, so smoke-test failures are not caused by a stale or empty
    local corpus
-2. `get_doc(path="/api-reference/server/frames/system-frames")` — returns
+2. `get_doc(path="/api-reference/server/frames/system-frames.md")` — returns
    full multi-chunk page (not a single 500-char chunk), confidence 1.0
-3. `get_doc(path="/api-reference/server/frames/system-frames", section="StartFrame")`
+3. `get_doc(path="/api-reference/server/frames/system-frames.md", section="StartFrame")`
    — returns only the StartFrame section from the assembled page
 4. `get_doc(doc_id=<id from a search_docs result>)` — returns non-empty content
    and is not `Not Found`
 5. `get_doc(path="")` and `get_doc(doc_id="")` — both raise validation errors
-6. `get_doc(doc_id="", path="/api-reference/server/frames/system-frames")` —
+6. `get_doc(doc_id="", path="/api-reference/server/frames/system-frames.md")` —
    falls back to the path lookup and returns the assembled page
 7. `search_api("send_dtmf", class_name="DailyTransport")` — returns
    `DailyTransportClient.send_dtmf` (prefix match)
@@ -320,7 +320,7 @@ the indexed pipecat version; re-verify against the current registry if they drif
     active deprecation never reports `removed` past its announced version), and the
     bare-key clobber guard. It does not mutate the persisted map.
 
-49. `get_doc(path="/api-reference/server/frames/system-frames")` — response
+49. `get_doc(path="/api-reference/server/frames/system-frames.md")` — response
     `sections` field is a **non-empty list** (regression canary for the always-empty
     sections bug fixed in PR #83). Each entry in `sections` must round-trip:
     passing `section=<title>` should narrow the page to that section's content

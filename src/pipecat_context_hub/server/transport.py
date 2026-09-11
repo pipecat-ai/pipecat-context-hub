@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import io
 import logging
 import os
 import subprocess  # nosec B404 - used only for a fixed-arg, timeout-guarded `ps` probe
 import sys
 import threading
-from typing import Callable, NamedTuple
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any, Callable, NamedTuple
 
+import anyio
 from mcp import stdio_server
 from mcp.server.lowlevel import Server
 
@@ -266,6 +270,33 @@ async def _watch_idle(tracker: IdleTracker, timeout: float, interval: float) -> 
             return f"idle_timeout idle_seconds={idle:.0f} timeout_seconds={timeout:.0f}"
 
 
+@asynccontextmanager
+async def _explicit_stdio_server() -> AsyncIterator[tuple[Any, Any]]:
+    """Run ``stdio_server`` over caller-owned, explicitly UTF-8 streams.
+
+    MCP 2.x diverts file descriptors 0 and 1 when no streams are supplied.
+    Passing explicit streams keeps the process handles owned by the caller,
+    avoids that diversion, and makes the encoding independent of the host
+    locale.  The text wrappers are kept alive until the MCP context exits;
+    detaching them afterwards prevents their finalizers from closing the
+    caller-owned buffers.
+    """
+    stdin_wrapper = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
+    stdout_wrapper = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    try:
+        async with stdio_server(
+            stdin=anyio.wrap_file(stdin_wrapper),
+            stdout=anyio.wrap_file(stdout_wrapper),
+        ) as streams:
+            yield streams
+    finally:
+        for wrapper in (stdin_wrapper, stdout_wrapper):
+            try:
+                wrapper.detach()
+            except (ValueError, AttributeError):
+                pass
+
+
 async def run_stdio(
     server: Server,
     original_ppid: int | None = None,
@@ -316,7 +347,7 @@ async def run_stdio(
 
     enable_idle_watch = idle_tracker is not None and idle_timeout_secs > 0
 
-    async with stdio_server() as (read_stream, write_stream):
+    async with _explicit_stdio_server() as (read_stream, write_stream):
         init_options = server.create_initialization_options()
         server_task = asyncio.create_task(
             server.run(read_stream, write_stream, init_options),
@@ -388,10 +419,9 @@ async def run_stdio(
             #
             # 1. mcp's stdio_server reads stdin via
             #    `anyio.to_thread.run_sync(readline, cancellable=False)`.
-            #    On Linux, closing fd 0 does not wake the worker
-            #    thread's blocked ``read(0)`` — the kernel keeps the
-            #    file object alive via the thread's reference — so the
-            #    asyncio task never observes its own cancellation.
+            #    On Linux, cancellation does not wake the worker thread's
+            #    blocked read, so the asyncio task may not observe its own
+            #    cancellation.
             # 2. Nothing in asyncio (``wait_for``, ``wait(timeout=…)``,
             #    ``gather``) guarantees return when the inner task is
             #    stuck in an uninterruptible blocked syscall off-loop;
@@ -472,14 +502,10 @@ async def run_stdio(
                 daemon=True,
             ).start()
 
-            # Still attempt graceful unwind — on macOS/BSD (and
-            # client-clean-close paths on Linux) this completes well
-            # within the 2.5 s window and the timer thread is
-            # harmless.
-            try:
-                os.close(sys.stdin.fileno())
-            except (OSError, ValueError):
-                pass
+            # Still attempt graceful unwind.  The explicit stream adapter
+            # keeps the caller-owned stdio handles intact; the hard-exit
+            # timer remains the bounded fallback if the worker thread does
+            # not respond to task cancellation.
         elif shutdown_reason is not None:
             # In-process safe mode (`exit_on_watchdog_shutdown=False`).
             # The caller owns `sys.stdin` and the host process — do NOT

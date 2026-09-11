@@ -398,23 +398,13 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
 
 
 def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
-    """Dispatch one tool call through the same handlers the MCP server uses.
-
-    Mirrors ``server.main.create_server``'s ``call_tool`` dispatch (the two
-    special signatures, then the uniform ``handler(args, retriever)`` map) so
-    CLI and MCP results cannot diverge.
-    """
+    """Dispatch one tool call through the shared tool registry."""
+    from pipecat_context_hub.server.dispatch import get_tool_handler
     from pipecat_context_hub.server.tools.check_deprecation import (
         handle_check_deprecation,
         resolve_framework_version,
     )
-    from pipecat_context_hub.server.tools.get_code_snippet import handle_get_code_snippet
-    from pipecat_context_hub.server.tools.get_doc import handle_get_doc
-    from pipecat_context_hub.server.tools.get_example import handle_get_example
     from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
-    from pipecat_context_hub.server.tools.search_api import handle_search_api
-    from pipecat_context_hub.server.tools.search_docs import handle_search_docs
-    from pipecat_context_hub.server.tools.search_examples import handle_search_examples
 
     if tool == "get_hub_status":
         return asyncio.run(
@@ -425,15 +415,10 @@ def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
         fw_version = resolve_framework_version(runtime.index_store, dep_map)
         return asyncio.run(handle_check_deprecation(args, dep_map, fw_version))
 
-    handler_map: dict[str, Any] = {
-        "search_docs": handle_search_docs,
-        "get_doc": handle_get_doc,
-        "search_examples": handle_search_examples,
-        "get_example": handle_get_example,
-        "get_code_snippet": handle_get_code_snippet,
-        "search_api": handle_search_api,
-    }
-    result: str = asyncio.run(handler_map[tool](args, runtime.retriever))
+    handler = get_tool_handler(tool)
+    if handler is None:
+        raise ValueError(f"Unknown tool: {tool}")
+    result: str = asyncio.run(handler(args, runtime.retriever))
     return result
 
 

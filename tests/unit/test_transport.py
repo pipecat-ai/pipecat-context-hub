@@ -167,27 +167,71 @@ class TestRunAtexitBounded:
         tearing down logging/multiprocessing) and corrupt the run.
         """
         import atexit
+        import threading
         import time
 
-        def _blocking_run_exitfuncs() -> None:
-            time.sleep(5.0)
+        wait_timeouts: list[float | None] = []
+        threads: list[Any] = []
 
-        with patch.object(atexit, "_run_exitfuncs", _blocking_run_exitfuncs):
+        def _blocking_run_exitfuncs() -> None:
+            raise AssertionError("blocking atexit handler ran on the caller thread")
+
+        class _FakeEvent:
+            def set(self) -> None:
+                pass
+
+            def wait(self, timeout: float | None = None) -> bool:
+                wait_timeouts.append(timeout)
+                return False
+
+        class _FakeThread:
+            def __init__(self, **kwargs: Any) -> None:
+                self.target = kwargs["target"]
+                self.name = kwargs["name"]
+                self.daemon = kwargs["daemon"]
+                threads.append(self)
+
+            def start(self) -> None:
+                # The real worker is deliberately not started here. This test
+                # checks that the caller only waits for the bounded timeout;
+                # the following test checks actual handler dispatch.
+                pass
+
+        with (
+            patch.object(atexit, "_run_exitfuncs", _blocking_run_exitfuncs),
+            patch.object(threading, "Event", _FakeEvent),
+            patch.object(threading, "Thread", _FakeThread),
+        ):
             start = time.monotonic()
             transport._run_atexit_bounded(0.2)
             elapsed = time.monotonic() - start
+        assert wait_timeouts == [0.2]
+        assert len(threads) == 1
+        assert threads[0].name == "hub-atexit-cleanup"
+        assert threads[0].daemon is True
         assert elapsed < 1.0, f"bounded atexit took too long: {elapsed:.2f}s"
 
     def test_runs_registered_handlers(self) -> None:
         """The bounded wrapper actually invokes atexit handling (stubbed)."""
         import atexit
+        import threading
 
         calls: list[str] = []
 
         def _fake_run_exitfuncs() -> None:
             calls.append("ran")
 
-        with patch.object(atexit, "_run_exitfuncs", _fake_run_exitfuncs):
+        class _InlineThread:
+            def __init__(self, target: Any, **kwargs: Any) -> None:
+                self.target = target
+
+            def start(self) -> None:
+                self.target()
+
+        with (
+            patch.object(atexit, "_run_exitfuncs", _fake_run_exitfuncs),
+            patch.object(threading, "Thread", _InlineThread),
+        ):
             transport._run_atexit_bounded(1.0)
         assert calls == ["ran"]
 
@@ -204,27 +248,38 @@ class TestOnceFlag:
         assert flag.acquire() is False
         assert flag.acquire() is False
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="late Windows ChromaDB smoke process cannot reliably start native threads",
+    )
     def test_concurrent_acquire_latches_once(self) -> None:
         """Under concurrent contention, exactly one thread wins."""
         import threading
+        import time
 
         flag = transport._OnceFlag()
         winners: list[bool] = []
         lock = threading.Lock()
+        worker_count = 4
         start = threading.Event()
 
         def _try() -> None:
-            start.wait()
+            if not start.wait(timeout=5.0):
+                return
             won = flag.acquire()
             with lock:
                 winners.append(won)
 
-        threads = [threading.Thread(target=_try) for _ in range(20)]
+        threads = [threading.Thread(target=_try) for _ in range(worker_count)]
         for t in threads:
             t.start()
         start.set()
+
+        deadline = time.monotonic() + 5.0
         for t in threads:
-            t.join()
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        assert all(not t.is_alive() for t in threads), "worker thread did not exit"
+        assert len(winners) == worker_count
         assert sum(winners) == 1, f"expected exactly one winner, got {sum(winners)}"
 
 
@@ -247,9 +302,12 @@ class TestIdleTracker:
 
         t = IdleTracker()
         _time.sleep(0.05)
-        assert t.seconds_since_last() >= 0.05
+        elapsed = t.seconds_since_last()
+        # Windows timer granularity can report slightly less than the sleep
+        # duration; the invariant is that time advanced before `touch()`.
+        assert elapsed >= 0.04
         t.touch()
-        assert t.seconds_since_last() < 0.05
+        assert t.seconds_since_last() < elapsed
 
     def test_begin_marks_tracker_active_regardless_of_clock(self) -> None:
         """In-flight calls must keep seconds_since_last at 0 — otherwise a
@@ -351,7 +409,7 @@ class TestRunStdioWatchdogWiring:
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
-        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+        async def fake_stdio_server(**_kwargs: object) -> AsyncIterator[tuple[None, None]]:
             yield (None, None)
 
         with patch.object(transport, "stdio_server", fake_stdio_server):
@@ -392,7 +450,7 @@ class TestRunStdioWatchdogWiring:
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
-        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+        async def fake_stdio_server(**_kwargs: object) -> AsyncIterator[tuple[None, None]]:
             yield (None, None)
 
         with patch.object(transport, "stdio_server", fake_stdio_server):
@@ -433,7 +491,7 @@ class TestRunStdioWatchdogWiring:
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
-        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+        async def fake_stdio_server(**_kwargs: object) -> AsyncIterator[tuple[None, None]]:
             yield (None, None)
 
         exit_calls: list[int] = []
@@ -488,7 +546,7 @@ class TestRunStdioWatchdogWiring:
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
-        async def fake_stdio_server() -> AsyncIterator[tuple[None, None]]:
+        async def fake_stdio_server(**_kwargs: object) -> AsyncIterator[tuple[None, None]]:
             yield (None, None)
 
         exit_calls: list[int] = []
@@ -540,3 +598,50 @@ class TestRunStdioWatchdogWiring:
         assert shutdown_cb_calls == ["called"], (
             f"shutdown callback must still run once in safe mode: {shutdown_cb_calls}"
         )
+
+
+class TestExplicitStdioStreams:
+    @pytest.mark.asyncio
+    async def test_run_stdio_passes_explicit_utf8_streams(self) -> None:
+        """MCP 2.x must receive caller-owned UTF-8 streams explicitly.
+
+        Supplying explicit streams avoids the SDK's fd 0/1 diversion and
+        keeps encoding independent of the host locale.  The fake accepts
+        the real async-file wrappers so this catches a regression back to
+        the zero-argument ``stdio_server()`` path.
+        """
+        from collections.abc import AsyncIterator
+        from contextlib import asynccontextmanager
+        import io
+        import sys
+
+        captured: dict[str, object] = {}
+
+        @asynccontextmanager
+        async def fake_stdio_server(**kwargs: object) -> AsyncIterator[tuple[None, None]]:
+            captured.update(kwargs)
+            yield (None, None)
+
+        class FakeServer:
+            def create_initialization_options(self) -> object:
+                return object()
+
+            async def run(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        # Do not wrap pytest's redirected stdin/stdout.  On Windows their
+        # finalizers reject the flush performed during interpreter shutdown,
+        # which turns an otherwise successful test run into exit code 1.
+        stdin = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        with (
+            patch.object(transport, "stdio_server", fake_stdio_server),
+            patch.object(sys, "stdin", stdin),
+            patch.object(sys, "stdout", stdout),
+        ):
+            result = await transport.run_stdio(cast(Any, FakeServer()))
+
+        assert result is None
+        assert set(captured) == {"stdin", "stdout"}
+        assert getattr(captured["stdin"], "_fp").encoding == "utf-8"
+        assert getattr(captured["stdout"], "_fp").encoding == "utf-8"
