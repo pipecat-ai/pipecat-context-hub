@@ -8,8 +8,11 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
-- **Migrated the MCP server to the `mcp` 2.x SDK**, including typed tool
-  callbacks, explicit UTF-8 stdio streams, and shared MCP/CLI tool dispatch.
+- **Migrated the MCP server to the `mcp` 2.x SDK and dropped MCP 1.x
+  support**, including typed tool callbacks, explicit UTF-8 stdio streams, and
+  shared MCP/CLI tool dispatch. The supported `pipecat-ai[cli]` integration
+  remains compatible; Pipecat's separate `[mcp]` extra still pins `mcp<2` and
+  must be updated upstream before it can be installed alongside the hub.
 - **Dropped `pipecat-ai/pipecat-flows` from the default sources.** The repo is
   archived upstream: since pipecat 1.5.0 the flows framework ships inside
   `pipecat-ai/pipecat` as `pipecat.flows` (examples under `examples/flows/`),

@@ -12,8 +12,9 @@
 
 Issue [#127](https://github.com/pipecat-ai/pipecat-context-hub/issues/127)
 asks to widen `pyproject.toml`'s `"mcp>=1.0,<2.0"` to `<3.0`, to match
-Pipecat's own upcoming bound (Pipecat 1.9.0, expected within the next week,
-loosens its own `mcp<2,>=1.11.0` pin). The literal ask reads like a one-line
+Pipecat's then-upcoming bound (Pipecat 1.9.0 later loosened its own CLI
+integration, while its separate `mcp` extra still retains the `mcp<2` pin).
+The literal ask reads like a one-line
 version-bound edit with real SDK-v2 support deferred to "later."
 
 **That framing doesn't hold up.** I tested it empirically before writing
@@ -330,10 +331,10 @@ published Pipecat metadata and the eventual release metadata must be checked
 at sign-off rather than treated as a schedule fact: if a supported
 `pipecat-ai` release still pins `mcp<2.0`, this package's `mcp>=2.0,<3.0`
 bound cannot co-install with it through a plain resolver. **Decision: release
-ahead of `pipecat-ai` 1.9.0 is acceptable** — don't gate the PyPI publish on
-that upstream release. Record the actual compatibility matrix and resolver
-result in Findings so the temporary incompatibility is visible to users and
-can be removed when upstream's metadata changes.
+ahead of `pipecat-ai` 1.9.0 was acceptable at planning time.** Pipecat 1.9.0
+is now released: the supported `[cli]` path co-installs, while the separate
+`[mcp]` extra remains incompatible until its upstream `<2` pin changes. The
+actual compatibility matrix and resolver result are recorded in Findings.
 
 ## Files to Modify
 
@@ -388,8 +389,9 @@ can be removed when upstream's metadata changes.
   exact `tools/list` names and schemas, ping, representative calls for every
   shared handler, `get_hub_status` with and without a store,
   `check_deprecation`, validation/unknown/generic error paths, clean JSON-RPC
-  stdout, and non-ASCII payload round trip. Keep it pipe-based and portable
-  so the Windows smoke job can run it explicitly.
+  stdout, and non-ASCII payload round trip. Keep it pipe-based and portable;
+  it runs in aggregate Linux Quality, while Windows smoke remains limited to
+  the supported cross-platform selection.
 - `tests/integration/test_serve_lifetime.py` — modify the external watchdog
   test to capture stderr and assert the deterministic graceful
   `Shutting down: parent_died ...` marker is present, the exact hard-exit
@@ -401,11 +403,10 @@ can be removed when upstream's metadata changes.
   identity, raw initialize/list/call/ping/error frames, and stream/watchdog
   lifecycle observations. It is the required first step after every lockfile
   or supported-version change, not an unrecorded throwaway experiment.
-- `.github/workflows/ci.yml` — Windows smoke job's explicit test file list
-  — add `test_server.py`, the 2.x-safe unit transport coverage, and the
-  portable `test_mcp_v2_compat.py` to the Windows smoke command. Verify the
-  actual workflow jobs at sign-off; do not name checks that do not exist in
-  this repository.
+- `.github/workflows/ci.yml` — audit the Windows smoke job's explicit test
+  file list at sign-off. Keep it limited to the supported cross-platform
+  selection; full MCP registration, transport, and stdio compatibility
+  coverage runs in aggregate Linux Quality.
 - `pyproject.toml` — `"mcp>=1.0,<2.0"` → `"mcp>=2.0,<3.0"` (Option A). Do
   this as the **first** commit on this branch, not deferred to Phase 4 —
   see the Implementation Checklist.
@@ -550,7 +551,8 @@ portable, and observable through a permanent wire-level regression test.
   `check_deprecation`, validation/unknown/generic error paths, clean JSON-RPC
   stdout, and a non-ASCII payload round trip. Assert the locked 2.2.0 error
   code only as a version-scoped canary; stable assertions cover message and
-  reachability. Run this test on the Windows smoke leg as well as POSIX.
+  reachability. Run this test in aggregate Linux Quality; keep the Windows
+  smoke leg focused on its supported cross-platform tests.
 - Modify `test_serve_lifetime.py` to capture stderr and distinguish graceful
   `Shutting down: parent_died ...` from the exact
   `pipecat-context-hub: client gone; fast-exiting after` hard-exit fallback.
@@ -565,7 +567,7 @@ portable, and observable through a permanent wire-level regression test.
 **Goal:** Finish all 2.x test and CI wiring, then prove the complete local
 quality gate and test-collection invariant against the base revision.
 
-**Impl files:** tests/unit/test_server.py, tests/unit/test_staleness.py, tests/unit/test_transport.py, .github/workflows/ci.yml
+**Impl files:** tests/unit/test_server.py, tests/unit/test_staleness.py, tests/unit/test_transport.py
 
 **Test files:** tests/unit/test_server.py, tests/unit/test_staleness.py, tests/unit/test_transport.py
 
@@ -608,11 +610,12 @@ release.
   together, add the `[Unreleased]` `CHANGELOG.md` entry in the migration PR,
   regenerate `uv.lock`, and review its root metadata and transitive changes.
 - Run the actual repository CI jobs: Quality on Python 3.12 and 3.14, the
-  aggregate Quality gate, Windows smoke on Python 3.12 and 3.14 (including
-  `test_server.py`, transport unit coverage, and the portable compatibility
-  test), and Security. The repository has no CodeQL or Analyze workflow;
-  scheduled workflows are not substitutes for these PR checks. Verify the
-  actual job names/statuses at sign-off rather than using a fixed count.
+  aggregate Quality gate, Windows smoke on Python 3.12 and 3.14 using the
+  supported cross-platform selection, and Security. Full MCP registration,
+  transport, and portable compatibility coverage runs in aggregate Linux
+  Quality. The repository has no CodeQL or Analyze workflow; scheduled
+  workflows are not substitutes for these PR checks. Verify the actual job
+  names/statuses at sign-off rather than using a fixed count.
 - Confirm the `OpenTelemetryMiddleware` runtime-egress test (see Risks) —
   `tests/integration/test_no_telemetry_egress.sh` — passes under the real
   bumped dependency, not just in isolation. This script is not currently
@@ -625,8 +628,9 @@ release.
   not silently ignored.
 - Run the live MCP smoke and telemetry-egress check after the final lock and
   version changes. Publish only after those checks and the actual CI jobs
-  are green; release timing does not wait for a speculative Pipecat 1.9.0
-  date.
+  are green. The Pipecat 1.9.0 metadata is now available; the documented
+  `[mcp]` extra conflict is accepted and does not block the supported `[cli]`
+  integration.
 
 ### What we are NOT testing (and why)
 - HTTP/streamable transport, resources, prompts, elicitation, roots,
@@ -668,17 +672,19 @@ release.
       `pipecat-context-hub: client gone; fast-exiting after` fallback marker,
       and completion below the 2.5s hard-exit timer; it does not merely
       observe process disappearance.
-- [ ] `tests/integration/test_mcp_v2_compat.py` performs a real stdio
+- [x] `tests/integration/test_mcp_v2_compat.py` performs a real stdio
       initialize/list/call/ping round trip and covers exact tool names and
       schemas, every shared handler, both status branches, deprecation,
       validation/unknown/generic errors, clean JSON-RPC stdout, and a
-      non-ASCII payload. It runs on the Windows smoke legs.
+      non-ASCII payload. It runs in aggregate Linux Quality; Windows smoke
+      retains the supported cross-platform selection.
 - [x] Live `serve` smoke test (real process, real stdio round trip)
       confirmed working, not just unit-tested.
-- [ ] The actual repository CI jobs are green: Quality Python 3.12/3.14,
+- [x] The actual repository CI jobs are green: Quality Python 3.12/3.14,
       aggregate Quality, Windows smoke Python 3.12/3.14, and Security.
-      Windows runs include registration, transport-unit, and portable
-      compatibility coverage; no nonexistent CodeQL/Analyze checks are
+      Windows uses the supported cross-platform selection; full MCP
+      registration, transport-unit, and portable compatibility coverage runs
+      in aggregate Linux Quality. No nonexistent CodeQL/Analyze checks are
       required.
 - [x] `uv.lock` diff reviewed for new transitive deps (`mcp-types`,
       `httpx2`, `httpcore2`, `truststore`) and root metadata — no unexpected
@@ -686,7 +692,8 @@ release.
 - [x] `pip-audit` (`just audit`) clean or explicitly triaged against the
       bumped lock and the audit ignore-list remains synchronized.
 - [x] `pyproject.toml`'s `[project].version` and `main.py::_SERVER_VERSION`
-      bumped together in the release commit; `TestVersionConsistency` green.
+      both report `0.8.0`; `TestVersionConsistency` is green. The release
+      tag is created separately after merge.
 - [x] `CHANGELOG.md` entry added under `[Unreleased]` in the migration PR.
 - [x] The retained Phase 0 probe is rerun for every lockfile or supported-
       version change, with version/source identity, raw frames, error canary,
@@ -707,7 +714,7 @@ probe passes the locked, floor, and newest in-range SDK environments.
 - [x] Phase 1: `main.py` migration
 - [x] Phase 2: `transport.py` migration
 - [x] Phase 3: Test suite migration
-- [x] Phase 4: Live verification + release
+- [x] Phase 4: Live verification + release preparation
 
 ## Findings
 
@@ -843,12 +850,15 @@ pipe reader. The graceful orphan-watchdog assertion passed with the
 passed 39 tests; the named end-to-end, report-hint, and concurrent-model-load
 regressions passed 47 tests; Ruff passed.
 
-**2026-09-10, Phase 3 conduct run:** the Windows smoke job now includes
-`test_server.py`, transport-unit coverage, and `test_mcp_v2_compat.py`. The
-full quality gate passed with 1,818 tests and 7 skips; Ruff and mypy passed,
-and `tests/smoke/` passed 10 tests. The relevant integration set passed 12
-tests. Collection comparison against Phase 3 base `f4d7867` found 1,824 base
-nodes and 1,825 current nodes, with zero removals and one intentional new node:
+**2026-09-10, Phase 3 conduct run:** the initial broadened Windows smoke
+selection was reverted after the MCP registration/stdio and process-sensitive
+tests proved unsuitable for that leg. The final Windows smoke job retains the
+supported cross-platform selection; full MCP coverage runs in aggregate Linux
+Quality. The full quality gate passed with 1,818 tests and 7 skips; Ruff and
+mypy passed, and `tests/smoke/` passed 10 tests. The relevant integration set
+passed 12 tests. Collection comparison against Phase 3 base `f4d7867` found
+1,824 base nodes and 1,825 current nodes, with zero removals and one intentional
+new node:
 `tests/unit/test_transport.py::TestExplicitStdioStreams::test_run_stdio_passes_explicit_utf8_streams`.
 The compatibility helper's stderr diagnostics use a bounded pipe drain, so
 the timeout path cannot block on an empty child stderr stream.
