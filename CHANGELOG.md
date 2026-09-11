@@ -7,6 +7,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-11
+
 ### Changed
 - **Migrated the MCP server to the `mcp` 2.x SDK and dropped MCP 1.x
   support**, including typed tool callbacks, explicit UTF-8 stdio streams, and
