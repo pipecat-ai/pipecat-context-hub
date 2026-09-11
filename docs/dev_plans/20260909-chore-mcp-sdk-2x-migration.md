@@ -691,7 +691,7 @@ release.
 - [x] The retained Phase 0 probe is rerun for every lockfile or supported-
       version change, with version/source identity, raw frames, error canary,
       and stream ownership/lifecycle evidence recorded in Findings.
-- [ ] The release-time `pipecat-ai` resolver matrix is recorded, including
+- [x] The release-time `pipecat-ai` resolver matrix is recorded, including
       any temporary `<2.0` conflict; release is not blocked on an unverified
       Pipecat 1.9.0 schedule.
 - [ ] Issue #127 closed by the merged PR, referencing this plan.
@@ -710,6 +710,18 @@ probe passes the locked, floor, and newest in-range SDK environments.
 - [x] Phase 4: Live verification + release
 
 ## Findings
+
+**2026-09-11, release-time `pipecat-ai` resolver matrix** — the live PyPI
+metadata reports `pipecat-ai==1.9.0`; the prior supported release `1.8.1`
+was checked as well. In isolated `uv pip compile` resolutions for Python 3.12
+on Linux, the local checkout (`-e .`, whose published dependency contract is
+`mcp>=2.0,<3.0`) co-installs with both `pipecat-ai[cli]==1.9.0` and
+`pipecat-ai[cli]==1.8.1`. Adding Pipecat's separate optional `mcp` extra is
+intentionally incompatible for both releases: that extra requires
+`mcp[cli]>=1.11.0,<2`. The supported plugin path is therefore compatible;
+the temporary conflict remains only for consumers who explicitly request
+`pipecat-ai[mcp]` alongside the hub. This is the accepted release-timing
+trade-off recorded above, not a migration implementation defect.
 
 **2026-09-10, during Phase 4 live verification + release** — the release
 metadata, final lock, live stdio path, and CI-shaped gates were revalidated
