@@ -8,6 +8,10 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Security
+- **Bumped `pyjwt` from `2.13.0` to `2.15.0`** in `uv.lock` (PR #136),
+  incorporating JWT/JWK validation hardening and malformed-input fixes from
+  the 2.14.0 and 2.15.0 releases. Includes PR #137's urllib3 and OAuthLib
+  updates so the combined dependency audit can pass before merging.
 - **Bumped `urllib3` from `2.7.0` to `2.8.0`** in `uv.lock` to address
   CVE-2026-97687/-97688/-97689 (HTTPS proxy TLS configuration, unbounded
   chunk-size buffering, and chunked Deflate streaming). PR #137 also bumps
