@@ -1833,7 +1833,7 @@ wheels = [
 
 [[package]]
 name = "pipecat-ai-context-hub"
-version = "0.8.0"
+version = "0.8.1"
 source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
