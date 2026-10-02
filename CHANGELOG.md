@@ -7,6 +7,13 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- **Bumped `urllib3` from `2.7.0` to `2.8.0`** in `uv.lock` to address
+  CVE-2026-97687/-97688/-97689 (HTTPS proxy TLS configuration, unbounded
+  chunk-size buffering, and chunked Deflate streaming). PR #137 also bumps
+  transitive `oauthlib` from `3.3.1` to `4.0.0` to address CVE-2026-49265.
+  No top-level dependency constraints or hub APIs changed.
+
 ## [0.8.0] - 2026-09-11
 
 ### Changed

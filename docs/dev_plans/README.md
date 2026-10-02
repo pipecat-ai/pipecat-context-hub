@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-10-02 | chore | Security updates: urllib3 2.8.0 and OAuthLib 4.0.0 (PR #137) | In Review (PR #137; included in #136 for combined security validation) | Dependabot / vr000m | `dependabot/uv/urllib3-2.8.0` | _(no plan file)_ |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
