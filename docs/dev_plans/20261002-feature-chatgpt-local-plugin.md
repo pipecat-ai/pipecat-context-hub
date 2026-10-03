@@ -1,6 +1,6 @@
 # Local Pipecat plugin: idea to Cloud deployment experiment
 
-**Status**: Not Started — second-review findings addressed; acceptance pending
+**Status**: Not Started — review findings addressed and accepted
 **Component**: plugin packaging, retrieval instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-02
@@ -40,7 +40,7 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 - `pipecat-context-hub install --print-config` returned the pinned launch configuration without registering a client or refreshing the index.
 - Official OpenAI documentation supports local shell/files in desktop Work when available to the account/workspace. Documentation support is not evidence of activation in the user's specific target chat; Phase 1 records retrieval and execution capabilities separately.
 
-## Implementation phases
+## Implementation Checklist
 
 ### Phase 1: Prove the desktop and installed-tool path
 
@@ -215,9 +215,15 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - https://learn.chatgpt.com/docs/enterprise/chatgpt-work-local-security
 - https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/cli/agent_templates/AGENTS.md
 
-<!-- reviewed: YYYY-MM-DD @ <hash> -->
+<!-- reviewed: 2026-10-03 @ b83525eeac4e330cd9b606ca118c63cb478582f2 -->
 
 ## Progress
+
+- [ ] Phase 1: Prove the desktop and installed-tool path
+- [ ] Phase 2: Complete grounded exploration
+- [ ] Phase 3: Add build and local verification
+- [ ] Phase 4: Prepare and exercise Cloud deployment
+- [ ] Phase 5: Evaluate, review and document
 
 - Initial draft committed; original five-lens review completed with one Important setup finding and three Minor testing gaps.
 - User authorised inclusion of Pipecat CLI and Cloud workflow on 2026-10-03. Expanded scope and all four original findings are incorporated here; this is not proof of a fresh review.
@@ -225,6 +231,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - Expanded implementation phases and desktop/Cloud workflow remain unimplemented and require review before coding.
 - Second five-lens review completed with three Important findings and zero contradictions; user requested all fixes on 2026-10-03. Secret approval boundaries and capability gates are now explicit; fixes require final acceptance before publishing the review marker.
 - Post-fix checks passed: capability gates are separate, the sequence places approval before secret writes and secret writes before build/deploy, and obsolete conflicting wording is absent. A fresh independent contradiction pass found zero contradictions and confirmed the fixes are compatible.
+- User accepted publication of the review marker on 2026-10-03. The implementation section heading was normalised for conduct's parser without changing phase scope.
 
 ## Findings
 
@@ -237,7 +244,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 ### Current limitations
 
-The installed CLI reports version 1.3.0 and differs from current upstream scaffold documentation. Actual desktop activation and Cloud account/secret readiness have not been verified. The persisted second-review JSON describes the expanded plan before these fixes; it remains the historical findings record, not a claim that the updated bytes were re-reviewed by all five lenses. No valid review marker has been published.
+The installed CLI reports version 1.3.0 and differs from current upstream scaffold documentation. Actual desktop activation and Cloud account/secret readiness have not been verified. The persisted second-review JSON describes the expanded plan before these fixes; it remains the historical findings record, not a claim that the updated bytes were re-reviewed by all five lenses. User acceptance permits publication of the review marker.
 
 ### Second review resolutions
 
