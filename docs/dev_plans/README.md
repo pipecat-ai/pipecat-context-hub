@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-10-02 | Feature | Local ChatGPT Context Hub plugin | Architecture confirmation pending | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
