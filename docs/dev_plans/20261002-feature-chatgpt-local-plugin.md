@@ -1,6 +1,6 @@
 # Local Pipecat plugin: idea to Cloud deployment experiment
 
-**Status**: Not Started — expanded plan awaiting review
+**Status**: Not Started — second-review findings addressed; acceptance pending
 **Component**: plugin packaging, retrieval instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-02
@@ -24,8 +24,8 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 - R2: Status establishes index readiness and indexed framework provenance. An unavailable requested version is a limitation, not permission to rebuild the index.
 - R3: Bind hub startup to its installed absolute Python executable using `-P -m pipecat_context_hub serve`; startup must be independent of desktop working directory.
 - R4: Build discovers installed CLI capabilities, maps user choices to supported scaffold options, validates a dry run, and only creates an app after a build request. Never overwrite or re-scaffold an existing app.
-- R5: Deploy preparation validates the project, runtime keys by name, selected Cloud organisation/region/agent identity, sizing and build path. Do not print secret values or send them to model-visible context.
-- R6: After the user approves the concrete deployment target and payload, invoke the installed Cloud CLI, check readiness and inspect bounded diagnostic logs. Failure is not success merely because the command was issued.
+- R5: Deploy preparation validates the project, required runtime key names, selected Cloud organisation/region/agent identity, sizing and build path. Cloud inspection before approval is read-only: inspect existing secret-set metadata and prepare proposed key additions/updates without uploading or creating secrets. Do not print secret values or send them to model-visible context.
+- R6: Present one concrete approval payload covering the deployment target, build source, resources, secret-set name and proposed key additions/updates. After the user approves that payload, use supported local tooling to create/update the approved Cloud secrets, then build/deploy through the installed Cloud CLI, check readiness and inspect bounded diagnostic logs. If secrets are already available and no changes are needed, skip the secret write. Failure is not success merely because a command was issued.
 - R7: Existing Context Hub server, CLI bridge, install registrations and retrieval semantics remain unchanged. No general shell execution tool is added to the retrieval MCP.
 
 ## Verified facts and compatibility boundaries
@@ -38,32 +38,33 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 - Live local probes on 2026-10-03: `pipecat --version` reports `1.3.0`; `pipecat init --help` supports `--config`, `--dry-run`, `--deploy-to-cloud` and `--list-options`; `pipecat cloud deploy --help` succeeds and offers build-directory and GitHub-source options.
 - A non-interactive scaffold dry run succeeded with explicit web bot type, SmallWebRTC, cascade, Deepgram/OpenAI/Cartesia, no client and Cloud files enabled. These are probe inputs, not defaults for users. Omitting `--bot-type` failed on this installed CLI, despite newer upstream guidance describing inference. This version has no `--eval` scaffold flag in its help.
 - `pipecat-context-hub install --print-config` returned the pinned launch configuration without registering a client or refreshing the index.
-- Official OpenAI documentation supports local shell/files in desktop Work when available to the account/workspace. Documentation support is not evidence of activation in the user's specific target chat; Phase 1 must prove it.
+- Official OpenAI documentation supports local shell/files in desktop Work when available to the account/workspace. Documentation support is not evidence of activation in the user's specific target chat; Phase 1 records retrieval and execution capabilities separately.
 
 ## Implementation phases
 
 ### Phase 1: Prove the desktop and installed-tool path
 
-- Inspect CLI versions/help, resolve the installed hub interpreter, and check index readiness without refresh.
-- Add a minimal plugin template and local renderer, then prove desktop discovery, skill activation, stdio initialize/status and a harmless local shell command in the intended Work mode.
-- Capture host mode, versions, command/argv and pass/fail evidence without machine paths in committed templates.
-- If a probe fails, stop and re-plan before finishing the skills. Do not substitute an untested execution adapter.
+- Retrieval outcome: resolve the installed hub interpreter, check index readiness without refresh, add the minimal plugin template and local renderer, then prove desktop discovery, explore-skill activation and stdio initialize/status. This gates Phase 2.
+- Execution outcome: separately check local shell availability with a harmless command, and inspect Pipecat CLI versions/help when installed. This gates Phase 3 only; absent shell access or CLI must not block working retrieval.
+- Cloud outcome: when the optional Cloud CLI is present, record command discovery; account/auth readiness remains a Phase 4 gate. Its absence does not block Phases 2 or 3.
+- Capture independent retrieval/execution/Cloud availability, host mode, versions, command/argv and pass/fail evidence without machine paths in committed templates.
+- If retrieval fails, stop the retrieval-dependent work and re-plan. If an optional capability is missing, mark only its dependent workflow unavailable and continue independent work. Do not substitute an untested execution adapter.
 
 ### Phase 2: Complete grounded exploration
 
-Depends on Phase 1. Define idea and concept workflows, source citations, version/source preference mapping and ambiguity handling. Test read-only conversations, including unsupported-filter and unavailable-version cases. The package can ship exploration without requiring the Pipecat CLI or Cloud credentials.
+Depends only on Phase 1's retrieval outcome. Define idea and concept workflows, source citations, version/source preference mapping and ambiguity handling. Test read-only conversations, including unsupported-filter and unavailable-version cases. The package can ship exploration without local shell access, the Pipecat CLI or Cloud credentials.
 
 ### Phase 3: Add build and local verification
 
-Depends on Phase 2. Discover scaffold options from installed help/JSON options, resolve user choices, validate `--dry-run`, then create a new app in an explicitly selected empty directory. Use generated structure and dependency pins; customise against retrieved APIs. Run project-appropriate import/startup and behavioural checks. Use upstream eval support only if the installed CLI actually supports it; otherwise record an explicit local verification method. No provider choice or credentials are invented.
+Depends on Phase 2 and Phase 1's execution outcome. If local shell access or the Pipecat CLI is unavailable, report build as unavailable while retaining exploration. Otherwise discover scaffold options from installed help/JSON options, resolve user choices, validate `--dry-run`, then create a new app in an explicitly selected empty directory. Use generated structure and dependency pins; customise against retrieved APIs. Run project-appropriate import/startup and behavioural checks. Use upstream eval support only if the installed CLI actually supports it; otherwise record an explicit local verification method. No provider choice or credentials are invented.
 
 ### Phase 4: Prepare and exercise Cloud deployment
 
-Depends on Phase 3. Inspect installed Cloud command help, validate Dockerfile/deploy configuration and image architecture versus region, and check account/auth readiness. User performs browser login when needed. Arrange runtime secrets using supported local Cloud tooling while keeping values out of transcripts; local `.env` is not assumed to reach Cloud automatically. Present the target, build source, resources and secret-set names for final approval. After approval, deploy, inspect readiness and bounded logs, and run an explicitly approved agent session if needed to verify behaviour. Document the deployed identity and cleanup instructions; do not delete deployments or automatically roll back by deleting data.
+Depends on Phase 3 and available Cloud CLI/account prerequisites. If Cloud prerequisites are absent, retain exploration/build and report deployment as unavailable. Inspect installed Cloud command help, validate Dockerfile/deploy configuration and image architecture versus region, and check account/auth readiness. User performs browser login when needed. Before approval, inspect only required key names and existing Cloud secret-set metadata, and prepare a local upload plan; do not create, update or upload Cloud secrets. Local `.env` is not assumed to reach Cloud automatically. Present one concrete payload identifying organisation, region, agent, build source, resources, secret-set name and proposed key additions/updates for final approval. After approval, use supported local tooling to write only those secrets without exposing values to transcripts, then build/deploy, inspect readiness and bounded logs, and run an explicitly approved agent session if needed to verify behaviour. If a proposed secret change or deployment target changes after approval, present the revised payload before executing it. Document the deployed identity and cleanup instructions; do not delete deployments or automatically roll back by deleting data.
 
 ### Phase 5: Evaluate, review and document
 
-Depends on all preceding phases. Complete the evaluation matrix, distinguish package checks from actual desktop outcomes, and document prerequisites and version limitations. Run proportional package/setup checks, the full repo quality gate before a PR, documentation review, code review and security review. Keep focused commits; no push/PR/merge is implied by plan completion. A missing Cloud account or approval leaves live deployment explicitly untested, not silently passed.
+Evaluate each workflow as its prerequisites become available; finish the live build/deploy cases after Phases 3 and 4 run. Complete the evaluation matrix, distinguish package checks from actual desktop outcomes, and document prerequisites and version limitations. Run proportional package/setup checks, the full repo quality gate before a PR, documentation review, code review and security review. Keep focused commits; no push/PR/merge is implied by plan completion. Missing optional prerequisites mark dependent workflows unavailable/untested and do not prevent recording successful exploration; a missing Cloud account or approval leaves live deployment explicitly untested, not silently passed. The full experiment remains incomplete until its live acceptance targets are demonstrated.
 
 ## Technical Specifications
 
@@ -89,6 +90,10 @@ Use a generated local copy to bind the installed interpreter; keep machine-speci
 
 Use native local shell tools in desktop Work/Codex for the Pipecat CLI; skills are instructions, not executable permissions. The Cloud optional extension is installed separately when a user needs deployment. Help-derived capability checks take precedence over assumptions from newer docs. Builds and Cloud operations occur in the user's app workspace, not this repository.
 
+Retrieval, local execution/Pipecat CLI and Cloud readiness are separate gates. Missing optional capabilities disable only the workflows that require them; working hub retrieval remains usable without local shell or either optional CLI.
+
+Secret mutation is an explicit approved Cloud operation, distinct from read-only deployment preparation. Include proposed secret creation/update in the same concrete approval payload as the deployment. Preapproval checks expose only key names and secret-set metadata; after approval, supported local tooling transfers secret values directly without returning them to model context. Upload secrets before starting the approved build/deploy so required runtime secrets are available at startup.
+
 ### Integration Seams
 
 | Producer | Consumer | Contract |
@@ -97,7 +102,7 @@ Use native local shell tools in desktop Work/Codex for the Pipecat CLI; skills a
 | ChatGPT explore skill | Hub MCP | Supported tool arguments, multi-concept delimiters, local index provenance and cited results |
 | ChatGPT build/deploy skills | Host local execution tools | User-authorised project workspace and actual installed CLI capabilities; no ambient execution assumption |
 | Pipecat scaffold | Build skill | Generated structure, dependency pins and named environment requirements |
-| Local Cloud CLI | Pipecat Cloud | User-selected identity/config, valid authentication and runtime secrets, build/deploy result and readiness evidence |
+| Local Cloud CLI | Pipecat Cloud | Read-only metadata inspection before approval; approved secret creation/update precedes approved build/deploy; identity/config, authentication, readiness and redacted diagnostics |
 
 ## Architecture & Call Flow
 
@@ -112,7 +117,8 @@ graph LR
   H -->|Evidence| C
   C -->|Authorised local execution| L[Installed Pipecat CLI]
   L --> A[User app workspace]
-  L -->|Approved deployment| K[Pipecat Cloud]
+  L -->|Read-only secret-set metadata| K[Pipecat Cloud]
+  L -->|Approved secret writes, then build and deployment| K
   K -->|Readiness and diagnostics| L
   C -->|Grounded response and verified result| U
 ```
@@ -135,10 +141,17 @@ sequenceDiagram
     L-->>C: Files and validation evidence
   end
   opt User requests Cloud deployment
-    C->>L: Prepare config and check prerequisites
-    C-->>U: Concrete target and payload for approval
-    U->>C: Approve deployment
-    C->>L: Deploy selected app
+    C->>L: Prepare config, check prerequisites and required key names
+    L->>K: Read existing secret-set metadata only
+    K-->>L: Secret-set metadata without values
+    C-->>U: Target, build source, resources and proposed secret changes
+    U->>C: Approve secrets and deployment payload
+    opt Approved secret changes are needed
+      C->>L: Write approved secrets using local tooling
+      L->>K: Create or update approved secret set
+      K-->>L: Result without secret values
+    end
+    C->>L: Build and deploy selected app
     L->>K: Build and deploy
     K-->>L: Ready or failed state and diagnostics
     L-->>C: Verified result
@@ -151,7 +164,8 @@ sequenceDiagram
 | Setup | Local rendering and install | Package identity and connection metadata | Local plugin copy; no secrets in package | Before experiment chat |
 | Explore | Idea/concept request | Requirements, preferences, indexed version and retrieved evidence | Conversation history; corpus stays on disk | User and tool turns |
 | Build | Explicit build request | Supported options, dry-run result, code and test output | User project files; credentials remain local | Assistant tool rounds |
-| Prepare deployment | Deployment request | Target, region, resources, key names and validation | Project configuration; no secret values in chat | Before approval |
+| Prepare deployment | Deployment request | Target, region, resources, key names, existing secret-set metadata and proposed changes | Local configuration/upload plan; no Cloud mutations or secret values in chat | Before approval |
+| Write secrets | Concrete payload approval, when changes are needed | Redacted result and approved key names | Approved Cloud secret set; values stay out of chat | After approval, before build/deploy |
 | Deploy | Concrete user approval | Deployment identity, readiness and redacted diagnostics | Cloud deployment and recorded result | Approval and tool rounds |
 
 ## Testing Notes
@@ -161,6 +175,7 @@ sequenceDiagram
 | Template rendering | Portable root files, pinned interpreter and safe argv; no unresolved placeholder in generated config |
 | Destination exists or hub absent | Clear error, no overwrite or partial registration |
 | Host feasibility | Actual skill discovery, stdio initialize/status and harmless shell execution in selected desktop mode |
+| Optional shell/CLI absent | Retrieval still activates and answers with sources; build is unavailable without shell/Pipecat CLI, and Cloud absence does not block working exploration/build |
 | Unrelated/shadow-module cwd | Packaged launch completes initialize/status using installed hub, not a same-named shadow module |
 | Idea versus concept prompts | Relevant retrieved material and sources precede Pipecat API assertions |
 | Unavailable version; empty/stale index | Limitation/remediation disclosure; no initiated refresh/replacement; before/after version and refresh metadata |
@@ -169,8 +184,8 @@ sequenceDiagram
 | Existing project | No overwrite/re-scaffold; adapt existing structure |
 | CLI capability drift | Installed 1.3.0 versus newer documented flags handled through discovery; unsupported flags never blindly invoked |
 | Cloud auth/keys unavailable | Preparation remains incomplete with specific prerequisites; no secret values in outputs |
-| Deployment declined or not yet approved | No upload/build/deploy or agent-session start |
-| Approved deployment | Correct target/build configuration, readiness evidence and bounded redacted diagnostics |
+| Deployment declined or not yet approved | Read-only preparation only; no secret create/update/upload, build/deploy or agent-session start |
+| Approved deployment | Only approved secret changes are written before approved build/deploy; correct target/configuration, readiness evidence and bounded redacted diagnostics |
 | Failed deploy | Explicit failure with actionable diagnostics; no false completion |
 
 Each run records prompt, host mode, CLI/framework versions, actual tool calls, cited response, latency and pass/fail/untested outcomes. Freeze at least 12 prompts across these cases. Local setup tests cannot establish model activation or successful Cloud behaviour.
@@ -186,7 +201,8 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - Actual desktop discovery and stdio connection are demonstrated with the rendered local package.
 - Idea/concept workflows retrieve relevant evidence and disclose version/source limitations.
 - A build request produces a scaffolded app using installed CLI capabilities and verifies it locally.
-- Deployment preparation produces concrete reviewed configuration without exposing credential values.
+- Deployment preparation produces concrete reviewed configuration and proposed secret changes without Cloud mutation or exposure of credential values. Approved secret changes occur before the approved build/deploy.
+- Missing optional CLI, shell or Cloud prerequisites leave working exploration usable and disable only dependent workflows.
 - Live Cloud deployment runs only after target/payload approval and is verified ready; missing prerequisites remain explicitly untested.
 - All evaluation results distinguish observed passes, failures and untested behaviour.
 - Existing hub CLI/server behavior and registrations are preserved.
@@ -207,6 +223,8 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - User authorised inclusion of Pipecat CLI and Cloud workflow on 2026-10-03. Expanded scope and all four original findings are incorporated here; this is not proof of a fresh review.
 - Live command help and scaffold dry run verified. No app was created, index refreshed, secrets uploaded or deployment started.
 - Expanded implementation phases and desktop/Cloud workflow remain unimplemented and require review before coding.
+- Second five-lens review completed with three Important findings and zero contradictions; user requested all fixes on 2026-10-03. Secret approval boundaries and capability gates are now explicit; fixes require final acceptance before publishing the review marker.
+- Post-fix checks passed: capability gates are separate, the sequence places approval before secret writes and secret writes before build/deploy, and obsolete conflicting wording is absent. A fresh independent contradiction pass found zero contradictions and confirmed the fixes are compatible.
 
 ## Findings
 
@@ -219,7 +237,12 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 ### Current limitations
 
-The installed CLI reports version 1.3.0 and differs from current upstream scaffold documentation. Actual desktop activation and Cloud account/secret readiness have not been verified. The prior review JSON describes the initial draft, not this expanded contract; no valid review marker has been published.
+The installed CLI reports version 1.3.0 and differs from current upstream scaffold documentation. Actual desktop activation and Cloud account/secret readiness have not been verified. The persisted second-review JSON describes the expanded plan before these fixes; it remains the historical findings record, not a claim that the updated bytes were re-reviewed by all five lenses. No valid review marker has been published.
+
+### Second review resolutions
+
+- Architecture ambiguity and secret-write ordering: preparation remains read-only; the concrete deployment approval includes proposed secret-set/key changes, and approved secret writes precede approved build/deploy. Requirements, phases, call flow, integration seam and evaluation expectations express the same boundary.
+- Optional capability gate: exploration depends only on retrieval readiness; building requires local execution/Pipecat CLI, and deploying additionally requires Cloud readiness. Missing optional capabilities no longer block independent retrieval or its evaluation.
 
 ## Final Results
 
