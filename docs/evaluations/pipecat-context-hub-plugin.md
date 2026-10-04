@@ -11,17 +11,85 @@ This repository report is not copied into the installed plugin package.
 | Installed Hub | Importable from unrelated cwd with pinned Python | Pass, installed Hub 0.8.0 |
 | Packaged stdio | Initialize and nonempty status using generated `mcp.json` | Pass, corrected portable command and unique connection; subprocess only |
 | Cwd safety | Same initialize/status with a shadow Hub module in cwd | Pass, subprocess only |
-| Index preservation | Before/after refresh date and framework provenance unchanged | Historical probes pass; current after-status unavailable (`Transport closed`), no refresh initiated |
+| Index preservation | Before/after refresh date and framework provenance unchanged | Pass, 2026-10-04 clean-worker before/after status preserves the user-refreshed baseline; no agent refresh |
 | Desktop discovery | Plugin and packaged skill exposed in selected host/mode | Pass, Codex local catalogue and enabled plugin 2026-10-03 |
 | Explore skill activation | Host reads and invokes packaged explore skill | Pass, observed TTS + STT exploration 2026-10-03 |
-| Desktop packaged MCP | Host uses `pipecat-context-hub-chatgpt-plugin` initialize/status connection | Observed named status call passes 2026-10-03 local / 2026-10-04 UTC; initialized connection established, raw initialize/startup trace unobserved |
-| Existing Hub retrieval | Status, API definitions, docs and examples with sources | Historical sourced retrieval passes; current packaged retrieval probes fail with `Transport closed`, documentation failures remain unresolved |
+| Desktop packaged MCP | Host uses `pipecat-context-hub-chatgpt-plugin` initialize/status connection | Pass, actual named calls in a clean Codex worker 2026-10-04; raw desktop initialize/startup trace unobserved |
+| Existing Hub retrieval | Status, API definitions, docs and examples with sources | Pass for recorded 2026-10-04 clean-worker queries and exact lookups; broad ranking and other page paths unverified |
 | Execution | Harmless shell command in selected host/mode | Pass, Codex local shell |
 | Pipecat CLI | Installed version and init help/options | Pass, CLI 1.3.0 version/init help |
 | Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
 | Cloud account | Auth/org readiness (later phase) | Untested |
 
-## Native crash diagnosis and bounded fix (2026-10-04)
+## After user refresh: packaged worker connection (2026-10-04)
+
+The user reported 45,453 upserts, zero errors and a 799.1-second refresh.
+This external recovery supersedes the historical retrieval-blocked outcomes
+below for the successfully tested paths; this worker initiated no refresh,
+reset, repair, installation or registration change.
+
+A clean Codex local Phase 1 worker called the actual uniquely named
+`mcp__pipecat_context_hub_chatgpt_plugin__` tools successfully, despite the
+parent chat's earlier `Transport closed` result. Initial status, status after
+the frozen docs query and final status all reported installed Hub 0.8.0,
+45,453 records, refresh `2026-10-04T16:11:55.385306+00:00`, framework pin
+`latest`, indexed framework 1.12.0, zero commits ahead and enabled reranker.
+Checkout 0.8.1 is distinct. All observed MCP results had `isError: false`.
+
+Sequential host checks, using inspected schemas:
+
+- `search_docs(query="TTS + STT")`, with no filters or limit override,
+  returned ten hits including both text-to-speech and speech-to-text learn pages.
+- `search_api(query="run_tts", class_name="TTSService", chunk_type="method",
+  limit=3)` returned `TTSService.run_tts` first with its method signature.
+- `search_examples(query="TTS pipeline", repo="pipecat-ai/pipecat",
+  domain="backend", limit=3)` returned framework example paths, led by
+  `examples/getting-started/01a-local-audio.py`; examples were not executed.
+- `get_doc(path="/pipecat/learn/pipeline.md")`, with no section/doc-id filter,
+  returned 9,632 characters, fourteen sections and confidence 1.0.
+- `get_doc(doc_id="26704f2068530cc7")`, using the first actual docs-search
+  hit, returned the nonempty Supported TTS Services chunk from the
+  [text-to-speech page](https://docs.pipecat.ai/pipecat/learn/text-to-speech.md),
+  with confidence 1.0; this ID lookup is not a full-page assembly claim.
+- `get_code_snippet(symbol="TTSService.run_tts")`, with no filters or limit
+  override, returned the exact abstract method first, including its signature,
+  docstring and `raise NotImplementedError`, with
+  [source lines 556–571](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/tts_service.py#L556-L571).
+- `get_example(example_id="582870762aa3dbb14f539fab", include_readme=false)`
+  returned the complete
+  [local-audio TTS example](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/examples/getting-started/01a-local-audio.py),
+  including its pipeline, worker, runner and `main` entry point. It demonstrates
+  TTS output, not an entire STT conversation, and was not executed.
+
+Status after these exact lookups again matched the initial record count,
+refresh timestamp, framework provenance and reranker state above.
+
+Fresh exact-packaged-command subprocess evidence separately confirms initialize,
+status, retrieval and clean exit 0 from an unrelated working directory. The
+worker's named host calls establish current packaged connection readiness;
+raw desktop initialize/startup argv remain unobserved. The parent's connection
+was not retested or restarted here. Broad unfiltered example/API ranking and
+other previously failed page paths remain unverified; nonempty results alone
+do not establish relevance or fix every retrieval issue. Local raw traces stay
+outside the checkout. No source/test changes or later-phase work occurred.
+
+The clean test writer found existing setup, corruption and real-protocol
+regressions sufficient: 26 targeted tests pass in 4.97 seconds. Conduct's
+canonical `uv run pytest tests/ -q` passes with 1,844 tests and 7 skips in
+64.93 seconds. These automated checks complement the live host observations;
+they do not establish unobserved desktop traces or executed voice examples.
+
+## Historical native crash diagnosis and bounded fix (2026-10-04, before refresh)
+
+An earlier pre-refresh `/conduct --resume` on 2026-10-04 refreshed the marker and state hash
+through the installed skill's preflight; it did not run a new plan review. A
+fresh Phase 1 worker independently repeated patched-checkout `status` without
+arguments, filters or environment overrides and received exit 2 in 0.72 seconds
+with the same corruption diagnosis. It changed no files and reported blocked.
+Conduct validated the report, saved blocked state with zero completed phases and
+released its lock. No native retrieval search, test-writer, tests, index recovery,
+installation/registration change or phase-boundary commit followed the blocker.
+At that checkpoint, the user's no-refresh instruction excluded agent recovery.
 
 The exact generated packaged launch was reproduced in a fresh process from an
 unrelated temporary directory. Initialize and status succeeded; the first
@@ -188,7 +256,7 @@ Local correction checks on 2026-10-03: nine renderer unit regressions passed,
 along with targeted Ruff format/check and mypy. They establish the unique
 connection/copy boundary and refusal paths, not desktop initialization.
 
-## Next desktop activation test
+## Historical desktop activation test (2026-10-03)
 
 1. Render a fresh local copy and inspect `mcp.json`: its only server key must
    be `pipecat-context-hub-chatgpt-plugin`, with the installed Python’s bare
@@ -211,7 +279,7 @@ framework version, then explain a TTS + STT voice-agent idea with sourced docs
 and examples. Do not use the standalone Hub connection as activation proof
 and do not refresh the index."
 
-Phase 2 remains gated on the attributed desktop connection.
+At this historical checkpoint, Phase 2 remained gated on the attributed desktop connection. The 2026-10-04 clean-worker evidence above satisfies that readiness gate for Codex local.
 
 Unique-connection installation preparation (2026-10-03): installed CLI help
 confirmed `plugin add` reinstalls from a configured marketplace. The existing
