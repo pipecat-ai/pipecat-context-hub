@@ -7,6 +7,13 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Optional local desktop plugin experiment with a read-only Pipecat Context
+  Hub explore skill, an independent MCP connection, and a renderer that pins
+  startup to the installed Hub interpreter. Build and deployment workflows
+  remain pending; the evaluation report records desktop attribution and
+  documentation-retrieval limitations separately.
+
 ## [0.8.1] - 2026-10-02
 
 ### Security

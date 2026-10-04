@@ -14,7 +14,7 @@ This repository report is not copied into the installed plugin package.
 | Index preservation | Before/after refresh date and framework provenance unchanged | Pass, read-only probes |
 | Desktop discovery | Plugin and packaged skill exposed in selected host/mode | Pass, Codex local catalogue and enabled plugin 2026-10-03 |
 | Explore skill activation | Host reads and invokes packaged explore skill | Pass, observed TTS + STT exploration 2026-10-03 |
-| Desktop packaged MCP | Host uses `pipecat-context-hub-chatgpt-plugin` initialize/status connection | Awaiting unique-connection retest; prior same-name activation was unattributed |
+| Desktop packaged MCP | Host uses `pipecat-context-hub-chatgpt-plugin` initialize/status connection | User-reported unique-connection status/retrieval pass 2026-10-03; initialize/startup trace unverified |
 | Existing Hub retrieval | Status, API definitions, docs and examples with sources | Pass, direct docs and real pipeline examples; docs search degraded |
 | Execution | Harmless shell command in selected host/mode | Pass, Codex local shell |
 | Pipecat CLI | Installed version and init help/options | Pass, CLI 1.3.0 version/init help |
@@ -170,3 +170,42 @@ therefore remains unobserved. Reload/restart the desktop and run the retest
 prompt in a new local chat through the unique packaged connection. No desktop
 restart or chat creation was performed here. The historical docs-search Chroma
 `Internal error: Error finding id` remains independently unresolved.
+
+## User-reported desktop retest (2026-10-03)
+
+The user supplied a new-chat exploration report stating that the installed
+explore skill used `pipecat-context-hub-chatgpt-plugin`. It reported 45,411
+records, a September 26 refresh date, indexed Pipecat 1.12.0, an enabled
+reranker and a stale-snapshot warning. No index refresh was performed.
+
+The reported run retrieved STT/TTS API excerpts and conversation/transcription
+example excerpts at pipecat commit
+`1559a684b1ee9771b36454b72418d7364b518e7f`:
+
+- [STTService.run_stt](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/stt_service.py#L336-L349)
+- [TTSService.run_tts](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/tts_service.py#L556-L571)
+- [User/assistant turns](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/examples/turn-management/turn-management-user-assistant-turns.py)
+- [Local Whisper transcription](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/examples/transcription/transcription-whisper-local.py)
+
+Documentation-page retrieval failed in this retest:
+`search_docs("TTS + STT")` returned `Error finding id`, and direct page lookups
+returned `Not Found`. The report did not include those lookup paths. Returned
+example files were partial and were not run. This is a status/API/example
+retrieval success with a separate documentation-retrieval failure.
+
+This evidence is the user's report, not a tool trace captured in this chat.
+The reporting chat still exposed only the standalone Hub tool names. Preserve
+the user-reported result without claiming independent initialize/startup
+verification or advancing conduct's blocked Phase 1 state. The remaining
+attribution check is to capture the unique connection's actual initialize/
+status calls and safe startup argv; later phases remain pending.
+
+Local commit checks on 2026-10-03: the renderer and setup-test formatter left
+both files unchanged. Ruff passed for `src/`, `tests/` and the renderer; mypy
+passed for the same scope (123 files). The full repository suite passed with
+1,835 tests and 7 skips. The plan's review-marker contract hash still matched.
+A direct template/AST check confirmed one unique server, the exact safe launch
+template and one fixed-argv subprocess call without a shell. Bandit reported
+one low-severity B404 warning for importing `subprocess`; that fixed-argv call
+was reviewed, and the warning remains disclosed rather than counted as a clean
+Bandit result. No index refresh was performed.
