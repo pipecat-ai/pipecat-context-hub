@@ -443,3 +443,7 @@ patch under SemVer. Only the git tag is deferred to merge time:
 Evidence: full suite **1071 passed, 6 skipped** on cpython-3.14.5 (macOS-arm64)
 in an isolated env; `uv lock` resolves all platforms. Only warning is an upstream
 chromadb `DeprecationWarning` (`asyncio.iscoroutinefunction`, removal in 3.16).
+
+## Follow-up: persisted HNSW corruption (2026-10-04)
+
+The [local plugin experiment](20261002-feature-chatgpt-local-plugin.md) adds a bounded read-only graph-size check before `PersistentClient`, alongside the existing pre-1.0 schema probe. Chroma 1.5.9 can initialize successfully and later SIGSEGV while loading a corrupt persisted vector graph. The check rejects oversized `link_lists.bin` files through `IncompatibleIndexFormatError` and the existing reset remediation; it neither changes the dependency pin nor repairs the index. Other graph corruption shapes remain outside this check. Live recovery is excluded by the user's no-refresh instruction.

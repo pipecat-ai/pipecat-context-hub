@@ -14,6 +14,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   remain pending; the evaluation report records desktop attribution and
   documentation-retrieval limitations separately.
 
+### Fixed
+- Reject oversized persisted Chroma HNSW link-list files before opening the
+  native client. Corrupt indexes now report the existing index-unready error
+  and rebuild guidance instead of initializing successfully and crashing on
+  the first vector-backed search. The check is read-only and does not repair
+  the index or cover every graph corruption shape.
+
 ## [0.8.1] - 2026-10-02
 
 ### Security

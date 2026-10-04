@@ -367,6 +367,20 @@ the indexed pipecat version; re-verify against the current registry if they drif
     to `create_server`) stays intact but delivery on the wire breaks (e.g.
     an MCP SDK kwarg rename).
 
+51. **Persisted graph corruption / first-search crash (2026-10-04).** The exact
+    failed query was `search_docs("TTS + STT")`: initialize/status succeeded,
+    then Chroma 1.5.9 SIGSEGVed loading the vector graph and MCP returned
+    `Transport closed`. Single-concept docs/API queries failed too. On a healthy
+    index, repeat the exact query and then status on the same connection. With
+    an oversized persisted HNSW `link_lists.bin`, fresh `serve`, `status` and
+    CLI `search-docs "TTS + STT"` must instead exit **2 before initialization**,
+    with `corrupt persisted HNSW` and `refresh --force --reset-index` on stderr
+    and empty stdout. The probe must not change index files or run recovery.
+    Regressions: `tests/unit/test_hnsw_validation.py` freezes the real header
+    and logical file size; `tests/integration/test_report_hint_e2e.py` freezes
+    the query against synthetic corruption. This bounded size check does not
+    prove all persisted graph data is healthy.
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 

@@ -21,6 +21,60 @@ This repository report is not copied into the installed plugin package.
 | Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
 | Cloud account | Auth/org readiness (later phase) | Untested |
 
+## Native crash diagnosis and bounded fix (2026-10-04)
+
+The exact generated packaged launch was reproduced in a fresh process from an
+unrelated temporary directory. Initialize and status succeeded; the first
+`search_docs("TTS + STT", limit=4)` ended stdout and exited with SIGSEGV (-11).
+Separate fresh processes crashed on single-concept docs and API searches too.
+`get_doc(path="/pipecat/learn/pipeline.md")` succeeded, so direct page assembly
+works for that path even while vector loading fails. This does not establish
+that every previously failed path now works.
+
+Faulthandler placed the failing Python call at Chroma's `Collection.count()`;
+macOS native reports located the fault in `chromadb_rust_bindings` at address
+0x88. Read-only inspection found 551,973 historical HNSW elements (distinct
+from the 45,448 current records), maximum graph level 3 and maxM 16. The graph's
+`link_lists.bin` has 12,090,482,427,024 logical bytes and 353,257,869,312 allocated
+bytes. Its current-element size bound is only 152,344,548 bytes; the new check
+uses the more conservative allocated-capacity bound of 289,406,976 bytes.
+The first malformed link-list record occurs at element 522,121 / byte offset
+4,513,636: its length is 13, which is not a multiple of the 68-byte level stride.
+A new temporary Chroma 1.5.9 collection passes creation and reopened queries.
+These observations establish persisted graph corruption. They do not establish
+which earlier writer or interruption caused it.
+
+Related upstream reports document [native crashes on corrupt persisted graphs](https://github.com/chroma-core/chroma/issues/7238)
+and [runaway sparse link-list files](https://github.com/chroma-core/chroma/issues/7510).
+They support the failure mechanism; their proposed recoveries were not applied.
+`dimensionality=None` also appears in the local legacy pickle, but its role in
+this failure was not isolated and is not treated as the established cause.
+
+The repository fix checks active persisted vector segments read-only before
+native Chroma client construction. An oversized graph uses the existing
+index-unready exit/error with rebuild guidance, rather than reporting metadata
+status as if retrieval were usable and then losing the MCP transport. The check
+reads bounded header bytes and file metadata; it does not scan the huge graph,
+deserialize the pickle, repair the index or guarantee detection of every
+corruption shape. Installed Hub 0.8.0 remains separate from the patched checkout.
+
+No live refresh/reset, index repair/deletion, plugin reinstallation or
+registration change was performed. Retrieval and conduct Phase 1 remain blocked
+until the damaged index can be recovered and the amended plan re-reviewed.
+The earlier review marker no longer matches the amended above-marker contract.
+
+Validation: 23 focused format/graph/front-door tests pass. The full suite reports
+1,844 passed and 7 skipped (64.69 seconds); Ruff format/check, mypy (124 files),
+`git diff --check` and Bandit for the new production helper pass. The frozen
+field-shape regression asserts that no native client is constructed. CLI status,
+the exact multi-concept query and MCP startup return exit 2 with clear remediation
+and unchanged synthetic index bytes. A read-only probe of the actual live graph
+returns the same corruption diagnosis; SQLite/header/pickle hashes and every
+segment file's size/mtime are identical before and after. The only native client
+construction in `VectorIndex` is inside `_open_client`, after validation; both
+construction and reset/reopen use that method. No installed-runtime or recovered
+live-retrieval success is claimed.
+
 ## Attributable packaged desktop re-validation (2026-10-03 local / 2026-10-04 UTC)
 
 This Codex local run exposes eight tools whose names begin with

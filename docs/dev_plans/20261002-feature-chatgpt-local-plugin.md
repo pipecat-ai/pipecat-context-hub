@@ -1,10 +1,10 @@
 # Local Pipecat plugin: idea to Cloud deployment experiment
 
-**Status**: In Progress — Phase 1 desktop MCP retest pending
+**Status**: Blocked — Phase 1 persisted vector index is corrupt
 **Component**: plugin packaging, retrieval instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-02
-**Updated**: 2026-10-03
+**Updated**: 2026-10-04
 
 ## Objective
 
@@ -26,7 +26,7 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 - R4: Build discovers installed CLI capabilities, maps user choices to supported scaffold options, validates a dry run, and only creates an app after a build request. Never overwrite or re-scaffold an existing app.
 - R5: Deploy preparation validates the project, required runtime key names, selected Cloud organisation/region/agent identity, sizing and build path. Cloud inspection before approval is read-only: inspect existing secret-set metadata and prepare proposed key additions/updates without uploading or creating secrets. Do not print secret values or send them to model-visible context.
 - R6: Present one concrete approval payload covering the deployment target, build source, resources, secret-set name and proposed key additions/updates. After the user approves that payload, use supported local tooling to create/update the approved Cloud secrets, then build/deploy through the installed Cloud CLI, check readiness and inspect bounded diagnostic logs. If secrets are already available and no changes are needed, skip the secret write. Failure is not success merely because a command was issued.
-- R7: Existing Context Hub server, CLI bridge, install registrations and retrieval semantics remain unchanged. No general shell execution tool is added to the retrieval MCP.
+- R7: Existing Context Hub server handlers, CLI bridge, install registrations and retrieval semantics remain unchanged. A bounded exception permits a read-only pre-open check for oversized persisted HNSW link-list files, using the existing index-unready error/remediation path. This check must precede native Chroma client construction, must not repair or delete index files, and does not assert that other corruption shapes are detected. No general shell execution tool is added to the retrieval MCP.
 
 ## Verified facts and compatibility boundaries
 
@@ -44,6 +44,7 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 
 ### Phase 1: Prove the desktop and installed-tool path
 
+- Crash prerequisite (2026-10-04): reject an oversized persisted HNSW graph before native loading; regress the actual `TTS + STT` query against a synthetic corrupt index and prove healthy persisted indexes still reopen and search. Keep live index recovery outside this run because refresh was explicitly excluded. Re-review this amended contract before resuming conduct.
 - Retrieval outcome: resolve the installed hub interpreter, check index readiness without refresh, add the minimal plugin template and local renderer, then prove desktop discovery, explore-skill activation and stdio initialize/status. This gates Phase 2.
 - Execution outcome: separately check local shell availability with a harmless command, and inspect Pipecat CLI versions/help when installed. This gates Phase 3 only; absent shell access or CLI must not block working retrieval.
 - Cloud outcome: when the optional Cloud CLI is present, record command discovery; account/auth readiness remains a Phase 4 gate. Its absence does not block Phases 2 or 3.
@@ -82,7 +83,7 @@ Evaluate each workflow as its prerequisites become available; finish the live bu
 
 ### Files to modify
 
-`docs/setup/README.md` and `docs/README.md` link the optional desktop workflow. Update this plan and its index with progress and results. Do not modify the existing Pipecat CLI bridge or shared server handlers for this packaging experiment.
+`docs/setup/README.md` and `docs/README.md` link the optional desktop workflow. Update this plan and its index with progress and results. The crash prerequisite may modify `src/pipecat_context_hub/services/index/vector.py` and `errors.py`, add a read-only `hnsw_validation.py` helper and unit regressions, and extend `tests/integration/test_report_hint_e2e.py`. Update `AGENTS.md`, `CHANGELOG.md`, the evaluation report and related recovery/migration plans in the same pass. Do not modify the existing Pipecat CLI bridge or shared server handlers for this packaging experiment.
 
 ### Architecture decisions
 
@@ -251,6 +252,10 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 ## Findings
 
+- Bounded crash fix validation (2026-10-04): all `VectorIndex` native opens pass through `_open_client`, with graph validation before its sole `PersistentClient` call. The frozen field-shape regression asserts native construction never occurs on this corruption; real healthy persistence/reopen/query passes. CLI status, `search-docs "TTS + STT"` and MCP startup return exit 2 with actionable remediation and unchanged synthetic index bytes. The actual live read-only probe rejects the 12 TB logical file using a conservative 289,406,976-byte capacity bound; metadata/header/pickle hashes and graph file sizes/mtimes remain unchanged. Twenty-three focused tests pass; full pytest is 1,844 passed / 7 skipped in 64.69s; Ruff format/check, mypy (124 files), diff whitespace and the new helper's Bandit scan pass. The installed 0.8.0 runtime was not replaced. Index recovery, contract re-review and conduct Phase 1 completion remain pending.
+
+- 2026-10-04 diagnostic: a fresh process launched with the exact packaged interpreter/argv initialized and returned status, then exited with SIGSEGV (-11) on `search_docs("TTS + STT")`. Fresh single-concept docs and API searches also crashed, while a direct page lookup succeeded. macOS crash reports place the fault in `chromadb_rust_bindings`, with a near-null read at 0x88; faulthandler locates `Collection.count()` during vector loading. The live HNSW header records 551,973 historical graph elements, maximum level 3 and maxM 16. Its `link_lists.bin` is 12,090,482,427,024 logical bytes / 353,257,869,312 allocated bytes, exceeding the conservative header-derived upper bound of 152,344,548 bytes. A healthy temporary Chroma 1.5.9 index passes creation and reopened queries. This establishes persisted graph corruption rather than a desktop transport or multi-concept-only failure. No live refresh, repair, deletion or registration change was performed. The above-marker backend exception invalidates the previous review marker; conduct must remain blocked until contract re-review and usable retrieval.
+
 - Conduct resume on 2026-10-03 dispatched a fresh Phase 1 implementer sequentially because phase file slots are absent. The runtime now exposes the uniquely named packaged tools, and an actual `mcp__pipecat_context_hub_chatgpt_plugin__get_hub_status({})` call succeeded, establishing desktop activation. Its first-call baseline was 45,448 records, refresh `2026-10-04T06:34:32.826220+00:00`, framework pin `latest`, indexed framework 1.12.0 with zero commits ahead and enabled reranker; this differed from the historical snapshot before any probes in this run. No refresh was initiated. Four subsequent packaged docs/API/example/page probes returned `Transport closed`, and a sequential status retry confirmed the closed connection. Exact query/filter arguments are frozen in the evaluation report. Shell and installed CLI/help discovery passed. Conduct validated the implementer's blocked report and persisted Phase 1 as blocked, with no completed phases, test-writer, canonical test run or phase-boundary commit. Desktop ownership is resolved; usable retrieval is the new blocker. Raw initialize response/startup argv and the previous documentation errors remain unverified or unresolved as recorded.
 
 - Commit preparation on 2026-10-03 ran the full local gate: Ruff passed for source, tests and the renderer; mypy passed for 123 files; pytest reported 1,835 passed and 7 skipped. Targeted formatting made no changes. The reviewed contract hash matched, and a direct template/AST assertion confirmed the unique server and fixed-argv, shell-free startup probe. Bandit's single low B404 import warning was reviewed and remains disclosed in the evaluation report. These checks do not resolve desktop attribution or documentation retrieval, and do not advance conduct's phase state.
@@ -266,7 +271,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 ### Current limitations
 
-The installed CLI reports version 1.3.0 and differs from current upstream scaffold documentation. Packaged explore-skill activation and an attributable packaged desktop MCP status call are observed in Codex local. Subsequent retrieval calls and a status retry failed with `Transport closed`, so usable retrieval remains blocked. Raw initialize/startup traces and Cloud account/secret readiness remain unverified. The persisted second-review JSON describes the expanded plan before these fixes; it remains the historical findings record, not a claim that the updated bytes were re-reviewed by all five lenses. User acceptance permits publication of the review marker.
+The installed CLI reports version 1.3.0 and differs from current upstream scaffold documentation. Packaged explore-skill activation and an attributable packaged desktop MCP status call are observed in Codex local. Subsequent retrieval calls and a status retry failed with `Transport closed`; fresh subprocess diagnosis establishes persisted graph corruption, so usable retrieval remains blocked. Exact packaged argv/initialize/status are qualified in a fresh subprocess, while raw desktop initialize/startup traces and Cloud account/secret readiness remain unverified. The bounded read-only startup check is locally validated but not installed into Hub 0.8.0. Recovery remains excluded by the no-refresh instruction. The persisted second-review JSON and old marker are historical: the amended backend exception needs re-review before conduct resumes.
 
 ### Second review resolutions
 
@@ -274,5 +279,7 @@ The installed CLI reports version 1.3.0 and differs from current upstream scaffo
 - Optional capability gate: exploration depends only on retrieval readiness; building requires local execution/Pipecat CLI, and deploying additionally requires Cloud readiness. Missing optional capabilities no longer block independent retrieval or its evaluation.
 
 ## Final Results
+
+The 2026-10-04 diagnosis establishes persisted HNSW graph corruption as the current retrieval blocker. The read-only startup check and frozen regressions pass the full local quality gate, and the live probe preserves index bytes/metadata. It prevents this corruption shape from reaching the native loader; it does not restore the damaged index. Installed-runtime update, index recovery, amended-contract re-review and conduct Phase 1 completion remain pending under the no-refresh constraint.
 
 Minimal Phase 1 prototype is committed in `f7994bf` and locally validated. Packaged skill activation and historical sourced retrieval are recorded; the user's retest reports successful status/API/example retrieval through the unique connection with failed documentation-page retrieval. The latest conduct resume independently established packaged desktop activation with an actual named status call, but subsequent retrieval calls and the status retry returned `Transport closed`. Phase 1 therefore remains blocked on usable retrieval, with no completed conduct phases. The corrected portable launch, loader acceptance, source/cache parity, ordinary/shadow-cwd subprocess qualification, fifteen renderer regressions and full local quality gate remain historical passes. The latest first-call baseline differed from the historical snapshot before probing; this run initiated no refresh or index mutation, and the closed connection prevented an after-status comparison. Conduct validated and saved the new worker blocker without a test-writer, canonical test run or phase-boundary commit. Later workflows and live deployment remain pending. Installed Hub 0.8.0 and checkout 0.8.1 are distinguished. Raw initialize/startup traces and the previous Chroma docs-search/direct-page failures remain unverified or unresolved as recorded.

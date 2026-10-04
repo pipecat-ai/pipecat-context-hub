@@ -21,7 +21,7 @@ class IncompatibleIndexFormatError(RuntimeError):
     the SQLite schema first and raises this typed error with a clear upgrade
     path instead.
 
-    Two cases raise this:
+    Three cases raise this:
 
     * **Pre-1.0 directory** — the pre-open sysdb-migration probe detects a
       chromadb 0.6 on-disk format (``detected_sysdb_migration`` set).
@@ -31,6 +31,10 @@ class IncompatibleIndexFormatError(RuntimeError):
       migration probe can't see this (the ``migrations`` table is still 1.x;
       the damage is in the ``collections`` row), so ``_open_client`` catches
       the parse failure and raises this with a custom ``reason``.
+    * **Oversized persisted HNSW graph** — the read-only pre-open check finds
+      a link-list file larger than its header-derived capacity bound. Chroma
+      1.5.x may otherwise terminate the process with a native SIGSEGV rather
+      than raising a Python exception. This check does not repair the graph.
     """
 
     def __init__(

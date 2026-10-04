@@ -23,6 +23,7 @@ from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryE
 from overrides import override
 
 from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
+from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
@@ -359,6 +360,10 @@ class VectorIndex:
         # Probe for a pre-1.0 on-disk format BEFORE constructing the client,
         # which would otherwise crash opaquely or rewrite 0.6 state.
         _detect_incompatible_format(self._chroma_path)
+        # Status reads metadata without loading the HNSW graph. Reject the
+        # observed oversized-graph corruption before the native client can
+        # initialize successfully and later SIGSEGV on the first search.
+        validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME)
         self._chroma_path.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(
             path=str(self._chroma_path),
