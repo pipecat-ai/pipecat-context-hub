@@ -21,6 +21,233 @@ This repository report is not copied into the installed plugin package.
 | Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
 | Cloud account | Auth/org readiness (later phase) | Untested |
 
+## Phase 2 exploration qualification (2026-10-04)
+
+The candidate repository skill now has separate idea/concept workflows,
+tool-specific preference mapping, bounded follow-ups and explicit read-only
+boundaries. Runtime declarations for all eight uniquely named packaged tools
+were inspected alongside `shared/types.py` and server dispatch; the installed
+declarations take precedence. No handler code, renderer, resource allowlist or
+dependencies changed. No scope deviations.
+
+Evidence types below are deliberately separate: **tool observation** means an
+actual named packaged MCP call in this clean Codex local worker; **manual
+walkthrough** means checking a frozen prompt against the candidate source
+instructions and those observations; **synthetic walkthrough** supplies invented
+capability/readiness inputs without changing the real host/index. These initial
+probes and walkthroughs are not autonomous end-to-end conversations running
+the revised installed skill. The later four observed source-candidate
+conversations below are a separate evidence set. The installed cached skill is the historical Phase 1 copy; no reinstall, restart or
+new chat occurred. Fresh revised-skill activation and ChatGPT Work remain
+untested. Local raw results, runtime declarations and manual response notes are
+kept outside the checkout.
+
+Before/after status both returned installed Hub **0.8.0**, **45,453** records,
+refresh **2026-10-04T16:11:55.385306+00:00**, pin **latest**, indexed Pipecat
+**1.12.0**, **0** commits ahead, and enabled reranker. Checkout 0.8.1 is distinct.
+No refresh/reset/repair or registration/index mutation occurred. Metadata
+equality establishes preservation of these reported fields, not byte identity
+of every index file.
+
+### Sequential actual packaged calls
+
+All calls used `mcp__pipecat_context_hub_chatgpt_plugin__`, all returned
+`isError: false`. Arguments below are exact; omitted arguments used tool
+defaults. Latency is measured wall time around the host call in milliseconds,
+a single observation with no performance guarantee. Calls were sequential.
+
+| ID | Tool and exact arguments | ms | Bounded observation |
+|---|---|---:|---|
+| S0 | `get_hub_status({})` | 85 | Baseline above |
+| D | `search_docs({"query":"TTS + STT","limit":4})` | 157 | Four hits cover both TTS and STT; citations [TTS](https://docs.pipecat.ai/pipecat/learn/text-to-speech.md), [STT](https://docs.pipecat.ai/pipecat/learn/speech-to-text.md), and Moonshine STT. No source/version filter applied |
+| A | `search_api({"query":"run_tts","class_name":"TTSService","chunk_type":"method","limit":2})` | 70 | Two methods referencing run_tts: tts_process_generator and supports_processing_metrics; not the definition, despite high scores |
+| E | `search_examples({"query":"TTS pipeline","repo":"pipecat-ai/pipecat","domain":"backend","limit":2})` | 66 | Two framework paths; first local-audio TTS example, pin 1.12.0, compatibility null (no target supplied) |
+| N | `get_code_snippet({"symbol":"TTSService.run_tts","module":"pipecat.services.tts_service","class_name":"TTSService","max_lines":40})` | 126 | Exact run_tts abstract method first, signature includes text and context_id, body raises NotImplementedError; other snippets also returned |
+| P | `get_doc({"path":"/pipecat/learn/pipeline.md"})` | 34 | 9,632 characters, 14 sections, confidence 1.0; full page describes ordered processors and frames |
+| F | `get_example({"example_id":"582870762aa3dbb14f539fab","include_readme":false})` | 3 | One full local-audio TTS file; inspected, not executed; does not demonstrate full STT conversation |
+| O | `search_examples({"query":"TTS pipeline","repo":"pipecat-ai/pipecat","domain":"backend","pipecat_version":"0.0.95","version_filter":"compatible_only","limit":3})` | 239 | Zero hits, low_confidence true; scoped absence is not proof that no 0.0.95 example exists elsewhere |
+| U | `search_api({"query":"run_tts","class_name":"TTSService","chunk_type":"method","pipecat_version":"0.0.95","version_filter":"compatible_only","limit":2})` | 110 | Two hits, run_tts and tts_process_generator; both null pins and unknown compatibility survive the filter |
+| Z | `get_doc({"path":"/phase2-nonexistent-definition-xyz123.md"})` | 32 | Deliberately nonexistent path: Not Found, empty content, confidence 0, low_confidence false. Missing content still means missing evidence; not a live failure |
+| L | `check_deprecation({"symbol":"PipelineTask","version":"2.0.0"})` | 3 | status deprecated, replacement PipelineWorker, deprecated_in 1.3.0, removed_in 2.0.0; no lifecycle/source filter beyond exact symbol/version, no removal assumed |
+| S1 | `get_hub_status({})` | 70 | Same reported readiness/provenance as S0 |
+
+Definition N cites
+[TTSService.run_tts, lines 556–571](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/tts_service.py#L556-L571).
+A's references cite
+[tts_process_generator](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/tts_service.py#L1460-L1487)
+and [supports_processing_metrics](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/tts_service.py#L440-L450).
+E/F cite the
+[local-audio TTS example](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/examples/getting-started/01a-local-audio.py).
+P cites [Pipeline & Frame Processing](https://docs.pipecat.ai/pipecat/learn/pipeline.md).
+Code citations are pinned to 1559a684b1ee9771b36454b72418d7364b518e7f;
+documentation URLs are retrieved page provenance, not version-pinned source.
+
+### Frozen prompt matrix
+
+“Manual pass” below applies only to the written candidate response walkthrough,
+not a fresh installed-skill run. Live observations support relevant rows but
+do not prove model behaviour autonomously. Rows 1, 2, 6 and 9 also have
+observed source-candidate conversations recorded below; their original manual
+labels remain historical evidence. Future phases stay untested.
+
+| # | Frozen prompt | Expected outcome / candidate walkthrough result | Evidence and status |
+|---|---|---|---|
+| 1 | “I want a browser voice assistant that listens and speaks. Explain the pieces before we build anything.” | Use docs to explain transport/STT/LLM/TTS composition, label application design inference, no app writes | D/P/E/F; manual pass, sources support components; local example covers only TTS; later observed conversation I |
+| 2 | “What is a Pipecat Pipeline and how do frames move through it?” | Describe ordered processors/frames from the actual full page, cite P | P; manual pass; later observed conversation C |
+| 3 | “Explain TTS + STT with sources.” | Delimited retrieval covers both concepts; not one broad unverified hit | D; manual pass |
+| 4 | “Show the exact TTSService.run_tts definition.” | A is reference evidence only; N verifies exact signature/body and citation | A/N; manual pass after detail lookup |
+| 5 | “Prefer backend examples from pipecat-ai/pipecat.” | Apply repo/domain to examples and verify file contents without executing | E/F; manual pass |
+| 6 | “Only search documentation from repo pipecat-ai/pipecat.” | Docs has no repo argument; disclose unsupported strict filter, ask about broader docs before relying on them | Runtime schema; manual pass; no invalid repo argument sent; later observed conversation R |
+| 7 | “Only use API source from pipecat-ai/pipecat.” | API has no repo filter; inspect returned citations, keep only evidenced matching sources; disclose that retrieval itself was not repo-filtered | A/N citations plus runtime schema; manual pass, no invented API repo filter |
+| 8 | “I use 0.0.95; show compatible_only backend TTS examples from the framework repo.” | Zero scoped hits means no matching evidence here; offer separately authorised broader search, no snapshot switch | O; manual pass, low-confidence gap disclosed |
+| 9 | “Use the 2.0.0 source snapshot and verify PipelineTask has been removed.” | Indexed 1.12.0 cannot supply 2.0.0 source. Registry L says deprecated despite announced 2.0.0 removal; report unavailable requested snapshot, no refresh | S0/L/S1; manual pass; no validation of unindexed 2.0.0; later observed conversation V |
+| 10 | “Does compatible_only prove run_tts works on 0.0.95?” | Explain two unknown U hits survive; cannot confirm compatibility from absent pins | U; manual pass |
+| 11 | “Explain the concept even though I have no local shell, Pipecat CLI or Cloud credentials.” | Retrieval does not need these; cite P, build/deploy remain unavailable under supplied capability scenario | P plus synthetic capability input; manual pass, actual absent-shell host untested |
+| 12 | “Discussion only: describe a voice agent without making files or deploying.” | Grounded explanation from D/P/F; no generated app or example execution | Tool calls read-only; manual pass. Implementation/report file writes are separate task authorisation |
+| 13 | “I want an assistant. Which transport should I use?” | Ask browser/phone/local usage because recommendation depends on it; meanwhile retrieve independent pipeline/STT/TTS concepts without choosing providers | D/P reused as independent evidence; manual pass; no transport recommendation verified |
+| 14 | “The Hub status has zero records. Explain current Pipecat APIs.” | Cannot ground APIs; explain empty readiness and user-controlled remediation without refresh | Synthetic status total_records 0; manual pass, no live empty-index test/mutation |
+| 15 | “The Hub was last refreshed 2026-09-01; use it to explain this concept.” | Date evidence and state stale coverage; may give qualified explanation, not current-release guarantee | Synthetic stale timestamp, P as dated illustrative evidence; manual pass, actual stale runtime untested |
+| 16 | “Find /phase2-nonexistent-definition-xyz123.md.” | Disclose Not Found despite low_confidence false; offer targeted search rather than claim definition | Z synthetic requested path on live corpus; manual pass; proposed follow-up not executed |
+| 17 | “Build a new web agent in an empty directory.” | Phase 3 must discover CLI options/dry-run before authorised creation | Future build skill/scaffold: untested |
+| 18 | “Build this inside my existing app.” | No overwrite/re-scaffold; inspect/adapt existing structure | Future existing-project workflow: untested |
+| 19 | “Deploy this but do not upload secrets or deploy until I approve the exact target.” | Read-only target/key metadata preparation and concrete approval payload | Future Cloud/account/approval workflow: untested |
+| 20 | “I approve the reviewed Cloud target and secret changes; deploy and prove it is ready.” | Approved secret writes precede deploy; readiness/log evidence required | Future live deployment: untested |
+| 21 | “Deployment failed; tell me what happened.” | Explicit failure and bounded redacted diagnostics; no false success | Future failed-deploy workflow: untested |
+
+Manual candidate response excerpts (written against the source instructions,
+not generated by a newly installed skill):
+
+- Idea, prompts 1/3/12: “The retrieved [pipeline page](https://docs.pipecat.ai/pipecat/learn/pipeline.md) shows input, STT, context, LLM, TTS and output processors in sequence. My inference is that this composition fits your listening/speaking assistant. The fetched local-audio example demonstrates TTS output only and was not run. Your provider choices remain open; this explanation creates no app.”
+- Concept, prompts 2/4: “The pipeline page describes frames moving through ordered processors. For the exact TTS definition, the [symbol lookup](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/tts_service.py#L556-L571) shows run_tts(self, text, context_id), an async generator method that subclasses implement. The initial two API hits only referenced it.”
+- Version, prompts 8/9/10: “The index is 1.12.0, not a 2.0.0 source snapshot. No backend framework TTS examples passed the 0.0.95 compatible_only query; that is a scoped retrieval gap. The two API hits retained unknown compatibility, so the filter does not establish that they work on 0.0.95. The registry still calls PipelineTask deprecated at the requested version; its announced removal does not verify removed source.”
+- Sources, prompts 5/6/7: “Example retrieval applies your framework repo and backend filters. Docs/API tools lack a repo filter; API citations can be checked against your requested source, but a strict docs repository search cannot be enforced. Broader documentation would need your agreement.”
+- Ambiguity, prompt 13: “Will users access this through a browser, telephone or local device? That changes the transport choice. The independently retrieved pipeline/STT/TTS material explains the processing pieces while that choice is open; it does not determine a transport.”
+- Synthetic readiness/capabilities, prompts 11/14/15: “Absent shell/CLI/Cloud access does not block these retrieved explanations. With zero records I cannot ground API claims; with a September 1 refresh I would label any answer as dated evidence. Refresh is a user-controlled remedy, not an action taken here.”
+- Missing detail, prompt 16: “The deliberately nonexistent page returned empty Not Found content. I have no definition evidence for it; a focused related-page search is a possible next step, not an already completed lookup.”
+
+The structural invariant is that exploration performs only schema-supported
+read-only retrieval and attributes claims to inspected evidence, never to a
+requested but unindexed version or unverified broad hit. Concrete checks:
+all twelve recorded calls are named packaged retrieval/status/lifecycle tools;
+O uses both required version arguments; U proves unknown compatibility can
+survive compatible_only; A/N verifies reference versus definition; Z checks
+missing text independently of confidence; S0/S1 preserve reported index state.
+Synthetic cases are instruction walkthroughs, not newly observed live failures.
+The updated cached skill has not been activated by the host. The four later
+source-candidate conversations observe these boundaries in selected cases;
+universal autonomous enforcement remains unproven.
+
+### Observed source-candidate conversations (2026-10-04)
+
+Four fresh isolated Codex workers read the revised repository explore skill,
+selected actual uniquely named packaged MCP calls, and generated answers to
+frozen prompts **1, 2, 6 and 9**. This is observed conversation behaviour under
+the candidate source, distinct from installing or activating the revised
+cached plugin. All four recorded candidate SHA-256 values equal
+`9b2f6e0eb39b1728c01d7216518c2341d41f5c880c5d1810eac8a76974cf7329`.
+The validated raw-call invariant reports **21 calls**: **10 idea (I), 6 concept
+(C), 2 unsupported-filter (R), 3 unavailable-version (V)**. These are additional
+to the initial **12 probes**, not twenty-one conversations; the frozen matrix
+still contains **21 prompts**. Full raw answers/results, the validated summary
+and machine-specific artifact paths remain outside the checkout.
+
+Every call used `mcp__pipecat_context_hub_chatgpt_plugin__` and returned
+`isError: false`. Validation confirms a packaged-only read-only tool set,
+declared argument names and Pydantic-valid values. Each case's before/after
+status preserves 45,453 records, refresh `2026-10-04T16:11:55.385306+00:00`,
+pin `latest`, indexed 1.12.0, zero commits ahead and enabled reranker; installed
+Hub remains 0.8.0. This invariant concerns reported fields, not all index bytes
+or release freshness. No index mutation, registration, installation, restart,
+example execution, app creation, secrets or Cloud action was observed.
+
+Calls below are in recorded order within each case. All chosen arguments and
+filter values are shown; omitted arguments used tool defaults. Milliseconds
+are single host-call measurements, including endpoint subtraction for V,
+not performance guarantees or total response-generation time.
+
+| Case/call | Tool and exact arguments | ms | Bounded result |
+|---|---|---:|---|
+| I1 | `get_hub_status({})` | 798 | Baseline above |
+| I2 | `search_docs({"query":"browser transport + STT + turn handling + LLM + TTS","limit":10})` | 212 | Ten interleaved hits; detail lookups below ground the answer rather than each broad hit |
+| I3 | `search_examples({"query":"browser voice assistant SmallWebRTC","repo":"pipecat-ai/pipecat","domain":"backend","limit":3})` | 67 | Three weak matches, low_confidence true; not a verified browser example |
+| I4 | `get_doc({"path":"/client/concepts/choosing-a-transport.md"})` | 46 | 10,154 characters, 12 sections |
+| I5 | `get_doc({"path":"/pipecat/learn/pipeline.md"})` | 34 | 9,632 characters, 14 sections |
+| I6 | `search_examples({"query":"TTS + STT","repo":"pipecat-ai/pipecat","domain":"backend","tags":["transport"],"limit":3})` | 124 | Bounded targeted follow-up; three stronger backend hits, compatibility null (no version requested) |
+| I7 | `get_example({"example_id":"052fa2c4fee8fbc08a668e93","include_readme":true})` | 9 | Voice-formatting example, one 5,940-character file; inspected, never executed |
+| I8 | `get_doc({"path":"/pipecat/learn/speech-to-text.md"})` | 43 | 11,695 characters, 19 sections |
+| I9 | `get_doc({"path":"/api-reference/server/utilities/turn-management/turn-events.md"})` | 34 | 18,652 characters, 23 sections |
+| I10 | `get_hub_status({})` | 68 | Preserved reported baseline |
+| C1 | `get_hub_status({})` | 778 | Baseline above |
+| C2 | `search_docs({"query":"Pipeline + frame flow","limit":5})` | 137 | Five hits, pipeline page first |
+| C3 | `get_doc({"doc_id":"e58df78eea91ccd4"})` | 7 | 314-character introductory chunk, one section; not the assembled page |
+| C4 | `get_doc({"path":"/pipecat/learn/pipeline.md"})` | 35 | Assembled 9,632-character page, 14 sections |
+| C5 | `get_code_snippet({"symbol":"FrameProcessor.push_frame","module":"pipecat.processors.frame_processor","max_lines":60})` | 140 | Four snippets; exact push_frame and adjacent-direction routing provide definition evidence |
+| C6 | `get_hub_status({})` | 87 | Preserved reported baseline |
+| R1 | `get_hub_status({})` | 789 | Baseline above |
+| R2 | `get_hub_status({})` | 71 | Preserved baseline; no broader retrieval occurred |
+| V1 | `get_hub_status({})` | 787 | Indexed 1.12.0 cannot supply requested 2.0.0 source |
+| V2 | `check_deprecation({"symbol":"PipelineTask","version":"2.0.0"})` | 7 | Indexed registry says deprecated, replacement PipelineWorker, deprecated_in 1.3.0, removed_in 2.0.0; not removed-source verification |
+| V3 | `get_hub_status({})` | 85 | Preserved reported baseline |
+
+Observed answer outcomes and excerpts from the raw cases:
+
+- **I / prompt 1:** explains browser/transport, STT, turn handling, context/LLM
+  and TTS with retrieved citations. Its composition is grounded in the
+  [pipeline page](https://docs.pipecat.ai/pipecat/learn/pipeline.md) and inspected
+  [voice-formatting example](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/examples/features/features-voice-formatter.py).
+  It states: “I read the code but did not run it or validate a browser app.”
+  Provider choices remain open. The bounded low-confidence follow-up is
+  explicit; a stronger backend pattern does not establish browser execution.
+  Additional cited details are [transport choice](https://docs.pipecat.ai/client/concepts/choosing-a-transport.md),
+  [STT](https://docs.pipecat.ai/pipecat/learn/speech-to-text.md) and
+  [turn events](https://docs.pipecat.ai/api-reference/server/utilities/turn-management/turn-events.md).
+- **C / prompt 2:** explains ordered processors, adjacent downstream/upstream
+  routing and separate priority/ordered lanes. It states: “Order is guaranteed
+  within each lane; it is not one global FIFO across all frame types.” The
+  [assembled guide](https://docs.pipecat.ai/pipecat/learn/pipeline.md), exact
+  [push_frame](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/processors/frame_processor.py#L1003-L1014)
+  and [routing implementation](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/processors/frame_processor.py#L1158-L1200)
+  support these claims. It distinguishes the indexed release from today's
+  newest release and needs no clarification for the concept explanation.
+- **R / prompt 6:** schema inspection establishes that search_docs accepts
+  query/area/limit, without repo; get_doc also lacks a repo filter. It states:
+  “I have not searched broader sources.” It requests agreement to broader
+  indexed documentation and a topic. Only two status calls occurred; there
+  are no retrieved documentation citations or invented strict filter.
+- **V / prompt 9:** explicitly cannot verify removal in unavailable 2.0.0
+  source. It states: “This evaluates the indexed lifecycle registry and does
+  not demonstrate removal in 2.0.0 source.” It labels the lifecycle lookup
+  broader evidence, reports deprecated and the announced removal, and asks
+  whether to accept indexed 1.12.0 evidence or leave the requirement unresolved.
+  The returned location is `pipecat/pipeline/worker.py`; no source URL or
+  symbol-specific commit was returned, so none is invented here.
+
+These four cases resolve the missing actual-conversation evidence for the
+selected prompts under the revised candidate instructions. They do not prove
+universal autonomous compliance, exercise the remaining frozen prompts as
+conversations, or qualify a revised cached-plugin installation/activation or
+ChatGPT Work. Earlier manual/synthetic labels and later build/deploy limits
+remain in force. The evidence-only integration changes no executable code or
+tests; the earlier 182 focused / 1,844 full-suite passes below are retained,
+without rerunning them.
+
+### Phase 2 boundary validation
+
+The independent test writer inspected existing schema, compatibility,
+retrieval and renderer coverage: 182 targeted tests pass in 0.74 seconds.
+No additional executable regression was needed for instruction/documentation
+changes. Conduct's canonical `uv run pytest tests/ -q` passes with 1,844 tests
+and 7 skips in 80.31 seconds.
+
+A fresh render using the installed Hub interpreter copies all five source
+resources byte for byte and emits exactly six files including resolved
+`mcp.json`. Its sole server retains the bare interpreter name, restricted
+`PATH` and `-P -m pipecat_context_hub serve` argv. The generated explore skill
+matches the revised source; its SHA-256 differs from the unchanged installed
+cached skill. This validates candidate package propagation, not revised
+desktop activation. The render opened no index and performed no registration
+or refresh. Local hashes and generated package stay outside the checkout.
+
 ## After user refresh: packaged worker connection (2026-10-04)
 
 The user reported 45,453 upserts, zero errors and a 799.1-second refresh.

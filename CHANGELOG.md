@@ -13,6 +13,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   startup to the installed Hub interpreter. Build and deployment workflows
   remain pending; the evaluation report records desktop attribution and
   documentation-retrieval limitations separately.
+- Explore now separates idea and concept workflows, verifies retrieved detail
+  before API claims, and discloses tool-specific source/version limits,
+  unknown compatibility and unavailable snapshots without changing the index.
 
 ### Fixed
 - Reject oversized persisted Chroma HNSW link-list files before opening the

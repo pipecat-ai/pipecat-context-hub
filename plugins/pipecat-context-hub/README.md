@@ -4,6 +4,33 @@ This optional desktop experiment packages read-only exploration with the
 installed Context Hub. It does not bundle Python, Pipecat CLI or an index.
 Build and Cloud workflows are pending later phases.
 
+## Explore an idea or concept
+
+Ask for an approach ("I want a browser voice assistant with TTS + STT") or a
+specific concept ("Explain Pipeline frames" / "Show TTSService.run_tts").
+Explore checks the packaged connection's readiness, retrieves relevant docs,
+definitions and examples, and cites their sources. Proposed combinations are
+labelled as inference; retrieved examples are not claimed to have been run.
+Material choices can be clarified while independent concept retrieval proceeds.
+Discussion requests remain read-only, including in hosts with execution tools.
+
+State your target Pipecat version and source preference in the conversation.
+The skill maps them to the installed tool schemas: example searches support
+`repo`; docs support `area`, and API searches support module/class prefixes,
+not a universal repository filter. Detail lookups retain the selected source's
+provenance. Unsupported preferences are disclosed, not translated into invented
+filters. Broad hits can reference a symbol without defining it; exploration
+checks a detail or symbol lookup before making a definition claim.
+
+`pipecat_version` annotates supported code/example searches; `compatible_only`
+requires that target version and excludes known newer requirements, while
+unknown compatibility can remain. These options do not switch the index or
+validate APIs at an unindexed version. `check_deprecation` accepts `version`
+for indexed-registry lifecycle evaluation, not snapshot selection. Missing,
+stale or unavailable requested snapshots are explained without an automatic
+refresh. Exploration requires working packaged MCP retrieval, neither local
+shell nor Pipecat CLI nor Cloud credentials.
+
 ## Prepare a local copy
 
 Install Context Hub separately and have a populated local index. Find its
