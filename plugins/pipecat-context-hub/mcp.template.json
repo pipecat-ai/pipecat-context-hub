@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "pipecat-context-hub-chatgpt-plugin": {
+      "type": "stdio",
+      "command": "__HUB_PYTHON_NAME__",
+      "args": ["-P", "-m", "pipecat_context_hub", "serve"],
+      "env": {"PATH": "__HUB_PYTHON_DIRECTORY__"}
+    }
+  }
+}

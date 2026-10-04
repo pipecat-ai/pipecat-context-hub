@@ -1,0 +1,172 @@
+# Local plugin feasibility evidence
+
+Record machine-specific command paths and raw diagnostics in a local report
+outside the checkout. Do not put credentials or secret values in either report.
+Package/subprocess checks and actual desktop activation are separate outcomes.
+This repository report is not copied into the installed plugin package.
+
+| Gate | Required observation | Result |
+|---|---|---|
+| Package | Root manifest, copied skill and resolved safe stdio argv | Pass, local setup 2026-10-03 |
+| Installed Hub | Importable from unrelated cwd with pinned Python | Pass, installed Hub 0.8.0 |
+| Packaged stdio | Initialize and nonempty status using generated `mcp.json` | Pass, corrected portable command and unique connection; subprocess only |
+| Cwd safety | Same initialize/status with a shadow Hub module in cwd | Pass, subprocess only |
+| Index preservation | Before/after refresh date and framework provenance unchanged | Pass, read-only probes |
+| Desktop discovery | Plugin and packaged skill exposed in selected host/mode | Pass, Codex local catalogue and enabled plugin 2026-10-03 |
+| Explore skill activation | Host reads and invokes packaged explore skill | Pass, observed TTS + STT exploration 2026-10-03 |
+| Desktop packaged MCP | Host uses `pipecat-context-hub-chatgpt-plugin` initialize/status connection | Awaiting unique-connection retest; prior same-name activation was unattributed |
+| Existing Hub retrieval | Status, API definitions, docs and examples with sources | Pass, direct docs and real pipeline examples; docs search degraded |
+| Execution | Harmless shell command in selected host/mode | Pass, Codex local shell |
+| Pipecat CLI | Installed version and init help/options | Pass, CLI 1.3.0 version/init help |
+| Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
+| Cloud account | Auth/org readiness (later phase) | Untested |
+
+For each run record date, prompt, host mode, Hub/CLI/framework versions,
+actual tool calls, source citations, latency and pass/fail/untested outcome.
+Count a desktop pass only when activation is observed; describe missing
+capabilities without disabling independent working gates.
+
+The local marketplace was added and this plugin installed successfully using
+the installed `codex plugin` commands. The Codex local skill catalogue now
+exposes the packaged explore skill, which was read and invoked for the frozen
+TTS + STT prompt. The existing Hub returned sourced docs and pipeline examples.
+However, a same-name manual MCP registration exists, and running Hub commands
+omit the package's `-P` argument. Package-owned desktop initialize/status is
+therefore unverified. Do not run retrieval-dependent Phase 2 until that gate
+passes. ChatGPT Work activation is independently untested.
+
+The packaged probes reported indexed framework `1.12.0`, pin `latest` and
+refresh date `2026-09-26T13:34:08.520927+00:00`; all three were unchanged across
+the ordinary and shadow cwd runs. This is an existing snapshot, not a refreshed
+corpus. It cannot establish coverage of a newer or requested version.
+
+Remaining observation: establish attribution to the packaged MCP connection
+and capture its desktop initialize/status outcome. Packaged skill discovery
+has passed; pre-existing Hub tools cannot establish package-owned startup.
+Docs search returned `Internal error: Error finding id` for `TTS + STT` and
+a narrower query. Direct STT/TTS/pipeline docs lookups under `/pipecat/learn/`
+succeeded; framework examples were read at the indexed commit. Refresh date,
+record count and indexed framework version remained unchanged.
+
+Phase 1 frozen prompts:
+
+1. "Use Pipecat Context Hub explore to explain a TTS + STT voice-agent idea."
+2. "Show the Hub status and indexed framework version without refreshing."
+3. "Confirm local execution with a harmless command, then inspect installed Pipecat CLI help."
+
+Later phases extend this matrix to the plan's complete conversation cases.
+
+Resume ownership audit (2026-10-03): read-only plugin listing confirms the
+installed local package is enabled, and its cached `mcp.json` has the required
+`-P -m pipecat_context_hub serve` argv. The manual registration uses the same
+server name without `-P`; observed running Hub processes match that manual
+argv. No package-owned initialize/status trace was found in the inspected
+daemon stderr log. These observations leave ownership unverified; they do not
+establish the loader's precedence rule or prove a package startup failure.
+
+The ownership audit above predates the user-authorised connection rename.
+The portable template and renderer now use `pipecat-context-hub-chatgpt-plugin`;
+the renderer rejects the legacy key and extra server entries. The plugin
+manifest identity and the standalone registration stay unchanged. This tests
+the suspected collision; it does not establish the loader's precedence rule.
+
+Local correction checks on 2026-10-03: nine renderer unit regressions passed,
+along with targeted Ruff format/check and mypy. They establish the unique
+connection/copy boundary and refusal paths, not desktop initialization.
+
+## Next desktop activation test
+
+1. Render a fresh local copy and inspect `mcp.json`: its only server key must
+   be `pipecat-context-hub-chatgpt-plugin`, with the installed Python’s bare
+   executable name, `PATH` containing only its absolute interpreter directory,
+   and `-P -m pipecat_context_hub serve` argv. Confirm this report is absent.
+2. Use the host's documented marketplace refresh/reinstall flow for the fresh
+   copy, then open a new local chat after restarting the host if required.
+3. Invoke the packaged explore skill and request status explicitly through
+   `pipecat-context-hub-chatgpt-plugin`. Capture discovery, initialize/status
+   and the safe startup argv. Existing standalone Hub tools do not satisfy
+   this attribution check.
+4. Compare refresh date, record count and indexed framework version against
+   the baseline above. Do not refresh the index. Record retrieval errors
+   separately from connection activation; the known docs-search error must
+   not be silently marked resolved by a successful status call.
+
+Retest prompt: "Use the packaged Pipecat Context Hub explore skill and its
+`pipecat-context-hub-chatgpt-plugin` MCP connection. Check Hub status and indexed
+framework version, then explain a TTS + STT voice-agent idea with sourced docs
+and examples. Do not use the standalone Hub connection as activation proof
+and do not refresh the index."
+
+Phase 2 remains gated on the attributed desktop connection.
+
+Unique-connection installation preparation (2026-10-03): installed CLI help
+confirmed `plugin add` reinstalls from a configured marketplace. The existing
+`pipecat-hub-local-experiment` catalogue now points to the fresh rendered copy;
+`codex plugin add pipecat-context-hub@pipecat-hub-local-experiment --json`
+succeeded. A subsequent listing confirms the same plugin identity/version is
+installed and enabled from that copy. The installed cache contains exactly
+`pipecat-context-hub-chatgpt-plugin`, the pinned interpreter and
+`-P -m pipecat_context_hub serve`; no evaluation report was copied.
+
+This running chat still exposes only `mcp__pipecat_context_hub__` Hub tools.
+The process probe filtered by `pipecat_context_hub serve` found nine processes,
+zero with the package's `-P -m` argv. The inspected daemon stderr file had zero
+literal `pipecat-context-hub-chatgpt-plugin` matches. These bounded observations
+do not prove a loader failure or a restart requirement. Native desktop
+inspection was unavailable: the computer-use tool refused access to Codex for
+safety reasons. No package-owned desktop initialize/status was established.
+
+Remaining user action: restart Codex desktop and open a new local chat, invoke
+the installed explore skill, and run the retest prompt above through the unique
+packaged connection. Installation is prepared; restart/new-chat actions were
+left to the user. Detailed machine-path diagnostics are saved outside the
+checkout. No standalone registration, retrieval handler or index was changed;
+the previously observed docs-search error remains a separate unresolved issue.
+
+
+## Portable loader correction qualification (2026-10-03)
+
+The original absolute-command configuration was a confirmed loader failure:
+Codex CLI 0.160.0 `plugin/read` returned no MCP servers and warned that Agent
+Plugins stdio commands must be a bare executable name or a contained `./` path.
+The renderer now writes the non-resolved installed interpreter's bare name,
+with `PATH` restricted to its absolute parent directory and the unchanged
+`-P -m pipecat_context_hub serve` argv. This preserves virtual-environment
+symlinks and supplies no ambient/system interpreter fallback. No launcher or
+legacy override was added.
+
+Fifteen renderer regressions passed, including symlink preservation, exact
+server/argv/PATH, unresolved-placeholder absence, refusal of extra launch or
+environment values, copy boundaries and destination protections. Targeted
+Ruff format/check and mypy passed for the renderer and setup test file. These
+qualification checks did not run the full repository suite.
+
+A fresh source was rendered outside the checkout and reinstalled using the
+existing marketplace and plugin identity. The installed cache's `mcp.json`
+bytes match that source; its sole server is
+`pipecat-context-hub-chatgpt-plugin`, and the evaluation report is absent.
+An isolated `codex app-server --stdio` diagnostic performed only initialize,
+initialized and `plugin/read`; the current marketplace source returned exactly
+that one server. The diagnostic stderr contained zero literal `bare executable
+name` rejection matches. This verifies loader acceptance, not desktop activation.
+A separate temporary marketplace using an absolute cache source returned
+`plugin ... was not found in marketplace`; that direct-cache probe is
+inconclusive and is preserved in local diagnostics rather than counted as a
+loader pass.
+
+The finished generated command, launched through the installed Hub's MCP
+client, completed initialize and `get_hub_status` from ordinary and shadow-module
+working directories. Both reported installed Hub 0.8.0 and unchanged metadata:
+45,411 records, refresh `2026-09-26T13:34:08.520927+00:00`, framework pin `latest`,
+indexed framework `1.12.0`, and zero commits ahead. The shadow module's sentinel
+was absent. A diagnostic parser initially used the newer SDK's camel-case
+attribute; correcting it to the installed SDK's `structured_content`/
+`is_error` fields allowed qualification to complete. No index refresh occurred.
+
+Catalogue inspection filtered tool names by `mcp__pipecat_context_hub__` and
+`chatgpt_plugin`; only the eight standalone Hub tools were available, with
+zero uniquely named packaged tools. Package-owned desktop initialize/status
+therefore remains unobserved. Reload/restart the desktop and run the retest
+prompt in a new local chat through the unique packaged connection. No desktop
+restart or chat creation was performed here. The historical docs-search Chroma
+`Internal error: Error finding id` remains independently unresolved.

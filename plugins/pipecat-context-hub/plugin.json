@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pipecat-context-hub",
+  "version": "0.1.0",
+  "description": "Explore voice-agent ideas with grounded Pipecat documentation and examples.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Pipecat Context Hub",
+        "shortDescription": "Ground voice-agent ideas in Pipecat sources",
+        "capabilities": ["Read"]
+      }
+    }
+  }
+}
