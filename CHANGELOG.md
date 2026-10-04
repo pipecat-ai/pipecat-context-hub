@@ -10,12 +10,15 @@ This project uses [Semantic Versioning](https://semver.org/).
 ### Added
 - Optional local desktop plugin experiment with a read-only Pipecat Context
   Hub explore skill, an independent MCP connection, and a renderer that pins
-  startup to the installed Hub interpreter. Build and deployment workflows
-  remain pending; the evaluation report records desktop attribution and
-  documentation-retrieval limitations separately.
+  startup to the installed Hub interpreter. Deployment remains pending;
+  the evaluation report records desktop attribution and documentation-retrieval
+  limitations separately.
 - Explore now separates idea and concept workflows, verifies retrieved detail
   before API claims, and discloses tool-specific source/version limits,
   unknown compatibility and unavailable snapshots without changing the index.
+- Local build skill discovers installed CLI options, resolves user choices,
+  validates a dry run, preserves existing apps and generated dependencies, and
+  reports bounded local verification separately from provider conversations.
 
 ### Fixed
 - Reject oversized persisted Chroma HNSW link-list files before opening the

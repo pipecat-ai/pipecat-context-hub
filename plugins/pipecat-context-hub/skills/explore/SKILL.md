@@ -8,7 +8,8 @@ Use the plugin's Context Hub MCP tools through the connection named
 concept question authorises retrieval and discussion, not scaffolding, local
 file writes, execution of examples, builds, secret access/uploads or deployment.
 Local shell, Pipecat CLI and Cloud credentials are optional for exploration.
-This package currently provides exploration only; build/deploy workflows are
+After an explicit build request, hand off to the build skill to check native
+execution, installed CLI and material project choices. Deployment remains
 pending. Skills do not grant executable permissions.
 
 ## Readiness and preferences

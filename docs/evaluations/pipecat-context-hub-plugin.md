@@ -20,6 +20,7 @@ This repository report is not copied into the installed plugin package.
 | Pipecat CLI | Installed version and init help/options | Pass, CLI 1.3.0 version/init help |
 | Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
 | Cloud account | Auth/org readiness (later phase) | Untested |
+| Local build | Installed options, dry run, scaffold, imports/startup/behaviour | Pass for Phase 3 local fixture only; provider conversation and revised skill activation untested |
 
 ## Phase 2 exploration qualification (2026-10-04)
 
@@ -88,7 +89,8 @@ documentation URLs are retrieved page provenance, not version-pinned source.
 not a fresh installed-skill run. Live observations support relevant rows but
 do not prove model behaviour autonomously. Rows 1, 2, 6 and 9 also have
 observed source-candidate conversations recorded below; their original manual
-labels remain historical evidence. Future phases stay untested.
+labels remain historical evidence. The later Phase 3 section adds named-choice
+build qualification and an existing-target conversation; Cloud cases stay untested.
 
 | # | Frozen prompt | Expected outcome / candidate walkthrough result | Evidence and status |
 |---|---|---|---|
@@ -108,8 +110,8 @@ labels remain historical evidence. Future phases stay untested.
 | 14 | “The Hub status has zero records. Explain current Pipecat APIs.” | Cannot ground APIs; explain empty readiness and user-controlled remediation without refresh | Synthetic status total_records 0; manual pass, no live empty-index test/mutation |
 | 15 | “The Hub was last refreshed 2026-09-01; use it to explain this concept.” | Date evidence and state stale coverage; may give qualified explanation, not current-release guarantee | Synthetic stale timestamp, P as dated illustrative evidence; manual pass, actual stale runtime untested |
 | 16 | “Find /phase2-nonexistent-definition-xyz123.md.” | Disclose Not Found despite low_confidence false; offer targeted search rather than claim definition | Z synthetic requested path on live corpus; manual pass; proposed follow-up not executed |
-| 17 | “Build a new web agent in an empty directory.” | Phase 3 must discover CLI options/dry-run before authorised creation | Future build skill/scaffold: untested |
-| 18 | “Build this inside my existing app.” | No overwrite/re-scaffold; inspect/adapt existing structure | Future existing-project workflow: untested |
+| 17 | “Build a new web agent in an empty directory.” | Phase 3 must discover CLI options/dry-run before authorised creation | Later named-choice fixtures and source-candidate build conversation pass; this exact underspecified prompt remains untested |
+| 18 | “Build this inside my existing app.” | No overwrite/re-scaffold; inspect/adapt existing structure | Later explicit scaffold-existing conversation preserves the app and asks about adaptation; actual adaptation remains untested |
 | 19 | “Deploy this but do not upload secrets or deploy until I approve the exact target.” | Read-only target/key metadata preparation and concrete approval payload | Future Cloud/account/approval workflow: untested |
 | 20 | “I approve the reviewed Cloud target and secret changes; deploy and prove it is ready.” | Approved secret writes precede deploy; readiness/log evidence required | Future live deployment: untested |
 | 21 | “Deployment failed; tell me what happened.” | Explicit failure and bounded redacted diagnostics; no false success | Future failed-deploy workflow: untested |
@@ -618,3 +620,202 @@ template and one fixed-argv subprocess call without a shell. Bandit reported
 one low-severity B404 warning for importing `subprocess`; that fixed-argv call
 was reviewed, and the warning remains disclosed rather than counted as a clean
 Bandit result. No index refresh was performed.
+
+## Phase 3 local build qualification (2026-10-04)
+
+The candidate package adds `build`: native execution/CLI gates, material choices,
+installed capability discovery, resolved dry run, empty destination recheck,
+existing-project adaptation, generated dependency preservation, grounded API
+customization and separate import/startup/behaviour evidence. Exploration hands
+an explicit build request to it and remains usable without shell/CLI. Cloud
+workflow is still pending. The manifest description now mentions local builds;
+its supported `Read` presentation capability remains unchanged and is not
+execution authorization. The existing renderer already discovers skill
+entrypoints, so no renderer changes were required. A narrow `.gitignore`
+exception admits only the build skill directory/entrypoint, because the existing
+`build/` pattern otherwise hides this package resource.
+
+**Observed local qualification**, not revised installed-skill activation:
+Pipecat CLI **1.3.0**, Python **3.12.7**, installed Hub **0.8.0**. Native Codex
+shell ran version/help/options, then created a fresh outside-checkout fixture.
+`init --help` advertises `--output`, `--name`, `--bot-type`, repeatable
+`--transport`, `--mode`, `--stt`, `--llm`, `--tts`, `--realtime`, `--video`,
+`--client-framework`, `--client-server`, telephony-mode options, recording,
+transcription, video input/output, Cloud-file generation, Krisp, observability,
+`--config`, `--dry-run` and `--list-options`. No `--eval` flag is advertised;
+explicit local checks replace it. `--list-options` returned bot types, transport
+sets and actual provider identifiers as JSON; it is not treated as a config
+schema. The flags path was qualified; JSON `--config` execution was not tested.
+
+Both dry run and generation used exactly these supported selections, with
+`<empty-output>` denoting the new fixture parent outside the checkout:
+
+```sh
+pipecat init --name phase3-local-qualification --bot-type web \
+  --transport smallwebrtc --mode cascade --stt deepgram_stt \
+  --llm openai_llm --tts cartesia_tts --client-framework none \
+  --no-deploy-to-cloud --output <empty-output> --dry-run
+# After verifying resolved JSON and an absent destination, repeat without --dry-run.
+```
+
+These are authorised **test inputs**, never provider defaults for later user
+apps. Compared with the earlier plan probe, Cloud files are explicitly disabled.
+Dry-run JSON resolves web, `transports: ["smallwebrtc"]`, cascade, the three
+selected service IDs, `generate_client: false`, and `deploy_to_cloud: false`;
+video, recording, transcription, Krisp and observability are false. It creates
+no app; the actual command exits 0 and creates the named child with `server/`
+and README. No Cloud files or client were generated. No pre-existing app was
+re-scaffolded. The refusal/adapt-existing and absent-shell/CLI cases are source
+instruction walkthroughs, not live negative CLI tests or synthetic host runs.
+
+Generated `requires-python = ">=3.11"` and
+`pipecat-ai[cartesia,deepgram,openai,runner,silero,webrtc]` have **no generated
+framework pin**. The generated dev constraints are `pyright>=1.1.404,<2` and
+`ruff>=0.12.11,<1`. `uv sync` succeeds without changing those declarations and
+creates a retained lock resolving Pipecat **1.12.0**. Future fresh resolution may
+differ; generated CLI version is not the installed app framework version.
+
+Actual tools used only the `pipecat-context-hub-chatgpt-plugin` connection:
+
+| Call | Exact arguments / filters | Outcome |
+|---|---|---|
+| `get_hub_status` before/after | `{}`; no filters | Same 45,453 records, refresh `2026-10-04T16:11:55.385306+00:00`, pin `latest`, indexed 1.12.0, zero commits ahead, reranker enabled |
+| `search_api` | `query="LLMContext + LLMContextAggregatorPair", limit=3`; no other filters | Retrieved context/aggregator evidence; no definition claim based on broad hits |
+| `get_code_snippet` | `symbol="LLMContext.__init__", module="pipecat.processors.aggregators.llm_context", pipecat_version="1.3.0"`; no other filters | Initial annotation probe before app resolution; compatibility unknown, not a CLI-to-framework version claim |
+| `get_code_snippet` | Same symbol/module, `pipecat_version="1.12.0"`; no other filters | Definition retrieved after resolved app version confirmed; API evidence remains indexed snapshot |
+| `get_code_snippet` | `symbol="LLMContext.add_message", module="pipecat.processors.aggregators.llm_context"`; no version/other filters | Exact append implementation retrieved, alongside broader related hits |
+| `check_deprecation` | `symbol="LLMContext"`; version omitted (indexed version) | `deprecated: false`, `status: current`; no claim of exhaustive coverage |
+
+The fixture preserves its generated architecture and adds a credential-free
+`create_context()` helper with an initial developer message, then uses it from
+`run_bot`; its greeting identifies the local qualification assistant. The
+constructor accepts initial messages, and `add_message` appends conversation
+history. Source evidence: [LLMContext constructor](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/processors/aggregators/llm_context.py#L91-L112),
+[message append](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/processors/aggregators/llm_context.py#L361-L367).
+The generated code names `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`,
+`CARTESIA_API_KEY`, and optional `CARTESIA_VOICE_ID` / `OPENAI_MODEL` overrides.
+No existing `.env` files or secret values were read. No keys were supplied;
+checks use a minimal environment with isolated HOME and
+`PYTHON_DOTENV_DISABLED=1`, rather than inheriting ambient credentials.
+
+| Local check | Observed outcome | What it verifies |
+|---|---|---|
+| Import generated/customized bot | Exit 0; all imports resolve | Local dependencies and API imports only |
+| Context behaviour | Exact initial developer message; user message appended with order/count assertions | Actual credential-free context helper behaviour |
+| Unsupported runner branch | Returns after expected error log, exit 0 | Generated unsupported-input guard only |
+| `bot.py --help` | Exit 0; inspected before launch | Actual installed runner options |
+| `bot.py --host 127.0.0.1 --port 18763` | Startup complete; loopback `/openapi.json` HTTP 200, FastAPI title | Local HTTP runner startup only; no offer/session endpoint called |
+| Process cleanup | Parent terminates bounded subprocess; exit -15 after shutdown logs | No qualification server left running |
+| Source renderer | Seven package files; build skill byte-identical to source; evaluations excluded | Resource propagation only |
+
+The runner emits a duplicate OpenAPI operation-ID warning; HTTP startup still
+passes. The negative runner check's error log is expected. No provider API,
+microphone, browser voice conversation, full pipeline session or remote agent
+session ran. This is **locally verified import/startup/context behaviour**, with
+provider integration and conversational behaviour untested. No index refresh,
+reset, repair, version switch, registration/reinstallation or host restart
+occurred. The revised build skill has not activated in the installed desktop
+cache or ChatGPT Work. Raw help/options/config, generated and customized app,
+lock, subprocess outputs and render evidence are retained outside the checkout;
+tracked documentation contains redacted outcomes rather than machine paths.
+
+At the implementation handback, renderer Ruff check/format-check and diff whitespace passed;
+14 existing renderer regressions pass (one exact package-file-set assertion
+is deselected pending the independent test writer's build-resource update).
+The real fresh-render seven-file assertion covers build propagation separately.
+No tests changed in this phase's implementation handback. The independent
+test writer then updated package membership and added two resource-byte
+preservation cases. All 17 renderer tests pass, including existing refusal and
+safe-launch coverage. Conduct's canonical `uv run pytest tests/ -q` passes with
+1,846 tests and 7 skips in 64.77 seconds. Ruff format-check/check passes for
+source, tests and renderer; mypy reports no issues in 124 source files.
+
+The conductor independently verifies the propagation invariant across all six
+source resources: every rendered byte equals the source, and the exact seven
+file set adds only resolved `mcp.json`. The unique server, bare executable,
+restricted interpreter-directory `PATH` and safe argv are retained. The new
+build resource is staged, while ordinary build artifacts remain ignored. These
+assertions establish package propagation, not revised desktop activation.
+
+### Fresh source-candidate build conversations
+
+Two further isolated workers read the candidate build instructions (SHA-256
+`7b0ff2751b7c27470569b6cd8b279226416a739701d7c6ac1e02fd6f49fa5240`),
+chose actual tools and produced answers. They did not author the skill, edit
+this repository or claim revised cached-plugin activation. These are expanded
+named-choice build/existing-target cases, not exact executions of frozen
+underspecified prompts 17 and 18.
+
+**New app:** requested web/SmallWebRTC/cascade/Deepgram/OpenAI/Cartesia, no
+client or Cloud files, explicit Pipecat 1.12.0 and brief replies in a selected
+new outside-checkout directory. Thirteen native shell calls inspect capability,
+dry-run/scaffold, install and verify. The output and named child are absent
+before dry run and again before a single scaffold. CLI choices match the earlier
+fixture, with name `phase3-source-conversation`. Unlike the first fixture,
+this explicit target request adds `==1.12.0` to the generated unpinned extras
+before `uv sync`; the resolved framework is 1.12.0 and its lock is retained.
+This deliberate target pin is disclosed, not a silent upgrade or user default.
+
+Twenty-one packaged calls use these exact argument shapes; omitted arguments
+use defaults. All return without MCP errors and validate against declared
+input names/types. Single observed latencies are not performance guarantees.
+
+| Calls | Exact arguments | Observed ms |
+|---|---|---:|
+| Two `get_hub_status` | `{}` | 779 / 72 |
+| `get_code_snippet` | `symbol="LLMContext", module="pipecat.processors.aggregators.llm_context", pipecat_version="1.12.0", max_lines=100` | 136 |
+| `get_code_snippet` | `symbol="OpenAILLMService.Settings", module="pipecat.services.openai", pipecat_version="1.12.0", max_lines=80` | 154 |
+| `search_api` | `query="system_instruction", module="pipecat.services.openai", class_name="OpenAILLMService", chunk_type="class_overview", pipecat_version="1.12.0", limit=2` | 35 |
+| `get_code_snippet` | `symbol="LLMSettings", module="pipecat.services.settings", pipecat_version="1.12.0", max_lines=80` | 60 |
+| Fifteen `check_deprecation` | One `symbol` per path listed below, `version="1.12.0"`; no other filters | 2–5 per call |
+
+Lifecycle paths: `pipecat.services.deepgram.stt`, `pipecat.services.openai.llm`,
+`pipecat.services.cartesia.tts`, `pipecat.pipeline.worker`,
+`pipecat.transports.smallwebrtc.transport`, `pipecat.audio.vad.silero`,
+`pipecat.frames.frames`, `pipecat.pipeline.pipeline`,
+`pipecat.processors.aggregators.llm_context`,
+`pipecat.processors.aggregators.llm_response_universal`, `pipecat.runner.types`,
+`pipecat.transports.base_transport`, `pipecat.transports.smallwebrtc.connection`,
+`pipecat.workers.runner` and `pipecat.runner.run`.
+
+The Settings lookup first ranks unrelated `OpenAILiveLLMSettings`; the narrower
+API search returns zero. Neither is accepted as the requested definition.
+The actual [OpenAI constructor](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/openai/llm.py#L25-L98)
+and [LLMSettings definition](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/services/settings.py#L294-L347)
+ground the brief `system_instruction` customization. Compatibility annotations
+remain unknown; local construction confirms only the exercised installed API.
+Before/after status preserves the same six provenance fields as the first
+fixture: records, refresh timestamp, operator pin, indexed release, commits
+ahead and reranker state. No index refresh occurred.
+
+Syntax/import and Ruff checks pass. Real provider objects, VAD, aggregators and
+pipeline construct with placeholder strings under a socket-connect guard;
+actual context assertions pass. Generated callbacks tested with worker/runner/
+transport doubles queue one `LLMRunFrame` on ready and cancel on disconnect.
+The isolated dotenv-disabled loopback server returns HTTP 200 via its installed
+prebuilt `/client/` assets and terminates after checks. No generated client,
+provider authentication, offer/start endpoint, audio/browser session or upstream
+provider eval is tested. Runner help advertises `-t eval`, while `pipecat init`
+has no `--eval`; that runtime mode is discovered but not executed here.
+The actual answer states: “These prove local construction and startup, not an
+audio/provider conversation.” Credentials remain unavailable and unaccessed.
+
+**Existing app:** a second worker receives an explicit scaffold request pointing
+to the first fixture's already populated target. Four harmless capability
+commands pass, then it declines scaffolding and asks whether to adapt the
+existing app or choose a new empty directory. No dry run or generation occurs.
+Before/after relative names, sizes and modification timestamps match for all
+16 inspected entries (10 files, 6 directories), including hidden entries;
+`.venv`, `.git` and `__pycache__` contents are excluded from traversal. No `.env`
+content is read. This proves the observed refusal preserves that metadata,
+not a universal overwrite guarantee or completed adaptation.
+
+Both actual answers, command/results, tool arguments, sources and invariant
+proof remain outside the checkout. No prohibited index, plugin lifecycle,
+credential, provider/session or Cloud action is observed. Source-candidate
+behaviour is distinct from revised installed-host activation and ChatGPT Work.
+
+The one-shot fresh Phase 3 reviewer checks the captured phase diff against the
+contract and raw evidence and returns zero findings. Staged whitespace and
+secret/PII scans pass. No tracked executable code changes follow the passing
+suite; final evidence additions are documentation only.

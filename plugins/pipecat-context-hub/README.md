@@ -1,8 +1,9 @@
 # Local Pipecat Context Hub plugin
 
-This optional desktop experiment packages read-only exploration with the
-installed Context Hub. It does not bundle Python, Pipecat CLI or an index.
-Build and Cloud workflows are pending later phases.
+This optional desktop experiment packages grounded exploration and local app
+build guidance with the installed Context Hub. It does not bundle Python, Pipecat CLI or an index.
+Local build requires native execution and an installed Pipecat CLI. Cloud
+deployment remains pending a later phase.
 
 ## Explore an idea or concept
 
@@ -30,6 +31,24 @@ for indexed-registry lifecycle evaluation, not snapshot selection. Missing,
 stale or unavailable requested snapshots are explained without an automatic
 refresh. Exploration requires working packaged MCP retrieval, neither local
 shell nor Pipecat CLI nor Cloud credentials.
+
+## Build a local app
+
+Explicitly request a build and select an empty project directory. The [build
+skill](skills/build/SKILL.md) checks native shell access, installed CLI version,
+help and JSON options, clarifies transport/providers/client/behaviour, validates
+resolved dry-run output and scaffolds once. Existing apps are adapted without
+re-scaffolding. It keeps generated constraints and records resolved dependency
+versions, grounds customization in packaged Hub retrieval, and reports separate
+import, startup and behaviour outcomes. Provider credentials are supplied locally
+by the user; imports and credential-free checks do not verify a conversation.
+
+CLI 1.3.0 was qualified with an explicit web/SmallWebRTC/cascade configuration,
+Deepgram/OpenAI/Cartesia and no client. These are test inputs, not user defaults.
+Local generation supports `--no-deploy-to-cloud`; no `--eval` flag is advertised.
+See the repository evaluation report for exact flags, resolved versions and
+limits. Build remains unavailable in discussion-only hosts or without CLI,
+while exploration remains usable.
 
 ## Prepare a local copy
 
@@ -90,7 +109,7 @@ Record retrieval, execution and Cloud prerequisites independently in
 Evaluation reports stay in repository documentation and are not copied into
 the installed plugin. Local stdio support is host-dependent.
 Discussion-only hosts cannot promise local file creation. Exploration needs
-neither Pipecat CLI nor Cloud credentials; later build work additionally
+neither Pipecat CLI nor Cloud credentials; build additionally
 needs local shell and Pipecat CLI, and Cloud deployment needs its optional
 CLI/account setup. Discover versions and flags from installed help.
 

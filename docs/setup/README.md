@@ -33,7 +33,9 @@ uvx pipecat-ai-context-hub serve --help
 > **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat packages are `pipecat-ai*`); the command and MCP server name are `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
 The optional [desktop plugin experiment](../../plugins/pipecat-context-hub/README.md)
-uses the independent connection name `pipecat-context-hub-chatgpt-plugin`.
+provides grounded exploration and a [local build workflow](../../plugins/pipecat-context-hub/skills/build/SKILL.md)
+with native shell/Pipecat CLI prerequisites. It uses the independent connection
+name `pipecat-context-hub-chatgpt-plugin`.
 See its [evaluation report](../evaluations/pipecat-context-hub-plugin.md) for
 the desktop activation test; existing standalone registrations stay unchanged.
 

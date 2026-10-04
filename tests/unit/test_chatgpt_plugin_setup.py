@@ -76,8 +76,22 @@ def test_render_excludes_evaluation_and_unrelated_files(
     renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = _copy_source(renderer, tmp_path, monkeypatch)
-    (source / "evaluation.md").write_text("Repository-only report")
-    (source / "scratch.txt").write_text("Unrelated local notes")
+    excluded = [
+        "evaluation.md",
+        "scratch.txt",
+        "qualification.json",
+        "package-check.json",
+        "docs/evaluations/pipecat-context-hub-plugin.md",
+        ".conduct/phase3-implementer.report.txt",
+        "scripts/__pycache__/prepare_local.pyc",
+        "skills/build/qualification.json",
+        "skills/build/reports/local-verification.txt",
+        "skills/explore/__pycache__/cached.pyc",
+    ]
+    for relative in excluded:
+        artifact = source / relative
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("Repository-only artifact")
     destination = renderer.prepare_local(tmp_path / "prepared")
     copied = {p.relative_to(destination).as_posix() for p in destination.rglob("*") if p.is_file()}
     assert copied == {
@@ -86,10 +100,28 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "mcp.json",
         "README.md",
         "scripts/prepare_local.py",
+        "skills/build/SKILL.md",
         "skills/explore/SKILL.md",
     }
     assert not (_SOURCE / "evaluation.md").exists()
     assert (_ROOT / "docs/evaluations/pipecat-context-hub-plugin.md").is_file()
+
+
+@pytest.mark.parametrize("skill", ["explore", "build"])
+def test_render_preserves_complete_skill_resource_bytes(
+    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill: str
+) -> None:
+    source = _copy_source(renderer, tmp_path, monkeypatch)
+    relative = Path("skills") / skill / "SKILL.md"
+    resource = source / relative
+    # Keep the real instructions and make encoding/newline normalisation observable.
+    expected = resource.read_bytes() + "\r\nByte-preservation fixture: café\r\n".encode()
+    resource.write_bytes(expected)
+
+    destination = renderer.prepare_local(tmp_path / "prepared")
+
+    assert (destination / relative).read_bytes() == expected
+    assert resource.read_bytes() == expected
 
 
 @pytest.mark.parametrize("mode", ["legacy", "extra"])

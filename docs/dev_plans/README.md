@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-10-02 | Feature | Local Pipecat plugin: explore, build and deploy | In Progress — Phase 2 verified; Phase 3 pending | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
+| 2026-10-02 | Feature | Local Pipecat plugin: explore, build and deploy | In Progress — Phase 3 verified; Phase 4 pending | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
