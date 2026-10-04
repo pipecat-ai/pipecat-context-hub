@@ -11,23 +11,83 @@ This repository report is not copied into the installed plugin package.
 | Installed Hub | Importable from unrelated cwd with pinned Python | Pass, installed Hub 0.8.0 |
 | Packaged stdio | Initialize and nonempty status using generated `mcp.json` | Pass, corrected portable command and unique connection; subprocess only |
 | Cwd safety | Same initialize/status with a shadow Hub module in cwd | Pass, subprocess only |
-| Index preservation | Before/after refresh date and framework provenance unchanged | Pass, read-only probes |
+| Index preservation | Before/after refresh date and framework provenance unchanged | Historical probes pass; current after-status unavailable (`Transport closed`), no refresh initiated |
 | Desktop discovery | Plugin and packaged skill exposed in selected host/mode | Pass, Codex local catalogue and enabled plugin 2026-10-03 |
 | Explore skill activation | Host reads and invokes packaged explore skill | Pass, observed TTS + STT exploration 2026-10-03 |
-| Desktop packaged MCP | Host uses `pipecat-context-hub-chatgpt-plugin` initialize/status connection | User-reported unique-connection status/retrieval pass 2026-10-03; initialize/startup trace unverified |
-| Existing Hub retrieval | Status, API definitions, docs and examples with sources | Pass, direct docs and real pipeline examples; docs search degraded |
+| Desktop packaged MCP | Host uses `pipecat-context-hub-chatgpt-plugin` initialize/status connection | Observed named status call passes 2026-10-03 local / 2026-10-04 UTC; initialized connection established, raw initialize/startup trace unobserved |
+| Existing Hub retrieval | Status, API definitions, docs and examples with sources | Historical sourced retrieval passes; current packaged retrieval probes fail with `Transport closed`, documentation failures remain unresolved |
 | Execution | Harmless shell command in selected host/mode | Pass, Codex local shell |
 | Pipecat CLI | Installed version and init help/options | Pass, CLI 1.3.0 version/init help |
 | Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
 | Cloud account | Auth/org readiness (later phase) | Untested |
+
+## Attributable packaged desktop re-validation (2026-10-03 local / 2026-10-04 UTC)
+
+This Codex local run exposes eight tools whose names begin with
+`mcp__pipecat_context_hub_chatgpt_plugin__`. Their actual schemas were inspected
+before invocation. The installed 0.1.0 explore skill was read as qualification
+evidence and its read-only status-first contract followed. No standalone Hub
+call was used for attribution.
+
+`mcp__pipecat_context_hub_chatgpt_plugin__get_hub_status({})` returned a successful
+MCP result (`isError: false`) in the initial status/help batch, which completed
+in 1.5 seconds. This actual named call establishes an initialized packaged
+desktop connection. The raw MCP initialize response and running process argv
+were not captured, so neither is claimed as a newly observed trace. The cached
+configuration still declares the unique server, bare `python3`, interpreter-only
+`PATH` and exact `-P -m pipecat_context_hub serve` argv; that is configuration
+evidence rather than an observation of the running process.
+
+The returned status reports installed Hub `0.8.0`, 45,448 records
+(`code`: 22,435; `doc`: 6,563; `source`: 16,450), refresh
+`2026-10-04T06:34:32.826220+00:00`, pin `latest`, indexed framework `1.12.0`,
+zero commits ahead, and enabled reranker
+`cross-encoder/ms-marco-MiniLM-L-6-v2`. These unfiltered status counts differ
+from the historical 45,411-record September 26 snapshot before any retrieval
+probe in this run. No refresh, registration change or index mutation was
+initiated here; the cause of that pre-existing snapshot change was not inspected.
+
+The following independent read-only calls were submitted together after status;
+each returned `isError: true` with `Transport closed` in approximately 1.1 seconds:
+
+| Packaged tool | Exact arguments | Result |
+|---|---|---|
+| `search_docs` | `query="TTS + STT", limit=4` | Transport closed |
+| `search_api` | `query="TTSService + STTService", chunk_type="class_overview", limit=4` | Transport closed |
+| `search_examples` | `query="TTS pipeline", domain="backend", limit=2` | Transport closed |
+| `get_doc` | `path="/pipecat/learn/pipeline.md"` | Transport closed |
+
+No version, source-repo or lifecycle filters were applied beyond the arguments
+shown. A subsequent sequential packaged `get_hub_status({})` also returned
+`Transport closed` immediately. Consequently this run cannot establish a
+successful before/after metadata comparison, sourced exploration response or
+retrieval recovery. It does not diagnose why the transport closed. The previous
+Chroma `Error finding id` docs-search failure and direct-page `Not Found`
+failures remain unresolved; a transport failure neither reproduces their exact
+error text nor proves their resolution.
+
+Harmless local `pwd` execution succeeded. Installed `pipecat --version` still
+reports `1.3.0`; `pipecat init --help` exposes `--config`, `--dry-run`,
+`--list-options` and `--deploy-to-cloud`. `pipecat cloud deploy --help` succeeds
+and exposes build-directory and GitHub-source options. These are execution and
+command-discovery passes only; no scaffold, build, account/auth check, secret
+upload or deployment was performed. ChatGPT Work activation remains untested.
+
+The prior desktop ownership blocker is resolved by the actual uniquely named
+status call. Phase 1 remains blocked on a usable retrieval connection after the
+observed transport failure; retrieval-dependent Phase 2 was not started. Further
+re-validation must capture recovered packaged status and retrieval without
+silently refreshing or replacing the index. The installation/restart guidance
+and ownership audits below are historical evidence, not a request to repeat
+installation for this run.
 
 For each run record date, prompt, host mode, Hub/CLI/framework versions,
 actual tool calls, source citations, latency and pass/fail/untested outcome.
 Count a desktop pass only when activation is observed; describe missing
 capabilities without disabling independent working gates.
 
-The local marketplace was added and this plugin installed successfully using
-the installed `codex plugin` commands. The Codex local skill catalogue now
+Historical qualification follows. The local marketplace was added and this
+plugin installed successfully using the installed `codex plugin` commands. The Codex local skill catalogue now
 exposes the packaged explore skill, which was read and invoked for the frozen
 TTS + STT prompt. The existing Hub returned sourced docs and pipeline examples.
 However, a same-name manual MCP registration exists, and running Hub commands
