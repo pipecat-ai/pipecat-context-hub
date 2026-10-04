@@ -46,6 +46,11 @@ invocation downloads the package and local models (allow a few minutes).
 > packages are `pipecat-ai*`); the command and MCP server name are
 > `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
+The optional [desktop plugin experiment](../plugins/pipecat-context-hub/README.md)
+uses a separate MCP connection named `pipecat-context-hub-chatgpt-plugin`.
+Its activation evidence and retest prompts live in the repository
+[evaluation report](evaluations/pipecat-context-hub-plugin.md).
+
 ### Inside the Pipecat CLI
 
 Installing this package alongside `pipecat-ai[cli]` mounts it as `pipecat context-hub`,

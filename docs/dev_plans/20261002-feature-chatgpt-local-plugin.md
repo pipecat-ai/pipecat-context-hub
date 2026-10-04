@@ -1,6 +1,6 @@
 # Local Pipecat plugin: idea to Cloud deployment experiment
 
-**Status**: Not Started — review findings addressed and accepted
+**Status**: In Progress — Phase 1 desktop MCP retest pending
 **Component**: plugin packaging, retrieval instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-02
@@ -22,7 +22,7 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 
 - R1: Explore retrieves relevant concepts and sources before making Pipecat-specific API assertions; use ` + ` or ` & ` for multi-concept hub queries.
 - R2: Status establishes index readiness and indexed framework provenance. An unavailable requested version is a limitation, not permission to rebuild the index.
-- R3: Bind hub startup to its installed absolute Python executable using `-P -m pipecat_context_hub serve`; startup must be independent of desktop working directory.
+- R3: Name the packaged MCP server `pipecat-context-hub-chatgpt-plugin`, independently of the standalone `pipecat-context-hub` registration. Bind hub startup to its installed Python using that executable's bare name and a generated `PATH` containing only its absolute interpreter directory, with `-P -m pipecat_context_hub serve`. The portable loader rejects absolute `command` values; startup must remain independent of desktop working directory and must not fall back to an ambient Python.
 - R4: Build discovers installed CLI capabilities, maps user choices to supported scaffold options, validates a dry run, and only creates an app after a build request. Never overwrite or re-scaffold an existing app.
 - R5: Deploy preparation validates the project, required runtime key names, selected Cloud organisation/region/agent identity, sizing and build path. Cloud inspection before approval is read-only: inspect existing secret-set metadata and prepare proposed key additions/updates without uploading or creating secrets. Do not print secret values or send them to model-visible context.
 - R6: Present one concrete approval payload covering the deployment target, build source, resources, secret-set name and proposed key additions/updates. After the user approves that payload, use supported local tooling to create/update the approved Cloud secrets, then build/deploy through the installed Cloud CLI, check readiness and inspect bounded diagnostic logs. If secrets are already available and no changes are needed, skip the secret write. Failure is not success merely because a command was issued.
@@ -71,13 +71,13 @@ Evaluate each workflow as its prerequisites become available; finish the live bu
 ### New files to create
 
 - `plugins/pipecat-context-hub/plugin.json`: portable plugin identity; OpenAI presentation metadata only where supported by current schema.
-- `plugins/pipecat-context-hub/mcp.template.json`: source template for the stdio entry, with an explicit interpreter placeholder; never register this unresolved template directly.
-- `plugins/pipecat-context-hub/scripts/prepare_local.py`: standard-library renderer run with the installed hub Python. Check the hub is importable, copy the package to a user-selected local destination outside the checkout, and write schema-compatible root `mcp.json` with `sys.executable`, `-P`, module and `serve`. Refuse overwriting a nonempty destination. Preserve the source template and emit no credentials.
+- `plugins/pipecat-context-hub/mcp.template.json`: source template for the uniquely named `pipecat-context-hub-chatgpt-plugin` stdio entry, with explicit interpreter-name and interpreter-directory placeholders; never register this unresolved template directly.
+- `plugins/pipecat-context-hub/scripts/prepare_local.py`: standard-library renderer run with the installed hub Python. Check the hub is importable, require exactly the unique packaged server entry, copy package resources to a user-selected local destination outside the checkout, and write schema-compatible root `mcp.json` with the bare name of `sys.executable`, `PATH` restricted to its absolute parent directory, `-P`, module and `serve`. Preserve interpreter symlinks so virtual-environment identity is retained. Refuse overwriting a nonempty destination. Preserve the source template, exclude repository evaluation reports and emit no credentials.
 - `plugins/pipecat-context-hub/skills/explore/SKILL.md`: retrieve concepts, docs, definitions and examples; synthesise with evidence and explicit limitations.
 - `plugins/pipecat-context-hub/skills/build/SKILL.md`: preflight host execution, CLI discovery, dry run, scaffold, customise and verify.
 - `plugins/pipecat-context-hub/skills/deploy/SKILL.md`: prepare target/config/secrets, obtain concrete approval, execute and verify Cloud deployment.
 - `plugins/pipecat-context-hub/README.md`: prerequisites, rendering, verified installation flow, host-mode distinction, version compatibility, update/re-render and removal instructions.
-- `plugins/pipecat-context-hub/evaluation.md`: frozen prompts, expected outcomes and results template; no live credentials.
+- `docs/evaluations/pipecat-context-hub-plugin.md`: repository-owned frozen prompts, expected outcomes and results template; no live credentials. This report is not an installed plugin resource.
 - `tests/unit/test_chatgpt_plugin_setup.py`: renderer validation and refusal paths, pinned launch assertions and package-copy boundaries.
 
 ### Files to modify
@@ -86,7 +86,7 @@ Evaluate each workflow as its prerequisites become available; finish the live bu
 
 ### Architecture decisions
 
-Use a generated local copy to bind the installed interpreter; keep machine-specific paths out of the portable source package. The renderer is a setup operation, not a tool invoked during queries. Re-render into a fresh local copy after plugin/interpreter updates and use the host's documented refresh/reinstall flow.
+Use a generated local copy to bind the installed interpreter; keep machine-specific paths out of the portable source package. Portable stdio commands use an executable name plus a generated `PATH` containing only the installed interpreter directory, rather than an absolute command rejected by the host loader. The packaged MCP server has a unique identity; keep the standalone registration unchanged. Evaluation reports stay under `docs/evaluations/` and are excluded from generated packages. The renderer is a setup operation, not a tool invoked during queries. Re-render into a fresh local copy after plugin/interpreter updates and use the host's documented refresh/reinstall flow.
 
 Use native local shell tools in desktop Work/Codex for the Pipecat CLI; skills are instructions, not executable permissions. The Cloud optional extension is installed separately when a user needs deployment. Help-derived capability checks take precedence over assumptions from newer docs. Builds and Cloud operations occur in the user's app workspace, not this repository.
 
@@ -172,7 +172,8 @@ sequenceDiagram
 
 | Case | Expected evidence |
 |---|---|
-| Template rendering | Portable root files, pinned interpreter and safe argv; no unresolved placeholder in generated config |
+| Template rendering | Portable root files, exactly the unique packaged MCP server, bare executable with `PATH` restricted to its installed directory and safe argv; no unresolved placeholder or repository evaluation report in generated package |
+| Host MCP loader | Installed Codex `plugin/read` discovers the unique server; freeze the absolute-command rejection and verify the generated configuration passes the real loader, separately from desktop activation |
 | Destination exists or hub absent | Clear error, no overwrite or partial registration |
 | Host feasibility | Actual skill discovery, stdio initialize/status and harmless shell execution in selected desktop mode |
 | Optional shell/CLI absent | Retrieval still activates and answers with sources; build is unavailable without shell/Pipecat CLI, and Cloud absence does not block working exploration/build |
@@ -215,7 +216,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - https://learn.chatgpt.com/docs/enterprise/chatgpt-work-local-security
 - https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/cli/agent_templates/AGENTS.md
 
-<!-- reviewed: 2026-10-03 @ b83525eeac4e330cd9b606ca118c63cb478582f2 -->
+<!-- reviewed: 2026-10-04 @ a50b5abfe2dfd0d13d6a97f467c9f2cbac7b8319 -->
 
 ## Progress
 
@@ -228,10 +229,25 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - Initial draft committed; original five-lens review completed with one Important setup finding and three Minor testing gaps.
 - User authorised inclusion of Pipecat CLI and Cloud workflow on 2026-10-03. Expanded scope and all four original findings are incorporated here; this is not proof of a fresh review.
 - Live command help and scaffold dry run verified. No app was created, index refreshed, secrets uploaded or deployment started.
-- Expanded implementation phases and desktop/Cloud workflow remain unimplemented and require review before coding.
+- Expanded implementation phases and desktop/Cloud workflow were unimplemented at the second review; acceptance and execution results follow below.
 - Second five-lens review completed with three Important findings and zero contradictions; user requested all fixes on 2026-10-03. Secret approval boundaries and capability gates are now explicit; fixes require final acceptance before publishing the review marker.
 - Post-fix checks passed: capability gates are separate, the sequence places approval before secret writes and secret writes before build/deploy, and obsolete conflicting wording is absent. A fresh independent contradiction pass found zero contradictions and confirmed the fixes are compatible.
 - User accepted publication of the review marker on 2026-10-03. The implementation section heading was normalised for conduct's parser without changing phase scope.
+- Conduct Phase 1 prepared and installed the minimal local package on 2026-10-03. Renderer formatting/lint, nonempty-destination refusal, and real generated-command stdio initialize/status passed from ordinary and shadow-module working directories; refresh/version metadata remained unchanged. Local shell, Pipecat CLI and Cloud command discovery passed. Desktop explore-skill activation is unobserved, so Phase 1 remains incomplete and conduct stopped before the test-writer, canonical tests or a phase-boundary commit.
+- Resume prerequisite: safely refresh/restart the desktop, open a new local chat, confirm the installed Pipecat Context Hub explore skill is discoverable, and exercise evaluation prompt 1 with plugin-owned initialize/status evidence. Package/subprocess checks do not establish this host outcome. No later phase ran.
+- Follow-up desktop report on 2026-10-03 confirms the packaged explore skill loaded and plugin 0.1.0 enabled. Plugin-owned MCP activation remains unverified: observed Hub processes use the existing registration's argv without `-P`. Both the package and existing registrations use the server name `pipecat-context-hub`; this is a possible collision to investigate, not a confirmed root cause.
+- `search_docs("TTS + STT")` failed on the existing MCP connection with Chroma `Internal error: Error finding id`. The same query failed from a fresh installed-Hub Python process with `-P`, so restarting an old MCP process alone does not resolve the observed failure. Status still succeeds. No refresh or index mutation was performed; refresh date, record count and indexed framework version remained unchanged. Keep packaged MCP activation and this retrieval/index failure as separate open checks.
+- Desktop evidence recorded on 2026-10-03: the Codex skill catalogue exposes the installed 0.1.0 explore skill, its packaged instructions were read and invoked, and the plugin is enabled. The available Hub connection returned 45,411 records, indexed framework 1.12.0 with zero commits ahead, and an enabled reranker. STT/TTS/pipeline docs and two framework pipeline examples were retrieved with source URLs; refresh timestamp and framework provenance were unchanged.
+- Desktop MCP ownership remains unresolved: a same-name manual MCP registration is present, and observed Hub processes use `-m pipecat_context_hub serve` while the package declares `-P -m pipecat_context_hub serve`. These successes prove packaged skill activation and existing Hub retrieval, but do not yet prove the package-owned desktop initialize/status outcome. Resume Phase 1 to audit that remaining gate before Phase 2.
+- Retrieval limitation frozen in the evidence record: `search_docs("TTS + STT")` and a narrower docs search returned `Internal error: Error finding id`; direct lookups under `/pipecat/learn/*.md` succeeded. No index refresh or retrieval-handler change was made.
+- Autonomous conduct resume on 2026-10-03 accepted the existing review marker and dispatched a fresh Phase 1 implementer sequentially. Its read-only ownership audit confirmed installed/enabled plugin and safe cached argv, but found no attributable package-owned desktop initialize/status trace. The worker reported blocked; conduct persisted that result before dispatching a test-writer, running canonical tests or making a phase-boundary commit. Phase 2 and later phases did not run.
+- User authorised a packaging correction on 2026-10-03: give the packaged MCP connection the unique identity `pipecat-context-hub-chatgpt-plugin` and move the evaluation report to repository docs before another desktop activation test. The standalone MCP registration and plugin manifest identity remain unchanged. This is a test of the suspected name collision, not proof of its cause or of host activation. The amended contract requires marker refresh by conduct's resume preflight.
+- Packaging correction verified locally: nine renderer regressions passed, including the exact unique server key, safe argv and interpreter-symlink preservation, exclusion of repository evaluation files, and refusal of legacy/additional server entries, unsafe launch templates, nonempty destinations, checkout destinations and unavailable Hub imports. Targeted Ruff format/check and mypy passed. The evaluation report and repository setup links now point to `docs/evaluations/pipecat-context-hub-plugin.md`. Desktop installation/activation of the renamed connection remains the next test; these checks do not mark Phase 1 complete.
+- Autonomous resume after the correction refreshed the amended review marker and resynchronised the Codex state hash, then dispatched a fresh Phase 1 implementer sequentially because phase file slots are absent. Supported local reinstallation succeeded from the fresh source under the existing marketplace/plugin identity. The installed cache now has exactly `pipecat-context-hub-chatgpt-plugin` with the safe argv and excludes the evaluation report. The running chat still exposes only standalone Hub tools; no attributable package-owned desktop initialize/status was observed. Native desktop inspection was refused by the computer-use tool. The worker reported blocked, so conduct persisted Phase 1 as blocked and released its lock before any test-writer, canonical tests or boundary commit. Restart the desktop and run the report's retest prompt in a new local chat, then resume. Before/after Hub status confirmed the refresh timestamp, record count and framework provenance unchanged; the docs-search error remains independently unresolved.
+- User's new-chat retest on 2026-10-03 still found only the standalone connection. A local diagnostic app-server reproduced the loader failure: `plugin/read` returned no packaged MCP servers and stderr reported `Agent Plugins stdio command must be a bare executable name or a contained ./ path`. Four isolated package variants confirmed that the absolute-command package and an OpenAI legacy override were rejected, while a bare executable with a pinned interpreter-only `PATH` and a contained launcher were discovered. The bare-command variant launched the exact installed virtual-environment Python from a shadow-module cwd. The contract now uses that minimal portable binding; the standalone registration and retrieval semantics remain unchanged. Real loader acceptance must accompany renderer regressions; desktop initialize/status remains an independent gate.
+- A fresh delegated implementer corrected the renderer/template and updated package guidance, qualification tests and evaluation evidence. Fifteen renderer regressions, targeted Ruff format/check and mypy passed before its terminal report. Supported rendering/reinstallation succeeded under the existing identity; accepted-source and installed-cache `mcp.json` bytes match. Real Codex `plugin/read` now discovers the unique server, and generated-command stdio initialize/status passes from ordinary and shadow-module directories with unchanged index provenance and no shadow import. The direct-cache diagnostic with an unsupported marketplace source path was inconclusive and is not counted as a loader pass. The worker's final report still blocks Phase 1 on actual desktop activation, so conduct saved that blocker and released the lock without a test-writer, canonical phase test run or boundary commit. Reload/restart the desktop and repeat the unique-connection retest in a new local chat.
+
+- User requested ordinary focused commits for the prepared work on 2026-10-03. Commit `f7994bf` records the local exploration plugin, portable launch correction, renderer regressions and evaluation evidence; repository setup and plan links are recorded separately. Fifteen renderer tests and targeted Ruff/mypy passed again before committing, and the staged secret/PII scan found no matches. Phase 1 remains pending actual desktop activation; conduct state has no completed phases.
 
 ## Findings
 
@@ -244,7 +260,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 ### Current limitations
 
-The installed CLI reports version 1.3.0 and differs from current upstream scaffold documentation. Actual desktop activation and Cloud account/secret readiness have not been verified. The persisted second-review JSON describes the expanded plan before these fixes; it remains the historical findings record, not a claim that the updated bytes were re-reviewed by all five lenses. User acceptance permits publication of the review marker.
+The installed CLI reports version 1.3.0 and differs from current upstream scaffold documentation. Packaged explore-skill activation is observed in Codex local, but package-owned desktop MCP activation and Cloud account/secret readiness remain unverified. The persisted second-review JSON describes the expanded plan before these fixes; it remains the historical findings record, not a claim that the updated bytes were re-reviewed by all five lenses. User acceptance permits publication of the review marker.
 
 ### Second review resolutions
 
@@ -253,4 +269,4 @@ The installed CLI reports version 1.3.0 and differs from current upstream scaffo
 
 ## Final Results
 
-Expanded plan only. Prototype implementation, installation and live deployment are pending.
+Minimal Phase 1 prototype is committed in `f7994bf`; packaged skill activation and sourced retrieval through the existing Hub are observed. The unique connection is reinstalled with a corrected portable launch: bare installed Python name, interpreter-directory-only `PATH` and exact safe argv. Fifteen renderer regressions plus targeted Ruff and mypy checks pass. The real Codex loader discovers the server, source/cache configs match, and ordinary/shadow-directory generated-command stdio initialize/status passes with unchanged index provenance. Actual package-owned desktop MCP initialize/status still gates Phase 1 completion and requires the next desktop retest. Conduct refreshed the amended review marker, recorded the worker blocker and released the lock without a canonical phase test run or boundary commit; later workflows, full repo gates and live deployment remain pending. No index refresh occurred. The installed Hub reports 0.8.0 while this checkout declares 0.8.1; feasibility evidence distinguishes these versions. The separate Chroma docs-search failure remains unresolved.
