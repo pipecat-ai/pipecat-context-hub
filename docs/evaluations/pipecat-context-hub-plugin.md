@@ -929,3 +929,89 @@ user's separate focused-commit request; Phase 4 remains unchecked.
 These checks do not prove container startup, Cloud readiness, provider integration
 or a voice session. Required target/credential fields and final approval remain
 unresolved; the draft is not presented as an executable approval payload.
+
+## Phase 4 resumed independent preparation conversation (2026-10-04)
+
+A new clean-context worker independently consumed the current deploy source
+(candidate SHA-256 `a8b935c1099c90dcb472a5d5954aaa1c11d62d55eac7930b1c574483534829bd`)
+and answered: “Prepare the pinned Phase3 app for Cloud; do not upload secrets,
+build, deploy or start sessions until exact approval.” This is a fresh actual
+source-candidate preparation conversation, separate from the historical synthetic
+walkthrough and the rejected supplementary report above. It does not establish
+revised cached-plugin activation or ChatGPT Work activation. Evidence is under
+`/Users/vr000m/.codex/tmp/phase4-resume-preparation-20261004/`:
+`source-candidate-conversation.json`, `hub-evidence.json`, `cli-help.json`,
+`static-command-record.json`, `project-readiness.json` and
+`preparation-payload.json`. Historical reports retain their failure labels.
+
+Five actual uniquely packaged calls returned without MCP errors:
+
+| Tool | Exact arguments | Latency |
+|---|---|---|
+| `get_hub_status` | `{}` | 79 ms |
+| `get_doc` | `path="/pipecat-cloud/fundamentals/agent-images.md"` | 38 ms |
+| `get_code_snippet` | `symbol="SmallWebRTCRunnerArguments", module="pipecat.runner.types", pipecat_version="1.12.0", max_lines=40` | 99 ms |
+| `get_doc` | `path="/pipecat-cloud/guides/cloud-builds.md"` | 35 ms |
+| `get_hub_status` | `{}` | 73 ms |
+
+The inspected tool schemas support these arguments; there is no unsupported
+version filter on the docs calls. The [agent-image page](https://docs.pipecat.ai/pipecat-cloud/fundamentals/agent-images.md)
+grounds the asynchronous entrypoint, inherited entrypoint and uv Dockerfile
+pattern. The [Cloud-build page](https://docs.pipecat.ai/pipecat-cloud/guides/cloud-builds.md)
+grounds source upload/build/deployment and context exclusions. The exact
+[runner definition](https://github.com/pipecat-ai/pipecat/blob/1559a684b1ee9771b36454b72418d7364b518e7f/src/pipecat/runner/types.py#L226-L233)
+identifies SmallWebRTC session arguments; its version-compatibility annotation
+is `unknown`, not a compatibility pass. Before/after status preserves server
+0.8.0, 45,453 records, refresh `2026-10-04T16:11:55.385306+00:00`, pin `latest`,
+indexed framework 1.12.0, zero commits ahead, enabled reranker/model/reason and
+all commit SHAs. No index refresh/reset/repair or registration/restart occurred.
+
+Fresh static AST/TOML/lock assertions pass for the same existing Phase 3 app.
+`bot(runner_args)` is asynchronous, the project and lock pin 1.12.0, required
+key names are `CARTESIA_API_KEY`, `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, and optional
+`CARTESIA_VOICE_ID`/`OPENAI_MODEL` retain bot defaults. All six app/config SHA-256
+values match the prior recorded baseline and a fresh end-of-conversation check.
+The deny-all dockerignore permits exactly `.dockerignore`, `Dockerfile`, `bot.py`,
+`pyproject.toml` and `uv.lock`; the allowlisted files are regular non-symlink files.
+No env/credential file is opened or archived, and no `.venv` source is read.
+The immutable base digest is preserved; no fresh registry manifest, container
+build or runtime check is claimed.
+
+CLI 1.3.0 version and harmless help checks are current. Deploy, agent status/list,
+secret list/set, organisations, regions/list and logs help all pass. An initial
+`cloud profiles --help` probe exits 2 with stderr withheld; discovery then
+confirms `cloud agent profiles list --help` passes and supports explicit
+`--organization`. No profile listing is run without a selected organisation.
+Deploy supports explicit org/region, build-directory/Dockerfile, architecture,
+profile and sizing flags. Status supports org but no region flag. Secret-file
+transfer and bounded deployment-filtered logs are supported command shapes;
+they are not executed. Exact argv, exit codes and individual latencies are in
+`cli-help.json`; no raw account output or auth config is persisted.
+
+The conversation response reports the app prepared for review and the draft
+**not approval-ready**. The human organisation/region question is still pending;
+no first/default organisation is inferred and no unselected-account metadata
+call is made. Fresh selected-target authentication/collision/key metadata,
+observed profile/region architecture, value-isolated provider credential supply
+and explicit completed-payload approval remain missing. Agent/secret-set names,
+ARM64, agent-1x, 0–1 agents and 600 seconds remain proposals. The new draft uses
+null unresolved target/actions and no executable final command payload; it does
+not relabel historical org observations as current proof. Existing `.env` contents
+and process credential values are not inspected. No source change is needed.
+No secret write, local/remote build, upload/push, deploy/session, login/org switch,
+delete or rollback occurs. Bounded source/preparation qualification passes;
+live execution remains **pending approval**, and Phase 4/live acceptance remains
+incomplete. The conductor owns subsequent tests, review, plan/state and commits.
+
+Conduct accepts the fresh implementer and test-writer reports under the installed
+schema. The writer finds no new executable behaviour needing tests; all 18 existing
+renderer tests and targeted Ruff formatting/lint checks pass. The fresh canonical
+suite reports 1,847 passed / 7 skipped in 86.87 seconds. The conductor independently
+matches all six current app/config hashes and the unchanged deploy candidate hash;
+only qualification documentation and plan notes change. The historical malformed
+report remains rejected. Resolving that report gate does not resolve the missing
+Cloud target, metadata, credentials or final approval.
+
+The fresh one-shot reviewer returns zero findings. The resumed preparation gate
+is accepted and conduct hands back as `awaiting_user`; the previous schema error
+is retained as history. No Phase 4 completion or deployed-ready result is recorded.
