@@ -19,7 +19,7 @@ This repository report is not copied into the installed plugin package.
 | Execution | Harmless shell command in selected host/mode | Pass, Codex local shell |
 | Pipecat CLI | Installed version and init help/options | Pass, CLI 1.3.0 version/init help |
 | Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
-| Cloud account | Auth/org readiness (later phase) | Untested |
+| Cloud account | Auth/org readiness; selected target and secret metadata | Authenticated read-only org discovery passes; one org's agent/secret reads fail; selected target/profile/key availability unresolved |
 | Local build | Installed options, dry run, scaffold, imports/startup/behaviour | Pass for Phase 3 local fixture only; provider conversation and revised skill activation untested |
 
 ## Phase 2 exploration qualification (2026-10-04)
@@ -819,3 +819,113 @@ The one-shot fresh Phase 3 reviewer checks the captured phase diff against the
 contract and raw evidence and returns zero findings. Staged whitespace and
 secret/PII scans pass. No tracked executable code changes follow the passing
 suite; final evidence additions are documentation only.
+
+
+## Phase 4 source and deployment preparation (2026-10-04)
+
+The deploy skill is implemented and a selected existing Phase 3 app is prepared
+without re-scaffolding. This is bounded source/preparation acceptance. Live Cloud
+execution is **pending approval**; Phase 4's deployed-ready target and the full
+experiment remain incomplete. Organisation/region selection, selected-target
+metadata, observed profile availability and local provider credential supply are
+unresolved. No login, org switch, secret write, image build, source upload,
+registry push, deployment, agent/session start, deletion or rollback occurred.
+
+Local evidence is under `/Users/vr000m/.codex/tmp/phase4-deploy-20261004/`:
+`preparation-payload.json` contains the reviewable draft and immutable file
+hashes; `project-readiness.json` records static project checks; `invariants.json`
+records package/app preservation; `source-candidate-conversation.json` records
+the implementer's candidate-source preparation walkthrough and an explicitly
+synthetic pending-approval refusal. These are not independent model conversations,
+revised installed-plugin activation, ChatGPT Work activation or live deployment.
+
+The user-selected project is the existing
+`/Users/vr000m/.codex/tmp/phase3-conversation-20261004/output/phase3-source-conversation/server`.
+Its `bot.py`, `pyproject.toml` and `uv.lock` hashes remain unchanged. New outside-repo
+files are `Dockerfile`, `.dockerignore` and `pcc-deploy.toml`. AST/TOML parsing
+confirms the asynchronous bot entrypoint and locked Pipecat 1.12.0. The Dockerfile
+uses the documented Cloud base-image entrypoint and `uv sync --locked` pattern;
+it does not overwrite reserved `/app` or replace the lock. Runtime/image build
+compatibility has not been exercised. The context allowlist contains only
+Dockerfile, dockerignore, bot, pyproject and lock; credentials, local envs,
+caches and the deploy config are excluded. No existing `.env` contents or
+`.venv` sources were read.
+
+Nine actual uniquely packaged MCP calls are frozen in `hub-evidence.json`:
+status; docs search `Pipecat Cloud Docker deployment + SmallWebRTC Cloud runner`
+(limit 4); direct Docker CLI and deploy-page lookups; docs search `Dockerfile
+pipecat-base SmallWebRTC` (limit 3); direct Cloud-build page lookup; docs search
+`Dockerfile pipecat-base` (area `pipecat-cloud`, limit 4); direct agent-image page
+lookup; status. The broad un-delimited search is one Dockerfile/base-image topic,
+not a multi-concept request. All return without MCP errors. Before/after status
+preserves 45,453 records, refresh `2026-10-04T16:11:55.385306+00:00`, operator pin
+`latest`, indexed 1.12.0, zero commits ahead and enabled reranker. No index
+refresh/reset/repair or plugin installation/registration/restart occurred.
+
+Sources: [Cloud builds](https://docs.pipecat.ai/pipecat-cloud/guides/cloud-builds.md)
+ground the source-upload/build boundary and context exclusions;
+[agent images](https://docs.pipecat.ai/pipecat-cloud/fundamentals/agent-images.md)
+ground the bot entrypoint, uv Dockerfile and region architecture;
+[deployments](https://docs.pipecat.ai/pipecat-cloud/fundamentals/deploy.md)
+ground configuration, documented sizing and ready-state verification;
+[Docker CLI](https://docs.pipecat.ai/api-reference/cli/cloud/docker.md)
+ground registry build/push semantics. Installed help takes precedence over docs.
+
+CLI 1.3.0 version/help is rechecked and safe help dumps saved. Cloud source build
+supports `--build-dir`/`--dockerfile`; Docker is unnecessary for this proposed
+path. `agent status` supports organisation but no region flag, so its prepared
+command omits that unsupported flag. Read-only organisation queries establish
+existing authentication without `auth whoami` or config inspection. Regions and
+agent/secret-set metadata are freshly queried with explicit org flags, captured
+in memory and allowlisted before persistence. Raw stderr and credential-bearing
+output are withheld. Evidence: `verified-cloud-readiness.json`,
+`verified-target-metadata.json`, `verified-secret-set-metadata.json`. Secret-list
+JSON uses `secretSets`; the initial generic projection omitted it, and a fresh
+structured projection preserves only set metadata. Neither that omitted field
+nor unavailable metadata is treated as an empty account. `cvs-signify` agent and
+secret reads fail; profile commands return no usable metadata. `agent-1x` sizing
+is documented, not independently observed available Cloud profile metadata.
+
+Anonymous read-only registry manifest inspection verifies the proposed Python
+3.12 base `dailyco/pipecat-base:0.1.0-py3.12` supports Linux arm64. The Dockerfile
+pins index digest `sha256:c4a2ab9fc41d7643266964c101eac6a59407bb36f02859d5cbafe11e0b10305a`;
+`base-image-metadata.json` records platform/digest evidence. Daily-hosted region
+metadata supports arm64 only. No image was pulled or built.
+
+The unapproved draft proposes agent `phase3-source-conversation`, secret set
+`phase3-source-conversation-secrets`, profile `agent-1x`, minimum 0 / maximum 1
+agents and 600-second sessions. New-set additions would be `CARTESIA_API_KEY`,
+`DEEPGRAM_API_KEY`, `OPENAI_API_KEY`; optional voice/model settings retain bot
+defaults. These are proposals with unresolved organisation/region and key
+availability. Successful inspected org listings show no same-name secret set;
+failed org reads remain unknown. A user-supplied key-only `.env.cloud-secrets`
+file is proposed but not created/read. Exact secret/deploy/status command
+**templates** in the payload remain non-executable until placeholders and all
+prerequisites are resolved and the concrete payload is approved. Hash or target
+changes require renewed approval. Sessions and cleanup are not authorised.
+
+Fresh `rendered-package/` contains eight files; all seven source resources,
+including deploy, match byte for byte. The unique MCP key, bare interpreter,
+interpreter-only PATH and `-P -m pipecat_context_hub serve` remain intact. Renderer
+and Hub code are unchanged. Static syntax/config/hash checks and whitespace
+verification pass; repository tests, canonical gates and independent review are
+completed by conduct's following workers. Eighteen renderer tests pass; the full
+suite reports 1,847 passed / 7 skipped in 66.73 seconds. Ruff format leaves 138
+files unchanged, Ruff check passes and mypy passes for 124 source files. The
+conductor independently verifies all seven resource bytes, eight-file membership,
+unchanged renderer and safe unique launch. Staged whitespace and secret/PII pattern
+checks pass. The one-shot source/security reviewer reports zero findings.
+
+A fresh independent preparation conversation retained four actual packaged calls
+and unchanged project/repository/index evidence outside the checkout under
+`/Users/vr000m/.codex/tmp/phase4-conversation-20261004/`. Its terminal report used
+`pos`, `label` and `summary_flags` instead of the conduct schema's required keys;
+`parse_report` rejected it with `missing required key: 'phase_position'`. Conduct
+stopped in `schema_error` without respawning or normalising that report. The raw
+evidence was inspected by the reviewer but is not accepted as a valid conduct
+phase report. Verified source/tests and documentation can be committed under the
+user's separate focused-commit request; Phase 4 remains unchecked.
+
+These checks do not prove container startup, Cloud readiness, provider integration
+or a voice session. Required target/credential fields and final approval remain
+unresolved; the draft is not presented as an executable approval payload.

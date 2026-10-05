@@ -1,6 +1,6 @@
 # Local Pipecat plugin: idea to Cloud deployment experiment
 
-**Status**: In Progress — Phase 3 verified; Phase 4 pending
+**Status**: In Progress — Phase 4 source prepared; live deployment pending
 **Component**: plugin packaging, retrieval instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-02
@@ -217,7 +217,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - https://learn.chatgpt.com/docs/enterprise/chatgpt-work-local-security
 - https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/cli/agent_templates/AGENTS.md
 
-<!-- reviewed: 2026-10-04 @ 23afff90f6ac95d9628375388a4535fc957c35a3 -->
+<!-- reviewed: 2026-10-05 @ 823c8e2c9ca129522deaf09931c279eada6dd670 -->
 
 ## Progress
 
@@ -226,6 +226,9 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - [x] Phase 3: Add build and local verification
 - [ ] Phase 4: Prepare and exercise Cloud deployment
 - [ ] Phase 5: Evaluate, review and document
+
+- Phase 4 source/preparation is verified independently of live acceptance. The deploy skill, handoffs and package docs are implemented; the selected pinned app has an allowlisted ARM64 build context and immutable deployment draft. Original bot/project/lock hashes are preserved. Eighteen renderer tests pass, all seven source resources propagate byte for byte into eight rendered files, and the safe MCP launch is unchanged. Ruff format/check and mypy pass; the full suite reports 1,847 passed / 7 skipped in 66.73 seconds. The one-shot source/security reviewer reports zero findings. No secret write, image build, upload, deployment or session occurred. Organisation/region, selected-target metadata, profile availability, provider credential availability and concrete approval remain unresolved.
+- The supplementary independent preparation worker retained raw conversation evidence but emitted malformed report keys (`pos`, `label`, `summary_flags`). Installed conduct schema validation rejected it with `missing required key: 'phase_position'`. Conduct stopped in `schema_error`, without a respawn, report normalisation or Phase 4 boundary commit. The user's separate focused-commit request preserves verified source/tests and qualification documentation; it does not complete Phase 4. Resume absorbs those commits as its new baseline and must recover the report gate before live acceptance.
 
 - Initial draft committed; original five-lens review completed with one Important setup finding and three Minor testing gaps.
 - User authorised inclusion of Pipecat CLI and Cloud workflow on 2026-10-03. Expanded scope and all four original findings are incorporated here; this is not proof of a fresh review.
@@ -251,6 +254,8 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - User requested ordinary focused commits for the prepared work on 2026-10-03. Commit `f7994bf` records the local exploration plugin, portable launch correction, renderer regressions and evaluation evidence; repository setup and plan links are recorded separately. Fifteen renderer tests and targeted Ruff/mypy passed again before committing, and the staged secret/PII scan found no matches. Phase 1 remains pending actual desktop activation; conduct state has no completed phases.
 
 ## Findings
+
+- Phase 4's fresh renderer and app/config hash assertions agree with the one-shot review. Its valid implementer/test-writer reports and canonical test result are preserved separately from the rejected supplementary conversation report. Sibling recovery/migration plan references remain accurate and require no Phase 4 changes. Live Cloud execution and revised cached-plugin activation remain untested.
 
 - Phase 3's one-shot fresh reviewer confirms the captured staged diff matches the phase scope and returns zero findings after inspecting the contract and raw qualification/conversation evidence. Staged whitespace and secret/PII scans pass. Related recovery/migration plan references remain accurate and need no Phase 3 edits. Conduct's final resume preflight refreshes the status-header contract hash; this is not a new multi-lens plan review.
 
