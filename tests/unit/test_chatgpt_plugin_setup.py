@@ -86,6 +86,9 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "scripts/__pycache__/prepare_local.pyc",
         "skills/build/qualification.json",
         "skills/build/reports/local-verification.txt",
+        "skills/deploy/scratch.txt",
+        "skills/deploy/reports/cloud-qualification.json",
+        "skills/deploy/__pycache__/cached.pyc",
         "skills/explore/__pycache__/cached.pyc",
     ]
     for relative in excluded:
@@ -101,13 +104,14 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "README.md",
         "scripts/prepare_local.py",
         "skills/build/SKILL.md",
+        "skills/deploy/SKILL.md",
         "skills/explore/SKILL.md",
     }
     assert not (_SOURCE / "evaluation.md").exists()
     assert (_ROOT / "docs/evaluations/pipecat-context-hub-plugin.md").is_file()
 
 
-@pytest.mark.parametrize("skill", ["explore", "build"])
+@pytest.mark.parametrize("skill", ["explore", "build", "deploy"])
 def test_render_preserves_complete_skill_resource_bytes(
     renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill: str
 ) -> None:

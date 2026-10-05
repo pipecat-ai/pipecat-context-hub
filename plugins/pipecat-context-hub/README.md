@@ -50,6 +50,29 @@ See the repository evaluation report for exact flags, resolved versions and
 limits. Build remains unavailable in discussion-only hosts or without CLI,
 while exploration remains usable.
 
+## Prepare a Cloud deployment
+
+Request deployment preparation for the selected existing app. The [deploy
+skill](skills/deploy/SKILL.md) discovers installed Cloud capabilities, verifies
+account metadata, target, runtime/build files, region architecture and resources,
+and records required key names and proposed secret-set changes. Existing apps
+and locks are preserved. Auth output and secret values stay outside the chat;
+failed metadata reads remain unresolved rather than meaning an empty account.
+
+Preparation produces hashes, exact commands and one concrete payload covering
+organisation/region/agent, build source, resources and secret changes. Explicit
+approval precedes any secret write, local/Cloud build, source upload, registry
+push or deployment. Approved secret changes precede build/deploy. Sessions and
+deletion need explicit scope too. An approved command is verified through Cloud
+readiness; readiness alone does not prove a provider conversation.
+
+CLI 1.3.0 supports Cloud source builds without a local Docker build. The pinned
+qualification app's Dockerfile/context/config have been prepared, with arm64
+base-image registry evidence. Organisation selection, local credential supply
+and live execution approval remain prerequisites; no live deployment has been
+verified. Candidate-source qualification and fresh rendering do not establish
+revised installed-skill activation or ChatGPT Work activation.
+
 ## Prepare a local copy
 
 Install Context Hub separately and have a populated local index. Find its

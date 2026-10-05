@@ -34,7 +34,8 @@ uvx pipecat-ai-context-hub serve --help
 
 The optional [desktop plugin experiment](../../plugins/pipecat-context-hub/README.md)
 provides grounded exploration and a [local build workflow](../../plugins/pipecat-context-hub/skills/build/SKILL.md)
-with native shell/Pipecat CLI prerequisites. It uses the independent connection
+and [Cloud deployment preparation](../../plugins/pipecat-context-hub/skills/deploy/SKILL.md)
+with native shell/CLI prerequisites and concrete approval before Cloud mutations. It uses the independent connection
 name `pipecat-context-hub-chatgpt-plugin`.
 See its [evaluation report](../evaluations/pipecat-context-hub-plugin.md) for
 the desktop activation test; existing standalone registrations stay unchanged.

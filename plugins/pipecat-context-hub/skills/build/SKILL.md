@@ -9,7 +9,8 @@ grant execution permissions. This workflow requires native local shell/file
 execution and the installed Pipecat CLI; it does not use a shell MCP adapter.
 If either is absent, report build unavailable and retain working exploration.
 Cloud account access is not required for local build. Deployment is a separate
-workflow; do not upload secrets, deploy or start remote agent sessions here.
+workflow; hand off to deploy for read-only preparation and a concrete approval
+payload. Do not upload secrets, deploy or start remote agent sessions here.
 
 ## Gate and resolve choices
 

@@ -20,6 +20,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   validates a dry run, preserves existing apps and generated dependencies, and
   reports bounded local verification separately from provider conversations.
 
+- Cloud deploy skill prepares target/runtime/build hashes and secret key changes
+  through read-only checks, requires concrete approval before secret writes or
+  builds/deployment, and distinguishes readiness from session verification.
+
 ### Fixed
 - Reject oversized persisted Chroma HNSW link-list files before opening the
   native client. Corrupt indexes now report the existing index-unready error

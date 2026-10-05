@@ -48,7 +48,8 @@ invocation downloads the package and local models (allow a few minutes).
 
 The optional [desktop plugin experiment](../plugins/pipecat-context-hub/README.md)
 provides grounded exploration and a [local build workflow](../plugins/pipecat-context-hub/skills/build/SKILL.md)
-with native shell/Pipecat CLI prerequisites. It uses a separate MCP connection
+and [Cloud deployment preparation](../plugins/pipecat-context-hub/skills/deploy/SKILL.md)
+with native shell/CLI prerequisites and concrete approval before Cloud mutations. It uses a separate MCP connection
 named `pipecat-context-hub-chatgpt-plugin`.
 Its activation evidence and retest prompts live in the repository
 [evaluation report](evaluations/pipecat-context-hub-plugin.md).

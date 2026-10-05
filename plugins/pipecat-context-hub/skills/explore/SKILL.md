@@ -9,8 +9,10 @@ concept question authorises retrieval and discussion, not scaffolding, local
 file writes, execution of examples, builds, secret access/uploads or deployment.
 Local shell, Pipecat CLI and Cloud credentials are optional for exploration.
 After an explicit build request, hand off to the build skill to check native
-execution, installed CLI and material project choices. Deployment remains
-pending. Skills do not grant executable permissions.
+execution, installed CLI and material project choices. After a deployment
+request, hand off to deploy for read-only preparation and concrete approval
+before secret writes, image builds or Cloud mutations. Skills do not grant
+executable permissions.
 
 ## Readiness and preferences
 
