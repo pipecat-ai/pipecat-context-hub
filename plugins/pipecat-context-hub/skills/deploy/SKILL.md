@@ -26,8 +26,27 @@ build remain available when optional Cloud prerequisites are missing.
    choices, including transport/runner compatibility, in retrieved definitions.
    Version annotations do not switch indexed snapshots. Missing/unknown evidence
    stays unresolved; never refresh/reset/repair or change the index/version pin.
-3. Validate project layout, asynchronous bot entrypoint, supported runtime,
-   dependency lock, Dockerfile and deploy configuration. Prepare only needed
+3. Validate the selected path's supported runtime, entrypoint and deploy
+   configuration. For source builds, also validate project layout, asynchronous
+   bot entrypoint, dependency lock and Dockerfile. For source builds, verify
+   required build tools against the exact pinned base, not a mutable tag or newer
+   template.
+   If absent, supply an explicit immutable tool input (for example, digest-pinned
+   official uv binaries with the required platform and lock-format support).
+   For source builds relying on the inherited entrypoint, inspect that base's
+   config and revision-linked entrypoint source to establish its Python, PATH,
+   workdir and dependency environment. Install into the Python
+   environment the inherited entrypoint actually uses; default uv `.venv` creation
+   is insufficient when that entrypoint runs system Python. Preserve base server
+   dependencies (for example, an explicitly targeted `uv sync --inexact`, with
+   conflicts and required imports checked) and inherited CMD. For source builds
+   deliberately selecting a custom entrypoint, validate it against its own
+   runtime and dependency environment. Preserve project/lock bytes for all source
+   builds. Existing immutable registry images require verified image digest,
+   platform and relevant runtime evidence, without a rebuild, dependency
+   installation or unavailable base-source provenance.
+   Manifests/source inspection proves inputs, not a successful build or runtime.
+   Prepare only needed
    local files, preserving existing ones. Inspect required key **names** from
    placeholders/source without reading existing `.env` contents or printing
    values. Distinguish required provider keys from optional settings/defaults

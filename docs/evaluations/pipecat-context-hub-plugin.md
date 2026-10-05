@@ -1087,3 +1087,139 @@ connection reports 45,453 records, server 0.8.0, indexed framework 1.12.0 and
 refresh `2026-10-04T16:11:55.385306+00:00`. No agent refresh occurred. The running
 Hub lacks the committed checkout's graph guard; this healthy-index retest does
 not establish broad corruption protection or revised runtime activation.
+
+
+## Phase 4 separately approved corrected Cloud retry (2026-10-05)
+
+The user's `g0 ahead` approval is bound by a separate approval receipt to immutable
+payload SHA-256 `086315609cd35b1d7a20394250cb78f8ebfbea5b962d914cc3e1fc9569ad2beb`.
+The proposal's historical `human_approved=false` remains unchanged. Fresh checks
+match all six original app/config hashes, external deployment configuration,
+strict five-file staging composition, installed CLI 1.3.0 / pipecatcloud 1.2.0
+uploader source and provenance, and the recreated 237,200-byte archive SHA-256
+`cb99800e2bdc1397130ade6ad35868128fc9cb5958d92fb4a18b523f9ce5bc70`
+with context hash `81187e5469e97345`. Fresh explicit-organisation metadata confirms
+the same organisation ID, target absence across listed regions, existing ready
+`my-pstn-agent-secrets` in `us-west` with exactly the four approved attached key
+names, and `agent-1x` with 500m CPU / 1Gi memory. No source/config/archive input
+was rewritten, and no secret values were read or secret writes performed.
+
+The exact approved source-upload/build/deploy argv ran once. Source upload
+completed; Cloud build `2b415ea3-4a92-4148-a848-4ccb5d0dd633` failed and the command
+exited 1 after 39.822 seconds. The build matches organisation
+`disastrous-mockingbird-amethyst-180` / `c00f4504-6b4c-4389-8e5a-9be213581e1d`,
+region `us-west`, the approved 237,200-byte context and context hash. It was
+created at `2026-10-05T17:39:11.028Z`, started at `17:39:11.109Z` and completed at
+`17:39:41.998Z`. Cloud reports failed status, 30 seconds build duration and no
+image digest. This confirms corrected archive delivery; it does not prove a
+successful container build or runtime compatibility. The intended
+`phase3-source-conversation` agent remains absent across the explicit-org list;
+agent status exits 1. No deployment ID or READY identity exists.
+
+Matching build status and supported build logs (`--limit 20`) both exit 0.
+The first twenty log lines show `DOWNLOAD_SOURCE State: SUCCEEDED` and entry to
+INSTALL; the generic Docker-build failure in status does not identify a failing
+instruction. The phrase `Setting HTTP client timeout to higher timeout for S3 source`
+is ordinary configuration, not evidence that a timeout caused the failure.
+The installed build-log command supports no offset/tail flag. The failing step,
+root cause and corrective input change remain unresolved within this bounded
+view; a separate diagnostic investigation is needed before proposing another
+payload. No agent logs were requested without a matching deployment ID. Raw
+CLI output, logs, credential URLs, emails and secret values remain withheld;
+only allowlisted metadata and diagnostic fragments are retained in
+`phase4-cloud-retry-20261005/execution-evidence.json` outside the repository.
+
+Actual uniquely packaged status calls before/after are identical: server 0.8.1,
+45,463 records, refresh `2026-10-05T16:38:04.707267+00:00`, pin `latest`, indexed
+Pipecat 1.12.0, zero commits ahead and enabled reranker. Full provenance is retained
+in separate before/after evidence. This observed baseline differs from earlier
+reports before this worker's first call; this run initiated no refresh, recovery,
+index/version change or activation. It does not establish revised cached-skill or
+ChatGPT Work activation.
+
+Phase 4 remains blocked on the terminal Cloud build failure. The previous failed
+45-byte upload and successful archive qualification above remain intact. No
+provider/session test, retry, deletion, rollback, commit or HEAD advancement
+occurred. Provider credential validity and ready runtime behaviour are unverified.
+Retain the failed build for a separately scoped investigation; no cleanup is
+authorised. Any eventual cleanup must identify this exact organisation/region/
+build and obtain explicit authorisation before deletion.
+
+
+## Phase 4 terminal uv failure and local replacement preparation (2026-10-05)
+
+The user-supplied build log resolves the earlier bounded-diagnostics limitation.
+Its SHA-256 is `964a919ed864fb50a80651c632a4c2d31cb911230f04177f0bbd123bae88607c`;
+lines 187–202 contain the safe fragment `/bin/sh: 1: uv: not found` and exit
+code 127 for the Dockerfile's `uv sync` instruction. Build
+`2b415ea3-4a92-4148-a848-4ccb5d0dd633` therefore failed because the pinned base
+provided no uv executable. The full log stays outside the repository; diagnostic
+text is data and no log commands were executed.
+
+Read-only OCI inspection qualifies the original base digest
+`c4a2ab9fc41d7643266964c101eac6a59407bb36f02859d5cbafe11e0b10305a` and its
+linux/arm64 manifest. Its config reports Python 3.12.11, `/app` workdir and
+`/usr/local/bin` first in PATH; inherited CMD runs `python app.py` after an
+optional pre-app hook. Its revision-linked Dockerfile, app.py, waiting_server.py
+and requirements were re-fetched at `61fe73e5268b406ebdba72329f892e4f98d818b7`
+and match the saved bytes. That source imports bot.py, FastAPI, uvicorn,
+loguru and pipecatcloud session argument types using the system interpreter.
+Default uv sync would create an unused `.venv`; copying uv alone would not
+address that environment mismatch.
+
+A fresh five-file staging context changes Dockerfile only. It keeps that base,
+copies `/uv` to `/usr/local/bin/uv` from official uv 0.12.23 at immutable index
+`61d393e44e249f2e4b526b6c7ddcecce245946826e608e11c93ad4f5bba55b21`
+(linux/arm64 manifest
+`8ef5ea0964b4a59c40d12775168fe55b679f6e8c170d23afa9f9176aeacff71b`), and
+explicitly targets `/usr/local` and `/usr/local/bin/python` with Python downloads
+disabled. Source revision `46b84fd0bfec23b72f29e8e2185ba68a65052f48` supports
+the unchanged lock's revision 5; the initially inspected uv 0.8.22 source used
+revision 3 and was not selected. Sync retains `--locked --no-install-project
+--no-dev` and adds `--inexact` to retain extraneous base server dependencies.
+Project conflicts can still replace dependency versions. The proposed Dockerfile
+asserts the interpreter prefix and required server imports at build time; these
+assertions have not run. Inherited CMD, bot/project/lock bytes and both historical
+approved contexts remain unchanged. This follows [official uv Docker guidance](https://docs.astral.sh/uv/guides/integration/docker/),
+[environment configuration](https://docs.astral.sh/uv/concepts/projects/config/)
+and [sync semantics](https://docs.astral.sh/uv/reference/cli/#uv-sync).
+
+The actual installed CLI 1.3.0 / pipecatcloud 1.2.0 uploader helper still matches
+source SHA-256 `703d0088f3630aca4e0885c6df9ec0b3f7d8a2151c40545c1ccedc44d9431534`.
+Local archive preparation produces exactly five regular members, no symlinks,
+traversal or extra inputs: `.dockerignore`, Dockerfile, bot.py, pyproject.toml and
+uv.lock. Archive SHA-256 is
+`84d8c5308cdb9c6b5bdf8dfd4e1b20e4b5cc960fd6d7a8cbb912e07461c38379`,
+size 237,542 bytes, context hash `a540a4ddc103df00`; synthetic secret/cache
+canaries produce identical archive bytes. All six original app/config hashes
+and external configuration SHA-256
+`a9b4cbb6849ac284f186c63c36a6905ad10ec1f775957ed9ea5ab799bb753fe9`
+remain intact. Detailed inputs, digest chains, member hashes, exact staging argv
+and local evidence are recorded outside the repository in
+`phase4-uv-repair-20261005/preparation-payload.json` and
+`qualification-evidence.json`.
+
+Fresh allowlisted read-only metadata confirms organisation
+`disastrous-mockingbird-amethyst-180` / `c00f4504-6b4c-4389-8e5a-9be213581e1d`,
+target absence across its unfiltered agent list, ready `my-pstn-agent-secrets`
+in us-west with CARTESIA_API_KEY, DAILY_API_KEY, DEEPGRAM_API_KEY and OPENAI_API_KEY,
+and agent-1x at 500m CPU / 1Gi memory. Proposal remains CREATE
+phase3-source-conversation, arm64, min 0 / max 1, session limit 600 seconds,
+whole-set reuse and zero secret writes. Raw metadata and credential values were
+not persisted or emitted.
+
+This is qualified local preparation, not Phase 4 live acceptance. The new payload
+has `human_approved=false` and requires explicit new approval; prior approved
+payload `086315609cd35b1d7a20394250cb78f8ebfbea5b962d914cc3e1fc9569ad2beb`
+does not authorise the changed Dockerfile/archive. No image build, upload, push,
+deploy, secret write, session, cleanup, upgrade or index refresh occurred.
+Container dependency installation, imports, server compatibility, image readiness
+and provider credential validity remain untested. Packaged Hub provenance uses
+the conductor's unchanged before/after baseline (0.8.1, 45,463 records, refresh
+2026-10-05T16:38:04.707267+00:00, latest / indexed 1.12.0 / zero ahead, reranker
+enabled); this implementer did not claim an additional package-owned Hub call.
+
+Local qualification: 18 renderer tests pass; targeted Ruff format/check pass.
+A fresh render using the installed Hub interpreter copies all seven resources
+byte for byte into exactly eight files. The conductor retains responsibility
+for canonical tests and independent review before any subsequent execution.
