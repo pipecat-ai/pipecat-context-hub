@@ -1015,3 +1015,75 @@ Cloud target, metadata, credentials or final approval.
 The fresh one-shot reviewer returns zero findings. The resumed preparation gate
 is accepted and conduct hands back as `awaiting_user`; the previous schema error
 is retained as history. No Phase 4 completion or deployed-ready result is recorded.
+
+## Phase 4 failed upload and corrected archive preparation (2026-10-05)
+
+The separately approved historical source-build attempt failed before dependency
+installation: Cloud recorded a 45-byte context, failed status and no image;
+bounded safe diagnostics include `failed to read dockerfile` and
+`open Dockerfile: no such file or directory`. The intended agent remained absent.
+No secret writes, agent session, deletion or rollback occurred. Earlier syntax
+checks of the Docker allowlist remain historical results; they did not inspect
+the actual uploader archive and did not establish that the intended files reached
+the build.
+
+Local reproduction now establishes the root cause, rather than inferring it
+solely from those diagnostics. CLI 1.3.0 uses the installed pipecatcloud 1.2.0
+`build_utils.py` helper: `get_exclusions` reads an unordered set of patterns, and
+`_should_exclude` applies `fnmatch` exclusions without negation/reinclusion.
+The original `*` excludes every file; `!Dockerfile` does not restore Dockerfile.
+The installed deploy path calls `create_deterministic_tarball` with those exact
+exclusions before uploading. Its inspected helper source SHA-256 is
+`703d0088f3630aca4e0885c6df9ec0b3f7d8a2151c40545c1ccedc44d9431534`.
+The actual installed helper, located outside `.venv`, was loaded directly without
+package initialization and called locally under an audit guard rejecting network
+connections/address resolution and subprocess/system execution. No upload,
+image build or Cloud mutation was made during this correction preparation;
+separate read-only metadata rechecks are recorded below.
+
+| Actual uploader result | Members | Compressed bytes | Archive SHA-256 | Uploader context hash |
+|---|---|---|---|---|
+| Original rules, fresh minimal copy | Empty | 45 | `272adeccafe73e7009d51f2ec2be9871db5e0eb14239f483ea429be26c3c6402` | `4092673af6a6ac45` |
+| Corrected staging exclusions | Five regular files | 237,200 | `cb99800e2bdc1397130ade6ad35868128fc9cb5958d92fb4a18b523f9ce5bc70` | `81187e5469e97345` |
+
+The old locally reproduced size and context hash exactly match the historical
+failed-build metadata. The fresh corrected staging directory contains exactly
+`.dockerignore`, `Dockerfile`, `bot.py`, `pyproject.toml` and `uv.lock`; the actual
+archive includes those same five paths, each as a regular file. Every member's
+content hash matches its staged input, with no duplicates, symlinks, traversal or
+extra files. The source, Dockerfile, project and lock bytes retain their original
+hashes. Only the staging copy of `.dockerignore` changes to explicit exclusions;
+all six original app/config hashes and the separate proposed deployment config
+hash remain unchanged. Synthetic nonsecret env/key/credential/cache/report/config
+canaries in a separate test context produce the identical corrected archive,
+demonstrating exclusions without reading real credentials or virtual environments.
+`archive-evidence.json` records member hashes, provenance and assertions;
+`summary.json` records preparation results.
+
+The revised `preparation-payload.json` selects the corrected build directory and
+records actual archive members, content/archive hashes, unchanged original-source
+hashes separately, and the historical failed-build reference. Previously approved
+target, region, existing whole secret-set reuse, all four attached key names,
+zero add/update writes, sizing, scaling/session limit, ARM64 immutable base and
+framework/CLI pins are retained. Historical build observations remain dated
+evidence. Fresh explicit selected-org read-only metadata calls independently
+confirm the same organisation identity, no same-name agent across listed regions,
+the ready existing set in the selected region with the exact same four key names,
+and the unchanged profile with 500m CPU and 1Gi memory. Raw output stays in memory;
+only allowlisted identity/status/key-name/resource metadata is persisted in
+`fresh-metadata.json`. Initial parsing of the profile table required handling its
+table separators; the corrected bounded projection confirms the profile. The changed
+source-upload payload is **pending new explicit approval** (`human_approved=false`),
+with `session_authorized=false` and no mutations in this preparation. Prior approval
+does not approve this corrected retry. Phase 4/live acceptance remains incomplete;
+container readiness, deployment and provider/session behaviour are unverified.
+The narrow source skill change requires actual uploader archive inspection before
+approval; revised cached-skill activation is not claimed.
+
+The conductor's separate Oct 5 packaged retest is recorded in
+`.conduct/hnsw-live-retest-20261005.json`: exact
+`search_docs("TTS + STT", limit=4)` returns four hits, then status on the same
+connection reports 45,453 records, server 0.8.0, indexed framework 1.12.0 and
+refresh `2026-10-04T16:11:55.385306+00:00`. No agent refresh occurred. The running
+Hub lacks the committed checkout's graph guard; this healthy-index retest does
+not establish broad corruption protection or revised runtime activation.

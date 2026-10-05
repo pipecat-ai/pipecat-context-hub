@@ -60,15 +60,33 @@ build remain available when optional Cloud prerequisites are missing.
 7. Choose a supported build path: Cloud source build, approved registry image or
    immutable GitHub revision. A Cloud `--build-dir` operation uploads source and
    builds/deploys, so it needs approval too; Docker is optional for that path.
-   Verify context exclusions locally. An allowlist containing only required
-   source/build files is preferable for a small existing app. Exclude `.env*`,
-   credentials, `.venv`, caches, reports and unrelated files. Record exact file
-   hashes and included paths without accessing secret files. No local/remote
-   build, upload or registry push is a preparation check.
+   For local source-upload builds, before approval inspect the archive produced
+   by the actual installed uploader's local preparation helper, without invoking
+   upload/build/deploy or
+   network operations. Docker `.dockerignore` negations cannot be assumed to
+   work in the CLI uploader. Prefer a fresh strict staging directory containing
+   only required regular, non-symlink source/build inputs, with verified
+   uploader-compatible explicit exclusions. Preserve original app/config bytes;
+   record any staging-only ignore-rule change separately. Exclude `.env*`,
+   credentials, `.venv`, caches, reports and unrelated files without accessing
+   secret content. Verify exact archive members and member-content hashes,
+   required Dockerfile/lock/source presence, regular file types and absence of
+   symlinks, traversal and extra paths. Record helper identity/version/provenance,
+   context and archive hashes/size, and independent staging composition; use
+   synthetic filenames/content to check exclusions. Local archive preparation
+   is allowed; image build, upload or push still requires approval. If the actual
+   archive cannot be verified safely, retain that prerequisite and stop before
+   presenting the payload as approval-ready. For an approved registry image,
+   verify its immutable image digest and platform; for an immutable GitHub
+   revision, verify the revision and immutable build inputs. These paths do not
+   require a local uploader archive.
 
 ## Concrete approval boundary
 
 Prepare one reviewable payload with project/build context and immutable hashes,
+verified uploader archive members/content hashes and archive hash/size for local
+source uploads, or immutable image digest/platform or GitHub revision/build-input
+evidence for the selected alternative path,
 CLI/framework versions, org ID/name, region, agent name and create/update action,
 architecture/base image digest, profile or explicit resources, scaling/session
 limits, secret-set name and exact proposed key additions/updates. Include a safe
