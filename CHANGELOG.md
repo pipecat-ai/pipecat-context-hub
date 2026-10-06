@@ -8,6 +8,10 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Explicit Context Hub setup skill checks existing MCP/CLI readiness and handles
+  authorised missing-runtime, initial-index and selected-plugin configuration.
+  Healthy installations/indexes are reused; plugin installation runs no setup
+  hook. MCP stays the default with verified Pipecat or standalone PCH CLI backup.
 - Optional local desktop plugin experiment with a read-only Pipecat Context
   Hub explore skill, an independent MCP connection, and a renderer that pins
   startup to the installed Hub interpreter. Recorded Codex local evidence

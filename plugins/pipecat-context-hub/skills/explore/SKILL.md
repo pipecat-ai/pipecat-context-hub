@@ -30,7 +30,10 @@ executable permissions.
    retrieval, report the actual failure and try the CLI backup when available.
    Do not present CLI retrieval or another MCP connection as proof that the
    packaged MCP activated. If neither route works, report retrieval unavailable
-   with both outcomes. Index/data failures, invalid input, low confidence, empty
+   with both outcomes. Offer [Context Hub setup](../setup/SKILL.md) when runtime,
+   initial index or host configuration is missing; wait for an explicit setup
+   request before installation, initial indexing or configuration changes.
+   Index/data failures, invalid input, low confidence, empty
    hits and unavailable versions are not reasons to change routes. Follow startup
    remediation in the explanation without running it. An empty index cannot
    ground an answer. A stale index can

@@ -109,6 +109,40 @@ matching cache bytes. Ruff formatting/checks and mypy pass; the full suite
 reports 1,850 passed / 7 skipped in 61.36 seconds. The labelled logo's live host
 display remains unobserved; no index refresh or Cloud action occurs.
 
+## Explicit Context Hub setup (2026-10-06)
+
+The approved fourth skill, `setup`, supplies a first-use "Set up Pipecat Context
+Hub" workflow. It checks native execution and existing MCP/CLI readiness,
+reuses healthy PCH/index state, offers concrete missing-runtime/index/client
+changes, and performs only authorised setup. PCH is one package for CLI and MCP.
+The initial index is created separately from client binding; bare `install`
+is avoided because it registers all detected clients and refreshes by default.
+The existing renderer prepares the selected packaged connection with its unique
+identity and installed interpreter, preserving old source copies and unrelated
+registrations. Ordinary Explore can offer Setup but never runs it implicitly.
+
+Native cloud execution is distinguished from desktop configuration and remote
+MCP hosting. Missing client access/restart leaves MCP pending, with CLI readiness
+reported separately. No hooks, runtime installer code, automatic plugin-install
+mutation, upgrade, reset/repair, provider credentials or Cloud provisioning is
+introduced. Fresh-user installation/indexing and autonomous installed-skill
+execution remain unqualified; package and read-only reuse checks are separate.
+
+All four skills validate, and twenty-two renderer regressions pass. The real
+thirteen-file render and installed cache match source resources byte for byte;
+existing MCP configuration, renderer, four branding assets and build/deploy
+skills are unchanged. Thirty-six relative links resolve and the original plan
+review marker remains valid. Ruff formatting changes no files; Ruff and mypy
+pass. The full suite reports 1,851 passed / 7 skipped in 61.70 seconds.
+
+Read-only reuse checks through actual packaged MCP and direct CLI each return
+four `TTS + STT` results covering both concepts. CLI and MCP status match on all
+fields, before and after: 0.8.1 / 45,463 / October 5 refresh / latest / 1.12.0 /
+zero commits ahead, with the same index path/commit list and enabled reranker.
+No dependency installation, refresh, standalone registration or Cloud action
+is performed for this qualification. These are interface/package checks, not
+an autonomous fresh-user onboarding execution.
+
 ## MCP default with CLI backup (2026-10-06)
 
 Follow-up: Explore recognises the existing `pipecat context-hub` bridge and

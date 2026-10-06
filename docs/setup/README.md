@@ -33,10 +33,14 @@ uvx pipecat-ai-context-hub serve --help
 > **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat packages are `pipecat-ai*`); the command and MCP server name are `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
 The optional [desktop plugin experiment](../../plugins/pipecat-context-hub/README.md)
-provides grounded exploration and a [local build workflow](../../plugins/pipecat-context-hub/skills/build/SKILL.md)
+provides [explicit Context Hub setup](../../plugins/pipecat-context-hub/skills/setup/SKILL.md),
+grounded exploration and a [local build workflow](../../plugins/pipecat-context-hub/skills/build/SKILL.md)
 and [Cloud deployment preparation](../../plugins/pipecat-context-hub/skills/deploy/SKILL.md)
 with native shell/CLI prerequisites and concrete approval before Cloud mutations. It uses the independent connection
 name `pipecat-context-hub-chatgpt-plugin`.
+Plugin installation adds skills and MCP configuration; ask "Set up Pipecat
+Context Hub" to detect prerequisites and perform authorised missing-runtime,
+initial-index and selected-client setup. A healthy index is reused.
 See its [evaluation report](../evaluations/pipecat-context-hub-plugin.md) for
 Codex packaged activation, local build/startup and the separately approved READY
 Cloud result. Provider/browser sessions, secret writes, revised cached-skill

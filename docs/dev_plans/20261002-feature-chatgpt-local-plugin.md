@@ -221,6 +221,8 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 ## Progress
 
+- [x] Follow-up (2026-10-06): Explicit Context Hub setup skill and package verification
+
 - [x] Phase 1: Prove the desktop and installed-tool path
 - [x] Phase 2: Complete grounded exploration
 - [x] Phase 3: Add build and local verification
@@ -427,3 +429,59 @@ same index path/commits and enabled reranker). Follow-up MCP status preserves th
 provenance. These are real interface smoke checks, not an induced transport
 outage or autonomous installed-skill fallback proof. No runtime code or tests are
 added; no index, dependency or Cloud mutation occurs.
+
+## Explicit Context Hub setup follow-up (2026-10-06)
+
+The user approved a one-time setup workflow after clarifying that plugin
+installation itself does not install PCH. This approved extension adds a fourth
+skill, `setup`, to the previously qualified three-skill package. The original
+reviewed acceptance contract and its dated results remain above; this follow-up
+does not claim a fresh-user installation or ChatGPT Work qualification.
+
+Implementation: add `plugins/pipecat-context-hub/skills/setup/SKILL.md`; link to
+setup from Explore when prerequisites are absent; explain the first-use flow
+in the plugin README; extend existing renderer membership and byte-preservation
+regressions for the new skill. The existing resource glob should include the
+new skill without changing the renderer or MCP launch template. Update the
+evaluation report, setup guides and plan index in the same pass.
+
+The skill must discover native execution and existing MCP/CLI readiness before
+offering mutations. Explicit setup authorisation covers only the agreed package,
+initial index and selected host configuration. Reuse healthy installations and
+indexes, keep ordinary exploration read-only, preserve the unique packaged MCP
+identity and use CLI only as backup. Installation and initial indexing must be
+separate from the existing `install` command's all-client registration behaviour.
+No hooks, automatic plugin-install execution, Cloud provisioning, credential
+access, index repair/reset or upgrade of an existing working installation is added.
+Unsupported host registration must remain pending with usable CLI reported
+separately. Cloud execution and local desktop configuration are separate hosts.
+
+Verification: validate all four skills; run existing renderer tests with the
+new package member; render with installed Hub Python, verify all thirteen
+members and unchanged MCP configuration, reinstall and compare cache bytes;
+perform read-only healthy-install readiness checks. Run Ruff formatting/checks,
+mypy and the full suite. Do not install dependencies, refresh the live index,
+re-register standalone MCP or mutate Cloud services to test this addition.
+
+All four skills validate. The renderer's new membership and byte-preservation
+cases pass with twenty-two tests. Real installed-Hub rendering produces exactly
+thirteen files; the four assets, renderer, build/deploy skills and MCP launch
+configuration retain their bytes. Reinstallation succeeds, and every cache
+file matches the rendered copy. Thirty-six relative links resolve. The original
+reviewed contract remains `34ee796df12e59e4bdaadd6f7c7d21b349facf7d`.
+
+Ruff formatting leaves all 138 Python files unchanged; Ruff checks and mypy
+(124 files) pass. The full suite reports 1,851 passed / 7 skipped in 61.70 seconds.
+Actual packaged MCP and direct CLI each return four TTS/STT hits. All status
+fields match between CLI/MCP and before/after: Hub 0.8.1, 45,463 records,
+October 5 refresh, latest pin / indexed 1.12.0 / zero commits ahead and enabled
+reranker, with unchanged index path and source commit list.
+
+The instruction review checks explicit authorisation, healthy-state reuse,
+initial-index-only writes, selected-client-only binding and pending outcomes for
+unsupported hosts. No runtime installer code changes, dependency installations,
+index refreshes, standalone registration changes or Cloud operations occur.
+Fresh installation/index creation, cloud persistence and autonomous execution
+of the new cached skill remain untested; package/reuse checks do not establish
+those outcomes. Sanitized CLI JSON and separate stderr are retained outside
+the checkout under `pch-setup-readiness-ecx9oqdy`.

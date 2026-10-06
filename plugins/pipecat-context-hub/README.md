@@ -1,6 +1,7 @@
 # Local Pipecat Context Hub plugin
 
-This optional desktop experiment packages grounded exploration, local app
+This optional desktop experiment packages explicit Context Hub setup,
+grounded exploration, local app
 build and approved Cloud deployment guidance with the installed Context Hub.
 It does not bundle Python, the Context Hub runtime, Pipecat CLI or an index.
 Local build requires native execution and an installed Pipecat CLI. Cloud
@@ -19,6 +20,30 @@ configuration to that existing installation. CLI backup or local stdio needs
 PCH and an index in the task's execution environment; remote MCP uses its
 server's runtime/index. Installing this plugin does not upload the local
 runtime/index or install them in a cloud container.
+
+## Set up Context Hub
+
+After installing the plugin, ask **"Set up Pipecat Context Hub"**. The
+[setup skill](skills/setup/SKILL.md) checks existing MCP/CLI readiness first.
+It reuses healthy PCH and its index. If prerequisites are missing, it presents
+the package, initial-index and selected-client configuration changes, then
+performs only authorised setup through native execution. One PCH installation
+provides MCP and CLI; they are not separate downloads.
+
+Setup supports local computers and cloud execution environments with compatible
+Python and subprocess access. It checks persistence and host configuration
+capabilities rather than assuming a cloud container configures the desktop app.
+If client configuration cannot be applied, it gives the remaining steps and
+reports MCP pending separately from usable CLI. An existing remote MCP uses
+its server's installation/index and needs no local PCH unless CLI backup is
+requested. Setup does not provision a remote server or Pipecat Cloud services.
+
+The workflow creates an initial index only when none exists; a healthy populated
+index is reused. It preserves existing installations/configuration and makes
+no automatic upgrade, refresh or repair. Existing corruption needs a separate
+recovery request. Plugin installation itself still runs no dependency installer
+or hook. Ordinary Explore requests remain read-only and can suggest Setup when
+prerequisites are missing.
 
 ## Explore an idea or concept
 

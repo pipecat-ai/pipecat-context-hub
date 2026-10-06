@@ -90,6 +90,7 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "skills/deploy/reports/cloud-qualification.json",
         "skills/deploy/__pycache__/cached.pyc",
         "skills/explore/__pycache__/cached.pyc",
+        "skills/setup/reports/setup-results.json",
         "assets/scratch.svg",
         "assets/private.env",
     ]
@@ -108,6 +109,7 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "skills/build/SKILL.md",
         "skills/deploy/SKILL.md",
         "skills/explore/SKILL.md",
+        "skills/setup/SKILL.md",
         "assets/cat-mark.svg",
         "assets/cat-mark-dark.svg",
         "assets/context-hub-logo.svg",
@@ -148,7 +150,7 @@ def test_render_rejects_missing_or_symlinked_brand_assets(
     assert not destination.exists()
 
 
-@pytest.mark.parametrize("skill", ["explore", "build", "deploy"])
+@pytest.mark.parametrize("skill", ["explore", "build", "deploy", "setup"])
 def test_render_preserves_complete_skill_resource_bytes(
     renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill: str
 ) -> None:

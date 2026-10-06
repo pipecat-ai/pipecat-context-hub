@@ -47,10 +47,14 @@ invocation downloads the package and local models (allow a few minutes).
 > `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
 The optional [desktop plugin experiment](../plugins/pipecat-context-hub/README.md)
-provides grounded exploration and a [local build workflow](../plugins/pipecat-context-hub/skills/build/SKILL.md)
+provides [explicit Context Hub setup](../plugins/pipecat-context-hub/skills/setup/SKILL.md),
+grounded exploration and a [local build workflow](../plugins/pipecat-context-hub/skills/build/SKILL.md)
 and [Cloud deployment preparation](../plugins/pipecat-context-hub/skills/deploy/SKILL.md)
 with native shell/CLI prerequisites and concrete approval before Cloud mutations. It uses a separate MCP connection
 named `pipecat-context-hub-chatgpt-plugin`.
+Plugin installation adds skills and MCP configuration; ask "Set up Pipecat
+Context Hub" to detect prerequisites and perform authorised missing-runtime,
+initial-index and selected-client setup. A healthy index is reused.
 The recorded Codex local experiment qualifies packaged exploration, bounded
 local build/startup and an exactly approved matching READY Cloud deployment.
 Provider/browser sessions, secret writes, revised cached-skill activation and
