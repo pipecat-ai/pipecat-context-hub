@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-10-02 | Feature | Local Pipecat plugin: explore, build and deploy | In Progress — Phase 4 Dockerfile repaired; deployment retry awaits approval | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
+| 2026-10-02 | Feature | Local Pipecat plugin: explore, build and deploy | In Progress — Phase 4 ready deployment verified; Phase 5 pending | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

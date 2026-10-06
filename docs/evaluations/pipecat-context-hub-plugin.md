@@ -19,8 +19,9 @@ This repository report is not copied into the installed plugin package.
 | Execution | Harmless shell command in selected host/mode | Pass, Codex local shell |
 | Pipecat CLI | Installed version and init help/options | Pass, CLI 1.3.0 version/init help |
 | Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
-| Cloud account | Auth/org readiness; selected target and secret metadata | Authenticated read-only org discovery passes; one org's agent/secret reads fail; selected target/profile/key availability unresolved |
+| Cloud account | Auth/org readiness; selected target and secret metadata | Pass, selected-org/region metadata and exact existing key names verified 2026-10-05; earlier failures remain dated below |
 | Local build | Installed options, dry run, scaffold, imports/startup/behaviour | Pass for Phase 3 local fixture only; provider conversation and revised skill activation untested |
+| Cloud deployment | Approved build linked to actual ready deployment and settings | Pass, independent matching-build/deployment reads 2026-10-05; provider/session behaviour untested |
 
 ## Phase 2 exploration qualification (2026-10-04)
 
@@ -1223,3 +1224,85 @@ Local qualification: 18 renderer tests pass; targeted Ruff format/check pass.
 A fresh render using the installed Hub interpreter copies all seven resources
 byte for byte into exactly eight files. The conductor retains responsibility
 for canonical tests and independent review before any subsequent execution.
+
+
+## Phase 4 existing approved deployment verified (2026-10-05)
+
+This current result supersedes the earlier pending-approval/blocked build checkpoints
+for live deployment acceptance while preserving their dated evidence. The user's
+`go ahead` receipt matches immutable payload SHA-256
+`dc61327daff3e47f33cde84ca659a1b7441b30efe6852f40fab9e0559fdb03d2`.
+The snapshot's historical `human_approved=false` is preserved; actual approval is
+recorded separately. The single approved command previously exited 0 after
+153.766 seconds. This recovery performed independent read-only verification of
+that existing result and executed no further upload, build or deployment.
+
+Fresh explicit-organisation CLI reads at `2026-10-06T04:49:54Z` (October 5 in the
+host's America/Los_Angeles timezone) establish the following matching identities:
+
+| Observation | Verified result |
+|---|---|
+| Organisation | `disastrous-mockingbird-amethyst-180` / `c00f4504-6b4c-4389-8e5a-9be213581e1d` |
+| Region / agent | `us-west` / `phase3-source-conversation` |
+| Agent ID / active version ID | `d033f622-2185-4697-961e-299c117f0ee6` / `077c7f13-06ba-4031-909c-f02e2d479732` |
+| Build | `3e9ff598-7578-4262-97de-3e1c2fe099e3`, terminal `success`, completed `2026-10-05T21:30:15.733Z`, duration 93 seconds |
+| Build image digest | `sha256:eb706abc9852d5be0f0e5aea06a85802e900a173547b152ce3774ad0364fe67f` |
+| Active deployment | `da8a157d-bfe9-405a-b5a1-b0288ba8cf43`; deployment record references that exact build ID |
+| Readiness | `ready=true`, `available=true`, `activeDeploymentReady=true`; desired, active and reconciled deployment agree; revision phase `Active` |
+| Deployment manifest | `arm64`, `agent-1x`, 500m CPU / 1Gi memory; minimum 0 / maximum 1 replica; maximum session duration 600 seconds |
+| Secret identity | Only `my-pstn-agent-secrets`; fresh managed/ready `us-west` metadata has exactly CARTESIA_API_KEY, DAILY_API_KEY, DEEPGRAM_API_KEY and OPENAI_API_KEY |
+
+The identity invariant is a chain across fresh build status, selected-name agent
+list, agent status and deployment history: the same selected organisation/region,
+agent ID and active deployment lead to the approved build and its reported image
+digest. The CLI exposes the image on build status and the build ID on deployment
+metadata; it does not independently expose the deployed OCI digest on the manifest.
+Architecture is exposed directly as `arm64` on that deployment manifest. The
+approved immutable base/uv digest provenance remains separate historical build-input
+evidence; no new registry inspection or runtime upgrade was performed.
+
+Cloud's successful build reports the exact approved context hash
+`a540a4ddc103df00` and size 237,542 bytes. Local read-only rechecks match all six
+original app/config hashes, all five staged-file hashes, the exact five regular
+archive members and external deploy configuration. The saved archive still has
+SHA-256 `84d8c5308cdb9c6b5bdf8dfd4e1b20e4b5cc960fd6d7a8cbb912e07461c38379`.
+The qualification-time guidance snapshot differs from final wording-only guidance;
+that documentation change is not a changed Dockerfile, archive or approved build
+input. Historical execution artifacts were hashed and left untouched.
+
+The supported logs command used the verified deployment ID with `--limit 20` and
+returned eleven entries. Allowlisted observations include server-listening and
+application-startup categories, with no traceback/import-error category in this
+bounded view. No raw logs or diagnostics were emitted or saved. Current status
+reports zero ready replicas and zero active sessions, consistent with permitted
+minimum-zero scaling; startup observations are historical matching-deployment logs,
+not evidence of an active conversation. READY and startup do not prove provider
+credential validity, audio behaviour or browser/session integration. No session
+was authorised or started, and zero secret changes were made.
+
+Actual `mcp__pipecat_context_hub_chatgpt_plugin.get_hub_status` calls before and
+after match: Hub 0.8.1, 45,463 records, refresh
+`2026-10-05T16:38:04.707267+00:00`, framework pin `latest`, indexed Pipecat 1.12.0,
+zero commits ahead and enabled reranker. No refresh, repair, reset, pin change,
+activation or runtime upgrade occurred. Package/readiness observations retain
+previous source-grounding evidence; revised cached-skill and ChatGPT Work
+activation are not established by these Cloud checks.
+
+Sanitized read-only metadata, input assertions and Hub projections are retained
+outside the checkout under `phase4-ready-resume-20261005` (`cloud.json`,
+`inputs.json`, `hub.json`). No executable package changes or new unit tests were
+needed for this evaluation-only update; conduct owns the subsequent canonical
+checks and review. Phase 4's approved deployment/readiness acceptance is now
+observed; provider sessions remain explicitly untested and Phase 5 evaluation
+remains separate.
+
+Cleanup instructions are recorded only; nothing was deleted, rolled back or
+scaled by this recovery. For a later explicitly authorised cleanup, first recheck
+`pipecat cloud --output json agent status phase3-source-conversation --organization
+disastrous-mockingbird-amethyst-180` and confirm `us-west`, the agent ID and active
+deployment above. The installed help supports the deletion shape
+`pipecat cloud agent delete phase3-source-conversation --organization
+disastrous-mockingbird-amethyst-180` (interactive confirmation; no region flag).
+Do not run it without a separate explicit cleanup request identifying this target.
+Preserve the shared `my-pstn-agent-secrets` set and other agents; this report supplies
+no secret-set deletion or rollback instruction.
