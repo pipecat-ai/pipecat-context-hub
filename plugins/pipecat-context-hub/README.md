@@ -1,9 +1,11 @@
 # Local Pipecat Context Hub plugin
 
-This optional desktop experiment packages grounded exploration and local app
-build guidance with the installed Context Hub. It does not bundle Python, Pipecat CLI or an index.
+This optional desktop experiment packages grounded exploration, local app
+build and approved Cloud deployment guidance with the installed Context Hub.
+It does not bundle Python, Pipecat CLI or an index.
 Local build requires native execution and an installed Pipecat CLI. Cloud
-deployment remains pending a later phase.
+deployment additionally requires the optional Cloud CLI, account access and
+approval of the exact payload.
 
 ## Explore an idea or concept
 
@@ -66,12 +68,34 @@ push or deployment. Approved secret changes precede build/deploy. Sessions and
 deletion need explicit scope too. An approved command is verified through Cloud
 readiness; readiness alone does not prove a provider conversation.
 
-CLI 1.3.0 supports Cloud source builds without a local Docker build. The pinned
-qualification app's Dockerfile/context/config have been prepared, with arm64
-base-image registry evidence. Organisation selection, local credential supply
-and live execution approval remain prerequisites; no live deployment has been
-verified. Candidate-source qualification and fresh rendering do not establish
-revised installed-skill activation or ChatGPT Work activation.
+CLI 1.3.0's Cloud source-build path was exercised after exact payload approval.
+On 2026-10-05, independent reads verified the qualification app's successful
+build and matching READY deployment in the selected organisation and region,
+with approved ARM64/resources/scaling/session limits and existing secret-set
+identity. Earlier failed uploads/builds and their corrections are retained in
+the repository evaluation report. The selected payload required zero secret
+writes; readiness and historical startup logs do not verify provider credentials
+or a voice session. Each new app still needs its own target, credential readiness
+and concrete approval. Candidate-source qualification and fresh rendering do
+not establish revised installed-skill activation or ChatGPT Work activation.
+
+## Qualification limits
+
+The recorded Codex local experiment demonstrates packaged exploration, CLI
+1.3.0 scaffolding, credential-free local imports/construction/startup and the
+approved Cloud READY result. It uses indexed Pipecat 1.12.0; the latest recorded
+Hub status is 0.8.1 with an October 5 refresh. These are dated observations,
+not guarantees about other hosts, versions, transports or provider combinations.
+JSON scaffold config execution, existing-app adaptation, absent-execution hosts,
+provider/browser sessions, secret writes and ChatGPT Work remain untested.
+The repository [evaluation report](https://github.com/pipecat-ai/pipecat-context-hub/blob/feature/chatgpt-local-plugin/docs/evaluations/pipecat-context-hub-plugin.md)
+distinguishes manual/synthetic walkthroughs, source-candidate conversations,
+actual packaged activation and live acceptance. Re-rendering propagates current
+instructions; activation of revised cached skills needs its own host test.
+
+The accepted presentation direction is a standalone Pipecat cat mark. An exact
+authorised standalone asset and supported presentation schema have not been
+qualified, so logo packaging is deferred; this package claims no bundled logo.
 
 ## Prepare a local copy
 

@@ -38,7 +38,10 @@ and [Cloud deployment preparation](../../plugins/pipecat-context-hub/skills/depl
 with native shell/CLI prerequisites and concrete approval before Cloud mutations. It uses the independent connection
 name `pipecat-context-hub-chatgpt-plugin`.
 See its [evaluation report](../evaluations/pipecat-context-hub-plugin.md) for
-the desktop activation test; existing standalone registrations stay unchanged.
+Codex packaged activation, local build/startup and the separately approved READY
+Cloud result. Provider/browser sessions, secret writes, revised cached-skill
+activation and ChatGPT Work remain untested; existing standalone registrations
+stay unchanged.
 
 ## How It Works
 

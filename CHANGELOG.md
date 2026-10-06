@@ -10,9 +10,11 @@ This project uses [Semantic Versioning](https://semver.org/).
 ### Added
 - Optional local desktop plugin experiment with a read-only Pipecat Context
   Hub explore skill, an independent MCP connection, and a renderer that pins
-  startup to the installed Hub interpreter. Deployment remains pending;
-  the evaluation report records desktop attribution and documentation-retrieval
-  limitations separately.
+  startup to the installed Hub interpreter. Recorded Codex local evidence
+  qualifies packaged exploration, bounded local build/startup and an exactly
+  approved matching READY Cloud deployment. Provider/browser sessions, secret
+  writes, revised cached-skill activation and ChatGPT Work remain untested;
+  the evaluation report preserves dated failures and scoped results separately.
 - Explore now separates idea and concept workflows, verifies retrieved detail
   before API claims, and discloses tool-specific source/version limits,
   unknown compatibility and unavailable snapshots without changing the index.
@@ -25,6 +27,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   builds/deployment, and distinguishes readiness from session verification.
 
 ### Fixed
+- Upgrade locked `fsspec` to `2026.6.0` to fix ReferenceFileSystem template
+  injection ([CVE-2026-104851](https://github.com/fsspec/filesystem_spec/security/advisories/GHSA-27vj-qcqg-25rc)).
 - Reject oversized persisted Chroma HNSW link-list files before opening the
   native client. Corrupt indexes now report the existing index-unready error
   and rebuild guidance instead of initializing successfully and crashing on

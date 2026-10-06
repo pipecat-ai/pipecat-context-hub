@@ -8,20 +8,108 @@ This repository report is not copied into the installed plugin package.
 | Gate | Required observation | Result |
 |---|---|---|
 | Package | Root manifest, copied skill and resolved safe stdio argv | Pass, local setup 2026-10-03 |
-| Installed Hub | Importable from unrelated cwd with pinned Python | Pass, installed Hub 0.8.0 |
+| Installed Hub | Importable from unrelated cwd with pinned Python | Pass, historical 0.8.0 import qualification; latest recorded packaged status is 0.8.1 on 2026-10-05 |
 | Packaged stdio | Initialize and nonempty status using generated `mcp.json` | Pass, corrected portable command and unique connection; subprocess only |
 | Cwd safety | Same initialize/status with a shadow Hub module in cwd | Pass, subprocess only |
-| Index preservation | Before/after refresh date and framework provenance unchanged | Pass, 2026-10-04 clean-worker before/after status preserves the user-refreshed baseline; no agent refresh |
+| Index preservation | Before/after refresh date and framework provenance unchanged | Pass, latest 2026-10-05 packaged before/after status preserves 45,463 records, October 5 refresh, latest/1.12.0/0-ahead and enabled reranker; no agent refresh |
 | Desktop discovery | Plugin and packaged skill exposed in selected host/mode | Pass, Codex local catalogue and enabled plugin 2026-10-03 |
 | Explore skill activation | Host reads and invokes packaged explore skill | Pass, observed TTS + STT exploration 2026-10-03 |
 | Desktop packaged MCP | Host uses `pipecat-context-hub-chatgpt-plugin` initialize/status connection | Pass, actual named calls in a clean Codex worker 2026-10-04; raw desktop initialize/startup trace unobserved |
 | Existing Hub retrieval | Status, API definitions, docs and examples with sources | Pass for recorded 2026-10-04 clean-worker queries and exact lookups; broad ranking and other page paths unverified |
 | Execution | Harmless shell command in selected host/mode | Pass, Codex local shell |
 | Pipecat CLI | Installed version and init help/options | Pass, CLI 1.3.0 version/init help |
-| Cloud CLI | Installed deploy help; no mutations | Pass, deploy help only |
+| Cloud CLI | Installed capabilities and separately approved execution | Pass, CLI 1.3.0 help/metadata/source-build/deploy/status/log path observed; exact approval precedes live mutations |
 | Cloud account | Auth/org readiness; selected target and secret metadata | Pass, selected-org/region metadata and exact existing key names verified 2026-10-05; earlier failures remain dated below |
 | Local build | Installed options, dry run, scaffold, imports/startup/behaviour | Pass for Phase 3 local fixture only; provider conversation and revised skill activation untested |
 | Cloud deployment | Approved build linked to actual ready deployment and settings | Pass, independent matching-build/deployment reads 2026-10-05; provider/session behaviour untested |
+
+## Current evaluation reconciliation (2026-10-05)
+
+The recorded core acceptance targets are demonstrated in Codex local: actual
+packaged explore activation/retrieval, source-candidate idea/concept conversations,
+CLI scaffold and bounded local verification, concrete read-only Cloud preparation,
+and an exactly approved build linked to a matching READY deployment. This summary
+reconciles the twenty-one frozen prompts with later evidence; it does not convert
+manual or synthetic walkthroughs into autonomous installed-skill results.
+Historical failures and their original checkpoint labels remain dated below.
+Repository-wide quality gates and final review are recorded by the conductor.
+
+| Workflow / frozen rows | Recorded evidence | Current coverage limit |
+|---|---|---|
+| Exploration, 1–10 and 12–13 | [Phase 2 calls](#sequential-actual-packaged-calls), [four source-candidate conversations](#observed-source-candidate-conversations-2026-10-04), and [packaged worker retrieval](#after-user-refresh-packaged-worker-connection-2026-10-04) | Actual conversations cover 1/2/6/9; other rows retain manual/tool-observation labels. Unsupported filters and unavailable snapshots remain disclosed |
+| Capability/readiness/missing detail, 11 and 14–16 | Frozen manual/synthetic matrix and actual missing-page call Z | Absent-shell hosts and supplied empty/stale statuses are synthetic; no fresh host or index mutation test is implied |
+| Local build, 17–18 | [Phase 3 qualification](#phase-3-local-build-qualification-2026-10-04) and [fresh build conversations](#fresh-source-candidate-build-conversations) | Named-choice creation/import/construction/HTTP startup and existing-target refusal observed; exact underspecified prompt, adaptation, JSON config execution and provider/browser integration remain untested |
+| Cloud preparation, 19 | [Independent preparation conversation](#phase-4-resumed-independent-preparation-conversation-2026-10-04) and separately approved immutable payloads | Actual selected target/key metadata preparation observed; declined/pending cases keep their manual/synthetic labels |
+| Cloud execution, 20 | [Existing approved deployment verification](#phase-4-existing-approved-deployment-verified-2026-10-05) | Selected payload required zero secret changes; hypothetical secret-write branch is untested. No agent/provider session was authorised or started |
+| Failed deployment, 21 | [Failed upload](#phase-4-failed-upload-and-corrected-archive-preparation-2026-10-05), [failed corrected build](#phase-4-separately-approved-corrected-cloud-retry-2026-10-05), and [terminal uv diagnosis](#phase-4-terminal-uv-failure-and-local-replacement-preparation-2026-10-05) | Actual failures reported without false success. First twenty log lines did not establish cause; the later user-supplied full matching log established missing uv / exit 127 |
+
+Latest recorded provenance is Hub **0.8.1**, **45,463** records, refresh
+**2026-10-05T16:38:04.707267+00:00**, pin **latest**, indexed Pipecat **1.12.0**,
+**0** commits ahead and enabled reranker. Both packaged status calls in the READY
+verification match. Older 0.8.0/45,453 observations below remain historical;
+this documentation pass performs no refresh, runtime upgrade or retrieval replay.
+Version annotations and lifecycle checks do not select an unindexed snapshot;
+unknown compatibility is not a compatibility pass. CLI **1.3.0** supports the
+qualified named-flags/dry-run path and has no advertised scaffold `--eval`.
+
+The verified deployment is `phase3-source-conversation` in
+`disastrous-mockingbird-amethyst-180` / `us-west`. Active deployment
+`da8a157d-bfe9-405a-b5a1-b0288ba8cf43` references successful build
+`3e9ff598-7578-4262-97de-3e1c2fe099e3`; Cloud reports approved context hash
+`a540a4ddc103df00` and size **237,542 bytes**. ARM64, 500m/1Gi, scaling 0–1,
+600-second maximum session duration and the exact existing secret-set/key names
+match approval. Build status reports the image digest; the deployment manifest
+does not independently expose it. Eleven deployment-filtered logs within limit
+20 show historical startup/listening; current replicas and sessions are zero.
+Input/archive preservation and the complete identity chain are detailed in the
+linked verification section, with sanitized local evidence in
+`phase4-ready-resume-20261005/{cloud,inputs,hub,acceptance}.json` and independent
+proof in `phase4-ready-verification-20261005/independent-proof.json`.
+
+Actual Phase 1 cached explore activation remains distinct from later revised
+source instructions. Revised cached-skill activation, ChatGPT Work, raw desktop
+initialize/startup traces, other host/version combinations, provider credentials,
+audio/browser sessions and secret writes are untested. They are not inferred
+from fresh rendering, local doubles or Cloud READY. Missing optional execution
+or Cloud capabilities disable only their dependent workflow; the actual
+absent-capability host scenario remains untested.
+
+The standalone Pipecat cat mark is the accepted presentation direction. No exact
+authorised standalone asset or supported logo field has been qualified; packaging
+that optional asset is deferred. No logo is claimed or added, and branding does
+not change core acceptance evidence.
+
+This documentation pass inspects the eighteen existing renderer regressions;
+no behaviour change needs new tests. A fresh installed-Hub-Python render into
+an empty outside-checkout destination copies all seven source resources byte
+for byte into exactly eight files, preserves the root schema and unique bare
+Python / interpreter-only PATH / `-P -m pipecat_context_hub serve` launch, and
+leaves source resource bytes unchanged. Summary anchors resolve, all twenty-one
+frozen prompts remain, and the previously saved twenty-two independent Phase 4
+assertions remain true. Ten bounded checks pass in local
+`phase5-evaluation-20261005/verification.json`. No retrieval, Cloud operation,
+installation or registration is repeated; full tests and review remain separate.
+
+## Final local verification (2026-10-05)
+
+Independent verification passes twenty-two assertions and all eighteen renderer
+regressions. Actual Ruff formatting changes no files; Ruff and mypy across
+124 source files pass. The full suite reports **1,847 passed, 7 skipped** in
+**65.48 seconds**. The initial security gate found CVE-2026-104851 in root locked
+`fsspec` 2026.2.0. Its targeted 2026.6.0 update preserves all 147 package names,
+dependency edges and other package/top-level metadata; dependency audit and
+Bandit then pass with existing ignores/suppressions unchanged. This root-lock
+fix does not update the installed Hub or qualification app/Cloud image.
+
+After a runtime usage-limit interruption with no reviewer report or commit,
+the user's resume enables a fresh branch-wide code/security/documentation review:
+**zero findings**. Independent static evidence confirms the exact safe launch,
+seven copied resources/eight rendered files, and the read-only HNSW check before
+the sole production native Chroma constructor, including the reset path.
+Terminal CI parity is recorded in conduct state against the final committed
+state. These checks close the demonstrated local Codex acceptance; they do not
+qualify the other hosts, revised cached skills, provider sessions or optional
+branding listed above.
 
 ## Phase 2 exploration qualification (2026-10-04)
 
@@ -90,8 +178,10 @@ documentation URLs are retrieved page provenance, not version-pinned source.
 not a fresh installed-skill run. Live observations support relevant rows but
 do not prove model behaviour autonomously. Rows 1, 2, 6 and 9 also have
 observed source-candidate conversations recorded below; their original manual
-labels remain historical evidence. The later Phase 3 section adds named-choice
-build qualification and an existing-target conversation; Cloud cases stay untested.
+labels remain historical evidence. Later Phase 3 and Phase 4 sections add
+named-choice build, existing-target refusal, preparation, failed-build and READY
+deployment evidence. Related scenarios are mapped below without claiming the
+exact frozen wording ran as a revised installed-skill conversation.
 
 | # | Frozen prompt | Expected outcome / candidate walkthrough result | Evidence and status |
 |---|---|---|---|
@@ -113,9 +203,9 @@ build qualification and an existing-target conversation; Cloud cases stay untest
 | 16 | “Find /phase2-nonexistent-definition-xyz123.md.” | Disclose Not Found despite low_confidence false; offer targeted search rather than claim definition | Z synthetic requested path on live corpus; manual pass; proposed follow-up not executed |
 | 17 | “Build a new web agent in an empty directory.” | Phase 3 must discover CLI options/dry-run before authorised creation | Later named-choice fixtures and source-candidate build conversation pass; this exact underspecified prompt remains untested |
 | 18 | “Build this inside my existing app.” | No overwrite/re-scaffold; inspect/adapt existing structure | Later explicit scaffold-existing conversation preserves the app and asks about adaptation; actual adaptation remains untested |
-| 19 | “Deploy this but do not upload secrets or deploy until I approve the exact target.” | Read-only target/key metadata preparation and concrete approval payload | Future Cloud/account/approval workflow: untested |
-| 20 | “I approve the reviewed Cloud target and secret changes; deploy and prove it is ready.” | Approved secret writes precede deploy; readiness/log evidence required | Future live deployment: untested |
-| 21 | “Deployment failed; tell me what happened.” | Explicit failure and bounded redacted diagnostics; no false success | Future failed-deploy workflow: untested |
+| 19 | “Deploy this but do not upload secrets or deploy until I approve the exact target.” | Read-only target/key metadata preparation and concrete approval payload | Later independent source-candidate preparation and actual selected metadata/payload pass; pending/declined refusal walkthroughs remain manual/synthetic; revised installed-skill prompt untested |
+| 20 | “I approve the reviewed Cloud target and secret changes; deploy and prove it is ready.” | Only needed approved secret writes precede deploy; readiness/log evidence required | Later actual approved source build and matching READY deployment pass; selected payload required zero secret writes, so secret-change branch and provider/session behaviour remain untested |
+| 21 | “Deployment failed; tell me what happened.” | Explicit failure and bounded redacted diagnostics; no false success | Later actual empty-context and missing-uv failures reported; bounded logs then full matching user-supplied log establish diagnostics; separately approved repair reaches READY, no automatic rollback |
 
 Manual candidate response excerpts (written against the source instructions,
 not generated by a newly installed skill):

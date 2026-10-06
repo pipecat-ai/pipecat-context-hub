@@ -51,8 +51,11 @@ provides grounded exploration and a [local build workflow](../plugins/pipecat-co
 and [Cloud deployment preparation](../plugins/pipecat-context-hub/skills/deploy/SKILL.md)
 with native shell/CLI prerequisites and concrete approval before Cloud mutations. It uses a separate MCP connection
 named `pipecat-context-hub-chatgpt-plugin`.
-Its activation evidence and retest prompts live in the repository
-[evaluation report](evaluations/pipecat-context-hub-plugin.md).
+The recorded Codex local experiment qualifies packaged exploration, bounded
+local build/startup and an exactly approved matching READY Cloud deployment.
+Provider/browser sessions, secret writes, revised cached-skill activation and
+ChatGPT Work remain untested. Its dated evidence and twenty-one frozen prompts
+live in the repository [evaluation report](evaluations/pipecat-context-hub-plugin.md).
 
 ### Inside the Pipecat CLI
 
