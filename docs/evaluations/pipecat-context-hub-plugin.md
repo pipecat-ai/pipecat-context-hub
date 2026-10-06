@@ -111,6 +111,19 @@ display remains unobserved; no index refresh or Cloud action occurs.
 
 ## MCP default with CLI backup (2026-10-06)
 
+Follow-up: Explore recognises the existing `pipecat context-hub` bridge and
+standalone `pipecat-context-hub`, with command availability verified through
+installed help. The current upstream guide documents bundled PCH via
+`pipecat-ai[cli]`. Local Pipecat CLI 1.3.0 has no PCH distribution or extension
+entry points and rejects `context-hub`; standalone PCH 0.8.1 exposes the query
+commands. Source entry points and the existing bridge confirm the integration;
+no live installed bridge query or dependency upgrade is claimed.
+
+Explore passes skill validation; forty existing bridge/renderer tests pass.
+Reinstallation preserves the twelve-file package and its MCP configuration;
+only README and Explore change, with all installed cache bytes matching.
+The reviewed plan contract remains valid; no index refresh or Cloud change occurs.
+
 The user-authorised instruction update prefers the packaged MCP and allows the
 installed PCH CLI only for absent tools/connections or transport failures when
 native execution is available. Build and Deploy reference Explore's shared
@@ -120,9 +133,9 @@ invalid input or poor retrieval quality. Read-only commands are explicit;
 no automatic installation, refresh, repair or Cloud operation is added.
 
 Plugin installation copies resources and MCP wiring, not PCH/Pipecat runtimes,
-models/index data or Cloud infrastructure. One separate PCH install supplies
-both retrieval interfaces. Local CLI/stdio requires an installed runtime and
-index in the executing environment; remote MCP uses the server's runtime/index.
+models/index data or Cloud infrastructure. PCH installed through Pipecat CLI
+or standalone supplies both retrieval interfaces. Local CLI/stdio requires an
+installed runtime and index in the executing environment; remote MCP uses the server's runtime/index.
 Live query smoke demonstrates CLI availability independently of MCP activation.
 It does not simulate a real transport outage or qualify ChatGPT Work fallback.
 

@@ -9,8 +9,12 @@ approval of the exact payload.
 
 Plugin installation copies the packaged skills, icons and MCP configuration;
 it does not install dependencies, download models, create/refresh an index or
-provision a Cloud service. Installing Context Hub separately supplies both the
-`pipecat-context-hub` CLI and its MCP server. The local renderer binds the MCP
+provision a Cloud service. PCH supplies both its CLI and MCP server. The
+[Pipecat setup guide](https://docs.pipecat.ai/api-reference/context-hub#setup)
+documents PCH bundled with `pipecat-ai[cli]`, exposing `pipecat context-hub`.
+A standalone PCH installation exposes `pipecat-context-hub`. Older or separate
+CLI environments may lack the bridge; verify `pipecat context-hub --help`
+rather than assuming it exists. The local renderer binds the MCP
 configuration to that existing installation. CLI backup or local stdio needs
 PCH and an index in the task's execution environment; remote MCP uses its
 server's runtime/index. Installing this plugin does not upload the local
@@ -43,9 +47,11 @@ validate APIs at an unindexed version. `check_deprecation` accepts `version`
 for indexed-registry lifecycle evaluation, not snapshot selection. Missing,
 stale or unavailable requested snapshots are explained without an automatic
 refresh. Exploration requires working MCP or CLI retrieval. MCP needs no shell;
-the CLI backup needs native execution and an existing PCH installation. Neither
-route needs Pipecat CLI or Cloud credentials. Build and Deploy share Explore's
-retrieval fallback. CLI evidence is labelled as such and does not prove MCP
+the CLI backup needs native execution and existing PCH, through either the
+Pipecat CLI's verified `context-hub` subcommand or the standalone executable.
+Standalone PCH needs no Pipecat CLI; neither route needs Cloud credentials.
+Build and Deploy share Explore's retrieval fallback. CLI evidence is labelled
+as such and does not prove MCP
 activation; empty/low-confidence results or index failures do not trigger it.
 
 ## Build a local app

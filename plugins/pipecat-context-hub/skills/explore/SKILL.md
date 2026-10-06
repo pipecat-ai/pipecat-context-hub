@@ -9,8 +9,10 @@ use the installed PCH CLI through native shell execution as the backup below.
 Exploration is read-only. An idea or
 concept question authorises retrieval and discussion, not scaffolding, local
 file writes, execution of examples, builds, secret access/uploads or deployment.
-Local shell is needed only for the CLI backup. Pipecat CLI and Cloud credentials
-are optional for exploration; the PCH CLI is a separate retrieval interface.
+Local shell is needed only for the CLI backup. PCH queries are available through
+`pipecat context-hub` when the installed Pipecat CLI includes PCH, or through
+the standalone `pipecat-context-hub` command. Cloud credentials are not required
+for exploration.
 After an explicit build request, hand off to the build skill to check native
 execution, installed CLI and material project choices. After a deployment
 request, hand off to deploy for read-only preparation and concrete approval
@@ -74,13 +76,19 @@ lookup is not proof of complete coverage or compatibility.
 
 Use this route only when the preferred MCP connection or required tools are
 unavailable, including transport failures. Discover an already-installed
-`pipecat-context-hub` executable through the host's native execution tools or
-the configured Hub interpreter's executable directory; do not guess machine
-paths, use a shell MCP adapter, or install/download tools automatically.
+`pipecat` or `pipecat-context-hub` executable through native execution tools or
+the configured Hub interpreter's executable directory. For Pipecat CLI, verify
+`pipecat context-hub --help` exposes the PCH query commands; finding `pipecat`
+alone is insufficient. Its `ch` alias may also exist, but prefer the full name.
+If that subcommand is absent, check the standalone executable. Do not guess
+machine paths, use a shell MCP adapter, or install/download tools automatically.
 If native execution or PCH is absent, explain the missing prerequisite.
 
-Inspect the resolved CLI's help and each needed subcommand's `--help`. Use only
-these read-only query commands, with safe argument quoting:
+Inspect the resolved CLI's help and each needed subcommand's `--help`. Prefix
+the commands below with the verified `pipecat context-hub` or standalone
+`pipecat-context-hub`; for example, `pipecat context-hub status` and
+`pipecat context-hub search-docs "TTS + STT"`. Use only these read-only query
+commands, with safe argument quoting:
 
 | MCP operation | PCH CLI command |
 |---|---|

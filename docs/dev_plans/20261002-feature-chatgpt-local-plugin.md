@@ -386,6 +386,21 @@ host display remains unobserved. No index refresh or Cloud mutation occurs.
 
 ## Retrieval CLI backup (2026-10-06)
 
+The user's follow-up identifies the existing Pipecat CLI bridge. Explore now
+accepts verified `pipecat context-hub` query commands as well as standalone
+`pipecat-context-hub`; Build/Deploy inherit that shared guidance. The current
+upstream setup guide documents PCH bundled with `pipecat-ai[cli]`. The local
+Pipecat CLI 1.3.0 environment contains neither PCH nor its extension entry points,
+and `pipecat context-hub --help` reports an absent command. Standalone PCH 0.8.1
+is separately installed and its query commands are available. These observations
+are distinct from a successful live bridge query; no dependency is installed
+or upgraded to make the bridge available.
+
+This follow-up passes Explore skill validation and forty existing bridge/renderer
+tests. Reinstallation preserves all twelve package members; only README and
+Explore bytes change, and all cached files match the rendered copy. The reviewed
+contract remains valid. No index refresh or Cloud mutation occurs.
+
 The user requested MCP as the default and the installed PCH CLI as backup.
 This instruction-only follow-up changes Explore and the retrieval guidance
 in Build/Deploy. It adds no runtime adapter, installation hook or dependency.
@@ -397,7 +412,7 @@ evidence is not presented as MCP activation. Installation, refresh, repair,
 index switching and Cloud operations remain outside retrieval recovery.
 
 The package guide now distinguishes installed skills/icons/MCP configuration
-from the separately installed PCH runtime, model/index data and optional
+from the existing PCH runtime, model/index data and optional
 Pipecat/Cloud CLIs. A cloud plugin install does not upload the user's local index
 or provision those dependencies; remote MCP uses the server's existing runtime.
 Historical MCP qualification above remains dated. CLI query smoke and instruction
