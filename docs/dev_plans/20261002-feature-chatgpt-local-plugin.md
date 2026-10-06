@@ -383,3 +383,32 @@ four assets, renderer and three skills in the installed cache. The reviewed
 contract hash remains valid. Ruff formatting/checks and mypy pass; the full suite
 reports 1,850 passed / 7 skipped in 61.36 seconds. The newly labelled logo's live
 host display remains unobserved. No index refresh or Cloud mutation occurs.
+
+## Retrieval CLI backup (2026-10-06)
+
+The user requested MCP as the default and the installed PCH CLI as backup.
+This instruction-only follow-up changes Explore and the retrieval guidance
+in Build/Deploy. It adds no runtime adapter, installation hook or dependency.
+Missing connections/tools or transport failures may use native read-only CLI
+queries; index/data failures, invalid input, low confidence, empty results and
+unavailable versions do not change routes. CLI help controls flag mapping,
+status and available MCP provenance prevent silent corpus changes, and CLI
+evidence is not presented as MCP activation. Installation, refresh, repair,
+index switching and Cloud operations remain outside retrieval recovery.
+
+The package guide now distinguishes installed skills/icons/MCP configuration
+from the separately installed PCH runtime, model/index data and optional
+Pipecat/Cloud CLIs. A cloud plugin install does not upload the user's local index
+or provision those dependencies; remote MCP uses the server's existing runtime.
+Historical MCP qualification above remains dated. CLI query smoke and instruction
+checks are recorded separately from autonomous fallback and ChatGPT Work tests.
+
+Validation: all three skills pass Skill Creator's validator and all twenty-one
+existing renderer tests pass. Actual default MCP and direct CLI searches each
+return four results for `TTS + STT`; a CLI doc-ID lookup returns a nonempty
+198-character excerpt. CLI before/after status matches the packaged MCP baseline
+(0.8.1, 45,463 records, October 5 refresh, latest / 1.12.0 / zero commits ahead,
+same index path/commits and enabled reranker). Follow-up MCP status preserves that
+provenance. These are real interface smoke checks, not an induced transport
+outage or autonomous installed-skill fallback proof. No runtime code or tests are
+added; no index, dependency or Cloud mutation occurs.

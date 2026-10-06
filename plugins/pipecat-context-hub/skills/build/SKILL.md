@@ -63,9 +63,11 @@ Read required key **names** from generated placeholders and source; never print
 secret values or read existing `.env` files. Credentials are supplied by the user
 through their local workflow, not invented or copied into reports.
 
-Before Pipecat API customization, use only the packaged connection
-`pipecat-context-hub-chatgpt-plugin`: call `get_hub_status`, inspect current tool
-schemas, retrieve definitions/examples, and cite returned source URLs. Separate
+Before Pipecat API customization, prefer the packaged connection
+`pipecat-context-hub-chatgpt-plugin`. If its connection/tools are unavailable,
+follow [Explore's CLI backup](../explore/SKILL.md#cli-backup) using the installed
+PCH CLI. Check status, inspect the active interface's schemas/help, retrieve
+definitions/examples, and cite returned source URLs. Separate
 multiple concepts with ` + ` or ` & `. Search/detail filters are tool-specific,
 as described in explore. Verify definitions rather than reference-only hits.
 Check relevant deprecations. Pass the app's version where supported, but explain

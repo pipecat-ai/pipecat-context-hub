@@ -109,6 +109,30 @@ matching cache bytes. Ruff formatting/checks and mypy pass; the full suite
 reports 1,850 passed / 7 skipped in 61.36 seconds. The labelled logo's live host
 display remains unobserved; no index refresh or Cloud action occurs.
 
+## MCP default with CLI backup (2026-10-06)
+
+The user-authorised instruction update prefers the packaged MCP and allows the
+installed PCH CLI only for absent tools/connections or transport failures when
+native execution is available. Build and Deploy reference Explore's shared
+backup guidance. It retains readiness/provenance, supported filters, detail
+lookups and citations, and disallows route switching for data/index failures,
+invalid input or poor retrieval quality. Read-only commands are explicit;
+no automatic installation, refresh, repair or Cloud operation is added.
+
+Plugin installation copies resources and MCP wiring, not PCH/Pipecat runtimes,
+models/index data or Cloud infrastructure. One separate PCH install supplies
+both retrieval interfaces. Local CLI/stdio requires an installed runtime and
+index in the executing environment; remote MCP uses the server's runtime/index.
+Live query smoke demonstrates CLI availability independently of MCP activation.
+It does not simulate a real transport outage or qualify ChatGPT Work fallback.
+
+The three updated skills pass Skill Creator validation; all twenty-one renderer
+tests pass. Live default MCP and direct CLI searches both return four `TTS + STT`
+hits, and CLI detail lookup returns a 198-character excerpt. Both routes report
+the same 0.8.1 / 45,463 / October 5 / latest / 1.12.0 / zero-ahead provenance,
+index path/commits and enabled reranker. CLI before/after and follow-up MCP status
+preserve it. No index refresh, dependency installation or Cloud mutation occurs.
+
 This documentation pass inspects the eighteen existing renderer regressions;
 no behaviour change needs new tests. A fresh installed-Hub-Python render into
 an empty outside-checkout destination copies all seven source resources byte

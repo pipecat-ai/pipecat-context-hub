@@ -2,16 +2,27 @@
 
 This optional desktop experiment packages grounded exploration, local app
 build and approved Cloud deployment guidance with the installed Context Hub.
-It does not bundle Python, Pipecat CLI or an index.
+It does not bundle Python, the Context Hub runtime, Pipecat CLI or an index.
 Local build requires native execution and an installed Pipecat CLI. Cloud
 deployment additionally requires the optional Cloud CLI, account access and
 approval of the exact payload.
+
+Plugin installation copies the packaged skills, icons and MCP configuration;
+it does not install dependencies, download models, create/refresh an index or
+provision a Cloud service. Installing Context Hub separately supplies both the
+`pipecat-context-hub` CLI and its MCP server. The local renderer binds the MCP
+configuration to that existing installation. CLI backup or local stdio needs
+PCH and an index in the task's execution environment; remote MCP uses its
+server's runtime/index. Installing this plugin does not upload the local
+runtime/index or install them in a cloud container.
 
 ## Explore an idea or concept
 
 Ask for an approach ("I want a browser voice assistant with TTS + STT") or a
 specific concept ("Explain Pipeline frames" / "Show TTSService.run_tts").
-Explore checks the packaged connection's readiness, retrieves relevant docs,
+Explore prefers the packaged MCP connection, with the installed PCH CLI as a
+backup when that connection/tools are unavailable and native shell execution is
+available. It checks the active route's readiness, retrieves relevant docs,
 definitions and examples, and cites their sources. Proposed combinations are
 labelled as inference; retrieved examples are not claimed to have been run.
 Material choices can be clarified while independent concept retrieval proceeds.
@@ -31,8 +42,11 @@ unknown compatibility can remain. These options do not switch the index or
 validate APIs at an unindexed version. `check_deprecation` accepts `version`
 for indexed-registry lifecycle evaluation, not snapshot selection. Missing,
 stale or unavailable requested snapshots are explained without an automatic
-refresh. Exploration requires working packaged MCP retrieval, neither local
-shell nor Pipecat CLI nor Cloud credentials.
+refresh. Exploration requires working MCP or CLI retrieval. MCP needs no shell;
+the CLI backup needs native execution and an existing PCH installation. Neither
+route needs Pipecat CLI or Cloud credentials. Build and Deploy share Explore's
+retrieval fallback. CLI evidence is labelled as such and does not prove MCP
+activation; empty/low-confidence results or index failures do not trigger it.
 
 ## Build a local app
 

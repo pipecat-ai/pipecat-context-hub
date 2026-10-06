@@ -3,11 +3,14 @@ name: explore
 description: Explore a voice-agent idea or Pipecat concept using the local Context Hub's documentation, API definitions and examples before making framework claims.
 ---
 
-Use the plugin's Context Hub MCP tools through the connection named
-`pipecat-context-hub-chatgpt-plugin`. Exploration is read-only. An idea or
+Prefer the plugin's Context Hub MCP tools through the connection named
+`pipecat-context-hub-chatgpt-plugin`. If its connection or tools are unavailable,
+use the installed PCH CLI through native shell execution as the backup below.
+Exploration is read-only. An idea or
 concept question authorises retrieval and discussion, not scaffolding, local
 file writes, execution of examples, builds, secret access/uploads or deployment.
-Local shell, Pipecat CLI and Cloud credentials are optional for exploration.
+Local shell is needed only for the CLI backup. Pipecat CLI and Cloud credentials
+are optional for exploration; the PCH CLI is a separate retrieval interface.
 After an explicit build request, hand off to the build skill to check native
 execution, installed CLI and material project choices. After a deployment
 request, hand off to deploy for read-only preparation and concrete approval
@@ -16,22 +19,28 @@ executable permissions.
 
 ## Readiness and preferences
 
-1. Call `get_hub_status` before retrieval. State record count, refresh date,
+1. Call `get_hub_status` before MCP retrieval, or `status` before CLI retrieval.
+   State which route is active, record count, refresh date,
    `framework_version` (operator pin), `indexed_framework_version` (observed
    release) and `indexed_framework_commits_ahead` when present. A `latest` pin
    is not proof of today's latest release. Retain relevant commit citations.
-2. If the packaged connection is missing or fails, report retrieval unavailable
-   and the actual error; do not substitute another connection as activation
-   proof. If initialization fails, follow startup remediation in the explanation
-   without running it. An empty index cannot ground an answer. A stale index can
+2. If the packaged connection/tools are absent or a transport failure prevents
+   retrieval, report the actual failure and try the CLI backup when available.
+   Do not present CLI retrieval or another MCP connection as proof that the
+   packaged MCP activated. If neither route works, report retrieval unavailable
+   with both outcomes. Index/data failures, invalid input, low confidence, empty
+   hits and unavailable versions are not reasons to change routes. Follow startup
+   remediation in the explanation without running it. An empty index cannot
+   ground an answer. A stale index can
    supply explicitly dated evidence when useful, with a coverage limitation.
    Unknown refresh/version metadata is unknown readiness, not a freshness pass.
    Suggest user-controlled remediation; never refresh/reset/repair or switch
    the index during exploration. Describe reranker limitations from status;
    `config_disabled` is an operator choice, not a failure requiring a bug report.
 3. Extract the user's idea/concept, Pipecat version and source preference.
-   Inspect available runtime schemas before mapping preferences: installed
-   tools may differ from this source package. Use only supported arguments.
+   Inspect runtime schemas or installed CLI help before mapping preferences:
+   installed interfaces may differ from this source package. Use only supported
+   arguments.
    If a preference cannot be enforced, say so before offering clearly labelled
    broader evidence. A strict source/version requirement remains unresolved;
    ask whether the user wants a broader alternative, while retrieving any
@@ -60,6 +69,44 @@ annotations on individual hits. `check_deprecation(version=...)` evaluates
 the indexed lifecycle registry, not source from that version; an announced
 removal date alone is not proof that removal occurred. A negative lifecycle
 lookup is not proof of complete coverage or compatibility.
+
+## CLI backup
+
+Use this route only when the preferred MCP connection or required tools are
+unavailable, including transport failures. Discover an already-installed
+`pipecat-context-hub` executable through the host's native execution tools or
+the configured Hub interpreter's executable directory; do not guess machine
+paths, use a shell MCP adapter, or install/download tools automatically.
+If native execution or PCH is absent, explain the missing prerequisite.
+
+Inspect the resolved CLI's help and each needed subcommand's `--help`. Use only
+these read-only query commands, with safe argument quoting:
+
+| MCP operation | PCH CLI command |
+|---|---|
+| `get_hub_status` | `status` |
+| `search_docs` | `search-docs QUERY` |
+| `get_doc` | `get-doc --doc-id ID` or `get-doc --path PATH` |
+| `search_examples` | `search-examples QUERY` |
+| `get_example` | `get-example EXAMPLE_ID` |
+| `search_api` | `search-api QUERY` |
+| `get_code_snippet` | `get-code-snippet --symbol SYMBOL`, `--intent QUERY`, or `--path PATH --line-start N` |
+| `check_deprecation` | `check-deprecation SYMBOL` |
+
+The query commands return the same handler JSON on stdout; keep stderr
+diagnostics separate and check exit codes. Inspect stderr on a nonzero exit to
+distinguish invalid input from an unready index; neither is successful retrieval.
+Use the configured local Hub data directory when known. Compare CLI status with
+any available MCP baseline; do not silently change the index or corpus. If no
+MCP baseline exists, disclose the CLI's index/version provenance without claiming
+it matches an unseen MCP server.
+
+Apply the same preferences, detail lookups, citations and evidence rules below.
+Installed help controls flag mapping: `version_filter="compatible_only"` uses
+`--compatible-only` with `--pipecat-version`; lifecycle `version` uses
+`--at-version`; example `tags` use repeated `--tag`; `include_readme=false` uses
+`--no-readme`. Do not assume an MCP parameter is a CLI flag. Never run `refresh`,
+`install`, reset/repair, package-manager commands or Cloud commands as recovery.
 
 ## Idea workflow
 

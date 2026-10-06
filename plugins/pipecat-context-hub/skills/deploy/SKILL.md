@@ -19,10 +19,13 @@ build remain available when optional Cloud prerequisites are missing.
    Missing execution/CLI disables deployment only; never install an adapter or
    upgrade tools silently. Preserve the existing bot, dependency pins and lock;
    never re-scaffold an existing project to obtain Cloud files.
-2. Use the uniquely packaged `pipecat-context-hub-chatgpt-plugin` connection:
-   `get_hub_status` before/after, relevant docs/API/example retrieval and returned
+2. Prefer the uniquely packaged `pipecat-context-hub-chatgpt-plugin` connection.
+   If its connection/tools are unavailable, follow
+   [Explore's CLI backup](../explore/SKILL.md#cli-backup) using the installed PCH
+   CLI. Check status before/after, retrieve relevant docs/API/examples and retain
    source citations. Separate multiple concepts with ` + ` or ` & `; inspect
-   schemas before passing filters. Ground Dockerfile and runtime entrypoint
+   the active interface's schemas/help before passing filters. Ground Dockerfile
+   and runtime entrypoint
    choices, including transport/runner compatibility, in retrieved definitions.
    Version annotations do not switch indexed snapshots. Missing/unknown evidence
    stays unresolved; never refresh/reset/repair or change the index/version pin.
