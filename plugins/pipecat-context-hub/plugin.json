@@ -11,8 +11,8 @@
         "capabilities": ["Read"],
         "composerIcon": "./assets/cat-mark.svg",
         "composerIconDark": "./assets/cat-mark-dark.svg",
-        "logo": "./assets/cat-mark.svg",
-        "logoDark": "./assets/cat-mark-dark.svg"
+        "logo": "./assets/context-hub-logo.svg",
+        "logoDark": "./assets/context-hub-logo-dark.svg"
       }
     }
   }

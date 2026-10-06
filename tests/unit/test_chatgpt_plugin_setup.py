@@ -110,10 +110,14 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "skills/explore/SKILL.md",
         "assets/cat-mark.svg",
         "assets/cat-mark-dark.svg",
+        "assets/context-hub-logo.svg",
+        "assets/context-hub-logo-dark.svg",
     }
     interface = json.loads((destination / "plugin.json").read_text())["extensions"]["com.openai"][
         "interface"
     ]
+    assert interface["logo"] != interface["composerIcon"]
+    assert interface["logoDark"] != interface["composerIconDark"]
     for field in ("composerIcon", "composerIconDark", "logo", "logoDark"):
         relative = interface[field]
         assert relative.startswith("./assets/")

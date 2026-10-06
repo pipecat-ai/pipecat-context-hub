@@ -95,17 +95,19 @@ instructions; activation of revised cached skills needs its own host test.
 
 ## Cat-mark branding
 
-The package includes the user-selected standalone Pipecat cat mark as square
-512 × 512 SVGs: black for light backgrounds and white for dark backgrounds.
-The portable manifest uses OpenAI's supported `logo` / `logoDark` and
-`composerIcon` / `composerIconDark` fields. The renderer copies both named
-assets; unrelated files in `assets/` are excluded.
+The package includes square 512 × 512 SVGs in black for light backgrounds and
+white for dark backgrounds. The larger `logo` / `logoDark` assets add a small
+`context-hub` label below the cat, aligned with the outer right whisker edge.
+The label is outlined vector geometry, so rendering needs no installed font.
+The `composerIcon` / `composerIconDark` assets retain the standalone cat for
+small sizes. The renderer copies these four named assets; unrelated files in
+`assets/` are excluded.
 
 The mark matches the [provided Pipecat brand folder](https://drive.google.com/drive/folders/10PXwYdU15L_7hgJqoAkuMmsxg_jNoeJY)
 (`Mark + Black Text [Traditional].png`). Its five vector paths are isolated
 from the supplied `daily + pipecat horizontal lockup - black.svg`, preserving
-the cat geometry while omitting the wordmarks. The white variant changes only
-the fill. Both assets retain transparent backgrounds. Pipecat's mark remains
+the cat geometry while omitting the original wordmarks. The white variants
+change only the fill. All assets retain transparent backgrounds. Pipecat's mark remains
 Pipecat branding.
 
 Re-render the marketplace source and reinstall the local plugin to propagate

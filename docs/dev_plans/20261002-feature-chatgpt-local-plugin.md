@@ -359,3 +359,27 @@ The MCP launch and all three skill files remain byte-identical to the previous
 local installation. Codex application inspection is prohibited by computer use,
 so the refreshed plugin-page icon remains unobserved. Source and local installed
 packaging are complete; no index or Cloud operation is performed.
+
+### Labelled logo follow-up
+
+The user approved a small `context-hub` label beneath the larger cat logo,
+aligned to the outer edge of the right whiskers. Two new square transparent
+SVGs preserve the cat's five paths and add eleven outlined Helvetica glyphs.
+The outline right edge and whisker right edge are both 464.1506 pixels; the
+label needs no host font. `logo` / `logoDark` select these labelled assets;
+`composerIcon` / `composerIconDark` retain the existing standalone cat files.
+The renderer names all four assets explicitly and excludes unrelated files.
+
+The user's later screenshot confirms the original white header logo displayed
+in dark mode. The small MCP-row icon appears black on that background, so its
+contrast remains a separate host-surface issue. This label change preserves
+the small icons and does not claim to resolve that issue.
+
+Labelled-logo verification passes: twenty-one renderer tests; a real installed-Hub
+twelve-file render; preserved five-path cat geometry and unchanged small-icon
+bytes; square dimensions with no executable or external SVG content; inspected
+light/dark PNG previews; successful reinstallation with matching manifest,
+four assets, renderer and three skills in the installed cache. The reviewed
+contract hash remains valid. Ruff formatting/checks and mypy pass; the full suite
+reports 1,850 passed / 7 skipped in 61.36 seconds. The newly labelled logo's live
+host display remains unobserved. No index refresh or Cloud mutation occurs.

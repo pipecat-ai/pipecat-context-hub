@@ -93,6 +93,22 @@ the computer-use tool, so the refreshed plugin-page icon itself is unobserved.
 Ruff formatting/checks and mypy pass; the full suite reports 1,850 passed and
 7 skipped in 68.35 seconds. No index refresh or Cloud mutation occurs.
 
+The subsequent approved branding revision adds an outlined, right-aligned
+`context-hub` label only to the larger `logo` / `logoDark` assets. Standalone
+composer icons retain their original bytes. Four explicitly named SVGs bring
+the rendered package to twelve files. The label and outer whisker share the
+464.1506-pixel right edge, and outlined glyphs avoid a runtime font dependency.
+The user's screenshot verifies the original white header cat in dark mode;
+the small MCP-row icon's dark-background contrast remains unresolved. Adding
+the label does not claim to repair that separate host behaviour.
+
+Labelled-logo qualification passes all twenty-one renderer tests and the real
+twelve-file render, with byte-identical asset propagation and small icons.
+Light/dark PNG previews were inspected, and local reinstallation succeeds with
+matching cache bytes. Ruff formatting/checks and mypy pass; the full suite
+reports 1,850 passed / 7 skipped in 61.36 seconds. The labelled logo's live host
+display remains unobserved; no index refresh or Cloud action occurs.
+
 This documentation pass inspects the eighteen existing renderer regressions;
 no behaviour change needs new tests. A fresh installed-Hub-Python render into
 an empty outside-checkout destination copies all seven source resources byte

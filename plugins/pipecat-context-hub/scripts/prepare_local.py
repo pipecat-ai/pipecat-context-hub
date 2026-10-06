@@ -41,7 +41,15 @@ def prepare_local(destination: Path) -> Path:
 
     files = [source / name for name in ("plugin.json", "mcp.template.json", "README.md")]
     files.append(source / "scripts" / "prepare_local.py")
-    files.extend(source / "assets" / name for name in ("cat-mark.svg", "cat-mark-dark.svg"))
+    files.extend(
+        source / "assets" / name
+        for name in (
+            "cat-mark.svg",
+            "cat-mark-dark.svg",
+            "context-hub-logo.svg",
+            "context-hub-logo-dark.svg",
+        )
+    )
     files.extend(sorted((source / "skills").glob("*/SKILL.md")))
     for path in files:
         if not path.is_file() or any(
