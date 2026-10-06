@@ -7,7 +7,9 @@ A build request authorises local project work within the chosen workspace.
 An idea/concept discussion alone authorises only exploration. Skills do not
 grant execution permissions. This workflow requires native local shell/file
 execution and the installed Pipecat CLI; it does not use a shell MCP adapter.
-If either is absent, report build unavailable and retain working exploration.
+If either is absent, report build unavailable, retain working exploration and
+offer [required CLI setup](../setup/SKILL.md#required-workflow-clis). Pipecat CLI
+is required for building; PCH's retrieval fallback does not replace it.
 Cloud account access is not required for local build. Deployment is a separate
 workflow; hand off to deploy for read-only preparation and a concrete approval
 payload. Do not upload secrets, deploy or start remote agent sessions here.

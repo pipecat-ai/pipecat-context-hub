@@ -1,11 +1,11 @@
 # Local Pipecat Context Hub plugin
 
-This optional desktop experiment packages explicit Context Hub setup,
+This optional desktop experiment packages explicit plugin/CLI setup,
 grounded exploration, local app
 build and approved Cloud deployment guidance with the installed Context Hub.
 It does not bundle Python, the Context Hub runtime, Pipecat CLI or an index.
 Local build requires native execution and an installed Pipecat CLI. Cloud
-deployment additionally requires the optional Cloud CLI, account access and
+deployment additionally requires the Cloud CLI extension, account login and
 approval of the exact payload.
 
 Plugin installation copies the packaged skills, icons and MCP configuration;
@@ -24,11 +24,34 @@ runtime/index or install them in a cloud container.
 ## Set up Context Hub
 
 After installing the plugin, ask **"Set up Pipecat Context Hub"**. The
-[setup skill](skills/setup/SKILL.md) checks existing MCP/CLI readiness first.
-It reuses healthy PCH and its index. If prerequisites are missing, it presents
-the package, initial-index and selected-client configuration changes, then
+[setup skill](skills/setup/SKILL.md) checks retrieval and the tools required for
+the requested workflows. Full plugin setup includes the Pipecat CLI and Cloud
+extension; explicitly retrieval-only setup needs only PCH. It reuses healthy
+installations and the index. If prerequisites are missing, it presents
+the required packages, initial-index and selected-client configuration changes, then
 performs only authorised setup through native execution. One PCH installation
 provides MCP and CLI; they are not separate downloads.
+
+| Workflow | Required tools | Cloud account |
+|---|---|---|
+| Explore | PCH MCP by default, PCH query CLI as backup | Not needed |
+| Build | Pipecat CLI and PCH retrieval | Not needed |
+| Deploy | Pipecat CLI with Cloud extension and PCH retrieval | Authenticated login required |
+
+The [fresh full-toolchain install](https://docs.pipecat.ai/api-reference/cli/overview#installation)
+is `uv tool install "pipecat-ai[cli]" --with pipecatcloud`. Current CLI distributions
+bundle PCH. Setup checks the actual installed commands and preserves existing
+tool environments/extensions; the Cloud CLI is required for deployment,
+independently of whether retrieval uses MCP or CLI.
+
+For Cloud setup, the workflow guides new users to
+[create/sign in to a Pipecat Cloud account](https://pipecat.daily.co), then run
+`pipecat cloud auth login` on the execution host and complete browser login.
+Already-authenticated users skip login. Headless cloud environments use the
+documented PAT route through a secure `PIPECAT_TOKEN` mechanism. Account signup
+and token entry are user actions, with no passwords/tokens pasted into chat.
+The [login guide](skills/setup/SKILL.md#cloud-account-and-login) separates CLI
+installation, account/organisation readiness and actual deployment approval.
 
 Setup supports local computers and cloud execution environments with compatible
 Python and subprocess access. It checks persistence and host configuration
@@ -218,8 +241,8 @@ Evaluation reports stay in repository documentation and are not copied into
 the installed plugin. Local stdio support is host-dependent.
 Discussion-only hosts cannot promise local file creation. Exploration needs
 neither Pipecat CLI nor Cloud credentials; build additionally
-needs local shell and Pipecat CLI, and Cloud deployment needs its optional
-CLI/account setup. Discover versions and flags from installed help.
+needs local shell and Pipecat CLI, and Cloud deployment requires the Cloud
+extension and authenticated account. Discover versions and flags from installed help.
 
 After changing the plugin or installed interpreter, render a fresh destination
 and use the host's documented marketplace refresh/reinstall flow. Disable or

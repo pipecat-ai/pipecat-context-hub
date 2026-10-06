@@ -222,6 +222,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 ## Progress
 
 - [x] Follow-up (2026-10-06): Explicit Context Hub setup skill and package verification
+- [x] Follow-up (2026-10-06): Required build/deploy CLIs and Cloud signup/login guidance
 
 - [x] Phase 1: Prove the desktop and installed-tool path
 - [x] Phase 2: Complete grounded exploration
@@ -485,3 +486,53 @@ Fresh installation/index creation, cloud persistence and autonomous execution
 of the new cached skill remain untested; package/reuse checks do not establish
 those outcomes. Sanitized CLI JSON and separate stderr are retained outside
 the checkout under `pch-setup-readiness-ecx9oqdy`.
+
+## Required workflow CLI and Cloud login follow-up (2026-10-06)
+
+The user clarified that the Pipecat CLI is a required build/deploy tool, not
+the PCH retrieval backup, and requested account/login guidance. Setup now
+distinguishes Explore, Build and Deploy requirements. Full-plugin/Cloud setup
+offers the documented fresh install `uv tool install "pipecat-ai[cli]" --with
+pipecatcloud`; PCH-only setup remains available for explicitly retrieval-only
+requests. Existing working environments are reused. Proposed changes retain
+existing extensions/pins because `uv tool install --with` replaces the environment.
+A root `cloud` listing alone is not readiness: supported subcommand help is required.
+
+The setup skill guides signup at the Pipecat Cloud dashboard, user-run browser
+login on the execution host and a documented secure PAT route for headless
+environments. Successful sanitized organisation metadata skips unnecessary
+login; missing/failed metadata remains pending. Passwords, tokens, auth URLs,
+auth configuration and key values stay out of model context. Signup, token entry
+and required dashboard organisation creation are user actions. No account or
+deployment mutations, login/logout, default-org switch or secret transfer are
+performed by this authoring follow-up. Build/Deploy link to Setup when their
+required CLI or account prerequisites are missing. MCP remains the preferred
+retrieval route, independently of deployment CLI readiness.
+
+Implementation is limited to Setup, Build and Deploy instructions and existing documentation.
+No renderer, manifest schema, runtime handlers, dependency pins or tests change.
+Verify all four skills, existing renderer tests, source/cache parity and relevant
+links, then record installed CLI help and sourced-doc evidence. Fresh installation,
+account creation/login and headless credential provisioning remain unqualified.
+
+All four skills validate; the existing renderer suite reports 22 passed in 0.10
+seconds. Thirteen relevant relative links and section anchors resolve, and
+`git diff --check` passes. The original reviewed contract remains
+`34ee796df12e59e4bdaadd6f7c7d21b349facf7d`. Sibling-plan references concern
+unchanged recovery work; the plan index already lists all four skills.
+
+The installed Hub Python renders the same thirteen-file package. Only README
+and Setup/Build/Deploy resources change; the other nine files retain their bytes.
+Reinstallation succeeds and all installed cache files match the rendered copy.
+Installed help supports login, PAT entry and organisation listing with Pipecat
+CLI 1.3.0 / Cloud extension 1.2.0. Live official installation, authentication,
+account and PAT references support the instructions; packaged MCP supplies the
+CLI installation section and a partial authentication overview.
+
+All packaged MCP status fields are equal before and after: Hub 0.8.1, 45,463
+records, refresh `2026-10-05T16:38:04.707267+00:00`, latest pin / indexed 1.12.0 /
+zero commits ahead and enabled reranker, with unchanged index path and source
+commits. No refresh, dependency installation, login or Cloud operation occurs.
+The earlier full-suite result belongs to the preceding Setup addition; this
+instructions-only follow-up runs the existing packaging gate without repeating
+the unchanged runtime suite. Fresh account and installation paths remain untested.

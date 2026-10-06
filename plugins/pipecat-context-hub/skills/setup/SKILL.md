@@ -1,9 +1,14 @@
 ---
 name: setup
-description: Set up Pipecat Context Hub after an explicit setup request, detecting existing MCP/CLI readiness and installing missing PCH, creating an initial index and configuring the selected host when authorised.
+description: Set up the Pipecat Context Hub plugin after an explicit request, checking retrieval and required Pipecat/Cloud CLIs, installing missing prerequisites, configuring an initial index/MCP and guiding Cloud account signup and login when authorised.
 ---
 
-Use this workflow when the user requests Context Hub setup. Plugin installation
+Use this workflow when the user requests plugin, Context Hub or Pipecat/Cloud
+CLI setup. Determine the requested capabilities from the conversation: full
+plugin setup includes the build/deploy toolchain; explicitly retrieval-only
+setup needs only PCH. PCH CLI is a retrieval backup, while Pipecat CLI and its
+Cloud extension are required tools for Build and Deploy respectively.
+Plugin installation
 or an exploration question alone does not authorise dependency installation,
 index creation or host configuration. PCH is one Python package providing both
 the MCP server and query CLI; users do not need two separate downloads.
@@ -24,13 +29,18 @@ Skills supply instructions, not execution permissions or installation hooks.
    exit 2 alone is not proof of an empty index. Record versions, index path, count,
    refresh date, framework pin and indexed framework version. Compare both routes
    when available; do not silently select a different index or installation.
+   Separately inspect `pipecat --version`, `pipecat init --help` and, for Cloud,
+   `pipecat cloud --help`, `pipecat cloud auth login --help` and organisation-list
+   help. A listed `cloud` command may be an unavailable-extension stub; require
+   working subcommand help rather than treating the root listing as readiness.
 3. Reuse working PCH and a healthy populated index. Staleness, a different requested
    framework version or disabled reranking does not authorise refresh, upgrade or
    model downloads. A corrupt/unreadable existing index is a separate recovery
    request; stop that branch without reset, repair, deletion or a replacement index.
    If working MCP needs no local setup and native execution is absent, report MCP
    usable and CLI backup unavailable rather than installing an execution adapter.
-4. Present the concrete changes needed: package/version specification, tool-manager
+4. Present the concrete changes needed: required PCH/Pipecat/Cloud package/version
+   specifications and retained extensions, tool-manager
    environment, resolved initial-index path and sources/framework pin, selected
    client and plugin configuration destination, plus any existing-file backup.
    Explain that first indexing downloads models and source repositories and can
@@ -38,6 +48,35 @@ Skills supply instructions, not execution permissions or installation hooks.
    explicitly requested installation, initial indexing and configuration, proceed
    within that scope; otherwise obtain one setup approval covering the proposed
    changes before executing them. A readiness-only request stays read-only.
+
+## Required workflow CLIs
+
+| Requested workflow | Required tools | Account requirement |
+|---|---|---|
+| Explore | Usable PCH MCP or query CLI | No Cloud account |
+| Build | Pipecat CLI with working `init`, plus PCH retrieval | No Cloud account |
+| Deploy | Pipecat CLI with working Cloud extension, plus PCH retrieval | Authenticated Pipecat Cloud account and selected workspace/organisation |
+
+For authorised fresh full-plugin or Cloud setup, the
+[documented installation](https://docs.pipecat.ai/api-reference/cli/overview#installation)
+is `uv tool install "pipecat-ai[cli]" --with pipecatcloud`. This supplies the
+Pipecat CLI with its Cloud extension; current distributions also bundle PCH.
+For an explicitly local-build-only setup, `uv tool install "pipecat-ai[cli]"`
+is sufficient. Cloud deployment cannot replace this CLI with PCH's MCP tools.
+
+Reuse existing working CLI installations. Inspect tool-manager/package metadata
+before modifying an existing environment: `uv tool install --with` replaces the
+tool environment, so retain every existing selected extension and its constraints
+in the proposed command. Do not silently remove extensions, change pins or
+upgrade a working installation just to unify it with PCH. An authorised separate
+environment is an alternative when the current environment must be preserved.
+If `uv` is unavailable, use the approved virtual-environment route below with
+the required packages, or report the missing execution prerequisite.
+
+Verify actual installed versions and required subcommand help after installation.
+If `pipecat context-hub --help` works, use that PCH installation; otherwise retain
+or install standalone PCH separately. A working Pipecat/Cloud CLI is mandatory
+for the requested Build/Deploy capability even when remote MCP retrieval works.
 
 ## Install missing PCH and create the initial index
 
@@ -99,6 +138,45 @@ paths, and creating that container's CLI does not deploy an HTTPS MCP endpoint.
 An existing remote MCP connection uses its server's runtime/index; do not install
 local PCH unless CLI backup in the selected environment is requested.
 
+## Cloud account and login
+
+For Cloud/full-plugin onboarding, guide the user through account readiness;
+retrieval-only or local build does not need Cloud login. After verifying the
+Cloud CLI, inspect authentication through the supported read-only organisation
+list. Capture output in memory and emit only allowlisted org IDs/names. Do not
+print `auth whoami`, auth config, raw stdout/stderr or API-key listings: some
+versions expose a Daily API key. Successful metadata reads establish existing
+authentication; skip login for an already-authenticated user.
+
+If an account is missing, direct the user to [Pipecat Cloud](https://pipecat.daily.co)
+to create/sign in to their account. Explain personal workspaces and team
+organisations using the
+[account guide](https://docs.pipecat.ai/pipecat-cloud/fundamentals/accounts-and-organizations).
+The user completes signup and any required organisation creation/joining in
+the dashboard; do not collect passwords or automate account/billing changes.
+
+For local interactive login, guide the user to run `pipecat cloud auth login`
+in their own terminal on the execution host and complete the browser flow.
+The [login reference](https://docs.pipecat.ai/api-reference/cli/cloud/auth#login)
+explains opening the displayed URL manually when needed. Do not capture or
+echo that one-time URL/token into model context. Login stores credentials in
+that host's CLI configuration; it does not authenticate another cloud container.
+
+For headless cloud/CI, follow the
+[PAT guide](https://docs.pipecat.ai/pipecat-cloud/guides/personal-access-tokens):
+the user creates a PAT in the dashboard and supplies `PIPECAT_TOKEN` through the
+environment's secure secret mechanism. When supported, `pipecat cloud auth use-pat`
+accepts a hidden prompt in the user's own interactive terminal. Never ask them
+to paste tokens into chat, put values in argv or copy desktop auth files to a
+different host. A public session API key is not proof of CLI management login.
+
+After the user completes authentication, repeat the safe organisation-list check,
+confirm the intended workspace/organisation and report Cloud account readiness
+separately from CLI installation. Prefer explicit target flags during deployment;
+do not switch a configured default organisation, log out, create keys or mutate
+Cloud resources as part of readiness checking. Missing credentials or unavailable
+metadata stay pending. Account/login setup does not approve a build or deployment.
+
 ## Verify and hand off
 
 After a changed launch configuration, restart the actual MCP process through
@@ -109,10 +187,14 @@ search when native execution is available. Require hits for both concepts and
 matching index/version provenance. These checks do not refresh the index.
 
 Report installed/reused package versions, initial indexing performed or skipped,
-configuration changes and backups, and separate MCP/CLI outcomes. CLI success,
+configuration changes and backups, and separate PCH MCP/CLI, Pipecat build CLI,
+Cloud CLI and Cloud account/organisation outcomes. PCH CLI success,
 rendering or another MCP connection is not proof of packaged MCP activation.
 Missing host restart/access remains pending; never call the whole setup complete
-from CLI-only proof. Hand off to [Explore](../explore/SKILL.md) when the required
-route is usable. Build and Deploy retain their own prerequisites and approvals;
-setup does not install their optional CLIs, access provider secrets, provision
-Cloud services or start agent sessions.
+from PCH CLI-only proof. Full-plugin/Cloud setup also requires usable workflow
+CLIs and successful account metadata checks; missing login remains pending.
+Hand off to [Explore](../explore/SKILL.md) when the required
+route is usable. Missing Cloud login does not block working Explore or local
+Build. Build and Deploy retain their app-workspace, provider-credential and
+concrete deployment approvals; setup does not access provider secrets, provision
+Cloud deployments or start agent sessions.

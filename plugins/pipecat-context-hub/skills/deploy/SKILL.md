@@ -8,7 +8,10 @@ Before concrete approval, Cloud inspection is read-only. Do not create/update
 secrets, upload source, build images locally or remotely, push to a registry,
 deploy, start agent sessions, delete deployments or roll back. `deploy` is not
 a dry run. Skills do not grant execution permissions. Exploration and local
-build remain available when optional Cloud prerequisites are missing.
+build remain available when Cloud prerequisites are missing. Pipecat CLI and
+its Cloud extension are required for deployment, independently of the PCH
+retrieval route. Offer [required CLI setup](../setup/SKILL.md#required-workflow-clis)
+when they are absent; preparation does not install them silently.
 
 ## Discover and prepare
 
@@ -60,7 +63,11 @@ build remain available when optional Cloud prerequisites are missing.
    Daily API key. Capture potentially sensitive output in memory, parse it and
    emit only allowlisted org IDs/names, region/resource metadata, secret-set
    names and key names. Withhold unsafe stderr, emails, credentials and values.
-   If login is required, let the user perform the supported browser login;
+   If an account/login is missing, hand off to
+   [Cloud account and login setup](../setup/SKILL.md#cloud-account-and-login):
+   guide signup at `https://pipecat.daily.co`, then user-run
+   `pipecat cloud auth login` on the execution host (or the supported PAT route
+   for headless execution). Let the user complete authentication;
    successful read-only org queries already establish authentication. Do not
    log in/out or switch the configured organisation during preparation.
 5. Resolve the user's organisation, region and agent identity explicitly; never

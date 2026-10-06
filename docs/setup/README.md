@@ -40,7 +40,9 @@ with native shell/CLI prerequisites and concrete approval before Cloud mutations
 name `pipecat-context-hub-chatgpt-plugin`.
 Plugin installation adds skills and MCP configuration; ask "Set up Pipecat
 Context Hub" to detect prerequisites and perform authorised missing-runtime,
-initial-index and selected-client setup. A healthy index is reused.
+initial-index and selected-client setup. Full plugin setup also covers required
+Pipecat/Cloud CLIs and guides Cloud account signup/login; PCH CLI is only the
+retrieval backup. A healthy index is reused.
 See its [evaluation report](../evaluations/pipecat-context-hub-plugin.md) for
 Codex packaged activation, local build/startup and the separately approved READY
 Cloud result. Provider/browser sessions, secret writes, revised cached-skill

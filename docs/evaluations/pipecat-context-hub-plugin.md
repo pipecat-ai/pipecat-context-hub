@@ -111,6 +111,45 @@ display remains unobserved; no index refresh or Cloud action occurs.
 
 ## Explicit Context Hub setup (2026-10-06)
 
+### Required CLI and Cloud account follow-up
+
+The later user clarification extends full-plugin onboarding to required Pipecat
+build/deploy CLIs and Cloud account/login guidance. PCH CLI remains a retrieval
+backup; deployment requires Pipecat CLI and its Cloud extension even with working
+MCP. Setup offers the documented fresh `pipecat-ai[cli]` plus `pipecatcloud` tool
+environment, preserves existing extensions/pins during any approved modification,
+checks real Cloud subcommands rather than a root stub and reuses healthy installs.
+Build and Deploy point to the appropriate Setup section for missing prerequisites.
+
+Signup and browser login are guided user actions on the execution host. Headless
+onboarding uses the documented secure PAT mechanism. Sanitized organisation
+metadata verifies existing login; no `whoami`, auth configuration, secret values
+or one-time URL/token is exposed. Cloud account readiness is independent of
+installed CLI readiness and concrete deployment approval. This authoring update
+does not execute login/signup, install tools or provision Cloud credentials.
+
+Actual installed help supports `auth login`, `auth use-pat` and `organizations
+list`; package metadata reports Pipecat CLI 1.3.0 / Cloud extension 1.2.0.
+Packaged MCP retrieves the CLI installation and auth references. The auth
+doc-ID lookup is only a short overview; live official CLI/auth/account/PAT pages
+supply the detailed current flows. Fresh account/login and headless setup remain
+untested rather than inferred from help or documentation.
+
+All four skills validate; the existing renderer suite reports 22 passed in 0.10
+seconds. Thirteen relative links and section anchors resolve, whitespace checks
+pass and the original reviewed contract is unchanged. The rendered package keeps
+all thirteen members; only README and Setup/Build/Deploy instructions change.
+Reinstallation succeeds, every cached file matches, and the other nine resources
+retain their bytes. No runtime or test source changes require a repeated full
+suite; the preceding Setup addition's full-suite result is recorded separately.
+
+Packaged MCP status matches on every field before and after: Hub 0.8.1, 45,463
+records, refresh `2026-10-05T16:38:04.707267+00:00`, latest pin, indexed 1.12.0,
+zero commits ahead and enabled reranker, with the same index path/source commits.
+No refresh, dependency installation, login or Cloud operation is performed.
+
+### Original setup packaging qualification
+
 The approved fourth skill, `setup`, supplies a first-use "Set up Pipecat Context
 Hub" workflow. It checks native execution and existing MCP/CLI readiness,
 reuses healthy PCH/index state, offers concrete missing-runtime/index/client
