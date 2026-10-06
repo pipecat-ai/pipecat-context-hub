@@ -74,10 +74,24 @@ from fresh rendering, local doubles or Cloud READY. Missing optional execution
 or Cloud capabilities disable only their dependent workflow; the actual
 absent-capability host scenario remains untested.
 
-The standalone Pipecat cat mark is the accepted presentation direction. No exact
-authorised standalone asset or supported logo field has been qualified; packaging
-that optional asset is deferred. No logo is claimed or added, and branding does
-not change core acceptance evidence.
+At the October 5 checkpoint, standalone Pipecat cat-mark packaging was deferred.
+The October 6 follow-up isolates the matching five paths from the supplied SVG
+lockup into square black/white assets and declares OpenAI's documented `logo`,
+`logoDark`, `composerIcon` and `composerIconDark` fields. The renderer includes
+only the two named assets and retains its regular-file/symlink boundary.
+Branding does not change core acceptance evidence; the host's visible icon is
+verified separately from source and rendered-package checks.
+
+October 6 qualification: all twenty-one renderer tests pass, including rejection
+of missing assets, file symlinks and directory symlinks. A real installed-Hub
+render produces exactly ten files and preserves both 1,222-byte SVGs, all four
+manifest references, all three skill files and the MCP launch. Browser previews
+show readable marks on light and dark backgrounds at 48 pixels and larger sizes.
+Reinstallation through `codex plugin add` succeeds, and installed-cache bytes
+match the source manifest and both assets. Codex app inspection is prohibited by
+the computer-use tool, so the refreshed plugin-page icon itself is unobserved.
+Ruff formatting/checks and mypy pass; the full suite reports 1,850 passed and
+7 skipped in 68.35 seconds. No index refresh or Cloud mutation occurs.
 
 This documentation pass inspects the eighteen existing renderer regressions;
 no behaviour change needs new tests. A fresh installed-Hub-Python render into

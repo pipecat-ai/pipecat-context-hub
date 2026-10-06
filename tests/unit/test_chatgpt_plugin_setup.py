@@ -90,6 +90,8 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "skills/deploy/reports/cloud-qualification.json",
         "skills/deploy/__pycache__/cached.pyc",
         "skills/explore/__pycache__/cached.pyc",
+        "assets/scratch.svg",
+        "assets/private.env",
     ]
     for relative in excluded:
         artifact = source / relative
@@ -106,9 +108,40 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "skills/build/SKILL.md",
         "skills/deploy/SKILL.md",
         "skills/explore/SKILL.md",
+        "assets/cat-mark.svg",
+        "assets/cat-mark-dark.svg",
     }
+    interface = json.loads((destination / "plugin.json").read_text())["extensions"]["com.openai"][
+        "interface"
+    ]
+    for field in ("composerIcon", "composerIconDark", "logo", "logoDark"):
+        relative = interface[field]
+        assert relative.startswith("./assets/")
+        assert (destination / relative).read_bytes() == (source / relative).read_bytes()
     assert not (_SOURCE / "evaluation.md").exists()
     assert (_ROOT / "docs/evaluations/pipecat-context-hub-plugin.md").is_file()
+
+
+@pytest.mark.parametrize("mode", ["missing", "file_symlink", "directory_symlink"])
+def test_render_rejects_missing_or_symlinked_brand_assets(
+    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    source = _copy_source(renderer, tmp_path, monkeypatch)
+    asset = source / "assets" / "cat-mark.svg"
+    if mode == "directory_symlink":
+        external = tmp_path / "external-assets"
+        (source / "assets").rename(external)
+        (source / "assets").symlink_to(external, target_is_directory=True)
+    else:
+        asset.unlink()
+        if mode == "file_symlink":
+            external = tmp_path / "external.svg"
+            external.write_text("Untrusted external asset")
+            asset.symlink_to(external)
+    destination = tmp_path / "prepared"
+    with pytest.raises(ValueError, match="Package resource must be a regular file"):
+        renderer.prepare_local(destination)
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize("skill", ["explore", "build", "deploy"])

@@ -93,9 +93,23 @@ distinguishes manual/synthetic walkthroughs, source-candidate conversations,
 actual packaged activation and live acceptance. Re-rendering propagates current
 instructions; activation of revised cached skills needs its own host test.
 
-The accepted presentation direction is a standalone Pipecat cat mark. An exact
-authorised standalone asset and supported presentation schema have not been
-qualified, so logo packaging is deferred; this package claims no bundled logo.
+## Cat-mark branding
+
+The package includes the user-selected standalone Pipecat cat mark as square
+512 × 512 SVGs: black for light backgrounds and white for dark backgrounds.
+The portable manifest uses OpenAI's supported `logo` / `logoDark` and
+`composerIcon` / `composerIconDark` fields. The renderer copies both named
+assets; unrelated files in `assets/` are excluded.
+
+The mark matches the [provided Pipecat brand folder](https://drive.google.com/drive/folders/10PXwYdU15L_7hgJqoAkuMmsxg_jNoeJY)
+(`Mark + Black Text [Traditional].png`). Its five vector paths are isolated
+from the supplied `daily + pipecat horizontal lockup - black.svg`, preserving
+the cat geometry while omitting the wordmarks. The white variant changes only
+the fill. Both assets retain transparent backgrounds. Pipecat's mark remains
+Pipecat branding.
+
+Re-render the marketplace source and reinstall the local plugin to propagate
+the assets, then reopen the plugin page to verify the host displays the mark.
 
 ## Prepare a local copy
 

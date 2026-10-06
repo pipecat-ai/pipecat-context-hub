@@ -8,7 +8,11 @@
       "interface": {
         "displayName": "Pipecat Context Hub",
         "shortDescription": "Ground voice-agent ideas in Pipecat sources",
-        "capabilities": ["Read"]
+        "capabilities": ["Read"],
+        "composerIcon": "./assets/cat-mark.svg",
+        "composerIconDark": "./assets/cat-mark-dark.svg",
+        "logo": "./assets/cat-mark.svg",
+        "logoDark": "./assets/cat-mark-dark.svg"
       }
     }
   }

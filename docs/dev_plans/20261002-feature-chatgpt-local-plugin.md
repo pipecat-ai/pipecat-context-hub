@@ -334,3 +334,28 @@ At the Phase 3 boundary, its build skill and local qualification were verified. 
 Phase 4's first approved source upload failed with an empty 45-byte context. Its corrected 237,200-byte retry reached Cloud, but failed before deployment because the exact pinned base lacked uv; the user-supplied full log establishes exit 127 at the Dockerfile sync step. A new staged Dockerfile explicitly supplies immutable ARM64 uv and targets the inherited system Python with inexact locked sync to retain base server packages. Exact base/uv OCI and source evidence, lock support, original-file preservation, actual five-file archive and renderer propagation pass independent verification. The canonical suite reports 1,847 passed / 7 skipped, and the one-shot guidance-scope finding is fixed with targeted checks and a fresh render. The user approved the new immutable 237,542-byte payload; its single upload/build/deploy command exited 0 and matching build metadata confirms the approved archive. After the worker usage-limit interruption, a fresh read-only resume independently proves the existing selected deployment is ready and available with matching build, architecture, resources, scaling, duration and secret identity. Bounded matching logs show historical startup/listening; current replicas and sessions are zero. Twenty-two independent assertions, eighteen renderer tests, scoped Ruff and a fresh byte-identical render pass, followed by 1,847 passed / 7 skipped in the canonical suite. No secret writes, sessions, refresh or deploy retry occurred. Phase 4 live acceptance was demonstrated at that boundary; Phase 5 evaluation, documentation and review remained next. Provider/session validity and revised cached-skill/ChatGPT Work activation remain untested.
 
 Phase 5 closes the local Codex experiment with all twenty-one frozen prompts reconciled against their actual evidence types. Twenty-two independent assertions, eighteen renderer regressions, unchanged formatting, Ruff, mypy across 124 files and the full 1,847-pass / 7-skip suite pass. The initial security audit found CVE-2026-104851; updating only root locked `fsspec` to 2026.6.0 preserves all 147 package names, dependency edges and other metadata, and dependency audit/Bandit pass with existing policy unchanged. The first final reviewer failed on a usage limit without a report or commit; after the user’s resume, a fresh clean-context branch-wide code/security/documentation review returns zero findings and independently verifies the safe launch and guard-before-native-construction invariants. The conductor records terminal CI against the final committed state separately. Revised cached skills/ChatGPT Work, provider/audio/browser sessions, secret-write behaviour, general adaptation and optional standalone cat-mark packaging remain unqualified; successful core acceptance does not pass those cases.
+
+## Cat-mark follow-up (2026-10-06)
+
+The user requested the selected standalone cat mark after reloading the three
+skills. The supplied brand-folder PNG matches the cat in the supplied SVG lockup.
+The follow-up preserves those five vector paths, omits both wordmarks and fits
+them on a transparent square 512-pixel canvas. Black and white variants are
+declared through OpenAI's documented `logo` / `logoDark` and `composerIcon` /
+`composerIconDark` fields. The renderer adds only these two explicit resource
+paths; its safe MCP command and refusal to copy symlinked resources are unchanged.
+
+Package-byte, asset-boundary and visual checks precede local re-rendering and
+reinstallation. No index refresh, provider session or Cloud action is involved.
+The earlier phase results above remain dated checkpoints; the cat-mark packaging
+deferral is resolved by this follow-up, while host display needs its own check.
+
+Verification passes: twenty-one renderer tests; a real installed-Hub ten-file
+render with byte-identical assets; square dimensions and no executable/external
+SVG content; browser previews on both backgrounds at 48 pixels and larger sizes;
+successful local reinstallation and matching cache bytes. Ruff formatting/checks
+and mypy pass; the full suite reports 1,850 passed / 7 skipped in 68.35 seconds.
+The MCP launch and all three skill files remain byte-identical to the previous
+local installation. Codex application inspection is prohibited by computer use,
+so the refreshed plugin-page icon remains unobserved. Source and local installed
+packaging are complete; no index or Cloud operation is performed.
