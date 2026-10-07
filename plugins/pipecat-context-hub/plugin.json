@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "pipecat-context-hub",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "license": "BSD-2-Clause",
   "repository": "https://github.com/pipecat-ai/pipecat-context-hub",
   "description": "Set up Context Hub, explore voice-agent ideas, build locally and prepare approved Cloud deployments with grounded Pipecat sources.",
@@ -18,6 +18,7 @@
         "websiteURL": "https://docs.pipecat.ai/api-reference/context-hub",
         "supportURL": "https://github.com/pipecat-ai/pipecat-context-hub/issues",
         "privacyPolicyURL": "https://www.daily.co/legal/privacy/",
+        "termsOfServiceURL": "https://www.daily.co/legal/terms-of-service/",
         "defaultPrompt": [
           "Set up Pipecat Context Hub.",
           "Explain an STT + TTS voice agent using sourced docs and examples.",

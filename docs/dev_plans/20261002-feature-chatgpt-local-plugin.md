@@ -656,3 +656,25 @@ Ruff format/checks pass, mypy passes over 124 files and the full suite reports
 Sanitized package proof is outside the checkout under `publisher-0.2.1-q00jd89f`.
 No existing index or runtime is accessed, no plugin cache is reinstalled, and no
 Cloud operation, dashboard upload or publication occurs. The user owns the upload.
+
+## Terms of Service listing follow-up (2026-10-07)
+
+The user uploaded 0.2.1 and supplied a dashboard screenshot showing metadata
+"No Issues", expected branding/publisher/four skills and zero of four skill scans
+complete at capture time. They then reported the blank Terms of Service field.
+Prepare 0.2.2 with `termsOfServiceURL` referencing Daily's existing public terms
+at `https://www.daily.co/legal/terms-of-service/`, already linked in `PRIVACY.md`.
+Update package README, changelog, evaluation and sibling-plan references/index.
+
+Seventeen packaging tests pass. Portable schema, listing limits, all four listing
+URL HTTP 200 responses, thirteen-file membership, CRCs and source-byte equality
+pass with zero credential/PII matches. Only manifest and package README change;
+all other eleven package resources retain their bytes. The reviewed prefix is
+unchanged. The 0.2.1 full-suite result remains dated and is not rerun for this
+metadata-only follow-up. No index, runtime, Cloud or dashboard mutation occurs.
+
+Output is `~/Downloads/pipecat-context-hub-0.2.2.zip` (32,917 bytes), SHA-256
+`28799984aff544ea90c32ec17a9db1fd8b3a2291f5e176aa39087e70f3a646ac`.
+Sanitized package proof is outside the checkout under `publisher-0.2.2-lj5ngk0m`.
+The user will upload this replacement to the existing corporate dashboard draft;
+portal skill-scan, review and publication outcomes remain unverified.

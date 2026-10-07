@@ -8,12 +8,13 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- Skills-only Pipecat Context Hub plugin 0.2.1 uses PCH CLI queries for Explore,
+- Skills-only Pipecat Context Hub plugin 0.2.2 uses PCH CLI queries for Explore,
   Build and Deploy grounding. Portable preparation needs no installed Hub and
   includes four skills and cat-mark assets, with no MCP configuration or hooks.
 - Plugin 0.2.1 includes approved Daily.co/Pipecat.ai publisher metadata, product
   and support URLs, Daily's public privacy-policy URL, three starter prompts and
   a bundled notice explaining local processing, chat results and Cloud data flows.
+- Plugin 0.2.2 adds Daily's Terms of Service link to the public listing.
 - Explicit Setup checks native execution and required PCH/Pipecat/Cloud CLIs,
   reuses healthy installations/indexes and handles only authorised missing-runtime
   and initial-index setup. It guides Cloud signup/login without handling passwords

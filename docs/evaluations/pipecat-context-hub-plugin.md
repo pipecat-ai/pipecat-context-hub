@@ -5,7 +5,28 @@ outside the checkout. Do not put credentials or secret values in either report.
 Package/subprocess checks and actual desktop activation are separate outcomes.
 This repository report is not copied into the installed plugin package.
 
-## Current package: publisher upload ZIP (2026-10-07)
+## Current package: Terms of Service listing fix (2026-10-07)
+
+The user-provided dashboard screenshot of uploaded 0.2.1 shows metadata
+"No Issues", the expected publisher/logo/four skills, and zero of four skill
+checks complete at capture time. It is upload/metadata evidence, not skill-scan,
+review or publication acceptance. The Terms of Service listing field was blank.
+
+Plugin 0.2.2 adds `termsOfServiceURL` pointing to Daily's existing public terms,
+already linked in the bundled privacy notice. Only manifest and package README
+bytes change in the thirteen-file ZIP; the other eleven resources, including all
+skills, assets, licence, privacy notice and preparer, retain their bytes. The new
+ZIP is `~/Downloads/pipecat-context-hub-0.2.2.zip` (32,917 bytes), SHA-256
+`28799984aff544ea90c32ec17a9db1fd8b3a2291f5e176aa39087e70f3a646ac`.
+Seventeen packaging tests pass. Portable schema, listing limits, archive CRCs,
+exact membership and source-byte parity pass, with zero credential/PII matches;
+all four listing URLs return HTTP 200. The reviewed prefix is unchanged.
+Sanitized proof remains outside the checkout under `publisher-0.2.2-lj5ngk0m`.
+The full-suite result below is the preceding 0.2.1 qualification; it is not rerun
+for this metadata-only follow-up. The agent performs no index or Cloud operation,
+dashboard upload or publication; the user will upload to the existing draft.
+
+## Publisher upload ZIP qualification (2026-10-07)
 
 Plugin 0.2.1 adds the approved Daily.co/Pipecat.ai publisher label, official
 Context Hub website and GitHub issue support, Daily's public privacy-policy URL,
