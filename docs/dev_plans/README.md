@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-10-02 | Feature | CLI-first Pipecat plugin: setup, explore, build and deploy | Complete — revised 0.2.3 publisher ZIP prepared; fresh setup/ChatGPT Work unqualified | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
+| 2026-10-02 | Feature | CLI-first Pipecat plugin: setup, explore, build and deploy | Complete — 0.2.3 listing fix ZIP prepared; portal recheck pending, fresh setup/ChatGPT Work unqualified | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |

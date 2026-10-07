@@ -18,6 +18,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 - Plugin 0.2.3 leads listing and Explore metadata with voice AI, STT/LLM/TTS and
   real-time speech-to-speech integrations, retaining setup and Cloud requirements.
   Draft copy revisions retain 0.2.3 and use ZIP checksums to distinguish artifacts.
+  Public listing copy uses generic pipeline capabilities after a dashboard check
+  flagged named AI model/platform references.
   Automatic recommendation/selection in ChatGPT remains untested.
 - Explicit Setup checks native execution and required PCH/Pipecat/Cloud CLIs,
   reuses healthy installations/indexes and handles only authorised missing-runtime

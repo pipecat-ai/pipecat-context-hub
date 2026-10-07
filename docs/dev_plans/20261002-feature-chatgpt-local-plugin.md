@@ -733,3 +733,30 @@ explicitly specifying same-version draft acceptance; dashboard acceptance remain
 unverified. Published updates require a version change per its submission guide.
 No runtime, Cloud or dashboard mutation occurs. Automatic recommendation/selection,
 portal scans and review remain unverified; earlier full-suite evidence stays dated.
+
+## Automated listing finding follow-up (2026-10-07)
+
+The user reported the dashboard finding: "The plugin’s name or description
+references another AI assistant, model, or platform." The preceding long
+description's named model services are the likely trigger, but the report does
+not identify a specific token. Remove those names and "leading" from the public
+long description, retaining generic STT/LLM/TTS and real-time speech-to-speech
+capabilities. Use the general supported-services link in the README introduction.
+Keep 0.2.3, all skills, permission boundaries, prompts, policy URLs and assets.
+
+Seventeen packaging tests pass. Portable schema, listing limits, thirteen-file
+membership, CRCs and source-byte equality pass. Checks of listing names,
+descriptions and starter prompts find zero named-model/provider matches in the
+checked set, and credential/PII scans find zero matches. Only longDescription and
+README change; all eleven other resources, including all four skills, remain
+byte-identical to the prior ZIP. The historic reviewed prefix is unchanged.
+Output is `~/Downloads/pipecat-context-hub-0.2.3-listing-fix.zip` (33,180 bytes),
+SHA-256 `93ac766bc69e72ef553f3cd20cb11cb9f70d55304920a919aa62c64c1da32afb`.
+Earlier ZIPs remain intact; proof is outside the checkout under
+`publisher-0.2.3-listing-fix-54rg79x3`. Update evaluation, changelog and sibling
+references/index. No index, runtime, Cloud or dashboard mutation occurs.
+
+Official guidelines support clear, accurate, non-comparative listing copy but do
+not identify the exact trigger of this automated finding. Public retrieval cannot
+inspect the authenticated dashboard result. The user must upload the replacement
+and recheck the portal; packaging checks do not prove acceptance or publication.

@@ -2,11 +2,10 @@
 
 Explore voice AI ideas, choose language and speech models supported by Pipecat,
 and build agents using sourced documentation, API definitions and examples. Explore
-STT/LLM/TTS pipelines and real-time speech-to-speech services such as
-[OpenAI Realtime](https://docs.pipecat.ai/api-reference/server/services/s2s/openai)
-and [Gemini Live](https://docs.pipecat.ai/api-reference/server/services/s2s/gemini-live).
-These are supported Pipecat integrations, not a claim of compatibility with every
-frontier model. The listing and Explore skill description name these use cases;
+STT/LLM/TTS pipelines and real-time speech-to-speech through
+[Pipecat's supported services](https://docs.pipecat.ai/api-reference/server/services/supported-services).
+The listing describes these capabilities in general terms. Explore retrieves
+documentation and examples for the specific services relevant to the user's idea;
 automatic recommendation/selection in ChatGPT remains untested.
 
 This plugin packages four workflows: Setup, Explore, Build and Deploy. It uses

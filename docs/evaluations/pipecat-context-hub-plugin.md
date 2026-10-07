@@ -5,7 +5,40 @@ outside the checkout. Do not put credentials or secret values in either report.
 Package/subprocess checks and actual desktop activation are separate outcomes.
 This repository report is not copied into the installed plugin package.
 
-## Current package: 0.2.3 speech-to-speech draft revision (2026-10-07)
+## Current package: 0.2.3 public listing correction (2026-10-07)
+
+The user reported this automated dashboard finding after the named-service draft:
+
+> The plugin’s name or description references another AI assistant, model, or platform.
+
+The preceding long description named OpenAI Realtime and Gemini Live. Those
+references are the likely trigger; the report does not identify a specific token.
+The authenticated dashboard URL exposes no review content through public retrieval,
+so the user's quoted finding is the evidence. The revised listing uses generic
+STT, LLM, TTS and real-time speech-to-speech capabilities. It also removes the
+qualifier "leading". The README introduction now links to the general supported
+services page. Explore remains able to retrieve service-specific evidence.
+
+The official [plugin guidelines](https://developers.openai.com/plugins/plugin-guidelines#plugin-name-description-and-optional-screenshots)
+require clear, accurate descriptions without comparisons or unverifiable claims.
+They do not establish the exact token responsible for the quoted automated finding.
+Local package validation is separate from dashboard approval; a new scan is needed.
+
+Version remains 0.2.3. The replacement ZIP is
+`~/Downloads/pipecat-context-hub-0.2.3-listing-fix.zip` (33,180 bytes), SHA-256
+`93ac766bc69e72ef553f3cd20cb11cb9f70d55304920a919aa62c64c1da32afb`.
+Seventeen packaging tests, portable schema, listing limits, archive CRCs, exact
+thirteen-file membership and source-byte equality pass. Listing-name, description
+and starter-prompt checks find zero named AI model/provider references in the
+checked set; credential/PII scans find zero matches. Only manifest longDescription
+and README differ from the preceding speech-to-speech ZIP; all eleven other
+resources, including all four complete skills, retain their bytes. Earlier ZIPs
+remain intact. Proof is outside the checkout under
+`publisher-0.2.3-listing-fix-54rg79x3`. The historic reviewed plan prefix is unchanged.
+No index, runtime, Cloud or dashboard mutation occurs. Portal recheck, completed
+skill scans, review and publication remain unverified.
+
+## Preceding 0.2.3 speech-to-speech draft revision (2026-10-07)
 
 The user requested broader model coverage and retention of 0.2.3 while iterating
 on the unpublished draft. The listing now names "leading language and speech
