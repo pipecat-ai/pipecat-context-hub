@@ -613,3 +613,46 @@ Cloud mutation, push, PR or directory submission occurs. Real package/CLI proofs
 and the 0.2.0 ZIP are outside the checkout under `cli-first-0.2.0-sw8jlzi2`;
 the prior marketplace source is preserved in `backup-cli-first-886uo8s9`.
 Fresh-user/cloud setup and autonomous revised-skill activation remain unqualified.
+
+## Publisher upload ZIP follow-up (2026-10-07)
+
+The user approved the corporate Daily.co/Pipecat.ai organisation label, the
+official Context Hub docs website, existing repository and GitHub issue support,
+a local-processing privacy notice referencing Daily's policy and Trust Center,
+and three starter prompts (Setup, sourced STT/TTS exploration, Cloud preparation).
+They requested the ZIP for their own upload to the corporate OpenAI dashboard.
+
+Prepare plugin 0.2.1 with those listing fields, Daily's existing published policy
+as `privacyPolicyURL`, and bundled `PRIVACY.md`. The notice explains processing
+on the execution host, selected results returned to chat, installation/refresh
+downloads, approved Cloud uploads, local-file retention and user controls.
+The selected verified Developer identity controls the dashboard's public
+publisher name; an organisation label alone does not prove that display name.
+
+Modify manifest, package README, renderer allowlist and existing packaging
+regression, with changelog/evaluation and sibling-plan references in the same pass.
+The package invariant is exactly thirteen regular, allowlisted resources matching
+source bytes: manifest, README, privacy notice, BSD licence, preparer, four skills
+and four SVGs. Include the repository's unchanged licence with the redistributed
+package resources.
+Validate public listing limits and URL accessibility, relative paths/anchors,
+schema and skills, inspect archive membership, CRCs and credentials, and record
+its checksum outside the checkout. Keep the original reviewed prefix unchanged.
+
+No index queries, refresh, runtime installation, login, Cloud operation or dashboard
+upload is needed to package this update. Do not claim portal acceptance, fresh-user
+setup, autonomous installed-skill activation or publication from ZIP validation.
+A separate public documentation privacy page is not published by this packaging
+work; the ZIP contains the notice and links to Daily's existing public policy.
+
+Qualification: portable schema and listing limits pass; three public listing URLs
+return HTTP 200. Fourteen relative links/anchors resolve. The thirteen-file ZIP
+has valid CRCs, matches every allowlisted source byte and contains no credential/PII
+pattern matches. Skills/assets and the historical reviewed prefix are unchanged.
+Ruff format/checks pass, mypy passes over 124 files and the full suite reports
+1,846 passed / 7 skipped in 63.50 seconds. Output is
+`~/Downloads/pipecat-context-hub-0.2.1.zip` (32,882 bytes), SHA-256
+`023194df0a38043a1036799c32ecaea9cea5c289a7502338855b3383b2c5ad18`.
+Sanitized package proof is outside the checkout under `publisher-0.2.1-q00jd89f`.
+No existing index or runtime is accessed, no plugin cache is reinstalled, and no
+Cloud operation, dashboard upload or publication occurs. The user owns the upload.

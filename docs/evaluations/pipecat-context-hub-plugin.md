@@ -5,7 +5,38 @@ outside the checkout. Do not put credentials or secret values in either report.
 Package/subprocess checks and actual desktop activation are separate outcomes.
 This repository report is not copied into the installed plugin package.
 
-## Current delivery: CLI-first skills-only (2026-10-06)
+## Current package: publisher upload ZIP (2026-10-07)
+
+Plugin 0.2.1 adds the approved Daily.co/Pipecat.ai publisher label, official
+Context Hub website and GitHub issue support, Daily's public privacy-policy URL,
+and three starter prompts. The public directory publisher name derives from the
+selected verified Developer identity in the upload dashboard. The bundled
+`PRIVACY.md` explains local index/query processing on the execution host, excerpts
+returned to chat, indexing downloads, approved Cloud uploads, retention and controls,
+and links to Daily's privacy policy and Trust Center. No separate public notice
+page is published by this packaging operation.
+
+The renderer includes exactly thirteen resources, adding the required privacy notice
+and unchanged repository BSD licence to the prior eleven-file allowlist.
+Skills, cat-mark assets, shared Hub runtime and
+dependencies retain their bytes. The user will upload the resulting ZIP to the
+corporate OpenAI dashboard; local packaging does not establish portal acceptance,
+fresh-user setup, installed-skill activation or publication. Earlier qualification
+results below remain the dated 0.2.0 snapshot.
+
+The final ZIP is `~/Downloads/pipecat-context-hub-0.2.1.zip` (32,882
+bytes), SHA-256 `023194df0a38043a1036799c32ecaea9cea5c289a7502338855b3383b2c5ad18`.
+The downloaded portable schema validates; listing limits and three starter prompts
+pass. Product, support and privacy URLs return HTTP 200, fourteen relative
+links/anchors resolve, and all thirteen archive files match source bytes with valid
+CRCs and no credential/PII matches. Four skills and four SVGs remain byte-identical
+to the preceding commit, and the historical reviewed plan prefix is unchanged.
+Ruff format/checks pass, mypy passes over 124 files, and the full suite reports
+1,846 passed / 7 skipped in 63.50 seconds. Sanitized archive proof is outside the
+checkout under `publisher-0.2.1-q00jd89f`. No runtime installation, index query or
+refresh, Cloud authentication, deployment, dashboard upload or cache reinstall occurs.
+
+## CLI-first qualification snapshot (2026-10-06)
 
 The approved 0.2.0 follow-up replaces required bundled stdio MCP with native PCH
 query commands. Current source is a skills-only package with Setup, Explore,
