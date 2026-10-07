@@ -167,7 +167,8 @@ python3 -I -S plugins/pipecat-context-hub/scripts/prepare_local.py \
 ```
 
 The destination must be outside this checkout and absent or empty. The helper
-copies exactly eleven resources: manifest, README, itself, four skill entrypoints
+copies exactly thirteen resources: manifest, README, privacy notice, BSD licence,
+itself, four skill entrypoints
 and four SVGs. It rejects missing/symlinked required resources and unsafe
 or nonempty destinations. It performs no runtime installation or indexing, and
 copies no MCP configuration, hooks, private reports or evaluation artifacts.
@@ -194,23 +195,28 @@ can contain `.agents/plugins/marketplace.json` with:
 Use `codex plugin marketplace add /absolute/local-marketplace` and install
 `pipecat-context-hub@pipecat-hub-local`, using the installed CLI's supported flags.
 After updates, prepare a fresh copy, preserve the old source as a backup and
-reinstall through the supported host flow. Verify version 0.2.0, four skills,
+reinstall through the supported host flow. Verify version 0.2.1, four skills,
 cat-mark resources and absence of bundled MCP servers in the installed package.
 Standalone Hub/client registrations are unrelated and remain unchanged.
 
 Start a new supported chat and invoke Setup or Explore. Observe skill loading and
 native PCH queries with sourced output. Successful packaging, direct CLI commands
 and cache parity do not prove autonomous installed-skill activation. Record
-runtime/index, Build and Cloud prerequisites independently in the repository
-[evaluation report](https://github.com/pipecat-ai/pipecat-context-hub/blob/feature/chatgpt-local-plugin/docs/evaluations/pipecat-context-hub-plugin.md).
+runtime/index, Build and Cloud prerequisites independently in your verification notes.
 No evaluation report is included in the installed package.
 
 ## Publication
 
 This is a skills-only release candidate for supported execution environments.
 A public submission ZIP excludes MCP configuration and hooks, so it needs no
-hosted PCH HTTPS endpoint. Publisher verification, final listing metadata/policy
-URLs, clean-environment tests and portal skill scans/review are still required.
+hosted PCH HTTPS endpoint. Version 0.2.1 includes the approved corporate publisher
+label, official product/support links, Daily's public privacy-policy URL and three
+starter prompts. The dashboard uses the selected verified Developer identity for
+the public publisher name. The bundled [privacy notice](PRIVACY.md) explains local
+index/query processing, information returned to chat, downloads and Cloud uploads,
+and links to Daily's policy and Trust Center. It is included in the submission ZIP;
+publishing a separate documentation page is not performed by packaging.
+Clean-environment tests and portal skill scans/review remain separate qualifications.
 Package installation does not provision command execution or persistent storage.
 See [submission requirements](https://developers.openai.com/plugins/deploy/submission).
 OpenAI currently does not support adding MCP to the same skills-only listing later;

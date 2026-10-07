@@ -93,6 +93,8 @@ def test_render_excludes_evaluation_and_unrelated_files(
     assert copied == {
         "plugin.json",
         "README.md",
+        "PRIVACY.md",
+        "LICENSE",
         "scripts/prepare_local.py",
         "skills/build/SKILL.md",
         "skills/deploy/SKILL.md",
@@ -107,6 +109,8 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "interface"
     ]
     assert interface["logo"] != interface["composerIcon"]
+    assert (destination / "PRIVACY.md").read_bytes() == (source / "PRIVACY.md").read_bytes()
+    assert (destination / "LICENSE").read_bytes() == (_ROOT / "LICENSE").read_bytes()
     assert interface["logoDark"] != interface["composerIconDark"]
     for field in ("composerIcon", "composerIconDark", "logo", "logoDark"):
         relative = interface[field]

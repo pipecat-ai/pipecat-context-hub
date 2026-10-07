@@ -21,7 +21,7 @@ def prepare_local(destination: Path) -> Path:
     if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
         raise ValueError("Destination must be absent or an empty directory")
 
-    files = [source / name for name in ("plugin.json", "README.md")]
+    files = [source / name for name in ("plugin.json", "README.md", "PRIVACY.md", "LICENSE")]
     files.append(source / "scripts" / "prepare_local.py")
     files.extend(
         source / "assets" / name
