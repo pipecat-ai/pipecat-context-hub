@@ -1,106 +1,81 @@
-# Local Pipecat Context Hub plugin
+# Pipecat Context Hub skills-only plugin
 
-This optional desktop experiment packages explicit plugin/CLI setup,
-grounded exploration, local app
-build and approved Cloud deployment guidance with the installed Context Hub.
-It does not bundle Python, the Context Hub runtime, Pipecat CLI or an index.
-Local build requires native execution and an installed Pipecat CLI. Cloud
-deployment additionally requires the Cloud CLI extension, account login and
-approval of the exact payload.
+This plugin packages four workflows: Setup, Explore, Build and Deploy. It uses
+PCH command-line queries for grounded documentation, API definitions and examples.
+It contains no MCP configuration or lifecycle hooks. The underlying Context Hub
+package continues to support MCP for other clients.
 
-Plugin installation copies the packaged skills, icons and MCP configuration;
-it does not install dependencies, download models, create/refresh an index or
-provision a Cloud service. PCH supplies both its CLI and MCP server. The
-[Pipecat setup guide](https://docs.pipecat.ai/api-reference/context-hub#setup)
-documents PCH bundled with `pipecat-ai[cli]`, exposing `pipecat context-hub`.
-A standalone PCH installation exposes `pipecat-context-hub`. Older or separate
-CLI environments may lack the bridge; verify `pipecat context-hub --help`
-rather than assuming it exists. The local renderer binds the MCP
-configuration to that existing installation. CLI backup or local stdio needs
-PCH and an index in the task's execution environment; remote MCP uses its
-server's runtime/index. Installing this plugin does not upload the local
-runtime/index or install them in a cloud container.
+Plugin installation copies skills and cat-mark assets; it does not install Python,
+PCH, Pipecat CLI, an index or Cloud credentials. Each workflow needs native command
+execution in the task's local or cloud environment. Installing on the web does not
+provision those capabilities. Environments without execution can show guidance but
+cannot run grounded queries or builds through this plugin.
 
 ## Set up Context Hub
 
-After installing the plugin, ask **"Set up Pipecat Context Hub"**. The
-[setup skill](skills/setup/SKILL.md) checks retrieval and the tools required for
-the requested workflows. Full plugin setup includes the Pipecat CLI and Cloud
-extension; explicitly retrieval-only setup needs only PCH. It reuses healthy
-installations and the index. If prerequisites are missing, it presents
-the required packages, initial-index and selected-client configuration changes, then
-performs only authorised setup through native execution. One PCH installation
-provides MCP and CLI; they are not separate downloads.
+After installing, ask **"Set up Pipecat Context Hub"**. The
+[setup skill](skills/setup/SKILL.md) detects native execution, installed commands,
+index readiness and the tools required for the requested workflows. It reuses
+healthy installations and indexes. When prerequisites are missing, it presents
+the required packages, initial-index path/sources and storage requirements, then
+performs only authorised setup. No MCP registration or binding is required.
 
 | Workflow | Required tools | Cloud account |
 |---|---|---|
-| Explore | PCH MCP by default, PCH query CLI as backup | Not needed |
+| Explore | Native execution and PCH query CLI | Not needed |
 | Build | Pipecat CLI and PCH retrieval | Not needed |
 | Deploy | Pipecat CLI with Cloud extension and PCH retrieval | Authenticated login required |
 
 The [fresh full-toolchain install](https://docs.pipecat.ai/api-reference/cli/overview#installation)
 is `uv tool install "pipecat-ai[cli]" --with pipecatcloud`. Current CLI distributions
-bundle PCH. Setup checks the actual installed commands and preserves existing
-tool environments/extensions; the Cloud CLI is required for deployment,
-independently of whether retrieval uses MCP or CLI.
+bundle PCH. Verify `pipecat context-hub --help`; older installations may need the
+standalone `pipecat-context-hub` command supplied by `pipecat-ai-context-hub`.
+Setup retains existing working versions/extensions instead of silently replacing
+them. An explicitly retrieval-only setup can use standalone PCH without Pipecat
+CLI or a Cloud account.
 
-For Cloud setup, the workflow guides new users to
-[create/sign in to a Pipecat Cloud account](https://pipecat.daily.co), then run
-`pipecat cloud auth login` on the execution host and complete browser login.
-Already-authenticated users skip login. Headless cloud environments use the
-documented PAT route through a secure `PIPECAT_TOKEN` mechanism. Account signup
-and token entry are user actions, with no passwords/tokens pasted into chat.
-The [login guide](skills/setup/SKILL.md#cloud-account-and-login) separates CLI
-installation, account/organisation readiness and actual deployment approval.
+For Cloud setup, guide users to [create/sign in to a Pipecat Cloud account](https://pipecat.daily.co),
+then run `pipecat cloud auth login` in their own terminal on the execution host
+and complete browser login. Already-authenticated users skip login. Headless
+execution uses the documented PAT route through a secure `PIPECAT_TOKEN`
+mechanism. Passwords and tokens stay out of chat. The
+[account/login guide](skills/setup/SKILL.md#cloud-account-and-login) separates
+CLI installation, authenticated organisation readiness and deployment approval.
 
-Setup supports local computers and cloud execution environments with compatible
-Python and subprocess access. It checks persistence and host configuration
-capabilities rather than assuming a cloud container configures the desktop app.
-If client configuration cannot be applied, it gives the remaining steps and
-reports MCP pending separately from usable CLI. An existing remote MCP uses
-its server's installation/index and needs no local PCH unless CLI backup is
-requested. Setup does not provision a remote server or Pipecat Cloud services.
-
-The workflow creates an initial index only when none exists; a healthy populated
-index is reused. It preserves existing installations/configuration and makes
-no automatic upgrade, refresh or repair. Existing corruption needs a separate
-recovery request. Plugin installation itself still runs no dependency installer
-or hook. Ordinary Explore requests remain read-only and can suggest Setup when
-prerequisites are missing.
+Setup checks Python/subprocess access, download permissions and runtime/index
+persistence on the actual host. Local installation/login does not authenticate
+another cloud container. Initial indexing can download models/source repositories;
+it needs explicit setup authorisation and an absent or demonstrably empty index.
+A stale populated index is reused; repair/reset and upgrades are separate requests.
+Fresh-user installation and cloud persistence remain unqualified until observed.
 
 ## Explore an idea or concept
 
-Ask for an approach ("I want a browser voice assistant with TTS + STT") or a
-specific concept ("Explain Pipeline frames" / "Show TTSService.run_tts").
-Explore prefers the packaged MCP connection, with the installed PCH CLI as a
-backup when that connection/tools are unavailable and native shell execution is
-available. It checks the active route's readiness, retrieves relevant docs,
-definitions and examples, and cites their sources. Proposed combinations are
-labelled as inference; retrieved examples are not claimed to have been run.
-Material choices can be clarified while independent concept retrieval proceeds.
-Discussion requests remain read-only, including in hosts with execution tools.
+Use the [explore skill](skills/explore/SKILL.md) for a voice-agent idea or framework
+concept. It discovers the PCH query commands, checks `status`, retrieves relevant
+concepts and detail, and cites returned source URLs. It uses `pipecat context-hub`
+when available, otherwise standalone `pipecat-context-hub`. Both dispatch the same
+handlers and return JSON on stdout; diagnostics remain on stderr.
 
-State your target Pipecat version and source preference in the conversation.
-The skill maps them to the installed tool schemas: example searches support
-`repo`; docs support `area`, and API searches support module/class prefixes,
-not a universal repository filter. Detail lookups retain the selected source's
-provenance. Unsupported preferences are disclosed, not translated into invented
-filters. Broad hits can reference a symbol without defining it; exploration
-checks a detail or symbol lookup before making a definition claim.
+For example, after verifying the installed command:
 
-`pipecat_version` annotates supported code/example searches; `compatible_only`
-requires that target version and excludes known newer requirements, while
-unknown compatibility can remain. These options do not switch the index or
-validate APIs at an unindexed version. `check_deprecation` accepts `version`
-for indexed-registry lifecycle evaluation, not snapshot selection. Missing,
-stale or unavailable requested snapshots are explained without an automatic
-refresh. Exploration requires working MCP or CLI retrieval. MCP needs no shell;
-the CLI backup needs native execution and existing PCH, through either the
-Pipecat CLI's verified `context-hub` subcommand or the standalone executable.
-Standalone PCH needs no Pipecat CLI; neither route needs Cloud credentials.
-Build and Deploy share Explore's retrieval fallback. CLI evidence is labelled
-as such and does not prove MCP
-activation; empty/low-confidence results or index failures do not trigger it.
+```sh
+pipecat context-hub status
+pipecat context-hub search-docs "TTS + STT"
+pipecat context-hub search-examples "TTS + STT" --domain backend
+```
+
+Multi-concept searches use ` + ` or ` & ` for balanced coverage. Fetch the relevant
+page, example or symbol detail before making framework claims. Installed help
+controls flags, including source/version preferences. Compatibility annotations
+are not a different source snapshot or proof of compatibility when unknown.
+A `latest` pin is not proof of today's latest release.
+
+Exploration is read-only: no installs, indexing, file creation, example execution,
+secret access or deployment. Missing runtime/index offers explicit Setup. CLI
+status before/after confirms unchanged index/version provenance; no refresh occurs.
+A stale index can provide dated evidence with a stated coverage limit. Neither PCH
+query route needs a Cloud account.
 
 ## Build a local app
 
@@ -149,16 +124,16 @@ not establish revised installed-skill activation or ChatGPT Work activation.
 
 ## Qualification limits
 
-The recorded Codex local experiment demonstrates packaged exploration, CLI
+The earlier stdio Codex local experiment demonstrated packaged exploration, CLI
 1.3.0 scaffolding, credential-free local imports/construction/startup and the
 approved Cloud READY result. It uses indexed Pipecat 1.12.0; the latest recorded
 Hub status is 0.8.1 with an October 5 refresh. These are dated observations,
-not guarantees about other hosts, versions, transports or provider combinations.
+not qualification of this CLI-first release, other hosts or provider combinations.
 JSON scaffold config execution, existing-app adaptation, absent-execution hosts,
 provider/browser sessions, secret writes and ChatGPT Work remain untested.
 The repository [evaluation report](https://github.com/pipecat-ai/pipecat-context-hub/blob/feature/chatgpt-local-plugin/docs/evaluations/pipecat-context-hub-plugin.md)
 distinguishes manual/synthetic walkthroughs, source-candidate conversations,
-actual packaged activation and live acceptance. Re-rendering propagates current
+actual packaged activation and live acceptance. Preparing a fresh copy propagates current
 instructions; activation of revised cached skills needs its own host test.
 
 ## Cat-mark branding
@@ -178,38 +153,30 @@ the cat geometry while omitting the original wordmarks. The white variants
 change only the fill. All assets retain transparent backgrounds. Pipecat's mark remains
 Pipecat branding.
 
-Re-render the marketplace source and reinstall the local plugin to propagate
+Prepare a fresh marketplace source and reinstall the local plugin to propagate
 the assets, then reopen the plugin page to verify the host displays the mark.
 
-## Prepare a local copy
+## Prepare a portable copy
 
-Install Context Hub separately and have a populated local index. Find its
-absolute Python command with `pipecat-context-hub install --print-config`
-(this prints configuration without registering a client). Run that Python:
+Package preparation requires only Python's standard library, not an installed Hub
+or index. From this checkout, run a compatible Python:
 
 ```sh
-"/absolute/installed/hub/python" -P plugins/pipecat-context-hub/scripts/prepare_local.py \
+python3 -I -S plugins/pipecat-context-hub/scripts/prepare_local.py \
   /absolute/local-marketplace/plugins/pipecat-context-hub
 ```
 
-The destination must be outside this checkout and absent or empty. The
-renderer checks importability, copies only named package files and skill
-entrypoints, preserves `mcp.template.json`, and creates root `mcp.json` with
-the installed interpreter’s bare executable name, `PATH` containing only its
-absolute interpreter directory, and `-P -m pipecat_context_hub serve`.
-Interpreter symlinks retain virtual-environment identity. The portable loader
-rejects an absolute `command`; the pinned `PATH` provides no ambient/system
-Python fallback. Extra launch fields or environment values are refused. The packaged
-MCP server is named `pipecat-context-hub-chatgpt-plugin`, distinct from the
-standalone `pipecat-context-hub` registration. The renderer rejects templates
-containing any other server entries. It does not
-register the package or refresh the index. Never register the unresolved
-template. No machine-specific launch paths belong in this source package.
+The destination must be outside this checkout and absent or empty. The helper
+copies exactly eleven resources: manifest, README, itself, four skill entrypoints
+and four SVGs. It rejects missing/symlinked required resources and unsafe
+or nonempty destinations. It performs no runtime installation or indexing, and
+copies no MCP configuration, hooks, private reports or evaluation artifacts.
+The package is independent of the packaging machine's interpreter/index paths.
 
-## Install and verify separately
+## Install and verify
 
-Follow [OpenAI's local marketplace instructions](https://developers.openai.com/plugins/build/plugins).
-In the local marketplace root create `.agents/plugins/marketplace.json`:
+Place the prepared copy in the selected local marketplace. A marketplace root
+can contain `.agents/plugins/marketplace.json` with:
 
 ```json
 {
@@ -219,33 +186,32 @@ In the local marketplace root create `.agents/plugins/marketplace.json`:
     "name": "pipecat-context-hub",
     "source": {"source": "local", "path": "./plugins/pipecat-context-hub"},
     "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
-    "category": "Productivity"
+    "category": "Developer Tools"
   }]
 }
 ```
 
-Use `codex plugin marketplace add /absolute/local-marketplace` to add that
-source; inspect installed `codex plugin --help` for supported commands.
-Install from the desktop Plugins Directory (or `codex plugin add
-pipecat-context-hub@pipecat-hub-local` if supported), then open a new local
-chat after refreshing/restarting the host as required. Confirm the plugin
-and `explore` skill are discovered, invoke exploration, and observe its own
-MCP initialize and `get_hub_status` calls through
-`pipecat-context-hub-chatgpt-plugin`. A subprocess smoke or an existing
-Hub registration cannot prove this plugin activated in the desktop.
+Use `codex plugin marketplace add /absolute/local-marketplace` and install
+`pipecat-context-hub@pipecat-hub-local`, using the installed CLI's supported flags.
+After updates, prepare a fresh copy, preserve the old source as a backup and
+reinstall through the supported host flow. Verify version 0.2.0, four skills,
+cat-mark resources and absence of bundled MCP servers in the installed package.
+Standalone Hub/client registrations are unrelated and remain unchanged.
 
-Record retrieval, execution and Cloud prerequisites independently in
-`docs/evaluations/pipecat-context-hub-plugin.md` in the
-[source repository](https://github.com/pipecat-ai/pipecat-context-hub).
-Evaluation reports stay in repository documentation and are not copied into
-the installed plugin. Local stdio support is host-dependent.
-Discussion-only hosts cannot promise local file creation. Exploration needs
-neither Pipecat CLI nor Cloud credentials; build additionally
-needs local shell and Pipecat CLI, and Cloud deployment requires the Cloud
-extension and authenticated account. Discover versions and flags from installed help.
+Start a new supported chat and invoke Setup or Explore. Observe skill loading and
+native PCH queries with sourced output. Successful packaging, direct CLI commands
+and cache parity do not prove autonomous installed-skill activation. Record
+runtime/index, Build and Cloud prerequisites independently in the repository
+[evaluation report](https://github.com/pipecat-ai/pipecat-context-hub/blob/feature/chatgpt-local-plugin/docs/evaluations/pipecat-context-hub-plugin.md).
+No evaluation report is included in the installed package.
 
-After changing the plugin or installed interpreter, render a fresh destination
-and use the host's documented marketplace refresh/reinstall flow. Disable or
-remove this plugin using the host's plugin controls; remove its marketplace
-only when no other plugins need it. Keep the Hub installation and index for
-other clients. Never remove unrelated registrations.
+## Publication
+
+This is a skills-only release candidate for supported execution environments.
+A public submission ZIP excludes MCP configuration and hooks, so it needs no
+hosted PCH HTTPS endpoint. Publisher verification, final listing metadata/policy
+URLs, clean-environment tests and portal skill scans/review are still required.
+Package installation does not provision command execution or persistent storage.
+See [submission requirements](https://developers.openai.com/plugins/deploy/submission).
+OpenAI currently does not support adding MCP to the same skills-only listing later;
+a future MCP offering needs its own supported distribution decision.

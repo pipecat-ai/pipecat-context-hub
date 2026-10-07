@@ -46,22 +46,18 @@ invocation downloads the package and local models (allow a few minutes).
 > packages are `pipecat-ai*`); the command and MCP server name are
 > `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
-The optional [desktop plugin experiment](../plugins/pipecat-context-hub/README.md)
-provides [explicit Context Hub setup](../plugins/pipecat-context-hub/skills/setup/SKILL.md),
-grounded exploration and a [local build workflow](../plugins/pipecat-context-hub/skills/build/SKILL.md)
-and [Cloud deployment preparation](../plugins/pipecat-context-hub/skills/deploy/SKILL.md)
-with native shell/CLI prerequisites and concrete approval before Cloud mutations. It uses a separate MCP connection
-named `pipecat-context-hub-chatgpt-plugin`.
-Plugin installation adds skills and MCP configuration; ask "Set up Pipecat
-Context Hub" to detect prerequisites and perform authorised missing-runtime,
-initial-index and selected-client setup. Full plugin setup also covers required
-Pipecat/Cloud CLIs and guides Cloud account signup/login; PCH CLI is only the
-retrieval backup. A healthy index is reused.
-The recorded Codex local experiment qualifies packaged exploration, bounded
-local build/startup and an exactly approved matching READY Cloud deployment.
-Provider/browser sessions, secret writes, revised cached-skill activation and
-ChatGPT Work remain untested. Its dated evidence and twenty-one frozen prompts
-live in the repository [evaluation report](evaluations/pipecat-context-hub-plugin.md).
+The optional [skills-only Pipecat plugin](../plugins/pipecat-context-hub/README.md)
+provides Setup, grounded Explore, local Build and approved Cloud Deploy workflows.
+It uses `pipecat context-hub` or standalone `pipecat-context-hub` through native
+execution, with no bundled MCP connection. Plugin installation supplies skills
+and assets; ask "Set up Pipecat Context Hub" to check prerequisites and perform
+only authorised missing-runtime and initial-index setup. Full-plugin setup also
+covers required Pipecat/Cloud CLIs and Cloud account signup/login. Healthy
+installations/indexes are reused, and existing standalone MCP clients are unchanged.
+Clean local/cloud onboarding and autonomous activation of the CLI-first release
+remain unqualified. The earlier stdio experiment's local build and approved READY
+Cloud evidence remain dated in the [evaluation report](evaluations/pipecat-context-hub-plugin.md); they do not
+prove fresh-user, provider/session or ChatGPT Work support for this release.
 
 ### Inside the Pipecat CLI
 

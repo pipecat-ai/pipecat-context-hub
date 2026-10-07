@@ -1,17 +1,18 @@
 ---
 name: setup
-description: Set up the Pipecat Context Hub plugin after an explicit request, checking retrieval and required Pipecat/Cloud CLIs, installing missing prerequisites, configuring an initial index/MCP and guiding Cloud account signup and login when authorised.
+description: Set up the Pipecat Context Hub plugin after an explicit request, checking native CLI retrieval and required Pipecat/Cloud tools, installing missing prerequisites, creating an initial index and guiding Cloud account signup and login when authorised.
 ---
 
 Use this workflow when the user requests plugin, Context Hub or Pipecat/Cloud
 CLI setup. Determine the requested capabilities from the conversation: full
 plugin setup includes the build/deploy toolchain; explicitly retrieval-only
-setup needs only PCH. PCH CLI is a retrieval backup, while Pipecat CLI and its
+setup needs only PCH. PCH CLI supplies retrieval; Pipecat CLI and its
 Cloud extension are required tools for Build and Deploy respectively.
-Plugin installation
-or an exploration question alone does not authorise dependency installation,
-index creation or host configuration. PCH is one Python package providing both
-the MCP server and query CLI; users do not need two separate downloads.
+Plugin installation or an exploration question alone does not authorise
+dependency installation or index creation. The plugin contains skills and assets,
+not Python, command-line
+tools or an index. Its setup runs in the selected execution environment; it does
+not configure a desktop MCP client or deploy a remote MCP service.
 Skills supply instructions, not execution permissions or installation hooks.
 
 ## Inspect and propose setup
@@ -20,15 +21,16 @@ Skills supply instructions, not execution permissions or installation hooks.
    access with a harmless command. A local computer or cloud execution environment
    can run PCH when it supports Python and subprocesses; installing a plugin on
    the web does not provision that environment. Record whether its runtime/index
-   will persist between tasks. Do not assume cloud files configure a local client.
-2. If the packaged `pipecat-context-hub-chatgpt-plugin` connection works, call
-   `get_hub_status`. Discover existing CLI retrieval using
-   [Explore's CLI backup](../explore/SKILL.md#cli-backup): verified
-   `pipecat context-hub` or standalone `pipecat-context-hub`, supported help and
-   `status`. Keep stdout JSON separate from stderr and inspect actual exit errors;
-   exit 2 alone is not proof of an empty index. Record versions, index path, count,
-   refresh date, framework pin and indexed framework version. Compare both routes
-   when available; do not silently select a different index or installation.
+   will persist between tasks. Cloud container paths, indexes and login do not
+   configure or authenticate another execution host.
+   If native execution is unavailable, report setup and grounded retrieval
+   unavailable and provide the user's remaining setup steps; do not install an adapter.
+2. Discover PCH through [Explore's CLI retrieval](../explore/SKILL.md#cli-retrieval):
+   verify `pipecat context-hub` or standalone `pipecat-context-hub`, installed
+   help and JSON `status`. Inspect failures before choosing a path: exit 2 alone
+   does not prove an empty index. Record versions, index path, count, refresh
+   date, framework pin and indexed framework version. Reuse the selected
+   installation/index rather than silently picking another.
    Separately inspect `pipecat --version`, `pipecat init --help` and, for Cloud,
    `pipecat cloud --help`, `pipecat cloud auth login --help` and organisation-list
    help. A listed `cloud` command may be an unavailable-extension stub; require
@@ -37,15 +39,13 @@ Skills supply instructions, not execution permissions or installation hooks.
    framework version or disabled reranking does not authorise refresh, upgrade or
    model downloads. A corrupt/unreadable existing index is a separate recovery
    request; stop that branch without reset, repair, deletion or a replacement index.
-   If working MCP needs no local setup and native execution is absent, report MCP
-   usable and CLI backup unavailable rather than installing an execution adapter.
 4. Present the concrete changes needed: required PCH/Pipecat/Cloud package/version
    specifications and retained extensions, tool-manager
-   environment, resolved initial-index path and sources/framework pin, selected
-   client and plugin configuration destination, plus any existing-file backup.
+   environment, resolved initial-index path and sources/framework pin, required
+   storage/persistence and any existing-file backup.
    Explain that first indexing downloads models and source repositories and can
    take several minutes. Use only already-authorised changes. If the user has
-   explicitly requested installation, initial indexing and configuration, proceed
+   explicitly requested installation and initial indexing, proceed
    within that scope; otherwise obtain one setup approval covering the proposed
    changes before executing them. A readiness-only request stays read-only.
 
@@ -53,7 +53,7 @@ Skills supply instructions, not execution permissions or installation hooks.
 
 | Requested workflow | Required tools | Account requirement |
 |---|---|---|
-| Explore | Usable PCH MCP or query CLI | No Cloud account |
+| Explore | Usable PCH query CLI and native execution | No Cloud account |
 | Build | Pipecat CLI with working `init`, plus PCH retrieval | No Cloud account |
 | Deploy | Pipecat CLI with working Cloud extension, plus PCH retrieval | Authenticated Pipecat Cloud account and selected workspace/organisation |
 
@@ -62,7 +62,7 @@ For authorised fresh full-plugin or Cloud setup, the
 is `uv tool install "pipecat-ai[cli]" --with pipecatcloud`. This supplies the
 Pipecat CLI with its Cloud extension; current distributions also bundle PCH.
 For an explicitly local-build-only setup, `uv tool install "pipecat-ai[cli]"`
-is sufficient. Cloud deployment cannot replace this CLI with PCH's MCP tools.
+is sufficient. PCH query commands do not replace the required build/deployment CLI.
 
 Reuse existing working CLI installations. Inspect tool-manager/package metadata
 before modifying an existing environment: `uv tool install --with` replaces the
@@ -76,14 +76,14 @@ the required packages, or report the missing execution prerequisite.
 Verify actual installed versions and required subcommand help after installation.
 If `pipecat context-hub --help` works, use that PCH installation; otherwise retain
 or install standalone PCH separately. A working Pipecat/Cloud CLI is mandatory
-for the requested Build/Deploy capability even when remote MCP retrieval works.
+for the requested Build/Deploy capability, separately from PCH query readiness.
 
 ## Install missing PCH and create the initial index
 
 Inspect the installed tool manager's help. When `uv` is already available, the
 standalone package install is `uv tool install pipecat-ai-context-hub`; use an
-explicit `==VERSION` only when selected by the user. This is sufficient for both
-MCP and CLI. PCH may already be bundled with the installed Pipecat CLI; do not
+explicit `==VERSION` only when selected by the user. This supplies the PCH CLI.
+PCH may already be bundled with the installed Pipecat CLI; do not
 install a duplicate or upgrade a working CLI to obtain it. If `uv` is absent,
 an authorised compatible Python virtual environment and its `pip` can install
 the same package. Do not install globally or bootstrap another tool manager
@@ -105,38 +105,6 @@ initial setup. Do not refresh a populated index to test setup. On failure, retai
 partial state and report the bounded error; do not retry, clear it or redirect
 to another index automatically. Check `status` after initial indexing and
 require nonzero records with known provenance before calling retrieval ready.
-
-## Configure only the selected plugin connection
-
-Preserve a working packaged connection. If it needs binding, verify the selected
-Hub Python can import `pipecat_context_hub` with `-P` from the neutral directory.
-Keep the virtual-environment interpreter path without resolving its symlink out
-of that environment. `install --print-config`, when supported, is a read-only
-diagnostic; its standalone server name is not the packaged connection identity.
-Do not run bare `install`: it registers all detected clients and refreshes.
-
-Use the packaged [local renderer](../../scripts/prepare_local.py) with that
-verified Hub Python and `-P`. Prepare into an absent/empty directory outside the
-checkout and installed plugin cache. Discover the selected marketplace's actual
-source and the host's supported update commands; preserve the plugin/marketplace
-identity. If replacing an existing source copy, prepare and validate a fresh
-copy first, preserve the old directory as a recoverable backup, then update only
-that selected source and reinstall/refresh through the supported host flow.
-Never edit the installed cache or unrelated client/MCP entries.
-
-Inspect generated `mcp.json`: the only server is
-`pipecat-context-hub-chatgpt-plugin`, its stdio command is the bare interpreter
-name, its PATH is that interpreter's directory, and its arguments are
-`-P -m pipecat_context_hub serve`. The CLI and server must resolve the same
-configured index; do not persist unrelated environment variables or secrets.
-
-Only use stdio where the selected host supports it. If host configuration is
-unavailable from this execution environment, provide the prepared configuration
-and exact remaining user steps, report MCP configuration pending, and retain
-usable CLI retrieval. A cloud container's paths are not desktop interpreter
-paths, and creating that container's CLI does not deploy an HTTPS MCP endpoint.
-An existing remote MCP connection uses its server's runtime/index; do not install
-local PCH unless CLI backup in the selected environment is requested.
 
 ## Cloud account and login
 
@@ -179,22 +147,18 @@ metadata stay pending. Account/login setup does not approve a build or deploymen
 
 ## Verify and hand off
 
-After a changed launch configuration, restart the actual MCP process through
-the supported host flow before checking the packaged connection; a logical
-reconnect may reuse the old process. Verify package-owned status and a read-only
-`search_docs("TTS + STT")`, then status again. Check CLI `status` and the equivalent
-search when native execution is available. Require hits for both concepts and
-matching index/version provenance. These checks do not refresh the index.
+Use the verified PCH command for `status`, a read-only
+`search-docs "TTS + STT"`, then `status` again. Require hits for both concepts and
+unchanged index/version provenance. These checks do not refresh the index.
+No MCP registration or process restart is needed for this skills-only plugin.
 
 Report installed/reused package versions, initial indexing performed or skipped,
-configuration changes and backups, and separate PCH MCP/CLI, Pipecat build CLI,
-Cloud CLI and Cloud account/organisation outcomes. PCH CLI success,
-rendering or another MCP connection is not proof of packaged MCP activation.
-Missing host restart/access remains pending; never call the whole setup complete
-from PCH CLI-only proof. Full-plugin/Cloud setup also requires usable workflow
-CLIs and successful account metadata checks; missing login remains pending.
-Hand off to [Explore](../explore/SKILL.md) when the required
-route is usable. Missing Cloud login does not block working Explore or local
-Build. Build and Deploy retain their app-workspace, provider-credential and
-concrete deployment approvals; setup does not access provider secrets, provision
-Cloud deployments or start agent sessions.
+backups, storage/persistence limits and separate PCH query, Pipecat build CLI,
+Cloud CLI and Cloud account/organisation outcomes. Full-plugin/Cloud setup also
+requires usable workflow CLIs and successful account metadata checks; missing
+login remains pending. Hand off to [Explore](../explore/SKILL.md) when retrieval
+is usable. Missing Cloud login does not block working Explore or local Build.
+Build and Deploy retain their app-workspace, provider-credential and concrete
+deployment approvals; setup does not access provider secrets, provision Cloud
+deployments or start agent sessions. Packaging and successful direct commands
+are not proof of autonomous installed-skill activation or fresh cloud onboarding.

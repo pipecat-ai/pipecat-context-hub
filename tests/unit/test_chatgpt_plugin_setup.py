@@ -1,4 +1,4 @@
-"""Regression coverage for the portable desktop plugin renderer."""
+"""Regression coverage for the portable skills-only plugin packager."""
 
 from __future__ import annotations
 
@@ -6,28 +6,24 @@ import importlib.util
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
-from unittest.mock import Mock
 
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SOURCE = _ROOT / "plugins" / "pipecat-context-hub"
-_SERVER_NAME = "pipecat-context-hub-chatgpt-plugin"
 
 
 @pytest.fixture
-def renderer(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def renderer() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "chatgpt_plugin_setup", _SOURCE / "scripts" / "prepare_local.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    probe = Mock(return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""))
-    monkeypatch.setattr(module.subprocess, "run", probe)
     return module
 
 
@@ -38,38 +34,26 @@ def _copy_source(renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.Monke
     return source
 
 
-def test_render_uses_only_unique_connection_and_preserves_interpreter(
-    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    executable = tmp_path / "environment" / "bin" / "python"
-    executable.parent.mkdir(parents=True)
-    real_python = tmp_path / "base-python"
-    real_python.touch()
-    executable.symlink_to(real_python)
-    monkeypatch.setattr(renderer.sys, "executable", str(executable))
-    template_before = (_SOURCE / "mcp.template.json").read_bytes()
-
+def test_prepare_runs_without_site_packages_or_hub(tmp_path: Path) -> None:
     destination = tmp_path / "prepared"
-    assert renderer.prepare_local(destination) == destination
-    config = json.loads((destination / "mcp.json").read_text())
-    assert set(config["mcpServers"]) == {_SERVER_NAME}
-    server = config["mcpServers"][_SERVER_NAME]
-    assert server == {
-        "type": "stdio",
-        "command": executable.name,
-        "args": ["-P", "-m", "pipecat_context_hub", "serve"],
-        "env": {"PATH": str(executable.parent)},
-    }
-    assert "__HUB_" not in (destination / "mcp.json").read_text()
-    assert server["env"]["PATH"] != str(real_python.parent)
-    assert renderer.subprocess.run.call_args.args[0] == [
-        str(executable),
-        "-P",
-        "-c",
-        "import pipecat_context_hub",
-    ]
-    assert (_SOURCE / "mcp.template.json").read_bytes() == template_before
-    assert (destination / "mcp.template.json").read_bytes() == template_before
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            str(_SOURCE / "scripts" / "prepare_local.py"),
+            str(destination),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Prepared skills-only plugin" in result.stdout
+    assert (destination / "skills" / "setup" / "SKILL.md").is_file()
+    assert not (destination / "mcp.json").exists()
 
 
 def test_render_excludes_evaluation_and_unrelated_files(
@@ -77,6 +61,11 @@ def test_render_excludes_evaluation_and_unrelated_files(
 ) -> None:
     source = _copy_source(renderer, tmp_path, monkeypatch)
     excluded = [
+        "mcp.json",
+        ".mcp.json",
+        "mcp.template.json",
+        "hooks/hooks.json",
+        ".app.json",
         "evaluation.md",
         "scratch.txt",
         "qualification.json",
@@ -91,6 +80,7 @@ def test_render_excludes_evaluation_and_unrelated_files(
         "skills/deploy/__pycache__/cached.pyc",
         "skills/explore/__pycache__/cached.pyc",
         "skills/setup/reports/setup-results.json",
+        "skills/private/SKILL.md",
         "assets/scratch.svg",
         "assets/private.env",
     ]
@@ -102,8 +92,6 @@ def test_render_excludes_evaluation_and_unrelated_files(
     copied = {p.relative_to(destination).as_posix() for p in destination.rglob("*") if p.is_file()}
     assert copied == {
         "plugin.json",
-        "mcp.template.json",
-        "mcp.json",
         "README.md",
         "scripts/prepare_local.py",
         "skills/build/SKILL.md",
@@ -167,52 +155,14 @@ def test_render_preserves_complete_skill_resource_bytes(
     assert resource.read_bytes() == expected
 
 
-@pytest.mark.parametrize("mode", ["legacy", "extra"])
-def test_render_rejects_legacy_or_additional_server_entries(
-    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+@pytest.mark.parametrize("skill", ["explore", "build", "deploy", "setup"])
+def test_render_requires_all_four_skills(
+    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill: str
 ) -> None:
     source = _copy_source(renderer, tmp_path, monkeypatch)
-    template = source / "mcp.template.json"
-    config = json.loads(template.read_text())
-    server = config["mcpServers"][_SERVER_NAME]
-    if mode == "legacy":
-        config["mcpServers"] = {"pipecat-context-hub": server}
-    else:
-        config["mcpServers"]["pipecat-context-hub"] = server
-    template.write_text(json.dumps(config))
+    (source / "skills" / skill / "SKILL.md").unlink()
     destination = tmp_path / "prepared"
-    with pytest.raises(ValueError, match="packaged MCP server identity"):
-        renderer.prepare_local(destination)
-    assert not destination.exists()
-
-
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        ("command", "python"),
-        ("command", "/absolute/python"),
-        ("args", ["-m", "pipecat_context_hub", "serve"]),
-        ("env", {}),
-        ("env", {"PATH": "__HUB_PYTHON_DIRECTORY__:/usr/bin"}),
-        ("env", {"PATH": "__HUB_PYTHON_DIRECTORY__", "PYTHONPATH": "/shadow"}),
-        ("cwd", "/shadow"),
-        ("type", "http"),
-    ],
-)
-def test_render_rejects_unpinned_or_unsafe_launch(
-    renderer: ModuleType,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    key: str,
-    value: Any,
-) -> None:
-    source = _copy_source(renderer, tmp_path, monkeypatch)
-    template = source / "mcp.template.json"
-    config = json.loads(template.read_text())
-    config["mcpServers"][_SERVER_NAME][key] = value
-    template.write_text(json.dumps(config))
-    destination = tmp_path / "prepared"
-    with pytest.raises(ValueError, match="Unexpected MCP launch template"):
+    with pytest.raises(ValueError, match="Package resource must be a regular file"):
         renderer.prepare_local(destination)
     assert not destination.exists()
 
@@ -226,7 +176,6 @@ def test_render_preserves_nonempty_destination(renderer: ModuleType, tmp_path: P
         renderer.prepare_local(destination)
     assert sentinel.read_text() == "Keep this file"
     assert list(destination.iterdir()) == [sentinel]
-    renderer.subprocess.run.assert_not_called()
 
 
 def test_render_refuses_checkout_destination(renderer: ModuleType) -> None:
@@ -234,14 +183,23 @@ def test_render_refuses_checkout_destination(renderer: ModuleType) -> None:
     with pytest.raises(ValueError, match="outside the checkout"):
         renderer.prepare_local(destination)
     assert not destination.exists()
-    renderer.subprocess.run.assert_not_called()
 
 
-def test_render_missing_hub_leaves_no_output(renderer: ModuleType, tmp_path: Path) -> None:
-    renderer.subprocess.run.return_value = subprocess.CompletedProcess(
-        [], 1, stdout="", stderr="Module unavailable"
-    )
+def test_render_rejects_symlink_destination(renderer: ModuleType, tmp_path: Path) -> None:
+    existing = tmp_path / "existing"
+    existing.mkdir()
     destination = tmp_path / "prepared"
-    with pytest.raises(ValueError, match="installed Context Hub Python"):
+    destination.symlink_to(existing, target_is_directory=True)
+    with pytest.raises(ValueError, match="Destination must not be a symlink"):
         renderer.prepare_local(destination)
-    assert not destination.exists()
+    assert list(existing.iterdir()) == []
+
+
+def test_skills_only_manifest_and_onboarding(renderer: ModuleType, tmp_path: Path) -> None:
+    destination = renderer.prepare_local(tmp_path / "prepared")
+    manifest = json.loads((destination / "plugin.json").read_text())
+    settings = manifest["extensions"]["com.openai"]
+    assert not {"mcpServers", "apps", "hooks"}.intersection(manifest)
+    assert not {"apps", "hooks"}.intersection(settings)
+    assert (destination / settings["onboardingSkill"]).is_file()
+    assert len(settings["interface"]["shortDescription"]) <= 30

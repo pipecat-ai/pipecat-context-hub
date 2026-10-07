@@ -8,18 +8,14 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- Explicit Context Hub setup skill checks existing MCP/CLI readiness and handles
-  authorised missing-runtime, initial-index and selected-plugin configuration,
-  required Pipecat/Cloud CLI onboarding and Cloud account signup/login guidance.
-  Healthy installations/indexes are reused; plugin installation runs no setup
-  hook. MCP stays the default with verified Pipecat or standalone PCH CLI backup.
-- Optional local desktop plugin experiment with a read-only Pipecat Context
-  Hub explore skill, an independent MCP connection, and a renderer that pins
-  startup to the installed Hub interpreter. Recorded Codex local evidence
-  qualifies packaged exploration, bounded local build/startup and an exactly
-  approved matching READY Cloud deployment. Provider/browser sessions, secret
-  writes, revised cached-skill activation and ChatGPT Work remain untested;
-  the evaluation report preserves dated failures and scoped results separately.
+- Skills-only Pipecat Context Hub plugin 0.2.0 uses PCH CLI queries for Explore,
+  Build and Deploy grounding. Portable preparation needs no installed Hub and
+  includes four skills and cat-mark assets, with no MCP configuration or hooks.
+- Explicit Setup checks native execution and required PCH/Pipecat/Cloud CLIs,
+  reuses healthy installations/indexes and handles only authorised missing-runtime
+  and initial-index setup. It guides Cloud signup/login without handling passwords
+  or tokens. Installation itself runs no setup hook. Earlier stdio qualification
+  remains historical; fresh CLI-first onboarding/Cloud execution is unqualified.
 - Explore now separates idea and concept workflows, verifies retrieved detail
   before API claims, and discloses tool-specific source/version limits,
   unknown compatibility and unavailable snapshots without changing the index.

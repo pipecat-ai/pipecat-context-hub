@@ -9,7 +9,7 @@ grant execution permissions. This workflow requires native local shell/file
 execution and the installed Pipecat CLI; it does not use a shell MCP adapter.
 If either is absent, report build unavailable, retain working exploration and
 offer [required CLI setup](../setup/SKILL.md#required-workflow-clis). Pipecat CLI
-is required for building; PCH's retrieval fallback does not replace it.
+is required for building; PCH query commands do not replace it.
 Cloud account access is not required for local build. Deployment is a separate
 workflow; hand off to deploy for read-only preparation and a concrete approval
 payload. Do not upload secrets, deploy or start remote agent sessions here.
@@ -65,10 +65,9 @@ Read required key **names** from generated placeholders and source; never print
 secret values or read existing `.env` files. Credentials are supplied by the user
 through their local workflow, not invented or copied into reports.
 
-Before Pipecat API customization, prefer the packaged connection
-`pipecat-context-hub-chatgpt-plugin`. If its connection/tools are unavailable,
-follow [Explore's CLI backup](../explore/SKILL.md#cli-backup) using the installed
-PCH CLI. Check status, inspect the active interface's schemas/help, retrieve
+Before Pipecat API customization, follow
+[Explore's CLI retrieval](../explore/SKILL.md#cli-retrieval) using the installed
+PCH command. Check status, inspect installed help, retrieve
 definitions/examples, and cite returned source URLs. Separate
 multiple concepts with ` + ` or ` & `. Search/detail filters are tool-specific,
 as described in explore. Verify definitions rather than reference-only hits.
@@ -101,6 +100,7 @@ resolved configuration and generated files are distinct evidence.
 Return project path, selected choices, CLI/framework versions, generated and
 resolved pins, files customized with sources, exact check outcomes and remaining
 credential/provider/client validation. Build unavailable, partially verified,
-locally verified and conversation-verified are different results. Missing optional
-shell/CLI does not disable exploration. Do not claim a live conversation from
-imports or mocks, or claim revised plugin activation from a fresh rendered copy.
+locally verified and conversation-verified are different results. Missing Pipecat
+build CLI does not disable working PCH exploration; missing native execution or
+PCH makes grounded retrieval unavailable. Do not claim a live conversation from
+imports or mocks, or revised plugin activation from a fresh prepared copy.

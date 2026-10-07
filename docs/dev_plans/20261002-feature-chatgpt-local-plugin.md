@@ -223,6 +223,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 - [x] Follow-up (2026-10-06): Explicit Context Hub setup skill and package verification
 - [x] Follow-up (2026-10-06): Required build/deploy CLIs and Cloud signup/login guidance
+- [ ] Follow-up (2026-10-06): CLI-first skills-only plugin
 
 - [x] Phase 1: Prove the desktop and installed-tool path
 - [x] Phase 2: Complete grounded exploration
@@ -536,3 +537,44 @@ commits. No refresh, dependency installation, login or Cloud operation occurs.
 The earlier full-suite result belongs to the preceding Setup addition; this
 instructions-only follow-up runs the existing packaging gate without repeating
 the unchanged runtime suite. Fresh account and installation paths remain untested.
+
+## CLI-first skills-only follow-up (2026-10-06)
+
+The user approved replacing the plugin's required stdio MCP connection with CLI
+retrieval. This supersedes the original local-plugin delivery design; the original
+review marker covers that historical design, not this follow-up. The Hub package's
+MCP server and standalone client registrations remain unchanged.
+
+Prepare plugin version 0.2.0 as a skills-only package. Explore uses the installed
+`pipecat context-hub` query interface or standalone `pipecat-context-hub` with the
+same handlers, JSON, citations, filters and read-only index boundaries. Build and
+Deploy ground their work through that CLI. Setup detects native execution, installs
+only authorised missing prerequisites, creates only an authorised absent/empty
+initial index and guides Cloud login. Remove MCP binding/restart requirements.
+No native execution means grounded retrieval unavailable; cloud runtime, network,
+storage/persistence and credentials are checked on the actual execution host.
+
+Modify all four skills, plugin manifest/README and `scripts/prepare_local.py`;
+delete the plugin's `mcp.template.json`. Retain the deterministic, atomic resource
+copy but remove interpreter binding and Hub import/subprocess probing. Packaging
+must succeed before runtime installation and emit exactly eleven resources with
+no MCP configuration, hooks, private evaluation artifacts or machine paths.
+Keep all four SVG assets byte-identical. Set the setup onboarding entrypoint and
+a submission-length subtitle; do not invent publisher identity or policy URLs.
+
+Update renderer regressions for no-runtime/no-MCP packaging, source-byte
+preservation and rejected unsafe source/destination paths. Update changelog,
+setup/docs guides, evaluation and sibling-plan references/index. Run four-skill
+validation, targeted tests, Ruff formatting/checks, mypy and the full suite.
+Review the runtime-independent packaging invariant and credential boundaries.
+Prepare a real package/ZIP, inspect its membership, reinstall from the local
+marketplace, verify cache parity and read-only CLI status/query/status with no
+index changes. Do not install runtime dependencies, refresh, authenticate,
+deploy, upload a submission, push or open a PR in this follow-up.
+
+Acceptance requires current plugin source and installed cache to contain no MCP
+configuration; actual CLI retrieval covers both TTS and STT with unchanged index
+provenance. Packaging/install/query checks are distinct from autonomous skill
+activation and fresh-user/cloud onboarding, which remain unqualified unless
+observed. Skills-only publication remains subject to metadata/verification and
+portal review, and adding MCP to the same published listing is currently unsupported.

@@ -86,3 +86,12 @@ On 2026-10-05 the parent uniquely named packaged connection also passed the froz
 Later on 2026-10-05 the approved Cloud-retry worker observes a newer packaged Hub baseline: 0.8.1, 45,463 records, indexed 1.12.0 and refresh `2026-10-05T16:38:04.707267+00:00`, identical before/after. This supersedes the earlier dated 0.8.0 snapshot for current status. No agent refresh, runtime upgrade or repair occurred in that run, and the bounded graph guard was not independently exercised in that runtime. The later read-only Cloud-readiness verification preserves this same Hub baseline; matching deployment acceptance is recorded in the linked plugin plan and does not extend graph-corruption detection.
 
 The plugin experiment’s Phase 5 evaluation now reconciles all twenty-one frozen prompts and preserves the bounded HNSW invariant: the shared `VectorIndex` constructor runs the read-only size check before the sole production `PersistentClient` call; synthetic-corruption refusals and healthy reopen/search remain covered. This is prevention for the observed oversized-link-list shape, not general graph repair. The final security gate’s root-lock `fsspec` update is separate from Chroma, the live index, the installed Hub and the deployed qualification app.
+
+
+### CLI-first plugin follow-up (2026-10-06)
+
+The [plugin plan](20261002-feature-chatgpt-local-plugin.md#cli-first-skills-only-follow-up-2026-10-06)
+now replaces bundled stdio with native PCH query commands in its 0.2.0 skills-only
+release. Historical packaged MCP/recovery evidence above remains dated. Shared
+CLI/MCP retrieval handlers and the bounded HNSW guard are unchanged; this packaging
+change neither refreshes nor repairs the index and does not extend corruption coverage.

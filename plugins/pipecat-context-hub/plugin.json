@@ -1,14 +1,17 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "pipecat-context-hub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Set up Context Hub, explore voice-agent ideas, build locally and prepare approved Cloud deployments with grounded Pipecat sources.",
   "extensions": {
     "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md",
       "interface": {
         "displayName": "Pipecat Context Hub",
-        "shortDescription": "Ground voice-agent ideas in Pipecat sources",
-        "capabilities": ["Read"],
+        "shortDescription": "Ground ideas in Pipecat docs",
+        "longDescription": "Set up Pipecat tools, explore voice-agent ideas using sourced Context Hub documentation and examples, build apps and prepare approved Pipecat Cloud deployments. Requires native command execution and a compatible Python runtime in the task environment. Setup guides authorised CLI installation and initial indexing; deployment additionally requires a Pipecat Cloud account and login. Plugin installation supplies skills and assets, not the runtime or index.",
+        "category": "Developer Tools",
+        "capabilities": ["Read", "Write"],
         "composerIcon": "./assets/cat-mark.svg",
         "composerIconDark": "./assets/cat-mark-dark.svg",
         "logo": "./assets/context-hub-logo.svg",

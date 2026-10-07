@@ -3,16 +3,17 @@ name: explore
 description: Explore a voice-agent idea or Pipecat concept using the local Context Hub's documentation, API definitions and examples before making framework claims.
 ---
 
-Prefer the plugin's Context Hub MCP tools through the connection named
-`pipecat-context-hub-chatgpt-plugin`. If its connection or tools are unavailable,
-use the installed PCH CLI through native shell execution as the backup below.
-Exploration is read-only. An idea or
-concept question authorises retrieval and discussion, not scaffolding, local
-file writes, execution of examples, builds, secret access/uploads or deployment.
-Local shell is needed only for the CLI backup. PCH queries are available through
-`pipecat context-hub` when the installed Pipecat CLI includes PCH, or through
-the standalone `pipecat-context-hub` command. Cloud credentials are not required
-for exploration.
+Use the installed PCH query CLI through native command execution. Prefer
+`pipecat context-hub` when installed help exposes its PCH commands; otherwise
+use standalone `pipecat-context-hub`. This skills-only plugin does not require
+an MCP connection. Native execution, a compatible runtime and a populated
+Context Hub index are required for grounded retrieval. If they are absent,
+report retrieval unavailable and offer [Context Hub setup](../setup/SKILL.md).
+Cloud credentials are not required for exploration.
+
+Exploration is read-only. An idea or concept question authorises retrieval and
+discussion, not dependency installation, indexing, scaffolding, local file writes,
+execution of examples, builds, secret access/uploads or deployment.
 After an explicit build request, hand off to the build skill to check native
 execution, installed CLI and material project choices. After a deployment
 request, hand off to deploy for read-only preparation and concrete approval
@@ -21,37 +22,31 @@ executable permissions.
 
 ## Readiness and preferences
 
-1. Call `get_hub_status` before MCP retrieval, or `status` before CLI retrieval.
-   State which route is active, record count, refresh date,
-   `framework_version` (operator pin), `indexed_framework_version` (observed
-   release) and `indexed_framework_commits_ahead` when present. A `latest` pin
-   is not proof of today's latest release. Retain relevant commit citations.
-2. If the packaged connection/tools are absent or a transport failure prevents
-   retrieval, report the actual failure and try the CLI backup when available.
-   Do not present CLI retrieval or another MCP connection as proof that the
-   packaged MCP activated. If neither route works, report retrieval unavailable
-   with both outcomes. Offer [Context Hub setup](../setup/SKILL.md) when runtime,
-   initial index or host configuration is missing; wait for an explicit setup
-   request before installation, initial indexing or configuration changes.
-   Index/data failures, invalid input, low confidence, empty
-   hits and unavailable versions are not reasons to change routes. Follow startup
-   remediation in the explanation without running it. An empty index cannot
-   ground an answer. A stale index can
-   supply explicitly dated evidence when useful, with a coverage limitation.
-   Unknown refresh/version metadata is unknown readiness, not a freshness pass.
-   Suggest user-controlled remediation; never refresh/reset/repair or switch
-   the index during exploration. Describe reranker limitations from status;
-   `config_disabled` is an operator choice, not a failure requiring a bug report.
+1. Run CLI `status` before retrieval. Record the selected executable/prefix,
+   record count, refresh date, `framework_version` (operator pin),
+   `indexed_framework_version` (observed release) and
+   `indexed_framework_commits_ahead` when present. A `latest` pin is not proof
+   of today's latest release. Retain relevant commit citations.
+2. Check exit codes and parse stdout as JSON, keeping stderr diagnostics separate.
+   Missing execution/runtime/index means retrieval unavailable; offer Setup and
+   wait for an explicit request before installation or initial indexing. Index
+   failures, invalid input, low confidence, empty hits and unavailable versions
+   are not reasons to select another index or silently switch installations.
+   Explain startup remediation without running it. An empty index cannot ground
+   an answer. A stale index can supply explicitly dated evidence with a coverage
+   limitation. Unknown provenance is not a freshness pass. Never refresh/reset/
+   repair during exploration. Describe reranker limitations from status;
+   `config_disabled` is an operator choice, not a bug.
 3. Extract the user's idea/concept, Pipecat version and source preference.
-   Inspect runtime schemas or installed CLI help before mapping preferences:
-   installed interfaces may differ from this source package. Use only supported
+   Inspect installed CLI help before mapping preferences:
+   installed command versions may differ from this source package. Use only supported
    arguments.
    If a preference cannot be enforced, say so before offering clearly labelled
    broader evidence. A strict source/version requirement remains unresolved;
    ask whether the user wants a broader alternative, while retrieving any
    independent material that already meets their request.
 
-| Tool | Supported version preference | Supported source/scope preference |
+| Handler operation | Supported version preference | Supported source/scope preference |
 |---|---|---|
 | `search_docs` | None | `area` docs-path prefix; no `repo` filter |
 | `get_doc` | None | `doc_id` from a hit or `path`, optionally `section`; no repo filter |
@@ -75,12 +70,11 @@ the indexed lifecycle registry, not source from that version; an announced
 removal date alone is not proof that removal occurred. A negative lifecycle
 lookup is not proof of complete coverage or compatibility.
 
-## CLI backup
+## CLI retrieval
 
-Use this route only when the preferred MCP connection or required tools are
-unavailable, including transport failures. Discover an already-installed
+Discover an already-installed
 `pipecat` or `pipecat-context-hub` executable through native execution tools or
-the configured Hub interpreter's executable directory. For Pipecat CLI, verify
+installed tool-manager metadata. For Pipecat CLI, verify
 `pipecat context-hub --help` exposes the PCH query commands; finding `pipecat`
 alone is insufficient. Its `ch` alias may also exist, but prefer the full name.
 If that subcommand is absent, check the standalone executable. Do not guess
@@ -93,7 +87,7 @@ the commands below with the verified `pipecat context-hub` or standalone
 `pipecat context-hub search-docs "TTS + STT"`. Use only these read-only query
 commands, with safe argument quoting:
 
-| MCP operation | PCH CLI command |
+| Handler operation | PCH CLI command |
 |---|---|
 | `get_hub_status` | `status` |
 | `search_docs` | `search-docs QUERY` |
@@ -107,16 +101,16 @@ commands, with safe argument quoting:
 The query commands return the same handler JSON on stdout; keep stderr
 diagnostics separate and check exit codes. Inspect stderr on a nonzero exit to
 distinguish invalid input from an unready index; neither is successful retrieval.
-Use the configured local Hub data directory when known. Compare CLI status with
-any available MCP baseline; do not silently change the index or corpus. If no
-MCP baseline exists, disclose the CLI's index/version provenance without claiming
-it matches an unseen MCP server.
+Use the selected Hub data directory and installed command consistently. Record
+status again after retrieval and require unchanged index/version provenance.
+Do not silently change the index, corpus or installation.
 
 Apply the same preferences, detail lookups, citations and evidence rules below.
 Installed help controls flag mapping: `version_filter="compatible_only"` uses
 `--compatible-only` with `--pipecat-version`; lifecycle `version` uses
 `--at-version`; example `tags` use repeated `--tag`; `include_readme=false` uses
-`--no-readme`. Do not assume an MCP parameter is a CLI flag. Never run `refresh`,
+`--no-readme`. The handler-operation table above names internal fields; map them
+to verified CLI flags. Never run `refresh`,
 `install`, reset/repair, package-manager commands or Cloud commands as recovery.
 
 ## Idea workflow
@@ -155,7 +149,7 @@ chunk_type="type_definition")` when needed.
 A nonempty search, even with high confidence, may contain only references or
 imports of the requested symbol. It is not definition evidence. Verify the
 name, path and contents; use a symbol/detail lookup or narrower filter before
-claiming success. `get_doc(section=...)` can fall back to the full page: check
+claiming success. `get-doc --section` can fall back to the full page: check
 that the returned text is actually the requested section. Empty content or
 `Not Found` is missing evidence even when `low_confidence` is false.
 
@@ -172,6 +166,6 @@ small number of targeted follow-ups (such as a direct page, symbol or matching
 chunk-type lookup). Do not repeat indefinitely or silently relax strict user
 preferences. Missing results do not prove an API does not exist. If the gap
 persists, state what remains unknown, offer a focused clarification and follow
-the server's report/remediation guidance without filing or mutating anything
+the CLI's stderr report/remediation guidance without filing or mutating anything
 automatically. End with the grounded answer, citations, material limitations
 and the next decision needed; no implementation action follows an idea prompt.

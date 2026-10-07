@@ -9,8 +9,8 @@ secrets, upload source, build images locally or remotely, push to a registry,
 deploy, start agent sessions, delete deployments or roll back. `deploy` is not
 a dry run. Skills do not grant execution permissions. Exploration and local
 build remain available when Cloud prerequisites are missing. Pipecat CLI and
-its Cloud extension are required for deployment, independently of the PCH
-retrieval route. Offer [required CLI setup](../setup/SKILL.md#required-workflow-clis)
+its Cloud extension are required for deployment, separately from PCH query
+readiness. Offer [required CLI setup](../setup/SKILL.md#required-workflow-clis)
 when they are absent; preparation does not install them silently.
 
 ## Discover and prepare
@@ -22,12 +22,11 @@ when they are absent; preparation does not install them silently.
    Missing execution/CLI disables deployment only; never install an adapter or
    upgrade tools silently. Preserve the existing bot, dependency pins and lock;
    never re-scaffold an existing project to obtain Cloud files.
-2. Prefer the uniquely packaged `pipecat-context-hub-chatgpt-plugin` connection.
-   If its connection/tools are unavailable, follow
-   [Explore's CLI backup](../explore/SKILL.md#cli-backup) using the installed PCH
-   CLI. Check status before/after, retrieve relevant docs/API/examples and retain
+2. Follow [Explore's CLI retrieval](../explore/SKILL.md#cli-retrieval) using the
+   installed PCH command. Check status before/after, retrieve relevant docs/API/
+   examples and retain
    source citations. Separate multiple concepts with ` + ` or ` & `; inspect
-   the active interface's schemas/help before passing filters. Ground Dockerfile
+   installed command help before passing filters. Ground Dockerfile
    and runtime entrypoint
    choices, including transport/runner compatibility, in retrieved definitions.
    Version annotations do not switch indexed snapshots. Missing/unknown evidence
