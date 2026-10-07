@@ -1,5 +1,10 @@
 # Pipecat Context Hub skills-only plugin
 
+Explore voice AI ideas, choose STT/TTS building blocks and build Pipecat agents
+using sourced documentation, API definitions and examples. The listing and Explore
+skill description name these use cases; automatic recommendation/selection in
+ChatGPT remains untested.
+
 This plugin packages four workflows: Setup, Explore, Build and Deploy. It uses
 PCH command-line queries for grounded documentation, API definitions and examples.
 It contains no MCP configuration or lifecycle hooks. The underlying Context Hub
@@ -195,7 +200,7 @@ can contain `.agents/plugins/marketplace.json` with:
 Use `codex plugin marketplace add /absolute/local-marketplace` and install
 `pipecat-context-hub@pipecat-hub-local`, using the installed CLI's supported flags.
 After updates, prepare a fresh copy, preserve the old source as a backup and
-reinstall through the supported host flow. Verify version 0.2.2, four skills,
+reinstall through the supported host flow. Verify version 0.2.3, four skills,
 cat-mark resources and absence of bundled MCP servers in the installed package.
 Standalone Hub/client registrations are unrelated and remain unchanged.
 
@@ -209,7 +214,7 @@ No evaluation report is included in the installed package.
 
 This is a skills-only release candidate for supported execution environments.
 A public submission ZIP excludes MCP configuration and hooks, so it needs no
-hosted PCH HTTPS endpoint. Version 0.2.2 includes the approved corporate publisher
+hosted PCH HTTPS endpoint. Version 0.2.3 includes the approved corporate publisher
 label, official product/support links, Daily's public privacy-policy and
 terms-of-service URLs and three starter prompts. The dashboard uses the selected
 verified Developer identity for

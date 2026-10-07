@@ -678,3 +678,26 @@ Output is `~/Downloads/pipecat-context-hub-0.2.2.zip` (32,917 bytes), SHA-256
 Sanitized package proof is outside the checkout under `publisher-0.2.2-lj5ngk0m`.
 The user will upload this replacement to the existing corporate dashboard draft;
 portal skill-scan, review and publication outcomes remain unverified.
+
+## Voice AI discovery wording follow-up (2026-10-07)
+
+The user found the long description overly technical and asked whether it supports
+recommendations when someone builds voice AI. Prepare 0.2.3 with an outcome-led
+listing: voice AI agents, STT/TTS, conversational pipelines and recommendations
+grounded in Pipecat docs/APIs/examples. Keep a brief execution requirement and
+Cloud login/approval disclosure. Expand only Explore's frontmatter description to
+name those actual capabilities. Its instruction body, permission boundaries,
+approved starter prompts, policy URLs and assets remain unchanged.
+
+Seventeen packaging tests and Explore skill validation pass. Portable schema,
+listing limits, thirteen-file membership, CRCs and source-byte parity pass with
+zero credential/PII matches. Only manifest, package README and Explore frontmatter
+change; the other ten package resources remain byte-identical to 0.2.2. Output is
+`~/Downloads/pipecat-context-hub-0.2.3.zip` (33,008 bytes), SHA-256
+`1592e1d258701795061c67a196a7da48da5df59cd9294d75f5d52fe525b9407a`.
+Sanitized proof is outside the checkout under `publisher-0.2.3-eefi1c5p`.
+
+OpenAI's metadata guidance motivates clear scenarios and evaluation, but describes
+MCP tool selection; the plugin is skills-only. Automatic recommendations, directory
+ranking and skill selection in ChatGPT remain untested. No index, Cloud or dashboard
+mutation occurs, and the preceding full-suite/portal evidence remains dated.

@@ -459,7 +459,7 @@ The plugin experiment’s Phase 5 evaluation now reconciles all twenty-one froze
 
 The [plugin plan](20261002-feature-chatgpt-local-plugin.md#cli-first-skills-only-follow-up-2026-10-06)
 replaced bundled stdio with native PCH query commands in its 0.2.0 skills-only
-release. The 0.2.1/0.2.2 publisher ZIPs add listing metadata and a privacy notice;
+release. The 0.2.1–0.2.3 publisher ZIPs add listing/discovery metadata and a privacy notice;
 runtime and
 index behaviour are unchanged. Historical packaged MCP/recovery evidence above
 remains dated. Shared

@@ -5,7 +5,33 @@ outside the checkout. Do not put credentials or secret values in either report.
 Package/subprocess checks and actual desktop activation are separate outcomes.
 This repository report is not copied into the installed plugin package.
 
-## Current package: Terms of Service listing fix (2026-10-07)
+## Current package: voice AI discovery wording (2026-10-07)
+
+Plugin 0.2.3 leads the listing with voice AI agents, STT/TTS, conversational
+pipelines and recommendations grounded in documentation, API definitions and
+examples. The subtitle is "Build voice AI with Pipecat". Explore's frontmatter
+description explicitly names the same supported use cases; its instruction body
+and permission boundaries are unchanged. Setup/runtime requirements remain briefly
+disclosed in the listing, with detailed instructions in the skills. Approved
+starter prompts, public policy URLs and all assets are unchanged.
+
+The user reported that the preceding long description sounded like setup guidance
+and asked about recommendations when building voice AI. This wording follows
+OpenAI's metadata guidance on clear relevant scenarios. That guidance discusses
+tool selection; this skills-only package has no MCP tools, and neither directory
+ranking nor automatic recommendation/skill selection in ChatGPT has been tested.
+Do not report measured discovery improvement from copy/schema validation alone.
+
+The thirteen-file ZIP is `~/Downloads/pipecat-context-hub-0.2.3.zip` (33,008 bytes),
+SHA-256 `1592e1d258701795061c67a196a7da48da5df59cd9294d75f5d52fe525b9407a`.
+Seventeen packaging tests and Explore frontmatter validation pass. Portable schema,
+listing limits, exact membership, CRCs and source-byte equality pass with zero
+credential/PII matches. Only manifest, package README and Explore frontmatter
+change; the remaining ten resources are byte-identical to 0.2.2. Sanitized proof
+is outside the checkout under `publisher-0.2.3-eefi1c5p`. No index, Cloud or
+dashboard operation occurs. The earlier full-suite and portal results stay dated.
+
+## Terms of Service listing fix (2026-10-07)
 
 The user-provided dashboard screenshot of uploaded 0.2.1 shows metadata
 "No Issues", the expected publisher/logo/four skills, and zero of four skill

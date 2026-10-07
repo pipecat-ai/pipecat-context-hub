@@ -1,20 +1,23 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "pipecat-context-hub",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "license": "BSD-2-Clause",
   "repository": "https://github.com/pipecat-ai/pipecat-context-hub",
-  "description": "Set up Context Hub, explore voice-agent ideas, build locally and prepare approved Cloud deployments with grounded Pipecat sources.",
+  "description": "Explore voice AI ideas and build Pipecat agents with sourced documentation, API definitions and examples, from local setup to Cloud deployment.",
   "extensions": {
     "com.openai": {
       "onboardingSkill": "./skills/setup/SKILL.md",
       "interface": {
         "displayName": "Pipecat Context Hub",
         "developerName": "Daily.co/Pipecat.ai",
-        "shortDescription": "Ground ideas in Pipecat docs",
-        "longDescription": "Set up Pipecat tools, explore voice-agent ideas using sourced Context Hub documentation and examples, build apps and prepare approved Pipecat Cloud deployments. Requires native command execution and a compatible Python runtime in the task environment. Setup guides authorised CLI installation and initial indexing; deployment additionally requires a Pipecat Cloud account and login. Plugin installation supplies skills and assets, not the runtime or index.",
+        "shortDescription": "Build voice AI with Pipecat",
+        "longDescription": "Build voice AI agents with Pipecat, from an idea to a local app and Pipecat Cloud deployment. Explore speech-to-text (STT), text-to-speech (TTS) and conversational pipelines with recommendations grounded in Pipecat documentation, API definitions and example code. The plugin guides setup and requires an environment that can run Python commands. Cloud deployment requires a Pipecat Cloud login and your approval.",
         "category": "Developer Tools",
-        "capabilities": ["Read", "Write"],
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
         "websiteURL": "https://docs.pipecat.ai/api-reference/context-hub",
         "supportURL": "https://github.com/pipecat-ai/pipecat-context-hub/issues",
         "privacyPolicyURL": "https://www.daily.co/legal/privacy/",

@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Explore a voice-agent idea or Pipecat concept using the local Context Hub's documentation, API definitions and examples before making framework claims.
+description: Explore a voice AI agent idea or Pipecat concept, including STT, TTS and conversational pipelines, using sourced documentation, API definitions and examples.
 ---
 
 Use the installed PCH query CLI through native command execution. Prefer
