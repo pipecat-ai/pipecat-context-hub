@@ -1,9 +1,62 @@
-# Local plugin feasibility evidence
+# Pipecat plugin feasibility evidence
 
 Record machine-specific command paths and raw diagnostics in a local report
 outside the checkout. Do not put credentials or secret values in either report.
 Package/subprocess checks and actual desktop activation are separate outcomes.
 This repository report is not copied into the installed plugin package.
+
+## Current delivery: CLI-first skills-only (2026-10-06)
+
+The approved 0.2.0 follow-up replaces required bundled stdio MCP with native PCH
+query commands. Current source is a skills-only package with Setup, Explore,
+Build and Deploy; it contains no MCP configuration or hooks. Package preparation
+requires only standard-library Python, before installing PCH or creating an index.
+The underlying Hub's MCP server and existing client registrations are unchanged.
+
+Setup discovers the execution host, existing tools/index and required workflow
+CLIs. It performs only authorised missing-runtime/absent-or-empty initial-index
+setup and retains the user-run Cloud signup/login and secure headless PAT guidance.
+No shell means grounded query execution unavailable. Cloud Python/network/storage,
+index persistence and authentication must be verified in the actual environment.
+No successful render or direct query establishes autonomous cached-skill activation.
+
+All four skills validate. Seventeen packaging tests pass, including isolated
+`python -I -S` preparation without site packages, exact eleven-member membership,
+excluded MCP/hooks/private files, required four skills, preserved bytes and rejected
+unsafe source/destination paths. A real package/ZIP and installed cache match
+all source resources byte for byte. Codex reports plugin 0.2.0 installed/enabled.
+The four cat-mark SVGs are unchanged; manifest onboarding resolves and its
+28-character subtitle meets the limit. Read/Write labels reflect the workflow
+capabilities without granting execution permission.
+
+Ruff formatting/checks pass, mypy passes over 125 files and the full suite reports
+1,846 passed / 7 skipped in 59.59 seconds. Thirteen relative links/anchors and
+whitespace checks pass. The historical reviewed contract prefix remains unchanged;
+it does not review this follow-up. Manual packaging/instruction/security review
+checks runtime independence, allowlisted resources, no implicit install/refresh,
+native execution requirements and unchanged Cloud credential/approval safeguards.
+Shared Hub runtime code and dependency pins remain unchanged.
+
+The installed Pipecat CLI has no PCH bridge, so standalone PCH 0.8.1 supplies
+actual query qualification. All eight query operations return JSON. Docs search
+returns four hits covering TTS and STT; API/example searches return four each.
+Broad example results rank CLI import registry files; filtering to
+`pipecat-ai/pipecat` returns two actual framework examples. Detail checks supply
+a 19,277-character TTS page, one 755-character partial Whisper example file,
+five symbol snippets and `CartesiaTTSService` with `deprecated: false`.
+These are bounded retrieval checks, not complete ranking or example execution proof.
+
+CLI status fields are identical before/after: Hub 0.8.1, 45,463 records, refresh
+`2026-10-05T16:38:04.707267+00:00`, latest pin / indexed 1.12.0 / zero commits
+ahead and enabled reranker. No refresh, runtime installation, authentication or
+Cloud operation occurs. Sanitized package/CLI proof and the release-candidate ZIP
+remain outside the checkout under `cli-first-0.2.0-sw8jlzi2`; ZIP SHA-256 is
+`114fb11670e2d5bac218190c97f0a1dea80e05d41fd92faa6703a33e13a1a043`.
+Fresh-user/cloud setup, autonomous cached-skill activation, provider/browser
+sessions and portal review remain unqualified. Earlier stdio acceptance below
+remains historical and does not qualify those outcomes for this release.
+
+## Historical stdio experiment gates
 
 | Gate | Required observation | Result |
 |---|---|---|
@@ -23,7 +76,7 @@ This repository report is not copied into the installed plugin package.
 | Local build | Installed options, dry run, scaffold, imports/startup/behaviour | Pass for Phase 3 local fixture only; provider conversation and revised skill activation untested |
 | Cloud deployment | Approved build linked to actual ready deployment and settings | Pass, independent matching-build/deployment reads 2026-10-05; provider/session behaviour untested |
 
-## Current evaluation reconciliation (2026-10-05)
+## Historical stdio evaluation reconciliation (2026-10-05)
 
 The recorded core acceptance targets are demonstrated in Codex local: actual
 packaged explore activation/retrieval, source-candidate idea/concept conversations,

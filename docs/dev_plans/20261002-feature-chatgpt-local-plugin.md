@@ -223,7 +223,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 - [x] Follow-up (2026-10-06): Explicit Context Hub setup skill and package verification
 - [x] Follow-up (2026-10-06): Required build/deploy CLIs and Cloud signup/login guidance
-- [ ] Follow-up (2026-10-06): CLI-first skills-only plugin
+- [x] Follow-up (2026-10-06): CLI-first skills-only plugin
 
 - [x] Phase 1: Prove the desktop and installed-tool path
 - [x] Phase 2: Complete grounded exploration
@@ -578,3 +578,38 @@ provenance. Packaging/install/query checks are distinct from autonomous skill
 activation and fresh-user/cloud onboarding, which remain unqualified unless
 observed. Skills-only publication remains subject to metadata/verification and
 portal review, and adding MCP to the same published listing is currently unsupported.
+
+Qualification: all four skills validate; seventeen packaging tests pass. A real
+standard-library-only `python -I -S` preparation succeeds without Hub installation,
+and source/copy/ZIP/cache contain exactly eleven byte-matching resources. The
+active local marketplace reports installed/enabled plugin 0.2.0. The four SVGs
+are unchanged. There are no MCP configuration files or manifest MCP/hooks/app
+declarations; the setup onboarding path resolves. The 28-character subtitle
+meets the submission limit and Read/Write labels describe the four workflows.
+No runtime installer hook is introduced.
+
+Ruff formatting/checks pass (138 formatted files), mypy passes over 125 files
+and the full suite reports 1,846 passed / 7 skipped in 59.59 seconds. Thirteen
+relative links/anchors and whitespace checks pass. The original historical
+reviewed contract prefix is byte-identical to the pre-follow-up commit; its
+marker does not qualify the new CLI-first design. Manual review checks package
+allowlists, required resources, no-runtime preparation, native-execution gates,
+read-only exploration, existing-index reuse and Cloud credential/approval boundaries.
+Shared Hub handlers, dependency pins and standalone client configuration are unchanged.
+
+Installed Pipecat CLI lacks the PCH bridge, so actual qualification uses standalone
+PCH 0.8.1. All eight operations return JSON through the query front door. Docs
+search returns four TTS/STT hits; API/example searches return four hits each.
+The broad example query ranks CLI registry files, so the framework repo filter
+is used to obtain two actual examples. Detail checks return a 19,277-character
+TTS page, a 755-character partial Whisper example, five symbol snippets and a
+current Cartesia lifecycle result. Examples are not run; ranking and excerpt
+coverage are disclosed rather than treating nonempty output as complete evidence.
+
+All CLI status fields are unchanged before/after: Hub 0.8.1, 45,463 records,
+refresh `2026-10-05T16:38:04.707267+00:00`, latest pin / indexed 1.12.0 / zero
+commits ahead and enabled reranker. No refresh, tool installation, authentication,
+Cloud mutation, push, PR or directory submission occurs. Real package/CLI proofs
+and the 0.2.0 ZIP are outside the checkout under `cli-first-0.2.0-sw8jlzi2`;
+the prior marketplace source is preserved in `backup-cli-first-886uo8s9`.
+Fresh-user/cloud setup and autonomous revised-skill activation remain unqualified.
