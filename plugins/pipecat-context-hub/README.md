@@ -1,9 +1,13 @@
 # Pipecat Context Hub skills-only plugin
 
-Explore voice AI ideas, choose STT/TTS building blocks and build Pipecat agents
-using sourced documentation, API definitions and examples. The listing and Explore
-skill description name these use cases; automatic recommendation/selection in
-ChatGPT remains untested.
+Explore voice AI ideas, choose language and speech models supported by Pipecat,
+and build agents using sourced documentation, API definitions and examples. Explore
+STT/LLM/TTS pipelines and real-time speech-to-speech services such as
+[OpenAI Realtime](https://docs.pipecat.ai/api-reference/server/services/s2s/openai)
+and [Gemini Live](https://docs.pipecat.ai/api-reference/server/services/s2s/gemini-live).
+These are supported Pipecat integrations, not a claim of compatibility with every
+frontier model. The listing and Explore skill description name these use cases;
+automatic recommendation/selection in ChatGPT remains untested.
 
 This plugin packages four workflows: Setup, Explore, Build and Deploy. It uses
 PCH command-line queries for grounded documentation, API definitions and examples.

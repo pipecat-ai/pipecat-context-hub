@@ -15,8 +15,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   and support URLs, Daily's public privacy-policy URL, three starter prompts and
   a bundled notice explaining local processing, chat results and Cloud data flows.
 - Plugin 0.2.2 adds Daily's Terms of Service link to the public listing.
-- Plugin 0.2.3 leads listing and Explore metadata with voice AI, STT/TTS and
-  conversational pipeline use cases, retaining setup and Cloud requirements.
+- Plugin 0.2.3 leads listing and Explore metadata with voice AI, STT/LLM/TTS and
+  real-time speech-to-speech integrations, retaining setup and Cloud requirements.
+  Draft copy revisions retain 0.2.3 and use ZIP checksums to distinguish artifacts.
   Automatic recommendation/selection in ChatGPT remains untested.
 - Explicit Setup checks native execution and required PCH/Pipecat/Cloud CLIs,
   reuses healthy installations/indexes and handles only authorised missing-runtime

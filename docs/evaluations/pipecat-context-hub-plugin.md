@@ -5,7 +5,43 @@ outside the checkout. Do not put credentials or secret values in either report.
 Package/subprocess checks and actual desktop activation are separate outcomes.
 This repository report is not copied into the installed plugin package.
 
-## Current package: voice AI discovery wording (2026-10-07)
+## Current package: 0.2.3 speech-to-speech draft revision (2026-10-07)
+
+The user requested broader model coverage and retention of 0.2.3 while iterating
+on the unpublished draft. The listing now names "leading language and speech
+models supported by Pipecat", real-time speech-to-speech integrations such as
+OpenAI Realtime and Gemini Live, and STT/LLM/TTS pipelines. It does not claim
+support for every frontier model. Explore's frontmatter includes speech-to-speech;
+its instruction body and all permission boundaries retain their preceding bytes.
+
+Read-only Hub retrieval reports 45,463 records, indexed Pipecat 1.12.0, refresh
+time `2026-10-05T16:38:04.707267+00:00` and an enabled reranker. Direct page lookups
+for both services succeed. Current official [OpenAI Realtime docs](https://docs.pipecat.ai/api-reference/server/services/s2s/openai),
+[Gemini Live docs](https://docs.pipecat.ai/api-reference/server/services/s2s/gemini-live)
+and the [framework service list](https://github.com/pipecat-ai/pipecat/blob/main/README.md)
+corroborate the supported-integration wording. This is documentation evidence,
+not a model-execution test or packaged-plugin activation trace. No index refresh
+was performed.
+
+Version 0.2.3 is retained in the manifest. Git commits, descriptive ZIP filenames
+and checksums distinguish draft iterations. OpenAI's [submission guide](https://developers.openai.com/plugins/deploy/submission)
+permits corrected ZIP uploads but does not explicitly specify repeated-version
+draft acceptance; that dashboard behavior remains unverified. After publication,
+the guide instructs publishers to update the package version for changes.
+
+The revised thirteen-file ZIP is
+`~/Downloads/pipecat-context-hub-0.2.3-speech-to-speech.zip` (33,238 bytes), SHA-256
+`263f439d9ab0f7f43f9d8737d06e8d5ea2892d06408ff045a71dc6158fe055e6`.
+The preceding 0.2.3 ZIP remains intact. Seventeen packaging tests, Explore
+frontmatter validation, portable schema, listing limits, archive CRCs, exact
+membership and source-byte parity pass, with zero credential/PII matches. Only
+manifest, package README and Explore frontmatter differ from that prior ZIP;
+the other ten resources are byte-identical. Local proof is outside the checkout
+under `publisher-0.2.3-s2s-vtndrr62`. The historic reviewed plan prefix is unchanged.
+No runtime, Cloud or dashboard mutation occurs; automatic recommendation/selection
+and portal skill-scan/review outcomes remain unverified.
+
+## Initial 0.2.3 voice AI discovery wording (2026-10-07)
 
 Plugin 0.2.3 leads the listing with voice AI agents, STT/TTS, conversational
 pipelines and recommendations grounded in documentation, API definitions and

@@ -4,7 +4,7 @@
   "version": "0.2.3",
   "license": "BSD-2-Clause",
   "repository": "https://github.com/pipecat-ai/pipecat-context-hub",
-  "description": "Explore voice AI ideas and build Pipecat agents with sourced documentation, API definitions and examples, from local setup to Cloud deployment.",
+  "description": "Explore voice AI ideas and build Pipecat agents with supported language and speech models, including speech-to-speech, using sourced documentation, APIs and examples.",
   "extensions": {
     "com.openai": {
       "onboardingSkill": "./skills/setup/SKILL.md",
@@ -12,7 +12,7 @@
         "displayName": "Pipecat Context Hub",
         "developerName": "Daily.co/Pipecat.ai",
         "shortDescription": "Build voice AI with Pipecat",
-        "longDescription": "Build voice AI agents with Pipecat, from an idea to a local app and Pipecat Cloud deployment. Explore speech-to-text (STT), text-to-speech (TTS) and conversational pipelines with recommendations grounded in Pipecat documentation, API definitions and example code. The plugin guides setup and requires an environment that can run Python commands. Cloud deployment requires a Pipecat Cloud login and your approval.",
+        "longDescription": "Build voice AI agents with Pipecat, from an idea to a local app and Pipecat Cloud deployment. Explore leading language and speech models supported by Pipecat, including real-time speech-to-speech services such as OpenAI Realtime and Gemini Live, or compose speech-to-text (STT), an LLM and text-to-speech (TTS). Get recommendations grounded in Pipecat documentation, API definitions and example code. The plugin guides setup and requires an environment that can run Python commands. Cloud deployment requires a Pipecat Cloud login and your approval.",
         "category": "Developer Tools",
         "capabilities": [
           "Read",

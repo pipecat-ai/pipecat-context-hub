@@ -701,3 +701,35 @@ OpenAI's metadata guidance motivates clear scenarios and evaluation, but describ
 MCP tool selection; the plugin is skills-only. Automatic recommendations, directory
 ranking and skill selection in ChatGPT remain untested. No index, Cloud or dashboard
 mutation occurs, and the preceding full-suite/portal evidence remains dated.
+
+## Speech-to-speech wording and draft version follow-up (2026-10-07)
+
+The user requested language/speech-model coverage and retention of 0.2.3 during
+draft iteration. Expand listing and Explore frontmatter to include real-time
+speech-to-speech and STT/LLM/TTS pipelines. Use "leading language and speech
+models supported by Pipecat", with OpenAI Realtime and Gemini Live examples,
+rather than universal support for all frontier models. Keep the version, skill
+instruction bodies, permission boundaries, prompts, policy URLs and assets.
+
+Read-only Hub status reports 45,463 records, indexed Pipecat 1.12.0, an enabled
+reranker and refresh time `2026-10-05T16:38:04.707267+00:00`. Both service page
+lookups succeed, and current official Pipecat documentation corroborates their
+speech-to-speech support. No index refresh occurs. Documentation retrieval does
+not qualify model execution or packaged-plugin activation.
+
+Seventeen packaging tests and Explore validation pass. Portable schema, listing
+limits, thirteen-file membership, CRCs and source-byte equality pass with zero
+credential/PII matches. Only manifest, README and Explore frontmatter change;
+the remaining ten resources and Explore instruction body are byte-identical to
+the preceding 0.2.3 ZIP. The historic reviewed prefix is unchanged. Output is
+`~/Downloads/pipecat-context-hub-0.2.3-speech-to-speech.zip` (33,238 bytes), SHA-256
+`263f439d9ab0f7f43f9d8737d06e8d5ea2892d06408ff045a71dc6158fe055e6`.
+The preceding ZIP is preserved; proof is under `publisher-0.2.3-s2s-vtndrr62`
+outside the checkout. Update evaluation, changelog, sibling references and index.
+
+Keep 0.2.3 while preparing this unpublished draft and distinguish builds by Git
+commit, filename and checksum. OpenAI documents corrected ZIP uploads without
+explicitly specifying same-version draft acceptance; dashboard acceptance remains
+unverified. Published updates require a version change per its submission guide.
+No runtime, Cloud or dashboard mutation occurs. Automatic recommendation/selection,
+portal scans and review remain unverified; earlier full-suite evidence stays dated.

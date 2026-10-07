@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Explore a voice AI agent idea or Pipecat concept, including STT, TTS and conversational pipelines, using sourced documentation, API definitions and examples.
+description: Explore a voice AI agent idea or Pipecat concept, including STT/LLM/TTS pipelines and real-time speech-to-speech models supported by Pipecat, using sourced documentation, API definitions and examples.
 ---
 
 Use the installed PCH query CLI through native command execution. Prefer
