@@ -251,6 +251,7 @@ class TestIndexUnready:
         """
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         data_dir = tmp_path / ".pipecat-context-hub"
+        data_dir.mkdir()
         chroma_path = data_dir / "chroma"
         with (
             patch(
@@ -1147,6 +1148,7 @@ class TestHomeRedaction:
         in the 'is empty' message must be home-redacted."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         data_dir = tmp_path / ".pipecat-context-hub"
+        data_dir.mkdir()
         with (
             patch(
                 "pipecat_context_hub.services.index.store.IndexStore",

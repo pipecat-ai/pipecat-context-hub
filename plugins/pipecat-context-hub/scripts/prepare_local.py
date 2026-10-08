@@ -22,7 +22,9 @@ def prepare_local(destination: Path) -> Path:
         raise ValueError("Destination must be absent or an empty directory")
 
     files = [source / name for name in ("plugin.json", "README.md", "PRIVACY.md", "LICENSE")]
-    files.append(source / "scripts" / "prepare_local.py")
+    files.extend(
+        source / "scripts" / name for name in ("prepare_local.py", "safe_cloud_metadata.py")
+    )
     files.extend(
         source / "assets" / name
         for name in (

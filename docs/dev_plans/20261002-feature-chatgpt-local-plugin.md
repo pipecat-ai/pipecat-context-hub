@@ -4,7 +4,7 @@
 **Component**: plugin packaging, retrieval instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-02
-**Updated**: 2026-10-05
+**Updated**: 2026-10-08
 
 ## Objective
 
@@ -248,6 +248,15 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
 
 ### Later decisions that supersede the reviewed contract
 
+- **2026-10-08 — execution boundary correction:** grounded Explore requires
+  native execution plus a working PCH CLI and populated index; discussion-only
+  hosts can provide setup guidance, not retrieval. Explore now inspects index
+  artifacts before `status`, query commands leave an absent data directory
+  untouched, retrieved content is untrusted evidence, and Cloud metadata is
+  filtered by the packaged fail-closed wrapper before agent-visible output.
+  This supersedes the earlier optional-shell claims in Phases 1–3, Testing Notes
+  and Acceptance Criteria; the current contract is in the packaged README and
+  Explore/Setup/Deploy skills.
 - **Retrieval transport:** the reviewed contract's generated stdio MCP package
   was a useful feasibility step, but the distributable package was later changed
   to four CLI-first skills. Setup installs or verifies Context Hub; Explore uses

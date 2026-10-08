@@ -115,6 +115,7 @@ def test_cli_empty_index_delivers_bug_report_hint_on_stderr(tmp_path: Path) -> N
     assert result.stdout == ""
     assert BUG_REPORT_ISSUE_URL in result.stderr
     assert "refresh" in result.stderr
+    assert not (home / ".pipecat-context-hub").exists()
 
 
 @pytest.mark.parametrize("command", [["status"], ["search-docs", "TTS + STT"], ["serve"]])

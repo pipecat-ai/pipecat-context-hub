@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import struct
+import tomllib
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -131,3 +132,21 @@ def test_healthy_native_graph_reopens_and_queries(tmp_path: Path) -> None:
         ]
     finally:
         index.close()
+
+
+def test_chromadb_dependency_stays_within_validated_hnsw_format_line() -> None:
+    """Future persisted formats must not bypass the pre-open validation boundary."""
+    from packaging.specifiers import SpecifierSet
+
+    root = Path(__file__).resolve().parents[2]
+    with (root / "pyproject.toml").open("rb") as stream:
+        project = tomllib.load(stream)["project"]
+    with (root / "uv.lock").open("rb") as stream:
+        lock = tomllib.load(stream)
+
+    declared = next(
+        dependency for dependency in project["dependencies"] if dependency.startswith("chromadb")
+    )
+    assert declared == "chromadb>=1.5,<1.6"
+    locked = next(package for package in lock["package"] if package["name"] == "chromadb")
+    assert locked["version"] in SpecifierSet(">=1.5,<1.6")

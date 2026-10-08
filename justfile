@@ -48,6 +48,9 @@ typecheck:
 # Run lint + format check + type check
 check: lint fmt-check typecheck
 
+# Run the complete local CI gate
+ci: check test audit
+
 # Dependency vulnerability audit
 audit-deps:
     # KEEP IN SYNC with the "Dependency Audit" step in .github/workflows/ci.yml —

@@ -57,11 +57,17 @@ when they are absent; preparation does not install them silently.
    values. Distinguish required provider keys from optional settings/defaults
    and Cloud management authentication. A local `.env` is not automatically
    transferred to Cloud. Do not copy it into an image or build context.
-4. Check authentication through read-only organisation metadata. Never print
-   `auth whoami`, local auth config or raw CLI output: some versions expose a
-   Daily API key. Capture potentially sensitive output in memory, parse it and
-   emit only allowlisted org IDs/names, region/resource metadata, secret-set
-   names and key names. Withhold unsafe stderr, emails, credentials and values.
+4. Check authentication through read-only organisation metadata. Never run a
+   credential-bearing Cloud metadata command directly through an agent-visible
+   execution tool: some versions expose a Daily API key. Invoke the packaged
+   `scripts/safe_cloud_metadata.py` wrapper with the matching `--kind` and pass
+   the installed read-only JSON command after `--`. The wrapper captures raw
+   stdout/stderr inside its subprocess and emits only schema-validated allowlisted
+   fields. Treat a nonzero wrapper exit or schema mismatch as unresolved; do not
+   retry by printing raw output. Never use `auth whoami`, local auth config or
+   API-key listings. The wrapper allowlists org IDs/names, region/resource
+   metadata, agent identity/status, secret-set names and key names; it withholds
+   stderr, emails, credentials and values.
    If an account/login is missing, hand off to
    [Cloud account and login setup](../setup/SKILL.md#cloud-account-and-login):
    guide signup at `https://pipecat.daily.co`, then user-run

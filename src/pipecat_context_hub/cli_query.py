@@ -324,6 +324,18 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
 
+    # IndexStore is a writer-capable abstraction whose constructor creates both
+    # backends. Query commands must not turn a missing index into a new empty
+    # index merely to report that retrieval is unavailable.
+    if not config.storage.data_dir.exists():
+        _echo_stderr_warning(
+            f"Error: the index at {config.storage.data_dir} does not exist.\n"
+            "Run 'pipecat-context-hub refresh' first to build it "
+            "(the first run downloads models and indexes sources — allow a few minutes).\n"
+            f"{bug_report_hint()}"
+        )
+        raise SystemExit(_EXIT_INDEX_UNREADY)
+
     # IndexStore.__init__ opens two backends (Chroma + SQLite) and does not roll
     # back if a *post-construction* call (get_index_stats) then raises, so close
     # whatever came up before exiting — mirrors the guarded close `serve` does.

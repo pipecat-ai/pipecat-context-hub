@@ -111,10 +111,15 @@ require nonzero records with known provenance before calling retrieval ready.
 For Cloud/full-plugin onboarding, guide the user through account readiness;
 retrieval-only or local build does not need Cloud login. After verifying the
 Cloud CLI, inspect authentication through the supported read-only organisation
-list. Capture output in memory and emit only allowlisted org IDs/names. Do not
-print `auth whoami`, auth config, raw stdout/stderr or API-key listings: some
-versions expose a Daily API key. Successful metadata reads establish existing
-authentication; skip login for an already-authenticated user.
+list. Never run that credential-bearing command directly through an agent-visible
+execution tool. Invoke the packaged `scripts/safe_cloud_metadata.py` wrapper with
+`--kind organizations` and pass the installed read-only JSON command after `--`.
+The wrapper captures raw stdout/stderr inside its subprocess and emits only
+schema-validated org IDs/names. Treat a nonzero wrapper exit or schema mismatch
+as unresolved; do not retry by printing raw output. Do not use `auth whoami`, auth
+config or API-key listings: some versions expose a Daily API key. Successful
+metadata reads establish existing authentication; skip login for an
+already-authenticated user.
 
 If an account is missing, direct the user to [Pipecat Cloud](https://pipecat.daily.co)
 to create/sign in to their account. Explain personal workspaces and team

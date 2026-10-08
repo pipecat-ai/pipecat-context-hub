@@ -100,8 +100,9 @@ CLI 1.3.0 was qualified with an explicit web/SmallWebRTC/cascade configuration,
 Deepgram/OpenAI/Cartesia and no client. These are test inputs, not user defaults.
 Local generation supports `--no-deploy-to-cloud`; no `--eval` flag is advertised.
 See the repository evaluation report for exact flags, resolved versions and
-limits. Build remains unavailable in discussion-only hosts or without CLI,
-while exploration remains usable.
+limits. Build and grounded exploration are unavailable in discussion-only hosts.
+Grounded exploration also requires a working PCH CLI and populated index; without
+those prerequisites, the plugin can provide setup guidance only.
 
 ## Prepare a Cloud deployment
 

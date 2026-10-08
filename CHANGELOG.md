@@ -40,6 +40,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   builds/deployment, and distinguishes readiness from session verification.
 
 ### Fixed
+- Keep grounded Explore read-only on a missing index, correct discussion-only
+  guidance, treat retrieved content as untrusted evidence, and filter Cloud
+  account metadata through a fail-closed packaged wrapper before agent-visible
+  output. Query commands now refuse an absent data directory without creating it.
+- Constrain ChromaDB to the validated 1.5.x persisted-HNSW format line; future
+  storage formats require explicit validator compatibility before the dependency
+  range can widen.
 - Upgrade locked `fsspec` to `2026.6.0` to fix ReferenceFileSystem template
   injection ([CVE-2026-104851](https://github.com/fsspec/filesystem_spec/security/advisories/GHSA-27vj-qcqg-25rc)).
 - Reject oversized persisted Chroma HNSW link-list files before opening the
