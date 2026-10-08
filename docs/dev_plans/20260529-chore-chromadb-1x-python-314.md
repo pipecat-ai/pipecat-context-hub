@@ -444,26 +444,14 @@ Evidence: full suite **1071 passed, 6 skipped** on cpython-3.14.5 (macOS-arm64)
 in an isolated env; `uv lock` resolves all platforms. Only warning is an upstream
 chromadb `DeprecationWarning` (`asyncio.iscoroutinefunction`, removal in 3.16).
 
-## Follow-up: persisted HNSW corruption (2026-10-04)
+## Later correction: persisted HNSW corruption (2026-10-04)
 
-The [local plugin experiment](20261002-feature-chatgpt-local-plugin.md) adds a bounded read-only graph-size check before `PersistentClient`, alongside the existing pre-1.0 schema probe. Chroma 1.5.9 can initialize successfully and later SIGSEGV while loading a corrupt persisted vector graph. The check rejects oversized `link_lists.bin` files through `IncompatibleIndexFormatError` and the existing reset remediation; it neither changes the dependency pin nor repairs the index. Other graph corruption shapes remain outside this check. The user subsequently refreshed the live index to 45,453 records; fresh packaged subprocess retrieval and actual named MCP calls in a clean conduct worker pass. Before/after status preserves the new baseline. The agent initiated no refresh. The parent's closed cached connection is a separate context limitation, not a fresh-worker readiness blocker.
-
-The 2026-10-05 parent packaged retest now returns four hits for `search_docs("TTS + STT", limit=4)` and successful follow-up status on that connection, with the same 45,453-record, indexed 1.12.0 and October 4 refresh baseline. The old parent-connection limitation no longer applies to this query. The live Hub remains 0.8.0; the new bounded check is committed in the checkout and has not been installed into that runtime. No dependency/index changes or agent recovery were performed during this retest.
-
-Later on 2026-10-05 the approved Cloud-retry worker observes a newer packaged Hub baseline: 0.8.1, 45,463 records, indexed 1.12.0 and refresh `2026-10-05T16:38:04.707267+00:00`, identical before/after. This supersedes the earlier dated 0.8.0 snapshot for current status. No agent refresh, runtime upgrade or repair occurred in that run, and the bounded graph guard was not independently exercised in that runtime. The later read-only Cloud-readiness verification preserves this same Hub baseline; matching deployment acceptance is recorded in the linked plugin plan and does not extend graph-corruption detection.
-
-The plugin experiment’s Phase 5 evaluation now reconciles all twenty-one frozen prompts and preserves the bounded HNSW invariant: the shared `VectorIndex` constructor runs the read-only size check before the sole production `PersistentClient` call; synthetic-corruption refusals and healthy reopen/search remain covered. This is prevention for the observed oversized-link-list shape, not general graph repair. The final security gate’s root-lock `fsspec` update is separate from Chroma, the live index, the installed Hub and the deployed qualification app.
-
-
-### CLI-first plugin follow-up (2026-10-06)
-
-The [plugin plan](20261002-feature-chatgpt-local-plugin.md#cli-first-skills-only-follow-up-2026-10-06)
-replaced bundled stdio with native PCH query commands in its 0.2.0 skills-only
-release. The 0.2.1–0.2.3 publisher ZIPs add listing/discovery metadata and a privacy notice;
-the revised 0.2.3 listing describes speech-to-speech capabilities without named
-model services after a user-reported dashboard finding. The user reports submitting
-that ZIP; a subsequent durable evaluation-link correction is prepared but not uploaded. Runtime and
-index behaviour are unchanged. Historical packaged MCP/recovery evidence above
-remains dated. Shared
-CLI/MCP retrieval handlers and the bounded HNSW guard are unchanged; this packaging
-change neither refreshes nor repairs the index and does not extend corruption coverage.
+This migration record remains historical, but a later field failure refined its
+1.x risk model: Chroma 1.5.9 can initialize successfully and then crash while
+loading a corrupt persisted graph on first search. The
+[plugin experiment](20261002-feature-chatgpt-local-plugin.md) added a bounded,
+read-only size check for oversized `link_lists.bin` files before `PersistentClient`,
+alongside the earlier schema probe. The guard uses the existing incompatible-index
+remediation, changes neither the 1.x dependency decision nor persisted data, and is
+not a general graph-integrity check. Reproduction and validation details remain in
+the [evaluation report](../evaluations/pipecat-context-hub-plugin.md).

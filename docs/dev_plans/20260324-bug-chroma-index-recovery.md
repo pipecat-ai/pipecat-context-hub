@@ -77,26 +77,14 @@ The live retrieval-quality benchmark can hang for several minutes against the cu
 - Added `refresh --reset-index`, ensured both `refresh` and `serve` close the store on exit, and documented the rebuild command.
 - Hardened the live retrieval-quality benchmark with a subprocess-based vector health probe. On the current unhealthy local index, it now fails in about 16 seconds with the rebuild command instead of hanging for several minutes.
 
-## Follow-up: persisted HNSW corruption (2026-10-04)
+## Later correction: persisted HNSW corruption (2026-10-04)
 
-The [local plugin experiment](20261002-feature-chatgpt-local-plugin.md) reproduced a Chroma 1.5.9 native SIGSEGV on the first vector-backed search despite successful initialization and metadata status. An oversized persisted `link_lists.bin` is checked read-only before native client construction, using the existing index-unready/reset remediation. This check covers that corruption shape; it does not recover data or guarantee detection of every malformed graph. The user subsequently refreshed the index: fresh status reports 45,453 records and a fresh packaged subprocess passes docs/API/example/page retrieval. Actual uniquely named packaged calls also pass in a clean conduct worker, with unchanged status before and after retrieval. The agent initiated no refresh. The parent's old cached connection remains closed; fresh-worker readiness no longer depends on that connection.
-
-On 2026-10-05 the parent uniquely named packaged connection also passed the frozen `search_docs("TTS + STT", limit=4)` query (four hits), then status on the same connection. The 45,453-record, indexed 1.12.0 and October 4 refresh baseline was unchanged. This resolves the recorded parent-connection limitation for that query; it does not establish that every graph corruption shape is prevented. The running Hub remains 0.8.0, without the committed checkout's new graph guard. No agent refresh or repair occurred.
-
-Later on 2026-10-05 the approved Cloud-retry worker observes a newer packaged Hub baseline: 0.8.1, 45,463 records, indexed 1.12.0 and refresh `2026-10-05T16:38:04.707267+00:00`, identical before/after. This supersedes the earlier dated 0.8.0 snapshot for current status. No agent refresh, runtime upgrade or repair occurred in that run, and the bounded graph guard was not independently exercised in that runtime. The later read-only Cloud-readiness verification preserves this same Hub baseline; matching deployment acceptance is recorded in the linked plugin plan and does not extend graph-corruption detection.
-
-The plugin experiment’s Phase 5 evaluation now reconciles all twenty-one frozen prompts and preserves the bounded HNSW invariant: the shared `VectorIndex` constructor runs the read-only size check before the sole production `PersistentClient` call; synthetic-corruption refusals and healthy reopen/search remain covered. This is prevention for the observed oversized-link-list shape, not general graph repair. The final security gate’s root-lock `fsspec` update is separate from Chroma, the live index, the installed Hub and the deployed qualification app.
-
-
-### CLI-first plugin follow-up (2026-10-06)
-
-The [plugin plan](20261002-feature-chatgpt-local-plugin.md#cli-first-skills-only-follow-up-2026-10-06)
-replaced bundled stdio with native PCH query commands in its 0.2.0 skills-only
-release. The 0.2.1–0.2.3 publisher ZIPs add listing/discovery metadata and a privacy notice;
-the revised 0.2.3 listing describes speech-to-speech capabilities without named
-model services after a user-reported dashboard finding. The user reports submitting
-that ZIP; a subsequent durable evaluation-link correction is prepared but not uploaded. Runtime and
-index behaviour are unchanged. Historical packaged MCP/recovery evidence above
-remains dated. Shared
-CLI/MCP retrieval handlers and the bounded HNSW guard are unchanged; this packaging
-change neither refreshes nor repairs the index and does not extend corruption coverage.
+The original explicit reset/rebuild decision remains valid, but the
+[local plugin experiment](20261002-feature-chatgpt-local-plugin.md) disproved an
+implicit assumption that successful initialization and metadata access establish
+vector-index health. Chroma 1.5.9 later crashed on first search while loading an
+oversized persisted `link_lists.bin`. Current code therefore performs a bounded,
+read-only graph-size check before native client construction and routes the observed
+corruption shape to the existing reset remediation. It does not repair the index or
+claim to detect every malformed graph. Detailed reproduction and validation evidence
+lives in the [evaluation report](../evaluations/pipecat-context-hub-plugin.md).
