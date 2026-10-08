@@ -94,7 +94,8 @@ The [plugin plan](20261002-feature-chatgpt-local-plugin.md#cli-first-skills-only
 replaced bundled stdio with native PCH query commands in its 0.2.0 skills-only
 release. The 0.2.1–0.2.3 publisher ZIPs add listing/discovery metadata and a privacy notice;
 the revised 0.2.3 listing describes speech-to-speech capabilities without named
-model services after a user-reported dashboard finding. Portal recheck is pending. Runtime and
+model services after a user-reported dashboard finding. The user reports submitting
+that ZIP; a subsequent durable evaluation-link correction is prepared but not uploaded. Runtime and
 index behaviour are unchanged. Historical packaged MCP/recovery evidence above
 remains dated. Shared
 CLI/MCP retrieval handlers and the bounded HNSW guard are unchanged; this packaging

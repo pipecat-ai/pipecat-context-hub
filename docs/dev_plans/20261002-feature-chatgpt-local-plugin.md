@@ -760,3 +760,29 @@ Official guidelines support clear, accurate, non-comparative listing copy but do
 not identify the exact trigger of this automated finding. Public retrieval cannot
 inspect the authenticated dashboard result. The user must upload the replacement
 and recheck the portal; packaging checks do not prove acceptance or publication.
+
+## P3 durable qualification-link follow-up (2026-10-07)
+
+The user reports submitting the preceding 0.2.3 listing-fix ZIP. Their fresh
+single-reviewer audit of all thirty changed files against `edea177` found one P3:
+the packaged evaluation-report URL referenced the feature branch, which deletion
+after merge would invalidate. The user then asked how to solve it. Pin the source
+README URL to the submitted commit `ad8a73c06942d78e5310d893cfd8b1f92cf067b4`,
+preserving the exact qualification snapshot. Local Git verifies the document at
+that commit, the GitHub commit API resolves it and the pinned page returns HTTP
+200. Regular merging retains that commit after deleting the branch.
+
+Seventeen packaging tests pass. Only one URL in the packaged README changes;
+all twelve other resources, including manifest and complete skills, remain
+byte-identical to the submitted ZIP. Thirteen-file membership, CRCs and source-byte
+parity pass with zero credential/PII matches. The reviewed prefix is unchanged.
+Output is `~/Downloads/pipecat-context-hub-0.2.3-durable-link.zip` (33,208 bytes),
+SHA-256 `46c36cdd97fe2f60dacf1e22b42378f7c6e89473fbe5c33669a3ca5efc9da40e`.
+Proof is outside the checkout under `publisher-0.2.3-durable-link-ykincirg`.
+Update changelog, evaluation, sibling references and index.
+
+The submitted ZIP is unchanged and still contains the earlier branch link. The
+replacement is prepared, not uploaded. Wait for the OpenAI review decision or
+explicitly cancel the active review before uploading a replacement, as required
+by its submission guide. Same-version upload acceptance remains unverified. No
+dashboard, push, PR, merge, index, runtime or Cloud action occurs in this correction.

@@ -20,6 +20,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   Draft copy revisions retain 0.2.3 and use ZIP checksums to distinguish artifacts.
   Public listing copy uses generic pipeline capabilities after a dashboard check
   flagged named AI model/platform references.
+  The packaged qualification-report link is pinned to the submitted commit so
+  deletion of the feature branch after merge cannot break the reference.
   Automatic recommendation/selection in ChatGPT remains untested.
 - Explicit Setup checks native execution and required PCH/Pipecat/Cloud CLIs,
   reuses healthy installations/indexes and handles only authorised missing-runtime

@@ -139,7 +139,7 @@ Hub status is 0.8.1 with an October 5 refresh. These are dated observations,
 not qualification of this CLI-first release, other hosts or provider combinations.
 JSON scaffold config execution, existing-app adaptation, absent-execution hosts,
 provider/browser sessions, secret writes and ChatGPT Work remain untested.
-The repository [evaluation report](https://github.com/pipecat-ai/pipecat-context-hub/blob/feature/chatgpt-local-plugin/docs/evaluations/pipecat-context-hub-plugin.md)
+The repository [evaluation report](https://github.com/pipecat-ai/pipecat-context-hub/blob/ad8a73c06942d78e5310d893cfd8b1f92cf067b4/docs/evaluations/pipecat-context-hub-plugin.md)
 distinguishes manual/synthetic walkthroughs, source-candidate conversations,
 actual packaged activation and live acceptance. Preparing a fresh copy propagates current
 instructions; activation of revised cached skills needs its own host test.

@@ -5,7 +5,33 @@ outside the checkout. Do not put credentials or secret values in either report.
 Package/subprocess checks and actual desktop activation are separate outcomes.
 This repository report is not copied into the installed plugin package.
 
-## Current package: 0.2.3 public listing correction (2026-10-07)
+## Current source follow-up: durable qualification link (2026-10-07)
+
+The user reports submitting the preceding 0.2.3 listing-fix ZIP. A fresh single
+read-only reviewer then found one P3: the packaged README linked to the feature
+branch, which the normal merge-and-delete workflow would remove. The source link
+now pins evaluation evidence to the exact submitted commit
+`ad8a73c06942d78e5310d893cfd8b1f92cf067b4`. Local Git confirms the report exists at
+that commit, GitHub's commit API resolves it and the pinned page returns HTTP 200.
+Regular merging preserves this commit in repository ancestry after branch deletion.
+
+The prepared replacement remains 0.2.3:
+`~/Downloads/pipecat-context-hub-0.2.3-durable-link.zip` (33,208 bytes), SHA-256
+`46c36cdd97fe2f60dacf1e22b42378f7c6e89473fbe5c33669a3ca5efc9da40e`.
+Seventeen packaging tests pass. The README differs by exactly one URL replacement;
+the twelve other resources, including manifest and all four skills, retain their
+submitted bytes. Thirteen-file membership, CRCs and source-byte parity pass, with
+zero credential/PII matches. Local proof is outside the checkout under
+`publisher-0.2.3-durable-link-ykincirg`. The historic reviewed plan prefix is unchanged.
+
+The submitted ZIP retains its original checksum and branch link. The replacement
+is prepared, not uploaded; the dashboard and active review were not changed.
+OpenAI's [submission guide](https://developers.openai.com/plugins/deploy/submission#submit-the-draft)
+requires waiting for the decision or cancelling an active review before uploading
+a replacement. Same-version replacement acceptance remains unverified. No push,
+PR, merge, index refresh, runtime or Cloud operation occurs in this correction.
+
+## Submitted package: 0.2.3 public listing correction (2026-10-07)
 
 The user reported this automated dashboard finding after the named-service draft:
 
