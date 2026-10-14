@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import selectors
+import shlex
 import signal
 import stat
 import threading
@@ -87,7 +88,10 @@ def _trusted_pipecat_path(executable: Path | None = None) -> Path | None:
         """
         if executable is None:
             try:
-                return [(prefix, distribution("pipecat-ai"))]
+                dist = distribution("pipecat-ai")
+                if _is_pipecat_distribution(dist):
+                    return [(prefix, dist)]
+                return []
             except PackageNotFoundError:
                 return []
         try:
@@ -100,22 +104,17 @@ def _trusted_pipecat_path(executable: Path | None = None) -> Path | None:
             env_root = resolved.parent.parent
             if not (env_root / "pyvenv.cfg").is_file():
                 return []
-            package_roots = [
-                env_root
-                / "lib"
-                / f"python{sys.version_info.major}.{sys.version_info.minor}"
-                / "site-packages",
-                env_root / "Lib" / "site-packages",
-            ]
             found: list[tuple[Path, Any]] = []
-            for package_root in package_roots:
+            for package_root in _site_packages_for_environment(env_root):
                 if not package_root.is_dir() or package_root.is_symlink():
                     continue
                 for metadata_dir in package_root.glob("*.dist-info"):
                     if not metadata_dir.is_dir() or metadata_dir.is_symlink():
                         continue
                     try:
-                        found.append((env_root, PathDistribution(metadata_dir)))
+                        dist = PathDistribution(metadata_dir)
+                        if _is_pipecat_distribution(dist):
+                            found.append((env_root, dist))
                     except (OSError, ValueError):
                         continue
             return found
@@ -178,6 +177,29 @@ def _trusted_pipecat_path(executable: Path | None = None) -> Path | None:
     return None
 
 
+def _is_pipecat_distribution(dist: Any) -> bool:
+    """Return whether metadata identifies the official Pipecat package."""
+    name = str(dist.metadata.get("Name", ""))
+    normalized = re.sub(r"[-_.]+", "-", name).casefold()
+    return normalized == "pipecat-ai"
+
+
+def _site_packages_for_environment(env_root: Path) -> list[Path]:
+    """Find site-packages using the selected environment's Python layout.
+
+    The helper may run under a different Python minor than an external uv tool.
+    Enumerating the environment's own ``python*/site-packages`` directories
+    avoids coupling external CLI discovery to the helper interpreter.
+    """
+    roots: list[Path] = []
+    lib = env_root / "lib"
+    if lib.is_dir() and not lib.is_symlink():
+        roots.extend(sorted(lib.glob("python*/site-packages")))
+        roots.append(lib / "site-packages")
+    roots.append(env_root / "Lib" / "site-packages")
+    return list(dict.fromkeys(roots))
+
+
 def _trusted_path_for_command(command: list[str]) -> Path | None:
     """Resolve trust against the environment selected by an absolute command."""
     requested = Path(command[0]) if command else Path()
@@ -204,7 +226,9 @@ def _record_digest_for_executable(executable: Path) -> str | None:
 
     distributions: list[Any] = []
     try:
-        distributions.append(distribution("pipecat-ai"))
+        current = distribution("pipecat-ai")
+        if _is_pipecat_distribution(current):
+            distributions.append(current)
     except PackageNotFoundError:
         pass
     # The selected CLI may belong to a separate uv tool/venv.  Reuse the same
@@ -212,19 +236,15 @@ def _record_digest_for_executable(executable: Path) -> str | None:
     # later private snapshot still binds to its RECORD digest.
     env_root = resolved.parent.parent
     if (env_root / "pyvenv.cfg").is_file():
-        for package_root in (
-            env_root
-            / "lib"
-            / f"python{sys.version_info.major}.{sys.version_info.minor}"
-            / "site-packages",
-            env_root / "Lib" / "site-packages",
-        ):
+        for package_root in _site_packages_for_environment(env_root):
             if not package_root.is_dir() or package_root.is_symlink():
                 continue
             for metadata_dir in package_root.glob("*.dist-info"):
                 if metadata_dir.is_dir() and not metadata_dir.is_symlink():
                     try:
-                        distributions.append(PathDistribution(metadata_dir))
+                        dist = PathDistribution(metadata_dir)
+                        if _is_pipecat_distribution(dist):
+                            distributions.append(dist)
                     except (OSError, ValueError):
                         continue
     for dist in distributions:
@@ -322,14 +342,85 @@ def _validate_producer_command(
     return [str(installed), *command[1:]]
 
 
+def _launcher_interpreter(launcher: Path) -> Path:
+    """Resolve the absolute interpreter named by a console-script shebang."""
+    with launcher.open("rb") as source:
+        first_line = source.readline(4096)
+    if not first_line.startswith(b"#!"):
+        raise ValueError("metadata producer has no absolute interpreter")
+    try:
+        shebang = shlex.split(first_line[2:].decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("metadata producer has an invalid interpreter") from exc
+    if len(shebang) != 1 or not shebang[0].startswith("/"):
+        raise ValueError("metadata producer must name an absolute interpreter")
+    interpreter = Path(shebang[0])
+    try:
+        resolved = interpreter.resolve(strict=True)
+        info = resolved.lstat()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("metadata producer interpreter is unavailable") from exc
+    if not stat.S_ISREG(info.st_mode) or not os.access(resolved, os.X_OK):
+        raise ValueError("metadata producer interpreter is not executable")
+    return resolved
+
+
+def _copy_verified_file(source: Path, destination: Path) -> None:
+    """Copy one regular file while detecting replacement during the read."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(source, flags)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("metadata producer package contains a non-file")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as output:
+            while True:
+                chunk = os.read(fd, 64 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_size) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+        ):
+            raise ValueError("metadata producer package changed while being copied")
+        destination.chmod(stat.S_IMODE(before.st_mode))
+    finally:
+        os.close(fd)
+
+
+def _snapshot_site_packages(roots: list[Path], destination: Path) -> None:
+    """Snapshot all importable files before handing a token to the CLI."""
+    for root in roots:
+        if not root.is_dir() or root.is_symlink():
+            raise ValueError("metadata producer package root is unsafe")
+        for current, directories, files in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            for name in directories:
+                path = current_path / name
+                if path.is_symlink():
+                    raise ValueError("metadata producer package contains a symlink")
+            for name in files:
+                source = current_path / name
+                if source.is_symlink():
+                    raise ValueError("metadata producer package contains a symlink")
+                relative = source.relative_to(root)
+                _copy_verified_file(source, destination / relative)
+
+
 @contextmanager
 def _materialize_verified_producer(command: list[str]):
-    """Execute a private snapshot of the verified launcher.
+    """Execute a private snapshot of the verified launcher and its imports.
 
     Validation and ``Popen`` cannot make a pathname execution atomic. Copying
-    the checked regular file through an open descriptor binds the credential-
-    bearing process to the bytes that were verified, even if the installed
-    launcher is replaced immediately afterwards.
+    the checked regular file through an open descriptor binds the launcher to
+    the bytes that were verified.  The launcher is run with its verified
+    interpreter and a private snapshot of the selected environment's
+    site-packages first on ``PYTHONPATH``; otherwise a mutable package module
+    could receive the token after the launcher itself was verified.
     """
     source = Path(command[0])
     trusted = _trusted_path_for_command(command)
@@ -383,24 +474,46 @@ def _materialize_verified_producer(command: list[str]):
         if encoded != record_digest:
             raise ValueError("metadata producer bytes are not RECORD-verified")
         snapshot.chmod(stat.S_IMODE(before.st_mode) | stat.S_IXUSR)
-        yield [str(snapshot), *command[1:]]
+        interpreter = _launcher_interpreter(trusted)
+        env_root = trusted.parent.parent
+        package_roots = [root for root in _site_packages_for_environment(env_root) if root.is_dir()]
+        if not package_roots:
+            raise ValueError("metadata producer package environment is unavailable")
+        package_snapshot = Path(temporary.name) / "site-packages"
+        _snapshot_site_packages(package_roots, package_snapshot)
+        # Invoke the interpreter explicitly rather than relying on the copied
+        # launcher's shebang. ``-P`` also prevents a mutable working directory
+        # from being inserted ahead of the private package snapshot.
+        yield (
+            [str(interpreter), "-P", str(snapshot), *command[1:]],
+            {"PYTHONPATH": str(package_snapshot)},
+        )
     finally:
         os.close(fd)
         temporary.cleanup()
 
 
-def _safe_child_environment() -> dict[str, str]:
+def _safe_child_environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """Pass runtime settings plus only the documented PAT credential."""
-    return {
+    environment = {
         key: value
         for key, value in os.environ.items()
         if key in _PASSTHROUGH_ENV
         or key in _SAFE_RUNTIME_ENV
         or (key.startswith("LC_") and not _SECRET_ENV.search(key))
     }
+    if extra is not None:
+        # Only the private import snapshot is allowed to add a child setting;
+        # never inherit a caller-controlled PYTHONPATH or interpreter option.
+        pythonpath = extra.get("PYTHONPATH")
+        if pythonpath:
+            environment["PYTHONPATH"] = pythonpath
+    return environment
 
 
-def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
+def _run_bounded(
+    command: list[str], *, extra_env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[bytes]:
     """Run a producer while retaining at most the allowlisted output size."""
     process: subprocess.Popen[bytes] | None = None
     stdout = None
@@ -419,7 +532,7 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
         # The command is intentionally treated as an untrusted producer: even
         # an allowlisted JSON field must not become a side channel for a
         # credential inherited from the agent process.
-        popen_kwargs["env"] = _safe_child_environment()
+        popen_kwargs["env"] = _safe_child_environment(extra_env)
         process = subprocess.Popen(command, **popen_kwargs)
         stdout = process.stdout
         assert stdout is not None
@@ -611,8 +724,9 @@ def main() -> int:
 
     try:
         validated = _validate_producer_command(command, expected_kind=args.kind)
-        with _materialize_verified_producer(validated) as safe_command:
-            result = _run_bounded(safe_command)
+        with _materialize_verified_producer(validated) as producer:
+            safe_command, extra_env = producer
+            result = _run_bounded(safe_command, extra_env=extra_env)
         if result.returncode != 0:
             raise ValueError("command failed")
         if len(result.stdout) > _MAX_OUTPUT_BYTES:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import base64
+import hashlib
 import json
 import os
 import re
@@ -53,7 +55,9 @@ def _run_metadata_wrapper(
     spec.loader.exec_module(module)
     fixture_env = dict(os.environ if env is None else env)
 
-    def run_fixture(_command: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def run_fixture(
+        _command: list[str], *, extra_env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
         child_env = {
             key: value
             for key, value in fixture_env.items()
@@ -61,6 +65,8 @@ def _run_metadata_wrapper(
             or key in module._SAFE_RUNTIME_ENV
             or (key.startswith("LC_") and not module._SECRET_ENV.search(key))
         }
+        if extra_env:
+            child_env.update(extra_env)
         return subprocess.run(
             [sys.executable, str(producer)], env=child_env, capture_output=True, check=False
         )
@@ -92,6 +98,47 @@ def _run_metadata_wrapper(
     finally:
         sys.argv = old_argv
     return subprocess.CompletedProcess([], returncode, stdout.getvalue(), stderr.getvalue())
+
+
+def _load_safe_metadata_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "safe_cloud_metadata_regression", _SOURCE / "scripts" / "safe_cloud_metadata.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _external_cli_fixture(
+    tmp_path: Path, *, distribution_name: str = "pipecat-ai", python_minor: str = "3.99"
+) -> tuple[Path, Path]:
+    env_root = tmp_path / "external-tool"
+    site_packages = env_root / "lib" / f"python{python_minor}" / "site-packages"
+    dist_info = site_packages / "fixture_cli-1.0.dist-info"
+    launcher = env_root / "bin" / "pipecat"
+    site_packages.mkdir(parents=True)
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "import json\n"
+        "import fixture_module\n"
+        "print(json.dumps({'organizations': [{'id': fixture_module.VALUE, 'name': 'Team'}]}))\n"
+    )
+    launcher.chmod(0o755)
+    (site_packages / "fixture_module.py").write_text("VALUE = 'snapshot'\n")
+    digest = (
+        base64.urlsafe_b64encode(hashlib.sha256(launcher.read_bytes()).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(f"Metadata-Version: 2.3\nName: {distribution_name}\n")
+    (dist_info / "RECORD").write_text(
+        f"../../../bin/pipecat,sha256={digest},{launcher.stat().st_size}\n"
+    )
+    (env_root / "pyvenv.cfg").write_text("home = /usr/bin\nversion_info = 3.99.0\n")
+    return launcher, site_packages
 
 
 def test_prepare_runs_without_site_packages_or_hub(tmp_path: Path) -> None:
@@ -462,6 +509,39 @@ def test_cloud_metadata_wrapper_rejects_spoofed_cli_and_mutating_args(tmp_path: 
         check=False,
     )
     assert mutating.returncode == 1
+
+
+def test_external_cli_requires_pipecat_distribution_metadata(
+    tmp_path: Path,
+) -> None:
+    module = _load_safe_metadata_module()
+    launcher, _ = _external_cli_fixture(tmp_path, distribution_name="unrelated-project")
+    assert module._trusted_pipecat_path(launcher) is None
+
+
+def test_external_cli_discovers_its_own_python_minor(tmp_path: Path) -> None:
+    """An external 3.99 venv must not use the helper's Python minor."""
+    module = _load_safe_metadata_module()
+    launcher, _ = _external_cli_fixture(tmp_path, python_minor="3.99")
+    assert module._trusted_pipecat_path(launcher) == launcher.resolve()
+
+
+def test_external_cli_snapshots_imported_producer_code(tmp_path: Path) -> None:
+    module = _load_safe_metadata_module()
+    launcher, site_packages = _external_cli_fixture(tmp_path)
+    command = [
+        str(launcher),
+        "cloud",
+        "--output",
+        "json",
+        "organizations",
+        "list",
+    ]
+    with module._materialize_verified_producer(command) as (safe_command, extra_env):
+        (site_packages / "fixture_module.py").write_text("VALUE = 'mutable-source'\n")
+        result = module._run_bounded(safe_command, extra_env=extra_env)
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"organizations": [{"id": "snapshot", "name": "Team"}]}
 
 
 @pytest.mark.parametrize("name", ["AWS_ACCESS_KEY_ID", "DOCKER_AUTH_CONFIG"])

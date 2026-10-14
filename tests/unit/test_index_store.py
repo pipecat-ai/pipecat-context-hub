@@ -19,6 +19,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from pipecat_context_hub.services.index.fts import FTSIndex
+from pipecat_context_hub.services.index import fts as fts_module
 from pipecat_context_hub.services.index.locking import generation_lock, index_lock
 from pipecat_context_hub.services.index.store import (
     IndexStore,
@@ -1043,6 +1044,24 @@ class TestFTSIndex:
             second.close()
         assert not path.with_name(path.name + "-wal").exists()
         assert not path.with_name(path.name + "-shm").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX lock fixture")
+    def test_close_reacquires_generation_lock_after_construction(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The constructor's lock must not authorize an unlocked shutdown."""
+        path = tmp_path / "metadata.db"
+        index = FTSIndex(path, lock_held=True)
+        acquired: list[tuple[Path, bool]] = []
+
+        @contextmanager
+        def tracking_lock(data_dir: Path, *, exclusive: bool, **_kwargs: object):
+            acquired.append((data_dir, exclusive))
+            yield
+
+        monkeypatch.setattr(fts_module, "index_lock", tracking_lock)
+        index.close()
+        assert acquired == [(tmp_path, True)]
 
     def test_result_limit(self, fts_index: FTSIndex):
         records = [

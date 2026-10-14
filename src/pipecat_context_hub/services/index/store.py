@@ -672,9 +672,12 @@ class ReadOnlyIndexStore:
         except Exception:
             if vector is not None:
                 vector.close()
+            # FTSIndex.close reacquires the generation lock after construction;
+            # release the reader's lifetime lock before closing it so a shared
+            # lock is never upgraded in place.
+            self._lock_context.__exit__(*sys.exc_info())
             if fts is not None:
                 fts.close()
-            self._lock_context.__exit__(*sys.exc_info())
             raise
 
     @property
@@ -713,6 +716,9 @@ class ReadOnlyIndexStore:
                 self._vector.close()
         finally:
             try:
-                self._fts.close()
-            finally:
+                # The reader lifetime lock is shared. Release it before FTS
+                # close reacquires the exclusive generation lock to unlink
+                # published sidecars safely.
                 self._lock_context.__exit__(None, None, None)
+            finally:
+                self._fts.close()

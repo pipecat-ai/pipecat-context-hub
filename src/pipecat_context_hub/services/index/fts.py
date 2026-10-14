@@ -465,6 +465,11 @@ class FTSIndex:
                                 f"SQLite {suffix[1:].upper()} path changed while opening"
                             )
         self._identity = identity
+        # ``lock_held`` only describes the lock used while constructing this
+        # connection.  The constructor returns after that generation lock has
+        # been released, so retaining the flag would let ``close`` unlink
+        # published WAL/SHM sidecars without reacquiring it.
+        self._lock_held = False
         tracked_sidecars = (
             sqlite_path.with_name(f"{sqlite_path.name}-wal"),
             sqlite_path.with_name(f"{sqlite_path.name}-shm"),
