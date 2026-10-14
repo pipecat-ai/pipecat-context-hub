@@ -889,6 +889,25 @@ class TestIndexStoreInitRollback:
         finally:
             reader.close()
 
+    def test_read_only_open_does_not_create_missing_lock_file(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "hub-data"
+        writer = IndexStore(StorageConfig(data_dir=data_dir))
+        writer.close()
+        (data_dir / ".index.lock").unlink()
+
+        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
+        try:
+            assert not (data_dir / ".index.lock").exists()
+        finally:
+            reader.close()
+
+    def test_writer_open_refuses_incomplete_reset_marker(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        (data_dir / ".reset-state.json").write_text('{"vector_reset": true}')
+        with pytest.raises(ValueError, match="reset is incomplete"):
+            IndexStore(StorageConfig(data_dir=data_dir))
+
     def test_read_only_open_preserves_persisted_chroma_bytes_and_mtimes(
         self, tmp_path: Path
     ) -> None:

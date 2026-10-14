@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any
 
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
+from pipecat_context_hub.services.index.locking import index_lock
 from pipecat_context_hub.services.index.vector import VectorIndex, _detect_incompatible_format
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.paths import is_reparse_link
@@ -161,6 +163,8 @@ class IndexStore:
     def __init__(self, config: StorageConfig) -> None:
         data_dir = config.data_dir.expanduser().resolve()
         data_dir.mkdir(parents=True, exist_ok=True)
+        if _reset_state_exists(data_dir):
+            raise ValueError("index reset is incomplete; run refresh to recover it")
         config = config.model_copy(update={"data_dir": data_dir})
         self._data_dir = data_dir
         _validate_backend_directory(config.chroma_path, data_dir)
@@ -193,19 +197,21 @@ class IndexStore:
         vector: VectorIndex | None = None
         fts: FTSIndex | None = None
         try:
-            vector = VectorIndex(config.chroma_path)
-            self._vector = vector
-            _verify_backend_path_identities(config.chroma_path, chroma_identities)
-            _validate_backend_directory(config.chroma_path, data_dir)
-            chroma_file = config.chroma_path / "chroma.sqlite3"
-            if chroma_file.exists() or chroma_file.is_symlink():
-                _validate_existing_backend_file(
-                    chroma_file, data_dir, allow_empty=created_chroma_db
-                )
-            fts = FTSIndex(config.sqlite_path)
-            self._fts = fts
-            _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
-            _validate_existing_backend_file(config.sqlite_path, data_dir)
+            # Open both backends under one generation lock.
+            with index_lock(data_dir, exclusive=True):
+                vector = VectorIndex(config.chroma_path)
+                self._vector = vector
+                _verify_backend_path_identities(config.chroma_path, chroma_identities)
+                _validate_backend_directory(config.chroma_path, data_dir)
+                chroma_file = config.chroma_path / "chroma.sqlite3"
+                if chroma_file.exists() or chroma_file.is_symlink():
+                    _validate_existing_backend_file(
+                        chroma_file, data_dir, allow_empty=created_chroma_db
+                    )
+                fts = FTSIndex(config.sqlite_path)
+                self._fts = fts
+                _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
+                _validate_existing_backend_file(config.sqlite_path, data_dir)
         except Exception:
             # Roll back the already-opened vector backend so callers don't
             # inherit a leaked Chroma handle/lock on a half-constructed store.
@@ -237,8 +243,9 @@ class IndexStore:
 
     def clear(self) -> None:
         """Drop all records from both indexes for a clean rebuild."""
-        self._vector.clear()
-        self._fts.clear()
+        with index_lock(self._data_dir, exclusive=True):
+            self._vector.clear()
+            self._fts.clear()
         logger.info("IndexStore cleared")
 
     def reset(self) -> None:
@@ -273,24 +280,26 @@ class IndexStore:
 
     async def upsert(self, records: list[ChunkedRecord]) -> int:
         """Insert or update records in both indexes. Returns count written."""
-        vector_count = self._vector.upsert(records)
-        try:
-            fts_count = self._fts.upsert(records)
-        except Exception:
-            logger.exception("FTS upsert failed; vector index may have diverged")
-            raise
+        with index_lock(self._data_dir, exclusive=True):
+            vector_count = self._vector.upsert(records)
+            try:
+                fts_count = self._fts.upsert(records)
+            except Exception:
+                logger.exception("FTS upsert failed; vector index may have diverged")
+                raise
         if vector_count != fts_count:
             logger.warning("Index divergence: vector=%d fts=%d records", vector_count, fts_count)
         return vector_count
 
     async def delete_by_content_type(self, content_type: str) -> int:
         """Delete records by content type from both indexes. Returns count deleted."""
-        vector_count = self._vector.delete_by_content_type(content_type)
-        try:
-            fts_count = self._fts.delete_by_content_type(content_type)
-        except Exception:
-            logger.exception("FTS delete_by_content_type failed; indexes may have diverged")
-            raise
+        with index_lock(self._data_dir, exclusive=True):
+            vector_count = self._vector.delete_by_content_type(content_type)
+            try:
+                fts_count = self._fts.delete_by_content_type(content_type)
+            except Exception:
+                logger.exception("FTS delete_by_content_type failed; indexes may have diverged")
+                raise
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (content_type=%s): vector=%d fts=%d",
@@ -302,12 +311,13 @@ class IndexStore:
 
     async def delete_by_repo(self, repo: str) -> int:
         """Delete records by repo from both indexes. Returns count deleted."""
-        vector_count = self._vector.delete_by_repo(repo)
-        try:
-            fts_count = self._fts.delete_by_repo(repo)
-        except Exception:
-            logger.exception("FTS delete_by_repo failed; indexes may have diverged")
-            raise
+        with index_lock(self._data_dir, exclusive=True):
+            vector_count = self._vector.delete_by_repo(repo)
+            try:
+                fts_count = self._fts.delete_by_repo(repo)
+            except Exception:
+                logger.exception("FTS delete_by_repo failed; indexes may have diverged")
+                raise
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (repo=%s): vector=%d fts=%d",
@@ -319,12 +329,13 @@ class IndexStore:
 
     async def delete_by_source(self, source_url: str) -> int:
         """Delete records by source URL from both indexes. Returns count deleted."""
-        vector_count = self._vector.delete_by_source(source_url)
-        try:
-            fts_count = self._fts.delete_by_source(source_url)
-        except Exception:
-            logger.exception("FTS delete_by_source failed; indexes may have diverged")
-            raise
+        with index_lock(self._data_dir, exclusive=True):
+            vector_count = self._vector.delete_by_source(source_url)
+            try:
+                fts_count = self._fts.delete_by_source(source_url)
+            except Exception:
+                logger.exception("FTS delete_by_source failed; indexes may have diverged")
+                raise
         if vector_count != fts_count:
             logger.warning(
                 "Delete divergence (source_url=%s): vector=%d fts=%d",
@@ -340,7 +351,8 @@ class IndexStore:
         Offloads the synchronous ChromaDB HNSW query to a thread so it
         doesn't block the event loop during concurrent MCP tool calls.
         """
-        return await asyncio.to_thread(self._vector.search, query)
+        with index_lock(self._data_dir, exclusive=False):
+            return await asyncio.to_thread(self._vector.search, query)
 
     async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
         """Return results ranked by FTS5 keyword relevance.
@@ -348,35 +360,43 @@ class IndexStore:
         Offloads the synchronous SQLite FTS5 query to a thread so it
         doesn't block the event loop during concurrent MCP tool calls.
         """
-        return await asyncio.to_thread(self._fts.search, query)
+        with index_lock(self._data_dir, exclusive=False):
+            return await asyncio.to_thread(self._fts.search, query)
 
     def set_metadata(self, key: str, value: str) -> None:
         """Store a key-value pair in persistent index metadata."""
-        self._fts.set_metadata(key, value)
+        with index_lock(self._data_dir, exclusive=True):
+            self._fts.set_metadata(key, value)
 
     def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key, or None if not found."""
-        return self._fts.get_metadata(key)
+        with index_lock(self._data_dir, exclusive=False):
+            return self._fts.get_metadata(key)
 
     def delete_metadata(self, key: str) -> None:
         """Remove a metadata key if it exists."""
-        self._fts.delete_metadata(key)
+        with index_lock(self._data_dir, exclusive=True):
+            self._fts.delete_metadata(key)
 
     def set_metadata_batch(self, pairs: dict[str, str], *, delete_keys: Iterable[str] = ()) -> None:
         """Upsert and delete several metadata keys atomically in one commit."""
-        self._fts.set_metadata_batch(pairs, delete_keys=delete_keys)
+        with index_lock(self._data_dir, exclusive=True):
+            self._fts.set_metadata_batch(pairs, delete_keys=delete_keys)
 
     def get_all_metadata(self) -> dict[str, str]:
         """Return all persistent index metadata as a dict."""
-        return self._fts.get_all_metadata()
+        with index_lock(self._data_dir, exclusive=False):
+            return self._fts.get_all_metadata()
 
     def get_counts_by_repo(self) -> dict[str, int]:
         """Return record counts grouped by repo."""
-        return self._fts.get_counts_by_repo()
+        with index_lock(self._data_dir, exclusive=False):
+            return self._fts.get_counts_by_repo()
 
     def get_index_stats(self) -> dict[str, Any]:
         """Return index statistics (counts by type, total, commit SHAs)."""
-        return self._fts.get_index_stats()
+        with index_lock(self._data_dir, exclusive=False):
+            return self._fts.get_index_stats()
 
     def close(self) -> None:
         """Close underlying database connections."""
@@ -425,7 +445,9 @@ def _cleanup_created_backend_state(
                 shutil.rmtree(config.chroma_path)
 
 
-def _existing_index_config(config: StorageConfig, *, include_vector: bool = True) -> StorageConfig:
+def _existing_index_config(
+    config: StorageConfig, *, include_vector: bool = True, allow_wal: bool = False
+) -> StorageConfig:
     """Validate an already-built index without creating or opening backends."""
     data_dir = config.data_dir.expanduser().resolve(strict=True)
     if not data_dir.is_dir():
@@ -440,7 +462,7 @@ def _existing_index_config(config: StorageConfig, *, include_vector: bool = True
         _detect_incompatible_format(config.chroma_path)
     # The bounded HNSW header/size check is cheap and must also protect the
     # status front door; it does not construct Chroma or copy the tree.
-    validate_persisted_hnsw(config.chroma_path, "latest")
+    validate_persisted_hnsw(config.chroma_path, "latest", allow_wal=allow_wal)
     _validate_existing_backend_file(config.sqlite_path, data_dir)
     return config
 
@@ -477,10 +499,18 @@ class ReadOnlyIndexStore:
     """
 
     def __init__(self, config: StorageConfig, *, include_vector: bool = True) -> None:
-        config = _existing_index_config(config, include_vector=include_vector)
-        self._data_dir = config.data_dir
-        chroma_identities = _backend_path_identities(config.chroma_path, self._data_dir)
-        sqlite_identities = _backend_path_identities(config.sqlite_path, self._data_dir)
+        data_dir = config.data_dir.expanduser().resolve(strict=True)
+        lock_context = index_lock(data_dir, exclusive=False, create=False)
+        lock_context.__enter__()
+        self._lock_context = lock_context
+        try:
+            config = _existing_index_config(config, include_vector=include_vector, allow_wal=True)
+            self._data_dir = config.data_dir
+            chroma_identities = _backend_path_identities(config.chroma_path, self._data_dir)
+            sqlite_identities = _backend_path_identities(config.sqlite_path, self._data_dir)
+        except BaseException:
+            lock_context.__exit__(*sys.exc_info())
+            raise
         vector: VectorIndex | None = None
         fts: FTSIndex | None = None
         try:
@@ -499,6 +529,7 @@ class ReadOnlyIndexStore:
                 vector.close()
             if fts is not None:
                 fts.close()
+            self._lock_context.__exit__(*sys.exc_info())
             raise
 
     @property
@@ -524,4 +555,7 @@ class ReadOnlyIndexStore:
             if self._vector is not None:
                 self._vector.close()
         finally:
-            self._fts.close()
+            try:
+                self._fts.close()
+            finally:
+                self._lock_context.__exit__(None, None, None)

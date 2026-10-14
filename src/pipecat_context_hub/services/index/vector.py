@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import stat
@@ -343,6 +344,59 @@ def _record_has_tags(result: IndexResult, tags: list[str]) -> bool:
     return all(t in record_tags for t in tags)
 
 
+def _copy_tree_no_follow(source: Path, destination: Path) -> None:
+    """Copy a published tree without ever following a swapped link.
+
+    ``shutil.copytree(..., symlinks=True)`` still opens a file by pathname
+    after its directory entry was inspected.  A concurrent replacement can
+    therefore turn a regular file into a symlink between those operations.
+    Descriptor reads plus identity checks make the copied snapshot fail closed
+    instead of reading outside the published tree.
+    """
+    source_info = source.lstat()
+    if is_reparse_link(source) or not stat.S_ISDIR(source_info.st_mode):
+        raise ValueError(f"Unsafe read-only Chroma path: {source.name}")
+    destination.mkdir(parents=True, exist_ok=True)
+    for entry in os.scandir(source):
+        source_path = Path(entry.path)
+        destination_path = destination / entry.name
+        entry_info = source_path.lstat()
+        if is_reparse_link(source_path):
+            raise ValueError(f"Unsafe read-only Chroma path: {source_path.name}")
+        if stat.S_ISDIR(entry_info.st_mode):
+            _copy_tree_no_follow(source_path, destination_path)
+            continue
+        if not stat.S_ISREG(entry_info.st_mode):
+            raise ValueError(f"Unsafe read-only Chroma path: {source_path.name}")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        source_fd = os.open(source_path, flags)
+        output_fd = -1
+        try:
+            opened = os.fstat(source_fd)
+            if (opened.st_dev, opened.st_ino) != (entry_info.st_dev, entry_info.st_ino):
+                raise ValueError(f"Unsafe read-only Chroma path: {source_path.name}")
+            output_fd = os.open(
+                destination_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            with os.fdopen(source_fd, "rb") as input_stream, os.fdopen(output_fd, "wb") as output:
+                source_fd = -1
+                output_fd = -1
+                shutil.copyfileobj(input_stream, output)
+            after = source_path.lstat()
+            if is_reparse_link(source_path) or (after.st_dev, after.st_ino) != (
+                entry_info.st_dev,
+                entry_info.st_ino,
+            ):
+                raise ValueError(f"Unsafe read-only Chroma path: {source_path.name}")
+        finally:
+            if source_fd != -1:
+                os.close(source_fd)
+            if output_fd != -1:
+                os.close(output_fd)
+
+
 class VectorIndex:
     """ChromaDB vector index for embedding similarity search.
 
@@ -380,25 +434,12 @@ class VectorIndex:
         tempdir = tempfile.TemporaryDirectory(prefix="pipecat-context-hub-chroma-")
         snapshot = Path(tempdir.name) / "chroma"
         try:
-            # Refresh holds the same exclusive lock around Chroma opens and
-            # mutations.  A shared lock makes the tree copy one stable
-            # generation instead of a mixture of SQLite/HNSW generations.
-            with index_lock(self._chroma_path.parent, exclusive=False):
-                shutil.copytree(self._chroma_path, snapshot, symlinks=True)
-                for path in snapshot.rglob("*"):
-                    if is_reparse_link(path):
-                        raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
-                    if not path.is_dir() and not stat.S_ISREG(path.stat().st_mode):
-                        raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
-                snapshot_wal = snapshot / "chroma.sqlite3-wal"
-                if snapshot_wal.exists() or snapshot_wal.is_symlink():
-                    raise IncompatibleIndexFormatError(
-                        self._chroma_path,
-                        reason=(
-                            "chroma.sqlite3-WAL appeared while taking the read-only snapshot; "
-                            "uncheckpointed Chroma state cannot be validated safely"
-                        ),
-                    )
+            _copy_tree_no_follow(self._chroma_path, snapshot)
+            for path in snapshot.rglob("*"):
+                if is_reparse_link(path):
+                    raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
+                if not path.is_dir() and not stat.S_ISREG(path.stat().st_mode):
+                    raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
         except BaseException:
             tempdir.cleanup()
             raise
@@ -407,19 +448,22 @@ class VectorIndex:
 
     def _open_client(self) -> None:
         """Open the persistent Chroma client and the ``latest`` collection."""
-        # Probe for a pre-1.0 on-disk format BEFORE constructing the client,
-        # which would otherwise crash opaquely or rewrite 0.6 state.
-        _detect_incompatible_format(self._chroma_path)
-        # Status reads metadata without loading the HNSW graph. Reject the
-        # observed oversized-graph corruption before the native client can
-        # initialize successfully and later SIGSEGV on the first search.
-        validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME)
-        client_path = self._chroma_path
-        if self._read_only:
-            client_path = self._copy_read_only_snapshot()
-        else:
-            self._chroma_path.mkdir(parents=True, exist_ok=True)
-        with index_lock(self._chroma_path.parent, exclusive=not self._read_only):
+        # Validation, snapshotting, and native opening must observe one
+        # generation. A writer lock also coordinates WAL-backed SQLite state;
+        # ``allow_wal`` is safe only under this lock.
+        with index_lock(
+            self._chroma_path.parent,
+            exclusive=not self._read_only,
+            create=not self._read_only,
+        ):
+            _detect_incompatible_format(self._chroma_path)
+            validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME, allow_wal=True)
+            client_path = self._chroma_path
+            if self._read_only:
+                client_path = self._copy_read_only_snapshot()
+                validate_persisted_hnsw(client_path, COLLECTION_NAME, allow_wal=True)
+            else:
+                self._chroma_path.mkdir(parents=True, exist_ok=True)
             self._client = chromadb.PersistentClient(
                 path=str(client_path),
                 settings=ChromaSettings(
@@ -429,34 +473,34 @@ class VectorIndex:
                     ),
                 ),
             )
-        try:
-            if self._read_only:
-                self._collection = self._client.get_collection(name=COLLECTION_NAME)
-            else:
-                self._collection = self._client.get_or_create_collection(
-                    name=COLLECTION_NAME,
-                    metadata={"hnsw:space": "cosine"},
-                )
-        except (KeyError, ValueError) as exc:
-            # The persisted collection configuration is unreadable. This is the
-            # one corruption the pre-open sysdb-migration probe cannot catch:
-            # an older chromadb (0.6) process that wrote to this 1.x directory
-            # leaves a ``config_json_str`` without the ``_type`` discriminator,
-            # so chromadb's own ``CollectionConfigurationInternal.from_json``
-            # raises ``KeyError: '_type'`` (or a ValueError on an unknown type)
-            # while loading the existing collection. A fresh/empty directory
-            # never hits this path (creation does not parse an existing config),
-            # so translating it here only ever fires on a genuinely poisoned
-            # index. Surface the typed, actionable error instead of the opaque
-            # one so ``serve``/``refresh`` print the reset remediation.
-            raise IncompatibleIndexFormatError(
-                self._chroma_path,
-                reason=(
-                    "the persisted collection configuration is unreadable "
-                    f"({exc!r}); this happens when an older chromadb (0.6) "
-                    "process writes to a 1.x index directory"
-                ),
-            ) from exc
+            try:
+                if self._read_only:
+                    self._collection = self._client.get_collection(name=COLLECTION_NAME)
+                else:
+                    self._collection = self._client.get_or_create_collection(
+                        name=COLLECTION_NAME,
+                        metadata={"hnsw:space": "cosine"},
+                    )
+            except (KeyError, ValueError) as exc:
+                # The persisted collection configuration is unreadable. This is the
+                # one corruption the pre-open sysdb-migration probe cannot catch:
+                # an older chromadb (0.6) process that wrote to this 1.x directory
+                # leaves a ``config_json_str`` without the ``_type`` discriminator,
+                # so chromadb's own ``CollectionConfigurationInternal.from_json``
+                # raises ``KeyError: '_type'`` (or a ValueError on an unknown type)
+                # while loading the existing collection. A fresh/empty directory
+                # never hits this path (creation does not parse an existing config),
+                # so translating it here only ever fires on a genuinely poisoned
+                # index. Surface the typed, actionable error instead of the opaque
+                # one so ``serve``/``refresh`` print the reset remediation.
+                raise IncompatibleIndexFormatError(
+                    self._chroma_path,
+                    reason=(
+                        "the persisted collection configuration is unreadable "
+                        f"({exc!r}); this happens when an older chromadb (0.6) "
+                        "process writes to a 1.x index directory"
+                    ),
+                ) from exc
         self._closed = False
         logger.info("VectorIndex initialized at %s", self._chroma_path)
 

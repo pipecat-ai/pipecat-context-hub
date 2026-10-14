@@ -184,6 +184,14 @@ def _copy_resource_path_fallback(source: Path, target: Path) -> None:
 
 def _rename_no_symlink(source: Path, destination: Path) -> None:
     """Rename within securely opened parent directories where supported."""
+    if os.open not in getattr(os, "supports_dir_fd", set()):
+        # The staging directory is private and the destination was checked
+        # before copying.  Recheck both parents immediately before the
+        # path-based rename for platforms (notably Windows) without dir_fd.
+        if _is_reparse_point(source.parent) or _is_reparse_point(destination.parent):
+            raise ValueError("Destination path is invalid")
+        source.rename(destination)
+        return
     source_parent_fd = _open_directory_chain(source.parent)
     destination_parent_fd = _open_directory_chain(destination.parent)
     try:

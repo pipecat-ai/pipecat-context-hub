@@ -172,6 +172,15 @@ def test_render_uses_windows_safe_fallback_without_secure_directory_descriptors(
     assert target.read_text() == "safe"
 
 
+def test_render_finishes_windows_safe_fallback_rename(
+    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "prepared"
+    monkeypatch.setattr(renderer.os, "supports_dir_fd", set())
+    assert renderer.prepare_local(destination) == destination
+    assert (destination / "plugin.json").is_file()
+
+
 @pytest.mark.parametrize("skill", ["explore", "build", "deploy", "setup"])
 def test_render_preserves_complete_skill_resource_bytes(
     renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill: str
@@ -327,6 +336,32 @@ def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) ->
     assert json.loads(result.stdout) == {"organizations": [{"id": "org-1", "name": "Team"}]}
     assert "secret" not in result.stdout + result.stderr
     assert "private@example.com" not in result.stdout + result.stderr
+
+
+def test_cloud_metadata_wrapper_does_not_inherit_cloud_token(tmp_path: Path) -> None:
+    producer = tmp_path / "producer.py"
+    producer.write_text(
+        "import json, os\n"
+        "print(json.dumps({'organizations': [{'id': os.environ.get('PIPECAT_TOKEN', 'missing'), 'name': 'Team'}]}))\n"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
+            "--kind",
+            "organizations",
+            "--",
+            sys.executable,
+            str(producer),
+        ],
+        env={**os.environ, "PIPECAT_TOKEN": "must-not-leak"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["organizations"][0]["id"] == "missing"
+    assert "must-not-leak" not in result.stdout + result.stderr
 
 
 def test_cloud_metadata_wrapper_handles_unselectable_windows_pipe(tmp_path: Path) -> None:

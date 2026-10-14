@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import selectors
@@ -27,6 +28,15 @@ _SCALARS = (str, int, float, bool)
 _MAX_OUTPUT_BYTES = 1_048_576
 _MAX_RECORDS = 1_000
 _MAX_DEPTH = 32
+_SECRET_ENV = re.compile(
+    r"(?:TOKEN|API[_-]?KEY|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|CREDENTIAL)",
+    re.IGNORECASE,
+)
+
+
+def _safe_child_environment() -> dict[str, str]:
+    """Pass only non-secret process settings to the untrusted producer."""
+    return {key: value for key, value in os.environ.items() if not _SECRET_ENV.search(key)}
 
 
 def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
@@ -45,6 +55,10 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             popen_kwargs["start_new_session"] = True
+        # The command is intentionally treated as an untrusted producer: even
+        # an allowlisted JSON field must not become a side channel for a
+        # credential inherited from the agent process.
+        popen_kwargs["env"] = _safe_child_environment()
         process = subprocess.Popen(command, **popen_kwargs)
         stdout = process.stdout
         assert stdout is not None

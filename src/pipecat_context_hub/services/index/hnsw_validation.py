@@ -106,7 +106,9 @@ def _open_segment_file(root: Path, segment_name: str, filename: str) -> tuple[in
     return fd, info
 
 
-def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
+def validate_persisted_hnsw(
+    chroma_path: Path, collection_name: str, *, allow_wal: bool = False
+) -> None:
     """Check active collection segments without opening Chroma or unpickling.
 
     SQLite is opened read-only/immutable, so this probe creates no WAL/SHM
@@ -124,11 +126,10 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
     if not db_path.is_file():
         return
 
-    # ``immutable=1`` deliberately ignores SQLite's WAL.  Reading the main
-    # database while Chroma can still see uncheckpointed collection/segment
-    # rows would make this guard validate a stale graph and re-open the crash
-    # path it is meant to prevent.  We cannot safely merge the WAL without
-    # allowing SQLite to create shared-memory state, so fail closed instead.
+    # An uncoordinated caller must not validate the main database while
+    # ignoring a WAL.  The index open path passes ``allow_wal`` only while it
+    # holds the shared/exclusive index lock, allowing SQLite's read-only
+    # connection to see the same committed generation as Chroma.
     wal_path = db_path.with_name(f"{db_path.name}-wal")
     try:
         wal_info = wal_path.lstat()
@@ -138,7 +139,7 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
         raise IncompatibleIndexFormatError(
             chroma_path, reason="unable to inspect chroma.sqlite3-wal; refusing native loading"
         ) from exc
-    if wal_info is not None:
+    if wal_info is not None and not allow_wal:
         if is_reparse_link(wal_path) or not stat.S_ISREG(wal_info.st_mode):
             reason = "unsafe chroma.sqlite3-wal path"
         else:
@@ -150,7 +151,8 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
 
     conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(db_path.as_uri() + "?mode=ro&immutable=1", uri=True)
+        uri_suffix = "?mode=ro" if allow_wal else "?mode=ro&immutable=1"
+        conn = sqlite3.connect(db_path.as_uri() + uri_suffix, uri=True)
         segments = conn.execute(
             "SELECT s.id FROM segments s JOIN collections c ON s.collection=c.id "
             "WHERE s.type=? AND c.name=?",
@@ -162,10 +164,11 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
         if conn is not None:
             conn.close()
 
-    # A WAL can arrive after the first check while another Chroma process is
-    # checkpointing.  Do not accept the probe's stale snapshot in that case.
+    # Without the coordination lock a WAL can arrive after the first check;
+    # do not accept that stale probe.  Under the lock, a writer cannot change
+    # the generation, so a pre-existing WAL is valid and remains visible.
     try:
-        if wal_path.exists() or wal_path.is_symlink():
+        if not allow_wal and (wal_path.exists() or wal_path.is_symlink()):
             raise IncompatibleIndexFormatError(
                 chroma_path,
                 reason=(
