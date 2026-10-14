@@ -18,7 +18,7 @@ def prepare_local(destination: Path) -> Path:
         source,
     )
     destination = destination.expanduser().absolute()
-    if destination.is_symlink():
+    if _is_reparse_point(destination):
         raise ValueError("Destination must not be a symlink")
     _validate_destination_parents(destination)
     try:
@@ -48,7 +48,7 @@ def prepare_local(destination: Path) -> Path:
     )
     for path in files:
         if not path.is_file() or any(
-            part.is_symlink() for part in (path, *path.parents) if part != source.parent
+            _is_reparse_point(part) for part in (path, *path.parents) if part != source.parent
         ):
             raise ValueError(f"Package resource must be a regular file: {path.name}")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -77,7 +77,7 @@ def _validate_destination_parents(destination: Path) -> None:
     try:
         current = destination.parent
         while current != current.parent:
-            if current.is_symlink():
+            if _is_reparse_point(current):
                 raise ValueError("Destination path is invalid")
             current = current.parent
     except (OSError, RuntimeError, ValueError) as exc:
@@ -90,7 +90,7 @@ def _copy_resource(source: Path, target: Path) -> None:
     """Copy a resource from an already-validated path without following links."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     before = source.lstat()
-    if source.is_symlink() or not stat.S_ISREG(before.st_mode):
+    if _is_reparse_point(source) or not stat.S_ISREG(before.st_mode):
         raise ValueError(f"Package resource must be a regular file: {source.name}")
     # Probe the spelling once with ``O_NOFOLLOW`` as well.  Besides preserving
     # the preflight-to-open identity check for a replaced leaf, the actual
@@ -102,10 +102,7 @@ def _copy_resource(source: Path, target: Path) -> None:
     fd = -1
     output_fd = -1
     try:
-        if source_parent_fd == -1:
-            fd = os.open(source, flags)
-        else:
-            fd = os.open(source.name, flags, dir_fd=source_parent_fd)
+        fd = os.open(source.name, flags, dir_fd=source_parent_fd)
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode) or (
             before.st_dev,
@@ -113,10 +110,7 @@ def _copy_resource(source: Path, target: Path) -> None:
         ) != (opened.st_dev, opened.st_ino):
             raise ValueError(f"Package resource changed during copy: {source.name}")
         target_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-        if target_parent_fd == -1:
-            output_fd = os.open(target, target_flags, 0o600)
-        else:
-            output_fd = os.open(target.name, target_flags, 0o600, dir_fd=target_parent_fd)
+        output_fd = os.open(target.name, target_flags, 0o600, dir_fd=target_parent_fd)
         with os.fdopen(fd, "rb") as stream, os.fdopen(output_fd, "wb") as output:
             fd = -1
             output_fd = -1
@@ -126,16 +120,14 @@ def _copy_resource(source: Path, target: Path) -> None:
             os.close(fd)
         if output_fd != -1:
             os.close(output_fd)
-        if source_parent_fd != -1:
-            os.close(source_parent_fd)
-        if target_parent_fd != -1:
-            os.close(target_parent_fd)
+        os.close(source_parent_fd)
+        os.close(target_parent_fd)
 
 
 def _open_directory_chain(path: Path) -> int:
     """Open every directory component without following symlinks."""
     if os.open not in getattr(os, "supports_dir_fd", set()):
-        return -1
+        raise ValueError("Secure directory descriptors are unavailable")
     path = path.absolute()
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path.anchor, flags)
@@ -155,9 +147,6 @@ def _rename_no_symlink(source: Path, destination: Path) -> None:
     source_parent_fd = _open_directory_chain(source.parent)
     destination_parent_fd = _open_directory_chain(destination.parent)
     try:
-        if source_parent_fd == -1 or destination_parent_fd == -1:
-            source.rename(destination)
-            return
         os.rename(
             source.name,
             destination.name,
@@ -165,10 +154,32 @@ def _rename_no_symlink(source: Path, destination: Path) -> None:
             dst_dir_fd=destination_parent_fd,
         )
     finally:
-        if source_parent_fd != -1:
-            os.close(source_parent_fd)
-        if destination_parent_fd != -1:
-            os.close(destination_parent_fd)
+        os.close(source_parent_fd)
+        os.close(destination_parent_fd)
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """Return true for symlinks and Windows junction/mount-point reparse tags."""
+    try:
+        if path.is_symlink():
+            return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            return bool(isjunction(path))
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    mount_point_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    if mount_point_tag is None:
+        return False
+    try:
+        return getattr(os.lstat(path), "st_reparse_tag", None) == mount_point_tag
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def main() -> int:

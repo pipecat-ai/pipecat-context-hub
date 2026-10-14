@@ -848,6 +848,35 @@ class TestIndexStoreInitRollback:
             IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
         fake_vector.close.assert_called_once()
 
+    def test_backend_placeholders_are_removed_when_vector_init_fails(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            VectorIndex,
+            "__init__",
+            lambda self, path: (_ for _ in ()).throw(RuntimeError("vector boom")),
+        )
+        data_dir = tmp_path / "hub-data"
+        with pytest.raises(RuntimeError, match="vector boom"):
+            IndexStore(StorageConfig(data_dir=data_dir))
+        assert not (data_dir / "metadata.db").exists()
+        assert not (data_dir / "chroma" / "chroma.sqlite3").exists()
+        assert not (data_dir / "chroma").exists()
+
+    def test_read_only_store_exposes_no_writer_methods(self, tmp_path: Path):
+        from pipecat_context_hub.services.index.store import ReadOnlyIndexStore
+
+        # Build the persisted shape through the writer, then reopen through the
+        # reader boundary and assert mutation methods are not part of its API.
+        writer = IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
+        writer.close()
+        reader = ReadOnlyIndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
+        try:
+            assert not hasattr(reader, "reset")
+            assert not hasattr(reader, "upsert")
+        finally:
+            reader.close()
+
 
 class TestIndexStore:
     @pytest.fixture()

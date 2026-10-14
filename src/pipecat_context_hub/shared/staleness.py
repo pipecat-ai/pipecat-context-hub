@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.shared.interfaces import IndexStatusReader
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def _stale_after_days() -> float:
     return value
 
 
-def staleness_info(index_store: IndexStore) -> dict[str, Any] | None:
+def staleness_info(index_store: IndexStatusReader) -> dict[str, Any] | None:
     """Return the ``index_staleness`` payload, or None when fresh/unknown.
 
     Reads ``last_refresh_at`` per call rather than caching, so a long-lived
@@ -100,7 +100,7 @@ def staleness_info(index_store: IndexStore) -> dict[str, Any] | None:
     }
 
 
-def annotate_response(result_json: str, index_store: IndexStore) -> str:
+def annotate_response(result_json: str, index_store: IndexStatusReader) -> str:
     """Inject ``index_staleness`` into a tool handler's JSON response.
 
     Returns the input unchanged when the index is fresh, when the payload

@@ -19,8 +19,8 @@ The prepared replacement remains 0.2.3:
 `~/Downloads/pipecat-context-hub-0.2.3-durable-link.zip` (33,208 bytes), SHA-256
 `46c36cdd97fe2f60dacf1e22b42378f7c6e89473fbe5c33669a3ca5efc9da40e`.
 Seventeen packaging tests pass. The README differs by exactly one URL replacement;
-the twelve other resources, including manifest and all four skills, retain their
-submitted bytes. Thirteen-file membership, CRCs and source-byte parity pass, with
+the thirteen other resources, including manifest and all four skills, retain their
+submitted bytes. Fourteen-file membership, CRCs and source-byte parity pass, with
 zero credential/PII matches. Local proof is outside the checkout under
 `publisher-0.2.3-durable-link-ykincirg`. The historic reviewed plan prefix is unchanged.
 

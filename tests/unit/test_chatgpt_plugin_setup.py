@@ -145,6 +145,32 @@ def test_render_rejects_missing_or_symlinked_brand_assets(
     assert not destination.exists()
 
 
+def test_render_rejects_reparse_point_resource(
+    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Junctions must be treated like symlinks even when ``is_symlink`` is false."""
+    source = _copy_source(renderer, tmp_path, monkeypatch)
+    asset = source / "assets" / "cat-mark.svg"
+    real_predicate = renderer._is_reparse_point
+    monkeypatch.setattr(
+        renderer,
+        "_is_reparse_point",
+        lambda path: path == asset or real_predicate(path),
+    )
+    with pytest.raises(ValueError, match="Package resource must be a regular file"):
+        renderer.prepare_local(tmp_path / "prepared")
+
+
+def test_render_fails_closed_without_secure_directory_descriptors(
+    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "resource.txt"
+    source.write_text("safe")
+    monkeypatch.setattr(renderer.os, "supports_dir_fd", set())
+    with pytest.raises(ValueError, match="Secure directory descriptors"):
+        renderer._copy_resource(source, tmp_path / "copy.txt")
+
+
 @pytest.mark.parametrize("skill", ["explore", "build", "deploy", "setup"])
 def test_render_preserves_complete_skill_resource_bytes(
     renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill: str

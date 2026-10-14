@@ -239,7 +239,7 @@ class TestIndexUnready:
 
     def test_empty_index_exits_with_refresh_hint(self):
         with patch(
-            "pipecat_context_hub.services.index.store.IndexStore",
+            "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
             return_value=_index_store_mock(total=0),
         ):
             result = runner.invoke(main, ["check-deprecation", "PipelineTask"])
@@ -252,16 +252,12 @@ class TestIndexUnready:
     def test_existing_empty_data_directory_is_not_materialized(self, tmp_path):
         """Read-only status must not create backend files in an empty dir."""
         before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
-        with (
-            patch("pipecat_context_hub.services.index.store.IndexStore") as index_store,
-            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
-        ):
+        with patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}):
             result = runner.invoke(main, ["status"])
         assert result.exit_code == _EXIT_INDEX_UNREADY
         assert result.stdout == ""
         assert "refresh" in result.stderr
         assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
-        index_store.assert_not_called()
 
     def test_empty_backend_files_are_not_accepted(self, tmp_path):
         """Marker paths must be regular, non-empty persisted backend files."""
@@ -319,7 +315,7 @@ class TestIndexUnready:
             result = runner.invoke(main, ["status"])
         assert result.exit_code == _EXIT_INDEX_UNREADY
         assert result.stdout == ""
-        assert "index location is invalid" in result.stderr
+        assert "index does not exist or cannot be opened" in result.stderr
         assert str(tmp_path) not in result.stderr
 
     @pytest.mark.parametrize("missing", ["sqlite", "chroma"])
@@ -334,16 +330,12 @@ class TestIndexUnready:
         else:
             (data_dir / "chroma" / "chroma.sqlite3").unlink()
         before = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
-        with (
-            patch("pipecat_context_hub.services.index.store.IndexStore") as index_store,
-            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
-        ):
+        with patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}):
             result = runner.invoke(main, ["status"])
         assert result.exit_code == _EXIT_INDEX_UNREADY
         assert result.stdout == ""
         assert "refresh" in result.stderr
         assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before
-        index_store.assert_not_called()
 
     def test_tilde_storage_root_uses_expanded_backend_paths(self, tmp_path, monkeypatch):
         """A directly constructed ``~`` root must reach the existing store."""
@@ -361,7 +353,7 @@ class TestIndexUnready:
         )
         store = _index_store_mock(total=1)
         with patch(
-            "pipecat_context_hub.services.index.store.IndexStore", return_value=store
+            "pipecat_context_hub.services.index.store.ReadOnlyIndexStore", return_value=store
         ) as ctor:
             with _query_runtime(
                 HubConfig(storage=StorageConfig(data_dir=Path("~/hub"))),
@@ -373,7 +365,7 @@ class TestIndexUnready:
 
     def test_unopenable_index_exits_with_reset_hint(self):
         with patch(
-            "pipecat_context_hub.services.index.store.IndexStore",
+            "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
             side_effect=RuntimeError("corrupt"),
         ):
             result = runner.invoke(main, ["status"])
@@ -397,7 +389,7 @@ class TestIndexUnready:
         chroma_path = data_dir / "chroma"
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 side_effect=IncompatibleIndexFormatError(chroma_path),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
@@ -421,7 +413,9 @@ class TestDispatch:
         """Lookup path: no embedding service is constructed."""
         store = _index_store_mock(total=10)
         with (
-            patch("pipecat_context_hub.services.index.store.IndexStore", return_value=store),
+            patch(
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore", return_value=store
+            ),
             patch(
                 "pipecat_context_hub.services.embedding.EmbeddingService",
                 side_effect=AssertionError("lookup commands must not load the embedding model"),
@@ -446,7 +440,7 @@ class TestDispatch:
         def _run(extra_args):
             with (
                 patch(
-                    "pipecat_context_hub.services.index.store.IndexStore",
+                    "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                     return_value=_index_store_mock(total=10),
                 ),
                 patch(
@@ -468,7 +462,7 @@ class TestDispatch:
     def test_status_reports_index_health(self, tmp_path):
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=42),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
@@ -488,7 +482,7 @@ class TestDispatch:
         embedding = MagicMock()
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch(
@@ -523,7 +517,7 @@ class TestDispatch:
         handler = AsyncMock(return_value=json.dumps({"path": "/guides/x", "content": "hi"}))
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch(
@@ -551,7 +545,7 @@ class TestDispatch:
         handler = AsyncMock(return_value=json.dumps({"example_id": "ex1", "files": []}))
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch(
@@ -579,7 +573,7 @@ class TestDispatch:
         embedding = MagicMock()
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch(
@@ -616,7 +610,7 @@ class TestDispatch:
         embedding = MagicMock()
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch(
@@ -652,7 +646,7 @@ class TestDispatch:
         embedding = MagicMock()
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch(
@@ -776,7 +770,7 @@ def _run_semantic_command(
     with contextlib.ExitStack() as stack:
         stack.enter_context(
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             )
         )
@@ -887,7 +881,7 @@ class TestRerankerNotCachedWarning:
         with contextlib.ExitStack() as stack:
             stack.enter_context(
                 patch(
-                    "pipecat_context_hub.services.index.store.IndexStore",
+                    "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                     return_value=_index_store_mock(total=10),
                 )
             )
@@ -939,7 +933,7 @@ class TestRerankerLoadFailedWarning:
             )
             stack.enter_context(
                 patch(
-                    "pipecat_context_hub.services.index.store.IndexStore",
+                    "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                     return_value=_index_store_mock(total=10),
                 )
             )
@@ -1092,7 +1086,7 @@ class TestRerankerWarningDoesNotCoFireWithValidationError:
     def test_validation_error_suppresses_reranker_warning(self, tmp_path):
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch(
@@ -1184,7 +1178,7 @@ class TestQuietOutput:
 
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
@@ -1199,7 +1193,7 @@ class TestQuietOutput:
 
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
@@ -1215,7 +1209,7 @@ class TestQuietOutput:
         env = {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             # patch.dict restores os.environ wholesale on exit, including
@@ -1238,7 +1232,7 @@ class TestQuietOutput:
         env = {"PIPECAT_HUB_DATA_DIR": str(tmp_path), "HF_HUB_OFFLINE": "0"}
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch.dict("os.environ", env, clear=False),
@@ -1269,7 +1263,7 @@ class TestHomeRedaction:
         embedded = data_dir / "chroma.sqlite3"
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 side_effect=FileNotFoundError(f"unable to open database file: {embedded}"),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
@@ -1277,8 +1271,7 @@ class TestHomeRedaction:
             result = runner.invoke(main, ["status"])
 
         assert result.exit_code == _EXIT_INDEX_UNREADY
-        # Redaction happened (tilde present) and nothing leaks the literal home.
-        assert "~/" in result.stderr or "~" + os.sep in result.stderr
+        # The generic error remains path-free and nothing leaks the literal home.
         assert str(tmp_path) not in result.stderr
         # The data_dir token is redacted.
         assert str(data_dir) not in result.stderr
@@ -1296,7 +1289,7 @@ class TestHomeRedaction:
         (data_dir / "chroma" / "chroma.sqlite3").write_bytes(b"marker")
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=0),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
@@ -1316,7 +1309,7 @@ class TestBadInput:
     def test_get_doc_requires_id_or_path(self, tmp_path):
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=10),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),

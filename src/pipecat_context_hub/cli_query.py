@@ -36,7 +36,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -52,10 +51,10 @@ from pipecat_context_hub.shared.support_links import (
 )
 
 if TYPE_CHECKING:
-    from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
     from pipecat_context_hub.shared.config import HubConfig
+    from pipecat_context_hub.shared.interfaces import IndexStatusReader
     from pipecat_context_hub.shared.types import RerankerStatus
 
 
@@ -255,7 +254,7 @@ class _QueryRuntime:
     """Everything a one-shot tool dispatch needs, built by ``_query_runtime``."""
 
     retriever: HybridRetriever
-    index_store: IndexStore
+    index_store: IndexStatusReader
     reranker_status: RerankerStatus
     # The live CrossEncoderReranker instance, or None when ``reranker_status``
     # was already disabled pre-dispatch (``not_cached``/``config_disabled``) or
@@ -322,96 +321,13 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     read stderr and run the suggested command.
     """
     from pipecat_context_hub.services.index import IncompatibleIndexFormatError
-    from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
-    from pipecat_context_hub.services.index.store import IndexStore
-    from pipecat_context_hub.services.index.vector import _detect_incompatible_format
+    from pipecat_context_hub.services.index.store import ReadOnlyIndexStore
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
 
-    # IndexStore is a writer-capable abstraction whose constructor creates both
-    # backends. Query commands must not turn a missing index into a new empty
-    # index merely to report that retrieval is unavailable.
-    # Do this before constructing IndexStore.  Its writer-capable constructor
-    # creates missing directories and backend files, which would make a
-    # read-only query mutate an otherwise empty data directory.
-    # Resolve the configured root once so both readiness checks and the store
-    # agree when a caller supplies a ``~``-rooted path directly (rather than
-    # through environment loading, which already expands it).
+    storage = config.storage.model_copy(update={"data_dir": config.storage.data_dir.expanduser()})
+    index_store: ReadOnlyIndexStore | None = None
     try:
-        data_dir = config.storage.data_dir.expanduser().resolve()
-    except (OSError, RuntimeError, ValueError) as exc:
-        # Do not interpolate the unresolved path or exception: both may carry
-        # an absolute path (and symlink-loop paths are especially noisy).
-        _echo_stderr_warning(
-            "Error: the index location is invalid.\n"
-            "Run 'pipecat-context-hub refresh' first to build it.\n"
-            f"{bug_report_hint()}"
-        )
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
-    storage = config.storage.model_copy(update={"data_dir": data_dir})
-    # Keep the non-mutating Chroma probes active even when the FTS marker is
-    # missing: a corrupt vector backend must be diagnosed as corrupt rather
-    # than being hidden behind the partial-index readiness error.
-    # Reject the Chroma directory itself before probing any child.  Calling
-    # ``is_file``/``stat`` on a child first would follow a directory symlink
-    # and inspect an external database before the later safety rejection.
-    try:
-        chroma_dir_info = storage.chroma_path.lstat()
-        chroma_dir_safe = (
-            stat.S_ISDIR(chroma_dir_info.st_mode)
-            and not stat.S_ISLNK(chroma_dir_info.st_mode)
-            and storage.chroma_path.resolve(strict=True).is_relative_to(data_dir)
-        )
-    except (OSError, RuntimeError, ValueError):
-        chroma_dir_safe = False
-    backend_paths = (storage.sqlite_path, storage.chroma_path / "chroma.sqlite3")
-    if not chroma_dir_safe:
-        backend_valid = False
-    else:
-        try:
-            backend_valid = all(
-                path.relative_to(data_dir) is not None
-                and not path.is_symlink()
-                and path.is_file()
-                and path.stat().st_size > 0
-                and path.resolve(strict=True).is_relative_to(data_dir)
-                for path in backend_paths
-            )
-        except (OSError, RuntimeError, ValueError):
-            backend_valid = False
-    # Keep the non-mutating Chroma probes active when the backend file is a
-    # valid regular file, even if the FTS marker is missing.
-    chroma_file = backend_paths[1]
-    try:
-        chroma_probe_ready = (
-            chroma_dir_safe
-            and chroma_file.is_file()
-            and not chroma_file.is_symlink()
-            and chroma_file.stat().st_size > 0
-        )
-    except (OSError, RuntimeError, ValueError):
-        chroma_probe_ready = False
-    if chroma_probe_ready:
-        try:
-            _detect_incompatible_format(storage.chroma_path)
-            validate_persisted_hnsw(storage.chroma_path, "latest")
-        except IncompatibleIndexFormatError as exc:
-            _echo_stderr_warning(f"Error: {exc}\n{bug_report_hint()}")
-            raise SystemExit(_EXIT_INDEX_UNREADY) from exc
-    if not backend_valid:
-        _echo_stderr_warning(
-            f"Error: the index at {storage.data_dir} does not exist.\n"
-            "Run 'pipecat-context-hub refresh' first to build it "
-            "(the first run downloads models and indexes sources — allow a few minutes).\n"
-            f"{bug_report_hint()}"
-        )
-        raise SystemExit(_EXIT_INDEX_UNREADY)
-
-    # IndexStore.__init__ opens two backends (Chroma + SQLite) and does not roll
-    # back if a *post-construction* call (get_index_stats) then raises, so close
-    # whatever came up before exiting — mirrors the guarded close `serve` does.
-    index_store: IndexStore | None = None
-    try:
-        index_store = IndexStore(storage)
+        index_store = ReadOnlyIndexStore(storage)
         stats = index_store.get_index_stats()
     except IncompatibleIndexFormatError as exc:
         if index_store is not None:
@@ -429,7 +345,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         # FileNotFoundError carrying .../chroma.sqlite3) can leak an absolute
         # path, so redact the full formatted string, not a single argument.
         _echo_stderr_warning(
-            f"Error: failed to open index at {storage.data_dir}: {exc}\n"
+            "Error: the index does not exist or cannot be opened.\n"
             "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
             f"{bug_report_hint()}"
         )

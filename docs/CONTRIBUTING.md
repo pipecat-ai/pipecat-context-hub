@@ -22,6 +22,7 @@ A [`justfile`](https://github.com/casey/just) provides common tasks
 ```bash
 just check    # lint + format check + typecheck
 just test     # run tests
+just ci       # run check, test and audit together
 just audit    # pip-audit + bandit
 just sbom     # generate CycloneDX SBOM
 ```

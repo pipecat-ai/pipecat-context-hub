@@ -15,6 +15,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
@@ -85,15 +86,21 @@ class FTSIndex:
     filtering. Data persists in a SQLite database file on disk.
     """
 
-    def __init__(self, sqlite_path: Path) -> None:
+    def __init__(self, sqlite_path: Path, *, read_only: bool = False) -> None:
         self._sqlite_path = sqlite_path
+        self._read_only = read_only
         self._lock = threading.RLock()
-        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
+        if read_only:
+            uri = f"file:{quote(str(sqlite_path), safe='/')}?mode=ro"
+            self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+        else:
+            sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
         self._closed = False
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_SCHEMA_SQL)
-        self._conn.commit()
+        if not read_only:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.executescript(_SCHEMA_SQL)
+            self._conn.commit()
         logger.info("FTSIndex initialized at %s", sqlite_path)
 
     def close(self) -> None:

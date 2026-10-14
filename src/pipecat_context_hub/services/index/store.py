@@ -7,15 +7,18 @@ to the VectorIndex and FTSIndex backends.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import shutil
 import stat
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from pipecat_context_hub.services.index.fts import FTSIndex
-from pipecat_context_hub.services.index.vector import VectorIndex
+from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
+from pipecat_context_hub.services.index.vector import VectorIndex, _detect_incompatible_format
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.paths import is_reparse_link
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
@@ -92,7 +95,7 @@ def _validate_configured_backend_path(path: Path, data_dir: Path) -> None:
 def _validate_backend_directory(path: Path, data_dir: Path) -> None:
     """Reject backend directories that could redirect writes."""
     try:
-        if path.is_symlink():
+        if is_reparse_link(path):
             raise ValueError(f"Unsafe index backend path: {path.name}")
         path.resolve(strict=False).relative_to(data_dir)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -162,6 +165,7 @@ class IndexStore:
         # opening either library.  This closes the absent-path window where a
         # concurrent symlink insertion could redirect a constructor's first
         # write outside ``data_dir``.
+        chroma_preexisting = config.chroma_path.exists()
         try:
             config.chroma_path.mkdir(parents=True, exist_ok=True)
             config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,8 +186,11 @@ class IndexStore:
                 _validate_existing_backend_file(backend_file, data_dir)
         chroma_identities = _backend_path_identities(config.chroma_path, data_dir)
         sqlite_identities = _backend_path_identities(config.sqlite_path, data_dir)
-        self._vector = VectorIndex(config.chroma_path)
+        vector: VectorIndex | None = None
+        fts: FTSIndex | None = None
         try:
+            vector = VectorIndex(config.chroma_path)
+            self._vector = vector
             _verify_backend_path_identities(config.chroma_path, chroma_identities)
             _validate_backend_directory(config.chroma_path, data_dir)
             chroma_file = config.chroma_path / "chroma.sqlite3"
@@ -191,16 +198,29 @@ class IndexStore:
                 _validate_existing_backend_file(
                     chroma_file, data_dir, allow_empty=created_chroma_db
                 )
-            self._fts = FTSIndex(config.sqlite_path)
+            fts = FTSIndex(config.sqlite_path)
+            self._fts = fts
             _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
             _validate_existing_backend_file(config.sqlite_path, data_dir)
         except Exception:
             # Roll back the already-opened vector backend so callers don't
             # inherit a leaked Chroma handle/lock on a half-constructed store.
-            try:
-                self._vector.close()
-            except Exception:
-                logger.exception("Vector backend close failed during rollback")
+            if vector is not None:
+                try:
+                    vector.close()
+                except Exception:
+                    logger.exception("Vector backend close failed during rollback")
+            if fts is not None:
+                try:
+                    fts.close()
+                except Exception:
+                    logger.exception("FTS backend close failed during rollback")
+            _cleanup_created_backend_state(
+                config,
+                created_sqlite=created_sqlite,
+                created_chroma_db=created_chroma_db,
+                chroma_preexisting=chroma_preexisting,
+            )
             raise
         logger.info("IndexStore initialized with data_dir=%s", config.data_dir)
 
@@ -344,6 +364,98 @@ class IndexStore:
 
     def close(self) -> None:
         """Close underlying database connections."""
+        try:
+            self._vector.close()
+        finally:
+            self._fts.close()
+
+
+def _cleanup_created_backend_state(
+    config: StorageConfig,
+    *,
+    created_sqlite: bool,
+    created_chroma_db: bool,
+    chroma_preexisting: bool,
+) -> None:
+    """Remove backend state created by a failed writer-store initialization."""
+    if created_sqlite:
+        for path in (
+            config.sqlite_path,
+            config.sqlite_path.with_name(config.sqlite_path.name + "-wal"),
+            config.sqlite_path.with_name(config.sqlite_path.name + "-shm"),
+        ):
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
+                if path.exists() and not is_reparse_link(path):
+                    path.unlink()
+    if created_chroma_db:
+        path = config.chroma_path / "chroma.sqlite3"
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            if path.exists() and not is_reparse_link(path):
+                path.unlink()
+    if not chroma_preexisting:
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            if config.chroma_path.is_dir() and not is_reparse_link(config.chroma_path):
+                shutil.rmtree(config.chroma_path)
+
+
+def _existing_index_config(config: StorageConfig) -> StorageConfig:
+    """Validate an already-built index without creating or opening backends."""
+    data_dir = config.data_dir.expanduser().resolve(strict=True)
+    if not data_dir.is_dir():
+        raise FileNotFoundError(data_dir)
+    config = config.model_copy(update={"data_dir": data_dir})
+    _validate_backend_directory(config.chroma_path, data_dir)
+    chroma_db = config.chroma_path / "chroma.sqlite3"
+    _validate_existing_backend_file(chroma_db, data_dir)
+    _detect_incompatible_format(config.chroma_path)
+    validate_persisted_hnsw(config.chroma_path, "latest")
+    _validate_existing_backend_file(config.sqlite_path, data_dir)
+    return config
+
+
+class ReadOnlyIndexStore:
+    """Reader-only facade over an existing persisted index.
+
+    Unlike :class:`IndexStore`, this boundary never creates directories/files,
+    exposes no mutation methods, and opens SQLite with ``mode=ro``. The Chroma
+    backend remains behind the same reader-only API so query callers cannot
+    accidentally reach refresh/reset operations.
+    """
+
+    def __init__(self, config: StorageConfig) -> None:
+        config = _existing_index_config(config)
+        self._data_dir = config.data_dir
+        vector: VectorIndex | None = None
+        fts: FTSIndex | None = None
+        try:
+            vector = VectorIndex(config.chroma_path, read_only=True)
+            fts = FTSIndex(config.sqlite_path, read_only=True)
+            self._vector = vector
+            self._fts = fts
+        except Exception:
+            if vector is not None:
+                vector.close()
+            if fts is not None:
+                fts.close()
+            raise
+
+    @property
+    def data_dir(self) -> Path:
+        return self._data_dir
+
+    async def vector_search(self, query: IndexQuery) -> list[IndexResult]:
+        return await asyncio.to_thread(self._vector.search, query)
+
+    async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
+        return await asyncio.to_thread(self._fts.search, query)
+
+    def get_all_metadata(self) -> dict[str, str]:
+        return self._fts.get_all_metadata()
+
+    def get_index_stats(self) -> dict[str, Any]:
+        return self._fts.get_index_stats()
+
+    def close(self) -> None:
         try:
             self._vector.close()
         finally:

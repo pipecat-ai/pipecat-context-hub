@@ -347,8 +347,9 @@ class VectorIndex:
     so indexes survive process restarts.
     """
 
-    def __init__(self, chroma_path: Path) -> None:
+    def __init__(self, chroma_path: Path, *, read_only: bool = False) -> None:
         self._chroma_path = chroma_path
+        self._read_only = read_only
         self._client: Any = None
         self._collection: Any = None
         self._closed = True
@@ -364,7 +365,8 @@ class VectorIndex:
         # observed oversized-graph corruption before the native client can
         # initialize successfully and later SIGSEGV on the first search.
         validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME)
-        self._chroma_path.mkdir(parents=True, exist_ok=True)
+        if not self._read_only:
+            self._chroma_path.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(
             path=str(self._chroma_path),
             settings=ChromaSettings(

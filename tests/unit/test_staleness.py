@@ -134,7 +134,7 @@ class TestBothFrontDoors:
     def test_cli_response_carries_footer_when_stale(self, tmp_path):
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_store_refreshed_days_ago(21),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
@@ -147,7 +147,7 @@ class TestBothFrontDoors:
     def test_cli_status_is_never_annotated(self, tmp_path):
         with (
             patch(
-                "pipecat_context_hub.services.index.store.IndexStore",
+                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_store_refreshed_days_ago(21),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),

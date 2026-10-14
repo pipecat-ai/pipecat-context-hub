@@ -6,6 +6,7 @@ Concrete implementations are wired together during integration (T8).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
 from pipecat_context_hub.shared.types import (
@@ -54,6 +55,27 @@ class IndexReader(Protocol):
 
     async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
         """Return results ranked by FTS5 keyword relevance."""
+        ...
+
+
+class IndexStatusReader(IndexReader, Protocol):
+    """Read-only index surface needed by status and one-shot query callers."""
+
+    @property
+    def data_dir(self) -> Path:
+        """Return the persisted index directory."""
+        ...
+
+    def get_all_metadata(self) -> dict[str, str]:
+        """Return persisted index metadata without changing it."""
+        ...
+
+    def get_index_stats(self) -> dict[str, object]:
+        """Return persisted index counts and provenance."""
+        ...
+
+    def close(self) -> None:
+        """Release read handles."""
         ...
 
 
