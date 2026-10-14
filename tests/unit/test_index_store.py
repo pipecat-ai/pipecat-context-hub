@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import os
 from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,19 @@ from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 EMBEDDING_DIM = 384
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_store_refuses_symlinked_backend_file(tmp_path: Path) -> None:
+    """The writer boundary must not open a backend through a symlink."""
+    target = tmp_path / "victim.db"
+    target.write_bytes(b"keep")
+    data_dir = tmp_path / "index"
+    data_dir.mkdir()
+    (data_dir / "metadata.db").symlink_to(target)
+    with pytest.raises(ValueError, match="Unsafe index backend path"):
+        IndexStore(StorageConfig(data_dir=data_dir))
+    assert target.read_bytes() == b"keep"
 
 
 def _random_embedding(seed: int = 0) -> list[float]:

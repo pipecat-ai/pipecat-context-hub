@@ -42,8 +42,8 @@ def _seed_persisted_index_for_mocked_store(tmp_path: Path, request: pytest.Fixtu
         data_dirs.append(tmp_path / ".pipecat-context-hub")
     for data_dir in data_dirs:
         (data_dir / "chroma").mkdir(parents=True, exist_ok=True)
-        (data_dir / "chroma" / "chroma.sqlite3").touch()
-        (data_dir / "metadata.db").touch()
+        (data_dir / "chroma" / "chroma.sqlite3").write_bytes(b"marker")
+        (data_dir / "metadata.db").write_bytes(b"marker")
 
 
 def _assert_remediation_before_report_hint(stderr: str, remediation_substr: str, url: str) -> None:
@@ -263,13 +263,57 @@ class TestIndexUnready:
         assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
         index_store.assert_not_called()
 
+    def test_empty_backend_files_are_not_accepted(self, tmp_path):
+        """Marker paths must be regular, non-empty persisted backend files."""
+        data_dir = tmp_path / "empty"
+        (data_dir / "chroma").mkdir(parents=True)
+        (data_dir / "chroma" / "chroma.sqlite3").touch()
+        (data_dir / "metadata.db").touch()
+        with patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.stdout == ""
+        assert "refresh" in result.stderr
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_symlinked_backend_is_rejected_without_following(self, tmp_path):
+        data_dir = tmp_path / "linked"
+        data_dir.mkdir()
+        target = tmp_path / "victim.db"
+        target.write_bytes(b"must remain unchanged")
+        (data_dir / "metadata.db").symlink_to(target)
+        (data_dir / "chroma").mkdir()
+        (data_dir / "chroma" / "chroma.sqlite3").write_bytes(b"marker")
+        with patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.stdout == ""
+        assert target.read_bytes() == b"must remain unchanged"
+
+    def test_data_dir_resolution_failure_is_redacted(self, tmp_path, monkeypatch):
+        data_dir = tmp_path / "loop"
+        original_resolve = Path.resolve
+
+        def fail_resolve(path: Path, *args: Any, **kwargs: Any) -> Path:
+            if path == data_dir:
+                raise RuntimeError(f"symlink loop at {path}")
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", fail_resolve)
+        with patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.stdout == ""
+        assert "index location is invalid" in result.stderr
+        assert str(tmp_path) not in result.stderr
+
     @pytest.mark.parametrize("missing", ["sqlite", "chroma"])
     def test_partial_index_is_not_materialized(self, tmp_path, missing):
         """Read-only commands require both persisted backends and never heal one."""
         data_dir = tmp_path / "partial"
         (data_dir / "chroma").mkdir(parents=True)
-        (data_dir / "chroma" / "chroma.sqlite3").touch()
-        (data_dir / "metadata.db").touch()
+        (data_dir / "chroma" / "chroma.sqlite3").write_bytes(b"marker")
+        (data_dir / "metadata.db").write_bytes(b"marker")
         if missing == "sqlite":
             (data_dir / "metadata.db").unlink()
         else:
@@ -293,8 +337,8 @@ class TestIndexUnready:
 
         data_dir = tmp_path / "hub"
         (data_dir / "chroma").mkdir(parents=True)
-        (data_dir / "chroma" / "chroma.sqlite3").touch()
-        (data_dir / "metadata.db").touch()
+        (data_dir / "chroma" / "chroma.sqlite3").write_bytes(b"marker")
+        (data_dir / "metadata.db").write_bytes(b"marker")
         monkeypatch.setattr(
             Path,
             "expanduser",
@@ -332,9 +376,9 @@ class TestIndexUnready:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         data_dir = tmp_path / ".pipecat-context-hub"
         data_dir.mkdir()
-        (data_dir / "metadata.db").touch()
+        (data_dir / "metadata.db").write_bytes(b"marker")
         (data_dir / "chroma").mkdir()
-        (data_dir / "chroma" / "chroma.sqlite3").touch()
+        (data_dir / "chroma" / "chroma.sqlite3").write_bytes(b"marker")
         chroma_path = data_dir / "chroma"
         with (
             patch(
@@ -1232,9 +1276,9 @@ class TestHomeRedaction:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         data_dir = tmp_path / ".pipecat-context-hub"
         data_dir.mkdir()
-        (data_dir / "metadata.db").touch()
+        (data_dir / "metadata.db").write_bytes(b"marker")
         (data_dir / "chroma").mkdir()
-        (data_dir / "chroma" / "chroma.sqlite3").touch()
+        (data_dir / "chroma" / "chroma.sqlite3").write_bytes(b"marker")
         with (
             patch(
                 "pipecat_context_hub.services.index.store.IndexStore",

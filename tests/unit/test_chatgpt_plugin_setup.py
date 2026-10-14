@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -210,6 +211,17 @@ def test_render_rejects_symlink_destination(renderer: ModuleType, tmp_path: Path
     with pytest.raises(ValueError, match="Destination must not be a symlink"):
         renderer.prepare_local(destination)
     assert list(existing.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_render_rejects_symlink_loop_destination_without_path_leak(
+    renderer: ModuleType, tmp_path: Path
+) -> None:
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop, target_is_directory=True)
+    with pytest.raises(ValueError, match="Destination path is invalid") as error:
+        renderer.prepare_local(loop / "nested")
+    assert str(tmp_path) not in str(error.value)
 
 
 def test_skills_only_manifest_and_onboarding(renderer: ModuleType, tmp_path: Path) -> None:

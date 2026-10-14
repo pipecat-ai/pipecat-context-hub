@@ -335,19 +335,44 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     # Resolve the configured root once so both readiness checks and the store
     # agree when a caller supplies a ``~``-rooted path directly (rather than
     # through environment loading, which already expands it).
-    data_dir = config.storage.data_dir.expanduser().resolve()
+    try:
+        data_dir = config.storage.data_dir.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        # Do not interpolate the unresolved path or exception: both may carry
+        # an absolute path (and symlink-loop paths are especially noisy).
+        _echo_stderr_warning(
+            "Error: the index location is invalid.\n"
+            "Run 'pipecat-context-hub refresh' first to build it.\n"
+            f"{bug_report_hint()}"
+        )
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     storage = config.storage.model_copy(update={"data_dir": data_dir})
     # Keep the non-mutating Chroma probes active even when the FTS marker is
     # missing: a corrupt vector backend must be diagnosed as corrupt rather
     # than being hidden behind the partial-index readiness error.
-    if (storage.chroma_path / "chroma.sqlite3").is_file():
+    backend_paths = (storage.sqlite_path, storage.chroma_path / "chroma.sqlite3")
+    try:
+        backend_valid = all(
+            path.relative_to(data_dir) is not None
+            and not path.is_symlink()
+            and path.is_file()
+            and path.stat().st_size > 0
+            and path.resolve(strict=True).is_relative_to(data_dir)
+            for path in backend_paths
+        )
+    except (OSError, RuntimeError, ValueError):
+        backend_valid = False
+    # Keep the non-mutating Chroma probes active when the backend file is a
+    # valid regular file, even if the FTS marker is missing.
+    chroma_file = backend_paths[1]
+    if chroma_file.is_file() and not chroma_file.is_symlink() and chroma_file.stat().st_size > 0:
         try:
             _detect_incompatible_format(storage.chroma_path)
             validate_persisted_hnsw(storage.chroma_path, "latest")
         except IncompatibleIndexFormatError as exc:
             _echo_stderr_warning(f"Error: {exc}\n{bug_report_hint()}")
             raise SystemExit(_EXIT_INDEX_UNREADY) from exc
-    if not (storage.sqlite_path.is_file() and (storage.chroma_path / "chroma.sqlite3").is_file()):
+    if not backend_valid:
         _echo_stderr_warning(
             f"Error: the index at {storage.data_dir} does not exist.\n"
             "Run 'pipecat-context-hub refresh' first to build it "

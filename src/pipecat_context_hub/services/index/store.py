@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import stat
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,24 @@ from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexRes
 logger = logging.getLogger(__name__)
 
 
+def _validate_existing_backend_file(path: Path, data_dir: Path) -> None:
+    """Refuse unsafe persisted files before any backend can open them.
+
+    SQLite and Chroma both follow symlinks when opening their files.  Keeping
+    this check at the writer-capable store boundary prevents refreshes from
+    accidentally writing through an operator- or attacker-planted link.
+    """
+    try:
+        path.relative_to(data_dir)
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(data_dir)
+        info = path.lstat()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"Unsafe index backend path: {path.name}") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+        raise ValueError(f"Unsafe index backend path: {path.name}")
+
+
 class IndexStore:
     """Unified index store satisfying both IndexWriter and IndexReader.
 
@@ -30,6 +49,12 @@ class IndexStore:
     def __init__(self, config: StorageConfig) -> None:
         config.data_dir.mkdir(parents=True, exist_ok=True)
         self._data_dir = config.data_dir
+        for backend_file in (
+            config.sqlite_path,
+            config.chroma_path / "chroma.sqlite3",
+        ):
+            if backend_file.exists() or backend_file.is_symlink():
+                _validate_existing_backend_file(backend_file, config.data_dir)
         self._vector = VectorIndex(config.chroma_path)
         try:
             self._fts = FTSIndex(config.sqlite_path)

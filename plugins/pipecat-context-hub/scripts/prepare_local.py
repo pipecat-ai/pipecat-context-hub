@@ -18,7 +18,10 @@ def prepare_local(destination: Path) -> Path:
     destination = destination.expanduser().absolute()
     if destination.is_symlink():
         raise ValueError("Destination must not be a symlink")
-    destination = destination.resolve()
+    try:
+        destination = destination.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("Destination path is invalid") from exc
     if destination == checkout or checkout in destination.parents:
         raise ValueError("Destination must be outside the checkout")
     if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
