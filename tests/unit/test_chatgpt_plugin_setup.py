@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType
 
@@ -36,14 +38,54 @@ def _copy_source(renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.Monke
     return source
 
 
-def _trusted_producer_command(tmp_path: Path, producer: Path) -> list[str]:
-    """Run fixture output through a test executable named like the CLI."""
-    launcher = tmp_path / "pipecat"
-    launcher.write_text(
-        f"#!{sys.executable}\nimport runpy, sys\nrunpy.run_path(sys.argv[1], run_name='__main__')\n"
+def _run_metadata_wrapper(
+    producer: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run schema fixtures through the real command validator."""
+    spec = importlib.util.spec_from_file_location(
+        f"safe_cloud_metadata_{producer.stem}",
+        _SOURCE / "scripts" / "safe_cloud_metadata.py",
     )
-    launcher.chmod(0o700)
-    return [str(launcher), str(producer)]
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    fixture_env = dict(os.environ if env is None else env)
+
+    def run_fixture(_command: list[str]) -> subprocess.CompletedProcess[bytes]:
+        child_env = {
+            key: value
+            for key, value in fixture_env.items()
+            if key in module._PASSTHROUGH_ENV
+            or key in module._SAFE_RUNTIME_ENV
+            or (key.startswith("LC_") and not module._SECRET_ENV.search(key))
+        }
+        return subprocess.run(
+            [sys.executable, str(producer)], env=child_env, capture_output=True, check=False
+        )
+
+    old_argv = sys.argv
+    stdout, stderr = io.StringIO(), io.StringIO()
+    try:
+        setattr(module, "_run_bounded", run_fixture)
+        sys.argv = [
+            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
+            "--kind",
+            "organizations",
+            "--",
+            "pipecat",
+            "cloud",
+            "--output",
+            "json",
+            "organizations",
+            "list",
+        ]
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            returncode = module.main()
+    finally:
+        sys.argv = old_argv
+    return subprocess.CompletedProcess([], returncode, stdout.getvalue(), stderr.getvalue())
 
 
 def test_prepare_runs_without_site_packages_or_hub(tmp_path: Path) -> None:
@@ -327,20 +369,7 @@ def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) ->
         "{'id': 'org-1', 'name': 'Team', 'email': 'private@example.com', "
         "'daily_api_key': 'stdout-secret'}]}))\n"
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
-            "--kind",
-            "organizations",
-            "--",
-            *_trusted_producer_command(tmp_path, producer),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    result = _run_metadata_wrapper(producer)
     assert result.returncode == 0
     assert json.loads(result.stdout) == {"organizations": [{"id": "org-1", "name": "Team"}]}
     assert "secret" not in result.stdout + result.stderr
@@ -353,20 +382,7 @@ def test_cloud_metadata_wrapper_preserves_headless_cloud_token(tmp_path: Path) -
         "import json, os\n"
         "print(json.dumps({'organizations': [{'id': os.environ.get('PIPECAT_TOKEN', 'missing'), 'name': 'Team'}]}))\n"
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
-            "--kind",
-            "organizations",
-            "--",
-            *_trusted_producer_command(tmp_path, producer),
-        ],
-        env={**os.environ, "PIPECAT_TOKEN": "must-not-leak"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run_metadata_wrapper(producer, env={**os.environ, "PIPECAT_TOKEN": "must-not-leak"})
     assert result.returncode == 0
     assert json.loads(result.stdout)["organizations"][0]["id"] == "must-not-leak"
 
@@ -396,6 +412,52 @@ def test_cloud_metadata_wrapper_rejects_arbitrary_producer(tmp_path: Path) -> No
     assert "must-not-leak" not in result.stdout + result.stderr
 
 
+def test_cloud_metadata_wrapper_rejects_spoofed_cli_and_mutating_args(tmp_path: Path) -> None:
+    spoof = tmp_path / "pipecat"
+    spoof.write_text(f"#!{sys.executable}\nprint('spoofed')\n")
+    spoof.chmod(0o700)
+    script = str(_SOURCE / "scripts" / "safe_cloud_metadata.py")
+    spoofed = subprocess.run(
+        [
+            sys.executable,
+            script,
+            "--kind",
+            "organizations",
+            "--",
+            str(spoof),
+            "cloud",
+            "--output",
+            "json",
+            "organizations",
+            "list",
+        ],
+        env={**os.environ, "PIPECAT_TOKEN": "must-not-leak"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert spoofed.returncode == 1
+    mutating = subprocess.run(
+        [
+            sys.executable,
+            script,
+            "--kind",
+            "organizations",
+            "--",
+            "pipecat",
+            "cloud",
+            "--output",
+            "json",
+            "organizations",
+            "select",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert mutating.returncode == 1
+
+
 @pytest.mark.parametrize("name", ["AWS_ACCESS_KEY_ID", "DOCKER_AUTH_CONFIG"])
 def test_cloud_metadata_wrapper_filters_credential_like_environment(
     tmp_path: Path, name: str
@@ -405,20 +467,7 @@ def test_cloud_metadata_wrapper_filters_credential_like_environment(
         "import json, os\n"
         f"print(json.dumps({{'organizations': [{{'id': os.environ.get('{name}', 'missing'), 'name': 'Team'}}]}}))\n"
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
-            "--kind",
-            "organizations",
-            "--",
-            *_trusted_producer_command(tmp_path, producer),
-        ],
-        env={**os.environ, name: "must-not-leak"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run_metadata_wrapper(producer, env={**os.environ, name: "must-not-leak"})
     assert result.returncode == 0
     assert json.loads(result.stdout)["organizations"][0]["id"] == "missing"
     assert "must-not-leak" not in result.stdout + result.stderr
@@ -614,20 +663,7 @@ def test_cloud_metadata_wrapper_does_not_project_nested_wrong_kind_records(
 ) -> None:
     producer = tmp_path / "producer.py"
     producer.write_text(f"import json\nprint(json.dumps({payload!r}))\n")
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
-            "--kind",
-            "organizations",
-            "--",
-            *_trusted_producer_command(tmp_path, producer),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    result = _run_metadata_wrapper(producer)
     if expected is None:
         assert result.returncode == 1
         assert result.stdout == ""
@@ -647,20 +683,7 @@ def test_cloud_metadata_wrapper_does_not_project_nested_wrong_kind_records(
 def test_cloud_metadata_wrapper_fails_closed_without_raw_output(tmp_path: Path, body: str) -> None:
     producer = tmp_path / "producer.py"
     producer.write_text(body + "\n")
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
-            "--kind",
-            "organizations",
-            "--",
-            *_trusted_producer_command(tmp_path, producer),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    result = _run_metadata_wrapper(producer)
     assert result.returncode == 1
     assert result.stdout == ""
     assert result.stderr == (
@@ -676,20 +699,7 @@ def test_cloud_metadata_wrapper_rejects_unbounded_records_and_nesting(tmp_path: 
         "for _ in range(1100): value = {'data': [value]}\n"
         "print(json.dumps(value))\n"
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
-            "--kind",
-            "organizations",
-            "--",
-            *_trusted_producer_command(tmp_path, producer),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    result = _run_metadata_wrapper(producer)
     assert result.returncode == 1
     assert result.stdout == ""
 

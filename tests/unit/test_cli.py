@@ -56,6 +56,34 @@ def test_partial_index_detection_recovers_persisted_reset_state(tmp_path: Path) 
     assert _partial_index_detected(config)
 
 
+def test_refresh_generation_lock_uses_resolved_data_dir_before_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    config = HubConfig.model_validate({"storage": {"data_dir": str(linked)}})
+    events: list[tuple[str, Path]] = []
+
+    class Lock:
+        def __enter__(self) -> None:
+            events.append(("enter", real))
+
+        def __exit__(self, *_args: object) -> None:
+            events.append(("exit", real))
+
+    monkeypatch.setattr(cli_module, "generation_lock", lambda path: Lock())
+
+    def callback(ctx: click.Context) -> None:
+        events.append(("callback", ctx.obj["config"].storage.data_dir))
+
+    ctx = click.Context(click.Command("test"))
+    ctx.obj = {"config": config}
+    cli_module._with_refresh_generation_lock(callback)(ctx)
+    assert events == [("enter", real), ("callback", linked), ("exit", real)]
+
+
 def test_reset_marker_is_recovered_before_writer_open(tmp_path: Path) -> None:
     config = HubConfig.model_validate({"storage": {"data_dir": str(tmp_path)}})
     marker = tmp_path / ".reset-state.json"

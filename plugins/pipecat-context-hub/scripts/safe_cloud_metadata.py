@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import selectors
+import shutil
 import signal
 import threading
 import time
@@ -42,15 +43,75 @@ _SAFE_RUNTIME_ENV = frozenset(
 )
 
 
-def _validate_producer_command(command: list[str]) -> None:
-    """Allow only the installed Pipecat CLI as a metadata producer.
+_READ_ONLY_CLOUD_COMMANDS = frozenset(
+    {
+        ("organizations", "list"),
+        ("regions", "list"),
+        ("agent", "list"),
+        ("agent", "profiles", "list"),
+        ("secrets", "list"),
+    }
+)
+_READ_ONLY_OPTIONS = frozenset({"--organization", "--region"})
 
-    The wrapper deliberately accepts no arbitrary interpreter, shell, or
-    caller-provided executable. Otherwise a producer could simply echo the
-    one supported credential, ``PIPECAT_TOKEN``, into an allowlisted field.
+
+def _validate_producer_command(command: list[str]) -> None:
+    """Allow only the installed Pipecat CLI and read-only Cloud commands.
+
+    A basename check is not sufficient: ``/tmp/pipecat`` can be an arbitrary
+    executable that exfiltrates ``PIPECAT_TOKEN``.  Resolve the command the
+    same way the shell does and require it to be the installed executable.
+    Then accept only the documented metadata list commands and their
+    read-only selector options; mutating commands must never run under the
+    credential-bearing environment.
     """
-    if not command or Path(command[0]).name.casefold() not in {"pipecat", "pipecat.exe"}:
+    if not command:
         raise ValueError("metadata producer must be the pipecat CLI")
+    installed = shutil.which("pipecat")
+    if installed is None:
+        raise ValueError("metadata producer must be the pipecat CLI")
+    requested = Path(command[0])
+    if requested.name.casefold() not in {"pipecat", "pipecat.exe"}:
+        raise ValueError("metadata producer must be the pipecat CLI")
+    try:
+        if requested.is_absolute():
+            if requested.resolve() != Path(installed).resolve():
+                raise ValueError("metadata producer must be the installed pipecat CLI")
+        elif requested.parent != Path("."):
+            raise ValueError("metadata producer must be the installed pipecat CLI")
+    except (OSError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("metadata producer"):
+            raise
+        raise ValueError("metadata producer must be the installed pipecat CLI") from exc
+
+    args = command[1:]
+    if args[:1] != ["cloud"]:
+        raise ValueError("metadata command is not read-only")
+    args = args[1:]
+    # The output mode is a global Cloud option and must be explicitly JSON;
+    # accepting the environment default could produce human-facing output.
+    if args[:2] == ["--output", "json"]:
+        args = args[2:]
+    elif args[:1] == ["--output=json"]:
+        args = args[1:]
+    else:
+        raise ValueError("metadata command must request JSON output")
+
+    command_words: list[str] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        if word in _READ_ONLY_OPTIONS:
+            if index + 1 >= len(args) or not args[index + 1] or args[index + 1].startswith("-"):
+                raise ValueError("metadata command has an unsafe option")
+            index += 2
+            continue
+        if word.startswith("-"):
+            raise ValueError("metadata command has an unapproved option")
+        command_words.append(word)
+        index += 1
+    if tuple(command_words) not in _READ_ONLY_CLOUD_COMMANDS:
+        raise ValueError("metadata command is not read-only")
 
 
 def _safe_child_environment() -> dict[str, str]:

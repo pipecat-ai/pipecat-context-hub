@@ -354,9 +354,45 @@ def _copy_tree_no_follow(source: Path, destination: Path) -> None:
     instead of reading outside the published tree.
     """
     if os.open not in getattr(os, "supports_dir_fd", set()):
-        # Path-based traversal cannot close the rename/junction window on
-        # Windows, where Python does not expose descriptor-relative opens.
-        raise ValueError("Secure directory descriptors are unavailable")
+        # Windows does not expose descriptor-relative opens.  Keep the same
+        # no-link contract with a path-based traversal: every entry is
+        # lstat'ed before copying, links/reparse points are rejected, and the
+        # source is checked again after each copy.  The enclosing index lock
+        # prevents normal Hub writers from racing this snapshot; the checks
+        # fail closed for an external replacement.
+        def copy_path(source_dir: Path, target: Path) -> None:
+            target.mkdir(parents=True, exist_ok=True)
+            try:
+                entries = list(os.scandir(source_dir))
+            except OSError as exc:
+                raise ValueError(f"Unsafe read-only Chroma path: {source_dir.name}") from exc
+            for entry in entries:
+                source_path = Path(entry.path)
+                target_path = target / entry.name
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}") from exc
+                if is_reparse_link(source_path) or stat.S_ISLNK(info.st_mode):
+                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}")
+                if stat.S_ISDIR(info.st_mode):
+                    copy_path(source_path, target_path)
+                elif stat.S_ISREG(info.st_mode):
+                    shutil.copyfile(source_path, target_path)
+                else:
+                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}")
+                try:
+                    after = source_path.stat()
+                except OSError as exc:
+                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}") from exc
+                if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino):
+                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}")
+
+        source_info = source.stat()
+        if is_reparse_link(source) or not stat.S_ISDIR(source_info.st_mode):
+            raise ValueError(f"Unsafe read-only Chroma path: {source.name}")
+        copy_path(source, destination)
+        return
 
     def copy_dir(source_fd: int, source_name: str, target: Path) -> None:
         target.mkdir(parents=True, exist_ok=True)

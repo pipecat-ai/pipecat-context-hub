@@ -608,6 +608,19 @@ class TestFTSIndex:
         assert all(r.match_type == "keyword" for r in results)
         assert all(r.score > 0 for r in results)
 
+    def test_read_only_open_does_not_create_sqlite_sidecars(self, tmp_path: Path) -> None:
+        path = tmp_path / "metadata.db"
+        writer = FTSIndex(path)
+        writer.upsert([_make_record()])
+        writer.close()
+        reader = FTSIndex(path, read_only=True)
+        try:
+            assert reader.search(IndexQuery(query_text="pipecat", limit=1))
+        finally:
+            reader.close()
+        assert not path.with_name(path.name + "-shm").exists()
+        assert not path.with_name(path.name + "-wal").exists()
+
     def test_upsert_empty(self, fts_index: FTSIndex):
         count = fts_index.upsert([])
         assert count == 0
@@ -863,6 +876,16 @@ class TestIndexStoreInitRollback:
             IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
         fake_vector.close.assert_called_once()
 
+    def test_writer_backend_creation_without_descriptor_relative_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The path-based Windows creation fallback still opens a fresh index."""
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+        store = IndexStore(StorageConfig(data_dir=tmp_path / "windows-style"))
+        store.close()
+        assert (tmp_path / "windows-style" / "metadata.db").is_file()
+        assert (tmp_path / "windows-style" / "chroma" / "chroma.sqlite3").is_file()
+
     def test_backend_placeholders_are_removed_when_vector_init_fails(
         self, tmp_path: Path, monkeypatch
     ):
@@ -949,6 +972,21 @@ class TestIndexStoreInitRollback:
         assert {
             path: (path.read_bytes(), path.stat().st_mtime_ns) for path in chroma_files
         } == before
+
+    def test_read_only_snapshot_without_descriptor_relative_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data_dir = tmp_path / "windows-style"
+        writer = IndexStore(StorageConfig(data_dir=data_dir))
+        writer._vector.upsert([_make_record()])
+        writer.close()
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
+        try:
+            assert reader._vector is not None
+            assert reader._vector._collection.count() == 1
+        finally:
+            reader.close()
 
     def test_read_only_open_rejects_missing_collection_without_recreating_it(
         self, tmp_path: Path

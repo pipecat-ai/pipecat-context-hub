@@ -262,7 +262,8 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
   to four CLI-first skills. Setup installs or verifies Context Hub; Explore uses
   native Context Hub query commands; Build and Deploy require the Pipecat CLI.
   This supersedes the package shape in R3 and the original renderer design. It
-  does not change shared CLI/MCP retrieval handlers or index semantics.
+  keeps shared CLI/MCP retrieval handlers in use, while index readiness,
+  recovery, and refresh locking now have the explicit semantics recorded below.
 - **Index readiness:** successful initialization and status were not sufficient
   evidence of vector health. A persisted Chroma graph crashed on first search,
   so current code performs a bounded, read-only oversized-link-list check before
@@ -282,6 +283,14 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
   branch; the prepared replacement pins the qualification document to commit
   `ad8a73c06942d78e5310d893cfd8b1f92cf067b4`. Upload waits for the active
   review decision or explicit cancellation.
+
+- **2026-10-14 — index safety correction:** the earlier unchanged-semantics
+  wording was stale. Current refresh semantics include fail-closed absent/partial
+  index recovery, generation locking before backend open/reset (including
+  resolved symlink roots), immutable read-only SQLite access, and cross-platform
+  secure backend/snapshot paths. See the [index-recovery plan](20260324-bug-chroma-index-recovery.md)
+  and focused regressions in `tests/unit/test_index_store.py` and
+  `tests/unit/test_cli.py`.
 
 ### Current limitations
 

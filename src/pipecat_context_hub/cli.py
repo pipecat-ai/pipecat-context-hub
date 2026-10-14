@@ -7,6 +7,7 @@ subcommands registered from :mod:`pipecat_context_hub.cli_query`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -14,6 +15,7 @@ import os
 import shutil
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -111,6 +113,28 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
         # serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+
+
+def _with_refresh_generation_lock(
+    callback: Callable[..., None],
+) -> Callable[..., None]:
+    """Run refresh while holding the lock for its normalized data directory.
+
+    The lock must cover reset, backend opening, and the complete async refresh;
+    acquiring it only around the ingest loop leaves a window where another
+    refresh can delete files that the first process already opened.  Resolve
+    the configured path here so a symlink spelling and its real directory use
+    the same lock identity as :class:`IndexStore`.
+    """
+
+    @functools.wraps(callback)
+    def locked(ctx: click.Context, *args: object, **kwargs: object) -> None:
+        config: HubConfig = ctx.obj["config"]
+        data_dir = config.storage.data_dir.expanduser().resolve()
+        with generation_lock(data_dir):
+            callback(ctx, *args, **kwargs)
+
+    return locked
 
 
 def _recover_reset_marker(config: HubConfig) -> None:
@@ -928,6 +952,7 @@ class _PinPreflightWriter:
     "Can also be enabled via PIPECAT_HUB_PRUNE=1.",
 )
 @click.pass_context
+@_with_refresh_generation_lock
 def refresh(
     ctx: click.Context,
     force: bool,
@@ -1723,11 +1748,6 @@ def refresh(
                 framework_slug,
             )
 
-    # Use the configured path rather than the store facade here: lightweight
-    # refresh test doubles need not expose the writer's normalized property,
-    # while IndexStore has already normalized and validated this same path.
-    generation_context = generation_lock(config.storage.data_dir)
-    generation_context.__enter__()
     try:
         asyncio.run(_run_refresh())
 
@@ -1880,10 +1900,7 @@ def refresh(
             unpruned_repo_count=unpruned_repo_count,
         )
     finally:
-        try:
-            index_store.close()
-        finally:
-            generation_context.__exit__(*sys.exc_info())
+        index_store.close()
 
 
 def _stdout_can_encode(text: str) -> bool:

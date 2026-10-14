@@ -91,7 +91,11 @@ class FTSIndex:
         self._read_only = read_only
         self._lock = threading.RLock()
         if read_only:
-            uri = f"file:{quote(str(sqlite_path), safe='/')}?mode=ro"
+            # `mode=ro` still permits SQLite to create a -shm sidecar when a
+            # WAL exists.  Immutable mode is the published-index contract:
+            # readers never create or update files, and refresh owns the
+            # writer connection that checkpoints WAL state.
+            uri = f"file:{quote(str(sqlite_path), safe='/')}?mode=ro&immutable=1"
             self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         else:
             sqlite_path.parent.mkdir(parents=True, exist_ok=True)
