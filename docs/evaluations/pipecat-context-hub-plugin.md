@@ -278,10 +278,10 @@ Version annotations and lifecycle checks do not select an unindexed snapshot;
 unknown compatibility is not a compatibility pass. CLI **1.3.0** supports the
 qualified named-flags/dry-run path and has no advertised scaffold `--eval`.
 
-The verified deployment is `phase3-source-conversation` in
-`disastrous-mockingbird-amethyst-180` / `us-west`. Active deployment
-`da8a157d-bfe9-405a-b5a1-b0288ba8cf43` references successful build
-`3e9ff598-7578-4262-97de-3e1c2fe099e3`; Cloud reports approved context hash
+The verified deployment is `example-agent` in
+`example-org` / `us-west`. Active deployment
+`<deployment-id>` references successful build
+`<build-id>`; Cloud reports approved context hash
 `a540a4ddc103df00` and size **237,542 bytes**. ARM64, 500m/1Gi, scaling 0–1,
 600-second maximum session duration and the exact existing secret-set/key names
 match approval. Build status reports the image digest; the deployment manifest
@@ -1208,7 +1208,7 @@ client or Cloud files, explicit Pipecat 1.12.0 and brief replies in a selected
 new outside-checkout directory. Thirteen native shell calls inspect capability,
 dry-run/scaffold, install and verify. The output and named child are absent
 before dry run and again before a single scaffold. CLI choices match the earlier
-fixture, with name `phase3-source-conversation`. Unlike the first fixture,
+fixture, with name `example-agent`. Unlike the first fixture,
 this explicit target request adds `==1.12.0` to the generated unpinned extras
 before `uv sync`; the resolved framework is 1.12.0 and its lock is retained.
 This deliberate target pin is disclosed, not a silent upgrade or user default.
@@ -1288,7 +1288,7 @@ metadata, observed profile availability and local provider credential supply are
 unresolved. No login, org switch, secret write, image build, source upload,
 registry push, deployment, agent/session start, deletion or rollback occurred.
 
-Local evidence is under `/Users/vr000m/.codex/tmp/phase4-deploy-20261004/`:
+Local evidence is under `phase4-deploy-20261004/`:
 `preparation-payload.json` contains the reviewable draft and immutable file
 hashes; `project-readiness.json` records static project checks; `invariants.json`
 records package/app preservation; `source-candidate-conversation.json` records
@@ -1297,7 +1297,7 @@ synthetic pending-approval refusal. These are not independent model conversation
 revised installed-plugin activation, ChatGPT Work activation or live deployment.
 
 The user-selected project is the existing
-`/Users/vr000m/.codex/tmp/phase3-conversation-20261004/output/phase3-source-conversation/server`.
+`phase3-conversation-20261004/output/example-agent/server`.
 Its `bot.py`, `pyproject.toml` and `uv.lock` hashes remain unchanged. New outside-repo
 files are `Dockerfile`, `.dockerignore` and `pcc-deploy.toml`. AST/TOML parsing
 confirms the asynchronous bot entrypoint and locked Pipecat 1.12.0. The Dockerfile
@@ -1340,7 +1340,7 @@ output are withheld. Evidence: `verified-cloud-readiness.json`,
 JSON uses `secretSets`; the initial generic projection omitted it, and a fresh
 structured projection preserves only set metadata. Neither that omitted field
 nor unavailable metadata is treated as an empty account. `cvs-signify` agent and
-secret reads fail; profile commands return no usable metadata. `agent-1x` sizing
+secret reads fail; profile commands return no usable metadata. `example-profile` sizing
 is documented, not independently observed available Cloud profile metadata.
 
 Anonymous read-only registry manifest inspection verifies the proposed Python
@@ -1349,8 +1349,8 @@ pins index digest `sha256:c4a2ab9fc41d7643266964c101eac6a59407bb36f02859d5cbafe1
 `base-image-metadata.json` records platform/digest evidence. Daily-hosted region
 metadata supports arm64 only. No image was pulled or built.
 
-The unapproved draft proposes agent `phase3-source-conversation`, secret set
-`phase3-source-conversation-secrets`, profile `agent-1x`, minimum 0 / maximum 1
+The unapproved draft proposes agent `example-agent`, secret set
+`example-secret-set`, profile `example-profile`, minimum 0 / maximum 1
 agents and 600-second sessions. New-set additions would be `CARTESIA_API_KEY`,
 `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`; optional voice/model settings retain bot
 defaults. These are proposals with unresolved organisation/region and key
@@ -1375,7 +1375,7 @@ checks pass. The one-shot source/security reviewer reports zero findings.
 
 A fresh independent preparation conversation retained four actual packaged calls
 and unchanged project/repository/index evidence outside the checkout under
-`/Users/vr000m/.codex/tmp/phase4-conversation-20261004/`. Its terminal report used
+`phase4-conversation-20261004/`. Its terminal report used
 `pos`, `label` and `summary_flags` instead of the conduct schema's required keys;
 `parse_report` rejected it with `missing required key: 'phase_position'`. Conduct
 stopped in `schema_error` without respawning or normalising that report. The raw
@@ -1396,7 +1396,7 @@ build, deploy or start sessions until exact approval.” This is a fresh actual
 source-candidate preparation conversation, separate from the historical synthetic
 walkthrough and the rejected supplementary report above. It does not establish
 revised cached-plugin activation or ChatGPT Work activation. Evidence is under
-`/Users/vr000m/.codex/tmp/phase4-resume-preparation-20261004/`:
+`phase4-resume-preparation-20261004/`:
 `source-candidate-conversation.json`, `hub-evidence.json`, `cli-help.json`,
 `static-command-record.json`, `project-readiness.json` and
 `preparation-payload.json`. Historical reports retain their failure labels.
@@ -1451,7 +1451,7 @@ no first/default organisation is inferred and no unselected-account metadata
 call is made. Fresh selected-target authentication/collision/key metadata,
 observed profile/region architecture, value-isolated provider credential supply
 and explicit completed-payload approval remain missing. Agent/secret-set names,
-ARM64, agent-1x, 0–1 agents and 600 seconds remain proposals. The new draft uses
+ARM64, example-profile, 0–1 agents and 600 seconds remain proposals. The new draft uses
 null unresolved target/actions and no executable final command payload; it does
 not relabel historical org observations as current proof. Existing `.env` contents
 and process credential values are not inspected. No source change is needed.
@@ -1557,20 +1557,20 @@ uploader source and provenance, and the recreated 237,200-byte archive SHA-256
 `cb99800e2bdc1397130ade6ad35868128fc9cb5958d92fb4a18b523f9ce5bc70`
 with context hash `81187e5469e97345`. Fresh explicit-organisation metadata confirms
 the same organisation ID, target absence across listed regions, existing ready
-`my-pstn-agent-secrets` in `us-west` with exactly the four approved attached key
-names, and `agent-1x` with 500m CPU / 1Gi memory. No source/config/archive input
+`example-secret-set` in `us-west` with exactly the four approved attached key
+names, and `example-profile` with 500m CPU / 1Gi memory. No source/config/archive input
 was rewritten, and no secret values were read or secret writes performed.
 
 The exact approved source-upload/build/deploy argv ran once. Source upload
-completed; Cloud build `2b415ea3-4a92-4148-a848-4ccb5d0dd633` failed and the command
+completed; Cloud build `<failed-build-id>` failed and the command
 exited 1 after 39.822 seconds. The build matches organisation
-`disastrous-mockingbird-amethyst-180` / `c00f4504-6b4c-4389-8e5a-9be213581e1d`,
+`example-org` / `<org-id>`,
 region `us-west`, the approved 237,200-byte context and context hash. It was
 created at `2026-10-05T17:39:11.028Z`, started at `17:39:11.109Z` and completed at
 `17:39:41.998Z`. Cloud reports failed status, 30 seconds build duration and no
 image digest. This confirms corrected archive delivery; it does not prove a
 successful container build or runtime compatibility. The intended
-`phase3-source-conversation` agent remains absent across the explicit-org list;
+`example-agent` agent remains absent across the explicit-org list;
 agent status exits 1. No deployment ID or READY identity exists.
 
 Matching build status and supported build logs (`--limit 20`) both exit 0.
@@ -1609,7 +1609,7 @@ The user-supplied build log resolves the earlier bounded-diagnostics limitation.
 Its SHA-256 is `964a919ed864fb50a80651c632a4c2d31cb911230f04177f0bbd123bae88607c`;
 lines 187–202 contain the safe fragment `/bin/sh: 1: uv: not found` and exit
 code 127 for the Dockerfile's `uv sync` instruction. Build
-`2b415ea3-4a92-4148-a848-4ccb5d0dd633` therefore failed because the pinned base
+`<failed-build-id>` therefore failed because the pinned base
 provided no uv executable. The full log stays outside the repository; diagnostic
 text is data and no log commands were executed.
 
@@ -1657,11 +1657,11 @@ and local evidence are recorded outside the repository in
 `qualification-evidence.json`.
 
 Fresh allowlisted read-only metadata confirms organisation
-`disastrous-mockingbird-amethyst-180` / `c00f4504-6b4c-4389-8e5a-9be213581e1d`,
-target absence across its unfiltered agent list, ready `my-pstn-agent-secrets`
+`example-org` / `<org-id>`,
+target absence across its unfiltered agent list, ready `example-secret-set`
 in us-west with CARTESIA_API_KEY, DAILY_API_KEY, DEEPGRAM_API_KEY and OPENAI_API_KEY,
-and agent-1x at 500m CPU / 1Gi memory. Proposal remains CREATE
-phase3-source-conversation, arm64, min 0 / max 1, session limit 600 seconds,
+and example-profile at 500m CPU / 1Gi memory. Proposal remains CREATE
+example-agent, arm64, min 0 / max 1, session limit 600 seconds,
 whole-set reuse and zero secret writes. Raw metadata and credential values were
 not persisted or emitted.
 
@@ -1698,15 +1698,15 @@ host's America/Los_Angeles timezone) establish the following matching identities
 
 | Observation | Verified result |
 |---|---|
-| Organisation | `disastrous-mockingbird-amethyst-180` / `c00f4504-6b4c-4389-8e5a-9be213581e1d` |
-| Region / agent | `us-west` / `phase3-source-conversation` |
-| Agent ID / active version ID | `d033f622-2185-4697-961e-299c117f0ee6` / `077c7f13-06ba-4031-909c-f02e2d479732` |
-| Build | `3e9ff598-7578-4262-97de-3e1c2fe099e3`, terminal `success`, completed `2026-10-05T21:30:15.733Z`, duration 93 seconds |
-| Build image digest | `sha256:eb706abc9852d5be0f0e5aea06a85802e900a173547b152ce3774ad0364fe67f` |
-| Active deployment | `da8a157d-bfe9-405a-b5a1-b0288ba8cf43`; deployment record references that exact build ID |
+| Organisation | `example-org` / `<org-id>` |
+| Region / agent | `us-west` / `example-agent` |
+| Agent ID / active version ID | `<agent-id>` / `<active-version-id>` |
+| Build | `<build-id>`, terminal `success`, completed `2026-10-05T21:30:15.733Z`, duration 93 seconds |
+| Build image digest | `<image-digest>` |
+| Active deployment | `<deployment-id>`; deployment record references that exact build ID |
 | Readiness | `ready=true`, `available=true`, `activeDeploymentReady=true`; desired, active and reconciled deployment agree; revision phase `Active` |
-| Deployment manifest | `arm64`, `agent-1x`, 500m CPU / 1Gi memory; minimum 0 / maximum 1 replica; maximum session duration 600 seconds |
-| Secret identity | Only `my-pstn-agent-secrets`; fresh managed/ready `us-west` metadata has exactly CARTESIA_API_KEY, DAILY_API_KEY, DEEPGRAM_API_KEY and OPENAI_API_KEY |
+| Deployment manifest | `arm64`, `example-profile`, 500m CPU / 1Gi memory; minimum 0 / maximum 1 replica; maximum session duration 600 seconds |
+| Secret identity | Only `example-secret-set`; fresh managed/ready `us-west` metadata has exactly the approved key names |
 
 The identity invariant is a chain across fresh build status, selected-name agent
 list, agent status and deployment history: the same selected organisation/region,
@@ -1754,11 +1754,11 @@ remains separate.
 
 Cleanup instructions are recorded only; nothing was deleted, rolled back or
 scaled by this recovery. For a later explicitly authorised cleanup, first recheck
-`pipecat cloud --output json agent status phase3-source-conversation --organization
-disastrous-mockingbird-amethyst-180` and confirm `us-west`, the agent ID and active
+`pipecat cloud --output json agent status example-agent --organization
+example-org` and confirm `us-west`, the agent ID and active
 deployment above. The installed help supports the deletion shape
-`pipecat cloud agent delete phase3-source-conversation --organization
-disastrous-mockingbird-amethyst-180` (interactive confirmation; no region flag).
+`pipecat cloud agent delete example-agent --organization
+example-org` (interactive confirmation; no region flag).
 Do not run it without a separate explicit cleanup request identifying this target.
-Preserve the shared `my-pstn-agent-secrets` set and other agents; this report supplies
+Preserve the shared `example-secret-set` set and other agents; this report supplies
 no secret-set deletion or rollback instruction.

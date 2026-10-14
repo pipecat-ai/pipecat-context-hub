@@ -317,6 +317,54 @@ def test_cloud_metadata_wrapper_handles_unselectable_windows_pipe(tmp_path: Path
     assert json.loads(result.stdout) == {"organizations": [{"id": "o", "name": "Team"}]}
 
 
+def test_cloud_metadata_wrapper_reaches_thread_fallback_when_nonblocking_fails(
+    tmp_path: Path,
+) -> None:
+    """Windows 3.11 anonymous pipes can reject ``os.set_blocking(False)``."""
+    spec = importlib.util.spec_from_file_location(
+        "safe_cloud_metadata", _SOURCE / "scripts" / "safe_cloud_metadata.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    producer = tmp_path / "producer.py"
+    producer.write_text("import json; print(json.dumps({'organizations': [{'id': 'o'}]}))\n")
+
+    def fail_set_blocking(*_args: object, **_kwargs: object) -> None:
+        raise OSError("operation not supported")
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(module.os, "set_blocking", fail_set_blocking)
+        result = module._run_bounded([sys.executable, str(producer)])
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"organizations": [{"id": "o"}]}
+
+
+def test_cloud_metadata_wrapper_terminates_process_group_on_bounded_failure(
+    tmp_path: Path,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "safe_cloud_metadata", _SOURCE / "scripts" / "safe_cloud_metadata.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    producer = tmp_path / "producer.py"
+    producer.write_text("import sys; sys.stdout.write('x' * 2000000); sys.stdout.flush()\n")
+    calls: list[int] = []
+    original = module._terminate_process_tree
+
+    def record_and_terminate(process: subprocess.Popen[bytes]) -> None:
+        calls.append(process.pid)
+        original(process)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(module, "_terminate_process_tree", record_and_terminate)
+        with pytest.raises(ValueError, match="output too large"):
+            module._run_bounded([sys.executable, str(producer)])
+    assert calls
+
+
 @pytest.mark.parametrize(
     "payload, expected",
     [

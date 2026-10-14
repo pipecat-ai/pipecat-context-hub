@@ -50,7 +50,23 @@ def _open_segment_file_without_dir_fd(
     fd = os.open(file_path, flags)
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
+        # ``O_NOFOLLOW`` protects only the final component.  On Windows the
+        # parent directory is opened by name, so compare every checked
+        # component again after the open to catch a replacement race before
+        # the descriptor is consumed.
+        current_root = root.lstat()
+        current_segment = segment_path.lstat()
+        current_file = file_path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino)
+            or (current_segment.st_dev, current_segment.st_ino)
+            != (segment_info.st_dev, segment_info.st_ino)
+            or (current_file.st_dev, current_file.st_ino) != (file_info.st_dev, file_info.st_ino)
+            or is_reparse_link(root)
+            or is_reparse_link(segment_path)
+            or is_reparse_link(file_path)
+        ):
             raise OSError(errno.ELOOP, "persisted HNSW path is not a regular file")
     except BaseException:
         os.close(fd)

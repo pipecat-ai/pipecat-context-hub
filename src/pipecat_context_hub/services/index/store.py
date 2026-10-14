@@ -16,9 +16,44 @@ from typing import Any
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.services.index.vector import VectorIndex
 from pipecat_context_hub.shared.config import StorageConfig
+from pipecat_context_hub.shared.paths import is_reparse_link
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
+
+
+def _backend_path_identities(path: Path, data_dir: Path) -> dict[Path, tuple[int, int]]:
+    """Snapshot existing path components so replacements can be detected."""
+    identities: dict[Path, tuple[int, int]] = {}
+    current = path
+    while True:
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            info = None
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError(f"Unsafe index backend path: {path.name}") from exc
+        if info is not None:
+            if current != data_dir and is_reparse_link(current):
+                raise ValueError(f"Unsafe index backend path: {path.name}")
+            identities[current] = (info.st_dev, info.st_ino)
+        if current == data_dir or current == current.parent:
+            break
+        current = current.parent
+    return identities
+
+
+def _verify_backend_path_identities(path: Path, identities: dict[Path, tuple[int, int]]) -> None:
+    """Fail closed if a backend path component changed while it was opening."""
+    try:
+        for component, expected in identities.items():
+            info = component.lstat()
+            if (info.st_dev, info.st_ino) != expected or is_reparse_link(component):
+                raise ValueError(f"Unsafe index backend path: {path.name}")
+    except (OSError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("Unsafe"):
+            raise
+        raise ValueError(f"Unsafe index backend path: {path.name}") from exc
 
 
 def _validate_existing_backend_file(path: Path, data_dir: Path) -> None:
@@ -79,9 +114,18 @@ class IndexStore:
         ):
             if backend_file.exists() or backend_file.is_symlink():
                 _validate_existing_backend_file(backend_file, data_dir)
+        chroma_identities = _backend_path_identities(config.chroma_path, data_dir)
+        sqlite_identities = _backend_path_identities(config.sqlite_path, data_dir)
         self._vector = VectorIndex(config.chroma_path)
         try:
+            _verify_backend_path_identities(config.chroma_path, chroma_identities)
+            _validate_backend_directory(config.chroma_path, data_dir)
+            chroma_file = config.chroma_path / "chroma.sqlite3"
+            if chroma_file.exists() or chroma_file.is_symlink():
+                _validate_existing_backend_file(chroma_file, data_dir)
             self._fts = FTSIndex(config.sqlite_path)
+            _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
+            _validate_existing_backend_file(config.sqlite_path, data_dir)
         except Exception:
             # Roll back the already-opened vector backend so callers don't
             # inherit a leaked Chroma handle/lock on a half-constructed store.

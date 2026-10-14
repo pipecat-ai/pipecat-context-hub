@@ -16,6 +16,7 @@ import pytest
 from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.hnsw_validation import (
     _open_segment_file,
+    _open_segment_file_without_dir_fd,
     validate_persisted_hnsw,
 )
 from pipecat_context_hub.services.index.vector import VectorIndex
@@ -128,6 +129,33 @@ def test_dir_fd_unavailable_uses_safe_path_fallback(
         assert os.fstat(fd).st_size == 1000
     finally:
         os.close(fd)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
+def test_path_fallback_rechecks_parent_identity_after_open(
+    persisted_segment: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A segment-directory swap must not redirect the Windows-compatible fallback."""
+    root, segment = persisted_segment
+    outside = tmp_path / "outside-segment"
+    outside.mkdir()
+    (outside / "link_lists.bin").write_bytes(b"outside")
+    (outside / "header.bin").write_bytes((segment / "header.bin").read_bytes())
+    real_open = os.open
+    swapped = False
+
+    def swap_parent(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if Path(path) == segment / "link_lists.bin" and not swapped:
+            swapped = True
+            moved = root / f"{segment.name}.moved"
+            segment.rename(moved)
+            (root / segment.name).symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr("pipecat_context_hub.services.index.hnsw_validation.os.open", swap_parent)
+    with pytest.raises(OSError, match="regular file"):
+        _open_segment_file_without_dir_fd(root, segment.name, "link_lists.bin")
 
 
 def test_malformed_header_closes_links_descriptor(

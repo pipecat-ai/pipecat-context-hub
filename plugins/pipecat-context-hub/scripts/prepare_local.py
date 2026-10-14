@@ -20,6 +20,7 @@ def prepare_local(destination: Path) -> Path:
     destination = destination.expanduser().absolute()
     if destination.is_symlink():
         raise ValueError("Destination must not be a symlink")
+    _validate_destination_parents(destination)
     try:
         destination = destination.resolve()
     except (OSError, RuntimeError) as exc:
@@ -62,6 +63,27 @@ def prepare_local(destination: Path) -> Path:
             destination.rmdir()  # Refuses if anything appeared since preflight.
         staged.rename(destination)
     return destination
+
+
+def _validate_destination_parents(destination: Path) -> None:
+    """Reject symlinked or looping parents before any directory is created.
+
+    ``Path.resolve(strict=False)`` is not a reliable loop detector on every
+    supported Python/filesystem combination.  In particular, a self-referential
+    parent can survive resolution and fail later in ``mkdir`` with an exception
+    that includes the caller's absolute path.  Walking existing parents with
+    ``is_symlink`` keeps the failure deterministic and path-free.
+    """
+    try:
+        current = destination.parent
+        while current != current.parent:
+            if current.is_symlink():
+                raise ValueError("Destination path is invalid")
+            current = current.parent
+    except (OSError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc) == "Destination path is invalid":
+            raise
+        raise ValueError("Destination path is invalid") from exc
 
 
 def _copy_resource(source: Path, target: Path) -> None:

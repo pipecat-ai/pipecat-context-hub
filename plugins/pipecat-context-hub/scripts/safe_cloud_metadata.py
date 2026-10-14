@@ -9,6 +9,7 @@ import queue
 import subprocess
 import sys
 import selectors
+import signal
 import threading
 import time
 from collections.abc import Mapping
@@ -35,22 +36,23 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
     selector: selectors.BaseSelector | None = None
     deadline = time.monotonic() + 30
     try:
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True
-        )
+        popen_kwargs: dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+        process = subprocess.Popen(command, **popen_kwargs)
         stdout = process.stdout
         assert stdout is not None
         stdout_fd = stdout.fileno()
-        os.set_blocking(stdout_fd, False)
         output = bytearray()
-        try:
-            selector = selectors.DefaultSelector()
-            selector.register(stdout, selectors.EVENT_READ)
-        except (NotImplementedError, OSError):
-            # Anonymous subprocess pipes are not selectable on Windows.
-            # A bounded reader thread keeps draining the pipe while the main
-            # thread enforces the timeout and terminates oversized producers.
-            os.set_blocking(stdout_fd, True)
+
+        def read_blocking() -> subprocess.CompletedProcess[bytes]:
+            """Drain an unselectable pipe without changing its blocking mode."""
             result_queue: queue.Queue[tuple[str, bytes | BaseException | None]] = queue.Queue(1)
 
             def read_pipe() -> None:
@@ -82,6 +84,22 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
             return subprocess.CompletedProcess(command, returncode, value, b"")
 
+        try:
+            os.set_blocking(stdout_fd, False)
+            selector = selectors.DefaultSelector()
+            selector.register(stdout, selectors.EVENT_READ)
+        except (NotImplementedError, OSError):
+            # Anonymous subprocess pipes are not selectable on Windows.
+            # A bounded reader thread keeps draining the pipe while the main
+            # thread enforces the timeout and terminates oversized producers.
+            try:
+                os.set_blocking(stdout_fd, True)
+            except (NotImplementedError, OSError):
+                # Windows 3.11 may reject both modes for anonymous pipes; they
+                # are blocking by default, so the reader remains safe here.
+                pass
+            return read_blocking()
+
         stdout_fd = stdout.fileno()
         while True:
             remaining = deadline - time.monotonic()
@@ -103,11 +121,11 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(command, returncode, bytes(output), b"")
     except (Exception,):
         if process is not None:
-            process.kill()
+            _terminate_process_tree(process)
             try:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
-                process.kill()
+                _terminate_process_tree(process)
                 process.wait()
         raise
     finally:
@@ -115,6 +133,25 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
             selector.close()
         if stdout is not None:
             stdout.close()
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Terminate the bounded command and descendants as one process group."""
+    if os.name == "nt":
+        # ``CREATE_NEW_PROCESS_GROUP`` groups descendants on Windows; taskkill
+        # is the supported way to terminate that tree from Python 3.11.
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        if process.poll() is None:
+            process.kill()
 
 
 def _records(
