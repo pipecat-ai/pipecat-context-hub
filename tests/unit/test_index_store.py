@@ -19,7 +19,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from pipecat_context_hub.services.index.fts import FTSIndex
-from pipecat_context_hub.services.index.locking import generation_lock
+from pipecat_context_hub.services.index.locking import generation_lock, index_lock
 from pipecat_context_hub.services.index.store import (
     IndexStore,
     ReadOnlyIndexStore,
@@ -65,6 +65,55 @@ def test_read_only_fts_reopen_retains_wal_snapshot_owner(tmp_path: Path) -> None
     finally:
         reader.close()
         writer.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock semantics")
+def test_legacy_read_releases_parent_guard_before_return(tmp_path: Path) -> None:
+    """A legacy read must not leak the parent transition guard."""
+    import fcntl
+
+    data_dir = tmp_path / "hub-data"
+    data_dir.mkdir()
+    (data_dir / "metadata.db").touch()
+    with index_lock(data_dir, exclusive=False, create=False):
+        pass
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        fcntl.flock(parent_fd, fcntl.LOCK_UN)
+        os.close(parent_fd)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock semantics")
+def test_legacy_read_rechecks_sibling_without_self_deadlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sibling published during legacy setup is acquired through its lock."""
+    from pipecat_context_hub.services.index import locking
+
+    data_dir = tmp_path / "hub-data"
+    data_dir.mkdir()
+    (data_dir / "metadata.db").touch()
+    lock_path = data_dir.parent / f".{data_dir.name}.index.lock"
+    original_lstat = Path.lstat
+    injected = False
+
+    def publish_sibling(path: Path):
+        nonlocal injected
+        if path == lock_path and not injected:
+            try:
+                return original_lstat(path)
+            except FileNotFoundError:
+                injected = True
+                lock_path.touch()
+                raise
+        return original_lstat(path)
+
+    monkeypatch.setattr(locking.Path, "lstat", publish_sibling)
+    with index_lock(data_dir, exclusive=False, create=False):
+        assert lock_path.is_file()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative SQLite opens")
