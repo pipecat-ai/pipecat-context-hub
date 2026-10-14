@@ -263,6 +263,55 @@ class TestIndexUnready:
         assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
         index_store.assert_not_called()
 
+    @pytest.mark.parametrize("missing", ["sqlite", "chroma"])
+    def test_partial_index_is_not_materialized(self, tmp_path, missing):
+        """Read-only commands require both persisted backends and never heal one."""
+        data_dir = tmp_path / "partial"
+        (data_dir / "chroma").mkdir(parents=True)
+        (data_dir / "chroma" / "chroma.sqlite3").touch()
+        (data_dir / "metadata.db").touch()
+        if missing == "sqlite":
+            (data_dir / "metadata.db").unlink()
+        else:
+            (data_dir / "chroma" / "chroma.sqlite3").unlink()
+        before = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore") as index_store,
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
+        ):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.stdout == ""
+        assert "refresh" in result.stderr
+        assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before
+        index_store.assert_not_called()
+
+    def test_tilde_storage_root_uses_expanded_backend_paths(self, tmp_path, monkeypatch):
+        """A directly constructed ``~`` root must reach the existing store."""
+        from pipecat_context_hub.cli_query import _query_runtime
+        from pipecat_context_hub.shared.config import HubConfig, StorageConfig
+
+        data_dir = tmp_path / "hub"
+        (data_dir / "chroma").mkdir(parents=True)
+        (data_dir / "chroma" / "chroma.sqlite3").touch()
+        (data_dir / "metadata.db").touch()
+        monkeypatch.setattr(
+            Path,
+            "expanduser",
+            lambda path: data_dir if str(path) == "~/hub" else path,
+        )
+        store = _index_store_mock(total=1)
+        with patch(
+            "pipecat_context_hub.services.index.store.IndexStore", return_value=store
+        ) as ctor:
+            with _query_runtime(
+                HubConfig(storage=StorageConfig(data_dir=Path("~/hub"))),
+                needs_embeddings=False,
+            ):
+                pass
+        ctor.assert_called_once()
+        assert ctor.call_args.args[0].data_dir == data_dir
+
     def test_unopenable_index_exits_with_reset_hint(self):
         with patch(
             "pipecat_context_hub.services.index.store.IndexStore",

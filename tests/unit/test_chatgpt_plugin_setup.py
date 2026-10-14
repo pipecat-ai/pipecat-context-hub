@@ -191,6 +191,17 @@ def test_render_refuses_checkout_destination(renderer: ModuleType) -> None:
     assert not destination.exists()
 
 
+def test_render_refuses_destination_inside_linked_worktree(
+    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _copy_source(renderer, tmp_path, monkeypatch)
+    (tmp_path / "source" / ".git").write_text("gitdir: /tmp/linked-worktree\n")
+    destination = tmp_path / "source" / "nested" / "prepared"
+    with pytest.raises(ValueError, match="outside the checkout"):
+        renderer.prepare_local(destination)
+    assert not destination.exists()
+
+
 def test_render_rejects_symlink_destination(renderer: ModuleType, tmp_path: Path) -> None:
     existing = tmp_path / "existing"
     existing.mkdir()
@@ -265,6 +276,29 @@ def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) ->
                 ]
             },
             {"organizations": [{"id": "org-2", "name": "Right"}]},
+        ),
+        (
+            {"id": "request-1", "name": "Envelope", "data": {"organizations": []}},
+            None,
+        ),
+        (
+            {
+                "data": {
+                    "id": "request-2",
+                    "name": "Envelope",
+                    "organizations": [{"id": "org-3", "name": "Right"}],
+                }
+            },
+            {"organizations": [{"id": "org-3", "name": "Right"}]},
+        ),
+        (
+            {
+                "items": [
+                    {"id": "wrong-envelope", "name": "Wrong", "regions": []},
+                    {"data": {"id": "org-4", "name": "Right"}},
+                ]
+            },
+            {"organizations": [{"id": "org-4", "name": "Right"}]},
         ),
     ],
 )

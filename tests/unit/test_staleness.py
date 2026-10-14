@@ -21,6 +21,8 @@ runner = CliRunner()
 def _seed_persisted_index_for_mocked_store(tmp_path: Path) -> None:
     """Represent the persisted marker required before opening a mocked store."""
     (tmp_path / "metadata.db").touch()
+    (tmp_path / "chroma").mkdir()
+    (tmp_path / "chroma" / "chroma.sqlite3").touch()
 
 
 def _store_refreshed_days_ago(days: float) -> MagicMock:

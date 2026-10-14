@@ -321,7 +321,9 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     read stderr and run the suggested command.
     """
     from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+    from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
     from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.services.index.vector import _detect_incompatible_format
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
 
     # IndexStore is a writer-capable abstraction whose constructor creates both
@@ -330,10 +332,24 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     # Do this before constructing IndexStore.  Its writer-capable constructor
     # creates missing directories and backend files, which would make a
     # read-only query mutate an otherwise empty data directory.
-    storage = config.storage
-    if not (storage.sqlite_path.is_file() or (storage.chroma_path / "chroma.sqlite3").is_file()):
+    # Resolve the configured root once so both readiness checks and the store
+    # agree when a caller supplies a ``~``-rooted path directly (rather than
+    # through environment loading, which already expands it).
+    data_dir = config.storage.data_dir.expanduser().resolve()
+    storage = config.storage.model_copy(update={"data_dir": data_dir})
+    # Keep the non-mutating Chroma probes active even when the FTS marker is
+    # missing: a corrupt vector backend must be diagnosed as corrupt rather
+    # than being hidden behind the partial-index readiness error.
+    if (storage.chroma_path / "chroma.sqlite3").is_file():
+        try:
+            _detect_incompatible_format(storage.chroma_path)
+            validate_persisted_hnsw(storage.chroma_path, "latest")
+        except IncompatibleIndexFormatError as exc:
+            _echo_stderr_warning(f"Error: {exc}\n{bug_report_hint()}")
+            raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+    if not (storage.sqlite_path.is_file() and (storage.chroma_path / "chroma.sqlite3").is_file()):
         _echo_stderr_warning(
-            f"Error: the index at {config.storage.data_dir} does not exist.\n"
+            f"Error: the index at {storage.data_dir} does not exist.\n"
             "Run 'pipecat-context-hub refresh' first to build it "
             "(the first run downloads models and indexes sources — allow a few minutes).\n"
             f"{bug_report_hint()}"
@@ -345,7 +361,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     # whatever came up before exiting — mirrors the guarded close `serve` does.
     index_store: IndexStore | None = None
     try:
-        index_store = IndexStore(config.storage)
+        index_store = IndexStore(storage)
         stats = index_store.get_index_stats()
     except IncompatibleIndexFormatError as exc:
         if index_store is not None:
@@ -363,7 +379,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         # FileNotFoundError carrying .../chroma.sqlite3) can leak an absolute
         # path, so redact the full formatted string, not a single argument.
         _echo_stderr_warning(
-            f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
+            f"Error: failed to open index at {storage.data_dir}: {exc}\n"
             "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
             f"{bug_report_hint()}"
         )
@@ -372,7 +388,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     try:
         if stats.get("total", 0) == 0:
             _echo_stderr_warning(
-                f"Error: the index at {config.storage.data_dir} is empty.\n"
+                f"Error: the index at {storage.data_dir} is empty.\n"
                 "Run 'pipecat-context-hub refresh' first to build it "
                 "(the first run downloads models and indexes sources — allow a few minutes).\n"
                 f"{bug_report_hint()}"
@@ -398,9 +414,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
 
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
-        retriever.deprecation_map = DeprecationMap.load(
-            config.storage.data_dir / "deprecation_map.json"
-        )
+        retriever.deprecation_map = DeprecationMap.load(storage.data_dir / "deprecation_map.json")
 
         yield _QueryRuntime(
             retriever=retriever,

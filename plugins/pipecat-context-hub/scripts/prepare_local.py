@@ -11,7 +11,10 @@ from pathlib import Path
 def prepare_local(destination: Path) -> Path:
     """Copy only skills-only package resources into a fresh destination."""
     source = Path(__file__).resolve().parents[1]
-    checkout = next((p for p in source.parents if (p / ".git").exists()), source)
+    checkout = next(
+        (p for p in source.parents if (p / ".git").is_file() or (p / ".git").is_dir()),
+        source,
+    )
     destination = destination.expanduser().absolute()
     if destination.is_symlink():
         raise ValueError("Destination must not be a symlink")

@@ -30,6 +30,10 @@ def _records(value: Any, fields: frozenset[str], kind: str) -> list[dict[str, An
     if not isinstance(value, Mapping):
         return projected
 
+    # Envelope objects can themselves carry id/name fields (request IDs,
+    # account metadata, etc.).  Only mappings that are not also containers may
+    # be interpreted as a resource record.
+    has_container = any(key in _GENERIC_CONTAINERS or key in _FIELDS for key in value)
     record: dict[str, Any] = {}
     for key in fields:
         candidate = value.get(key)
@@ -41,7 +45,7 @@ def _records(value: Any, fields: frozenset[str], kind: str) -> list[dict[str, An
             and all(isinstance(item, str) for item in candidate)
         ):
             record[key] = candidate
-    if record and ("id" in record or "name" in record):
+    if not has_container and record and ("id" in record or "name" in record):
         projected.append(record)
 
     for key, candidate in value.items():
