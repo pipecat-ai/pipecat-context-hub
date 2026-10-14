@@ -161,14 +161,15 @@ def test_render_rejects_reparse_point_resource(
         renderer.prepare_local(tmp_path / "prepared")
 
 
-def test_render_fails_closed_without_secure_directory_descriptors(
+def test_render_uses_windows_safe_fallback_without_secure_directory_descriptors(
     renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "resource.txt"
     source.write_text("safe")
     monkeypatch.setattr(renderer.os, "supports_dir_fd", set())
-    with pytest.raises(ValueError, match="Secure directory descriptors"):
-        renderer._copy_resource(source, tmp_path / "copy.txt")
+    target = tmp_path / "copy.txt"
+    renderer._copy_resource(source, target)
+    assert target.read_text() == "safe"
 
 
 @pytest.mark.parametrize("skill", ["explore", "build", "deploy", "setup"])

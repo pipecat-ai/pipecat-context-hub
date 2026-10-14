@@ -83,6 +83,9 @@ _module_logger = logging.getLogger(__name__)
 
 def _partial_index_detected(config: HubConfig) -> bool:
     """Return whether one persisted backend exists without its sibling."""
+    reset_state = config.storage.data_dir.expanduser() / ".reset-state.json"
+    if reset_state.exists() or reset_state.is_symlink():
+        return True
     sqlite_exists = config.storage.sqlite_path.is_file()
     chroma_exists = (config.storage.chroma_path / "chroma.sqlite3").is_file()
     return sqlite_exists != chroma_exists

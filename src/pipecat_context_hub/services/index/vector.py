@@ -26,6 +26,7 @@ from overrides import override
 
 from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
+from pipecat_context_hub.services.index.locking import index_lock
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 from pipecat_context_hub.shared.paths import is_reparse_link
 
@@ -379,21 +380,25 @@ class VectorIndex:
         tempdir = tempfile.TemporaryDirectory(prefix="pipecat-context-hub-chroma-")
         snapshot = Path(tempdir.name) / "chroma"
         try:
-            shutil.copytree(self._chroma_path, snapshot, symlinks=True)
-            for path in snapshot.rglob("*"):
-                if is_reparse_link(path):
-                    raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
-                if not path.is_dir() and not stat.S_ISREG(path.stat().st_mode):
-                    raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
-            snapshot_wal = snapshot / "chroma.sqlite3-wal"
-            if snapshot_wal.exists() or snapshot_wal.is_symlink():
-                raise IncompatibleIndexFormatError(
-                    self._chroma_path,
-                    reason=(
-                        "chroma.sqlite3-WAL appeared while taking the read-only snapshot; "
-                        "uncheckpointed Chroma state cannot be validated safely"
-                    ),
-                )
+            # Refresh holds the same exclusive lock around Chroma opens and
+            # mutations.  A shared lock makes the tree copy one stable
+            # generation instead of a mixture of SQLite/HNSW generations.
+            with index_lock(self._chroma_path.parent, exclusive=False):
+                shutil.copytree(self._chroma_path, snapshot, symlinks=True)
+                for path in snapshot.rglob("*"):
+                    if is_reparse_link(path):
+                        raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
+                    if not path.is_dir() and not stat.S_ISREG(path.stat().st_mode):
+                        raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
+                snapshot_wal = snapshot / "chroma.sqlite3-wal"
+                if snapshot_wal.exists() or snapshot_wal.is_symlink():
+                    raise IncompatibleIndexFormatError(
+                        self._chroma_path,
+                        reason=(
+                            "chroma.sqlite3-WAL appeared while taking the read-only snapshot; "
+                            "uncheckpointed Chroma state cannot be validated safely"
+                        ),
+                    )
         except BaseException:
             tempdir.cleanup()
             raise
@@ -414,15 +419,16 @@ class VectorIndex:
             client_path = self._copy_read_only_snapshot()
         else:
             self._chroma_path.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(
-            path=str(client_path),
-            settings=ChromaSettings(
-                anonymized_telemetry=False,
-                chroma_product_telemetry_impl=(
-                    "pipecat_context_hub.services.index.vector.NoOpProductTelemetryClient"
+        with index_lock(self._chroma_path.parent, exclusive=not self._read_only):
+            self._client = chromadb.PersistentClient(
+                path=str(client_path),
+                settings=ChromaSettings(
+                    anonymized_telemetry=False,
+                    chroma_product_telemetry_impl=(
+                        "pipecat_context_hub.services.index.vector.NoOpProductTelemetryClient"
+                    ),
                 ),
-            ),
-        )
+            )
         try:
             if self._read_only:
                 self._collection = self._client.get_collection(name=COLLECTION_NAME)
@@ -499,8 +505,9 @@ class VectorIndex:
         if self._read_only:
             raise RuntimeError("read-only VectorIndex cannot reset")
         with self._op_lock:
-            self._release_client()
-            shutil.rmtree(self._chroma_path, ignore_errors=True)
+            with index_lock(self._chroma_path.parent, exclusive=True):
+                self._release_client()
+                shutil.rmtree(self._chroma_path, ignore_errors=True)
             self._open_client()
             logger.info("VectorIndex reset at %s", self._chroma_path)
 
@@ -509,11 +516,12 @@ class VectorIndex:
         if self._read_only:
             raise RuntimeError("read-only VectorIndex cannot clear")
         with self._op_lock:
-            self._client.delete_collection(COLLECTION_NAME)
-            self._collection = self._client.get_or_create_collection(
-                name=COLLECTION_NAME,
-                metadata={"hnsw:space": "cosine"},
-            )
+            with index_lock(self._chroma_path.parent, exclusive=True):
+                self._client.delete_collection(COLLECTION_NAME)
+                self._collection = self._client.get_or_create_collection(
+                    name=COLLECTION_NAME,
+                    metadata={"hnsw:space": "cosine"},
+                )
             logger.info("VectorIndex cleared")
 
     def upsert(self, records: list[ChunkedRecord]) -> int:
@@ -544,7 +552,7 @@ class VectorIndex:
         if not ids:
             return 0
 
-        with self._op_lock:
+        with self._op_lock, index_lock(self._chroma_path.parent, exclusive=True):
             # ChromaDB limits batch operations to ~5,461 embeddings.
             for i in range(0, len(ids), _CHROMA_BATCH_SIZE):
                 end = i + _CHROMA_BATCH_SIZE
@@ -561,7 +569,7 @@ class VectorIndex:
         """Delete all records matching a content type. Returns count deleted."""
         if self._read_only:
             raise RuntimeError("read-only VectorIndex cannot delete records")
-        with self._op_lock:
+        with self._op_lock, index_lock(self._chroma_path.parent, exclusive=True):
             where_clause: dict[str, Any] = {"content_type": {"$eq": content_type}}
             existing = self._collection.get(where=where_clause, include=[])
             ids = existing["ids"]
@@ -580,7 +588,7 @@ class VectorIndex:
         """Delete all records matching a repo. Returns count deleted."""
         if self._read_only:
             raise RuntimeError("read-only VectorIndex cannot delete records")
-        with self._op_lock:
+        with self._op_lock, index_lock(self._chroma_path.parent, exclusive=True):
             where_clause: dict[str, Any] = {"repo": {"$eq": repo}}
             existing = self._collection.get(where=where_clause, include=[])
             ids = existing["ids"]
@@ -596,7 +604,7 @@ class VectorIndex:
         """Delete all records matching a source URL. Returns count deleted."""
         if self._read_only:
             raise RuntimeError("read-only VectorIndex cannot delete records")
-        with self._op_lock:
+        with self._op_lock, index_lock(self._chroma_path.parent, exclusive=True):
             where_clause: dict[str, Any] = {"source_url": {"$eq": source_url}}
             existing = self._collection.get(where=where_clause, include=[])
             ids = existing["ids"]

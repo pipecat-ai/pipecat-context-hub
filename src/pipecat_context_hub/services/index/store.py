@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import shutil
 import stat
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,8 @@ from pipecat_context_hub.shared.paths import is_reparse_link
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
+
+_RESET_STATE_FILENAME = ".reset-state.json"
 
 
 def _backend_path_identities(path: Path, data_dir: Path) -> dict[Path, tuple[int, int]]:
@@ -220,6 +224,8 @@ class IndexStore:
                 created_sqlite=created_sqlite,
                 created_chroma_db=created_chroma_db,
                 chroma_preexisting=chroma_preexisting,
+                chroma_identities=chroma_identities,
+                sqlite_identities=sqlite_identities,
             )
             raise
         logger.info("IndexStore initialized with data_dir=%s", config.data_dir)
@@ -237,14 +243,20 @@ class IndexStore:
 
     def reset(self) -> None:
         """Delete all persisted search data and cached metadata."""
+        _write_reset_state(self._data_dir, {"vector_reset": False, "fts_reset": False})
         vector_error: Exception | None = None
         fts_error: Exception | None = None
         try:
             self._vector.reset()
+            _write_reset_state(self._data_dir, {"vector_reset": True, "fts_reset": False})
         except Exception as exc:
             vector_error = exc
         try:
             self._fts.reset()
+            _write_reset_state(
+                self._data_dir,
+                {"vector_reset": vector_error is None, "fts_reset": True},
+            )
         except Exception as exc:
             fts_error = exc
         if vector_error is not None and fts_error is not None:
@@ -253,6 +265,10 @@ class IndexStore:
             raise fts_error
         if vector_error is not None:
             raise vector_error
+        marker = self._data_dir / _RESET_STATE_FILENAME
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise ValueError("Unsafe reset state path")
+        marker.unlink(missing_ok=True)
         logger.info("IndexStore reset")
 
     async def upsert(self, records: list[ChunkedRecord]) -> int:
@@ -376,8 +392,19 @@ def _cleanup_created_backend_state(
     created_sqlite: bool,
     created_chroma_db: bool,
     chroma_preexisting: bool,
+    chroma_identities: dict[Path, tuple[int, int]],
+    sqlite_identities: dict[Path, tuple[int, int]],
 ) -> None:
     """Remove backend state created by a failed writer-store initialization."""
+    # A failed identity check may mean a backend root was swapped to a
+    # symlink.  Refuse all path-based cleanup in that case; otherwise unlinking
+    # a child would follow the swapped directory into an external location.
+    try:
+        _verify_backend_path_identities(config.chroma_path, chroma_identities)
+        _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
+    except ValueError:
+        logger.warning("Skipping failed-index cleanup after backend path replacement")
+        return
     if created_sqlite:
         for path in (
             config.sqlite_path,
@@ -398,19 +425,46 @@ def _cleanup_created_backend_state(
                 shutil.rmtree(config.chroma_path)
 
 
-def _existing_index_config(config: StorageConfig) -> StorageConfig:
+def _existing_index_config(config: StorageConfig, *, include_vector: bool = True) -> StorageConfig:
     """Validate an already-built index without creating or opening backends."""
     data_dir = config.data_dir.expanduser().resolve(strict=True)
     if not data_dir.is_dir():
         raise FileNotFoundError(data_dir)
     config = config.model_copy(update={"data_dir": data_dir})
+    if _reset_state_exists(data_dir):
+        raise ValueError("index reset is incomplete; run refresh to recover it")
     _validate_backend_directory(config.chroma_path, data_dir)
     chroma_db = config.chroma_path / "chroma.sqlite3"
     _validate_existing_backend_file(chroma_db, data_dir)
-    _detect_incompatible_format(config.chroma_path)
+    if include_vector:
+        _detect_incompatible_format(config.chroma_path)
+    # The bounded HNSW header/size check is cheap and must also protect the
+    # status front door; it does not construct Chroma or copy the tree.
     validate_persisted_hnsw(config.chroma_path, "latest")
     _validate_existing_backend_file(config.sqlite_path, data_dir)
     return config
+
+
+def _write_reset_state(data_dir: Path, state: dict[str, bool]) -> None:
+    """Persist reset progress without ever following a marker symlink."""
+    marker = data_dir / _RESET_STATE_FILENAME
+    if marker.is_symlink():
+        raise ValueError("Unsafe reset state path")
+    fd, temporary_name = tempfile.mkstemp(prefix=".reset-state-", dir=data_dir)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(state, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _reset_state_exists(data_dir: Path) -> bool:
+    marker = data_dir / _RESET_STATE_FILENAME
+    return marker.exists() or marker.is_symlink()
 
 
 class ReadOnlyIndexStore:
@@ -422,19 +476,23 @@ class ReadOnlyIndexStore:
     accidentally reach refresh/reset operations.
     """
 
-    def __init__(self, config: StorageConfig) -> None:
-        config = _existing_index_config(config)
+    def __init__(self, config: StorageConfig, *, include_vector: bool = True) -> None:
+        config = _existing_index_config(config, include_vector=include_vector)
         self._data_dir = config.data_dir
         chroma_identities = _backend_path_identities(config.chroma_path, self._data_dir)
         sqlite_identities = _backend_path_identities(config.sqlite_path, self._data_dir)
         vector: VectorIndex | None = None
         fts: FTSIndex | None = None
         try:
-            vector = VectorIndex(config.chroma_path, read_only=True)
-            _verify_backend_path_identities(config.chroma_path, chroma_identities)
+            if include_vector:
+                vector = VectorIndex(config.chroma_path, read_only=True)
+                _verify_backend_path_identities(config.chroma_path, chroma_identities)
             fts = FTSIndex(config.sqlite_path, read_only=True)
             _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
-            self._vector = vector
+            # Metadata-only readers intentionally leave this unset; keep the
+            # private field dynamically typed because callers/tests inspect the
+            # full reader's Chroma handle for byte-preservation checks.
+            self._vector: Any = vector
             self._fts = fts
         except Exception:
             if vector is not None:
@@ -448,6 +506,8 @@ class ReadOnlyIndexStore:
         return self._data_dir
 
     async def vector_search(self, query: IndexQuery) -> list[IndexResult]:
+        if self._vector is None:
+            raise RuntimeError("vector search is unavailable on a metadata-only index reader")
         return await asyncio.to_thread(self._vector.search, query)
 
     async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
@@ -461,6 +521,7 @@ class ReadOnlyIndexStore:
 
     def close(self) -> None:
         try:
-            self._vector.close()
+            if self._vector is not None:
+                self._vector.close()
         finally:
             self._fts.close()

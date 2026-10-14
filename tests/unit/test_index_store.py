@@ -104,6 +104,20 @@ def test_store_rejects_new_backend_directory_replaced_during_open(tmp_path: Path
     vector.close.assert_called_once()
 
 
+def test_metadata_only_reader_does_not_construct_chroma(tmp_path: Path) -> None:
+    """Status/deprecation reads must not snapshot or initialize Chroma."""
+    data_dir = tmp_path / "index"
+    writer = IndexStore(StorageConfig(data_dir=data_dir))
+    writer.close()
+    with patch(
+        "pipecat_context_hub.services.index.store.VectorIndex",
+        side_effect=AssertionError("metadata-only reader opened Chroma"),
+    ):
+        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir), include_vector=False)
+    assert reader.get_index_stats()["total"] == 0
+    reader.close()
+
+
 def _random_embedding(seed: int = 0) -> list[float]:
     """Generate a deterministic pseudo-random embedding vector."""
     rng = random.Random(seed)
@@ -887,6 +901,7 @@ class TestIndexStoreInitRollback:
         before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in chroma_files}
         reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
         try:
+            assert reader._vector is not None
             assert reader._vector._collection.count() == 1
         finally:
             reader.close()
@@ -1179,6 +1194,11 @@ class TestIndexStore:
             store.reset()
 
         assert calls == ["vector", "fts"]
+        assert (store.data_dir / ".reset-state.json").is_file()
+
+    def test_reset_state_is_removed_only_after_both_backends_succeed(self, store: IndexStore):
+        store.reset()
+        assert not (store.data_dir / ".reset-state.json").exists()
 
     def test_satisfies_writer_protocol(self, store: IndexStore):
         """Verify IndexStore has all IndexWriter methods."""

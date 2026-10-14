@@ -327,7 +327,10 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     storage = config.storage.model_copy(update={"data_dir": config.storage.data_dir.expanduser()})
     index_store: ReadOnlyIndexStore | None = None
     try:
-        index_store = ReadOnlyIndexStore(storage)
+        # Lookup-only commands need SQLite metadata/FTS but never query vectors.
+        # Avoid opening and snapshotting the complete Chroma tree for status
+        # and deprecation checks; semantic commands retain the full reader.
+        index_store = ReadOnlyIndexStore(storage, include_vector=needs_embeddings)
         stats = index_store.get_index_stats()
     except IncompatibleIndexFormatError as exc:
         if index_store is not None:

@@ -464,7 +464,7 @@ class TestDispatch:
             patch(
                 "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
                 return_value=_index_store_mock(total=42),
-            ),
+            ) as reader_ctor,
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
         ):
             result = runner.invoke(main, ["status"])
@@ -472,6 +472,7 @@ class TestDispatch:
         payload = json.loads(result.stdout)
         assert payload["total_records"] == 42
         assert payload["last_refresh_at"] == "2026-06-12T00:00:00+00:00"
+        assert reader_ctor.call_args.kwargs == {"include_vector": False}
 
     def test_search_docs_uses_embeddings_and_prints_handler_json(self, tmp_path):
         """Semantic path: embedding service constructed, handler JSON on stdout."""

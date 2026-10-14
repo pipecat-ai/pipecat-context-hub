@@ -49,6 +49,12 @@ def test_partial_index_detection_forces_reconciliation(tmp_path: Path) -> None:
     assert not _partial_index_detected(config)
 
 
+def test_partial_index_detection_recovers_persisted_reset_state(tmp_path: Path) -> None:
+    config = HubConfig.model_validate({"storage": {"data_dir": str(tmp_path)}})
+    (tmp_path / ".reset-state.json").write_text('{"vector_reset": true}')
+    assert _partial_index_detected(config)
+
+
 @pytest.mark.parametrize("error", [OSError("invalid data dir"), RuntimeError("symlink loop")])
 def test_refresh_open_failure_is_controlled_for_invalid_data_dir(error: Exception) -> None:
     """Malformed storage paths must use the controlled index-unready exit."""
