@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -55,11 +57,33 @@ def prepare_local(destination: Path) -> Path:
         for path in files:
             target = staged / path.relative_to(source)
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target)
+            _copy_resource(path, target)
         if destination.exists():
             destination.rmdir()  # Refuses if anything appeared since preflight.
         staged.rename(destination)
     return destination
+
+
+def _copy_resource(source: Path, target: Path) -> None:
+    """Copy a resource from an already-validated path without following links."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    before = source.lstat()
+    if source.is_symlink() or not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"Package resource must be a regular file: {source.name}")
+    fd = os.open(source, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (
+            before.st_dev,
+            before.st_ino,
+        ) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"Package resource changed during copy: {source.name}")
+        with os.fdopen(fd, "rb") as stream, target.open("wb") as output:
+            fd = -1
+            shutil.copyfileobj(stream, output)
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 def main() -> int:

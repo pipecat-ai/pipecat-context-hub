@@ -14,7 +14,10 @@ import chromadb
 import pytest
 
 from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
-from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
+from pipecat_context_hub.services.index.hnsw_validation import (
+    _open_segment_file,
+    validate_persisted_hnsw,
+)
 from pipecat_context_hub.services.index.vector import VectorIndex
 
 SEGMENT_ID = "6719df4e-c43a-4cd8-b8ce-b9b5c9fb4400"
@@ -102,6 +105,44 @@ def test_unreadable_header_refuses_native_open(
         with pytest.raises(IncompatibleIndexFormatError, match="persisted HNSW header"):
             VectorIndex(root)
         native.assert_not_called()
+
+
+def test_dir_fd_unavailable_uses_safe_path_fallback(
+    persisted_segment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows' missing dir_fd support must not reject healthy active segments."""
+    root, segment = persisted_segment
+    real_open = os.open
+
+    def no_dir_fd_open(path, flags, *args, **kwargs):
+        if "dir_fd" in kwargs:
+            raise NotImplementedError("dir_fd is unavailable")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "pipecat_context_hub.services.index.hnsw_validation.os.open", no_dir_fd_open
+    )
+    fd, info = _open_segment_file(root, segment.name, "link_lists.bin")
+    try:
+        assert info.st_size == 1000
+        assert os.fstat(fd).st_size == 1000
+    finally:
+        os.close(fd)
+
+
+def test_malformed_header_closes_links_descriptor(
+    persisted_segment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rejected headers must not leak one links descriptor per probe."""
+    root, segment = persisted_segment
+    (segment / "header.bin").write_bytes(_header(version=2))
+    before = len(os.listdir("/proc/self/fd")) if Path("/proc/self/fd").is_dir() else None
+    for _ in range(20):
+        with pytest.raises(IncompatibleIndexFormatError):
+            validate_persisted_hnsw(root, "latest")
+    if before is not None:
+        after = len(os.listdir("/proc/self/fd"))
+        assert after <= before + 1
 
 
 def test_new_index_without_persisted_graph_is_allowed(tmp_path: Path) -> None:

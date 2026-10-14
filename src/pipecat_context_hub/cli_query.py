@@ -381,12 +381,16 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     # Keep the non-mutating Chroma probes active when the backend file is a
     # valid regular file, even if the FTS marker is missing.
     chroma_file = backend_paths[1]
-    if (
-        chroma_dir_safe
-        and chroma_file.is_file()
-        and not chroma_file.is_symlink()
-        and chroma_file.stat().st_size > 0
-    ):
+    try:
+        chroma_probe_ready = (
+            chroma_dir_safe
+            and chroma_file.is_file()
+            and not chroma_file.is_symlink()
+            and chroma_file.stat().st_size > 0
+        )
+    except (OSError, RuntimeError, ValueError):
+        chroma_probe_ready = False
+    if chroma_probe_ready:
         try:
             _detect_incompatible_format(storage.chroma_path)
             validate_persisted_hnsw(storage.chroma_path, "latest")

@@ -213,6 +213,32 @@ def test_render_rejects_symlink_destination(renderer: ModuleType, tmp_path: Path
     assert list(existing.iterdir()) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
+def test_render_does_not_follow_resource_replaced_after_preflight(
+    renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "resource.txt"
+    outside = tmp_path / "outside.txt"
+    target = tmp_path / "copy.txt"
+    source.write_text("safe")
+    outside.write_text("outside")
+    real_open = renderer.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == source and not swapped:
+            swapped = True
+            source.unlink()
+            source.symlink_to(outside)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(renderer.os, "open", swap_before_open)
+    with pytest.raises((OSError, ValueError)):
+        renderer._copy_resource(source, target)
+    assert not target.exists()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
 def test_render_rejects_symlink_loop_destination_without_path_leak(
     renderer: ModuleType, tmp_path: Path
@@ -262,6 +288,33 @@ def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) ->
     assert json.loads(result.stdout) == {"organizations": [{"id": "org-1", "name": "Team"}]}
     assert "secret" not in result.stdout + result.stderr
     assert "private@example.com" not in result.stdout + result.stderr
+
+
+def test_cloud_metadata_wrapper_handles_unselectable_windows_pipe(tmp_path: Path) -> None:
+    """The bounded reader has a pipe-draining fallback for Windows selectors."""
+    spec = importlib.util.spec_from_file_location(
+        "safe_cloud_metadata", _SOURCE / "scripts" / "safe_cloud_metadata.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Unselectable:
+        def register(self, *_args, **_kwargs):
+            raise NotImplementedError("anonymous pipes are not selectable")
+
+        def close(self):
+            pass
+
+    producer = tmp_path / "producer.py"
+    producer.write_text(
+        "import json; print(json.dumps({'organizations': [{'id': 'o', 'name': 'Team'}]}))\n"
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(module.selectors, "DefaultSelector", Unselectable)
+        result = module._run_bounded([sys.executable, str(producer)])
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"organizations": [{"id": "o", "name": "Team"}]}
 
 
 @pytest.mark.parametrize(

@@ -34,6 +34,15 @@ def test_store_refuses_symlinked_backend_file(tmp_path: Path) -> None:
     assert target.read_bytes() == b"keep"
 
 
+@pytest.mark.parametrize("sqlite_filename", ["../outside.db", str(Path("/tmp/outside.db"))])
+def test_store_refuses_sqlite_path_outside_data_dir(tmp_path: Path, sqlite_filename: str) -> None:
+    """A missing configured SQLite path must not escape before existence checks."""
+    data_dir = tmp_path / "index"
+    with pytest.raises(ValueError, match="Unsafe index backend path"):
+        IndexStore(StorageConfig(data_dir=data_dir, sqlite_filename=sqlite_filename))
+    assert not (tmp_path / "outside.db").exists()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
 def test_store_accepts_symlinked_data_root(tmp_path: Path) -> None:
     real = tmp_path / "real"

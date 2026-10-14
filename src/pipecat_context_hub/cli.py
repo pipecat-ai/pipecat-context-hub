@@ -966,6 +966,7 @@ def refresh(
     # existing index. This keeps invalid input fail-closed even when recovery
     # detected a partial backend pair.
     index_store: IndexStore
+    partial_index_recovery = False
     if not reset_index:
         # A surviving SQLite metadata store paired with a missing Chroma
         # directory is a partial index.  Opening the writer creates an empty
@@ -973,6 +974,7 @@ def refresh(
         # metadata and silently skip rebuilding semantic retrieval.
         if _partial_index_detected(config):
             force = True
+            partial_index_recovery = True
             logger.warning("Partial index detected; forcing a complete rebuild")
     # ----- 0. Validate an explicit framework pin -----
     # Resolve a concrete pin before any indexing work, so a typo costs one
@@ -1024,10 +1026,13 @@ def refresh(
 
     if not reset_index:
         index_store = _open_index_store_or_exit(config, logger)
-        # A partial pair forces every configured source through its normal
-        # delete-and-reingest path below.  Do not clear the whole store here:
-        # the no-prune contract requires records for unconfigured repos to
-        # survive.
+        if partial_index_recovery:
+            # The surviving backend cannot be reconciled from the other side:
+            # FTS stores content but not embeddings, while Chroma has no
+            # recoverable source metadata. Reset both backends and metadata
+            # before rebuilding so no FTS-only/vector-only records remain.
+            index_store.reset()
+            logger.warning("Partial index recovery reset both backends before rebuild")
 
     if reset_index:
         logger.warning("Deleting local index storage before refresh")

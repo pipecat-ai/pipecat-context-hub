@@ -39,6 +39,14 @@ def _validate_existing_backend_file(path: Path, data_dir: Path) -> None:
         raise ValueError(f"Unsafe index backend path: {path.name}")
 
 
+def _validate_configured_backend_path(path: Path, data_dir: Path) -> None:
+    """Reject backend paths that would escape ``data_dir`` before creation."""
+    try:
+        path.resolve(strict=False).relative_to(data_dir)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"Unsafe index backend path: {path.name}") from exc
+
+
 def _validate_backend_directory(path: Path, data_dir: Path) -> None:
     """Reject backend directories that could redirect writes."""
     try:
@@ -64,6 +72,7 @@ class IndexStore:
         config = config.model_copy(update={"data_dir": data_dir})
         self._data_dir = data_dir
         _validate_backend_directory(config.chroma_path, data_dir)
+        _validate_configured_backend_path(config.sqlite_path, data_dir)
         for backend_file in (
             config.sqlite_path,
             config.chroma_path / "chroma.sqlite3",

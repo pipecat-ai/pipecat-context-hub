@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import subprocess
 import sys
 import selectors
+import threading
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -28,17 +30,59 @@ _MAX_DEPTH = 32
 
 def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
     """Run a producer while retaining at most the allowlisted output size."""
-    process = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True
-    )
-    assert process.stdout is not None
-    stdout_fd = process.stdout.fileno()
-    os.set_blocking(stdout_fd, False)
-    output = bytearray()
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
+    process: subprocess.Popen[bytes] | None = None
+    stdout = None
+    selector: selectors.BaseSelector | None = None
     deadline = time.monotonic() + 30
     try:
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True
+        )
+        stdout = process.stdout
+        assert stdout is not None
+        stdout_fd = stdout.fileno()
+        os.set_blocking(stdout_fd, False)
+        output = bytearray()
+        try:
+            selector = selectors.DefaultSelector()
+            selector.register(stdout, selectors.EVENT_READ)
+        except (NotImplementedError, OSError):
+            # Anonymous subprocess pipes are not selectable on Windows.
+            # A bounded reader thread keeps draining the pipe while the main
+            # thread enforces the timeout and terminates oversized producers.
+            os.set_blocking(stdout_fd, True)
+            result_queue: queue.Queue[tuple[str, bytes | BaseException | None]] = queue.Queue(1)
+
+            def read_pipe() -> None:
+                data = bytearray()
+                try:
+                    while True:
+                        chunk = stdout.read(64 * 1024)
+                        if not chunk:
+                            result_queue.put(("ok", bytes(data)))
+                            return
+                        data.extend(chunk)
+                        if len(data) > _MAX_OUTPUT_BYTES:
+                            result_queue.put(("too_large", None))
+                            return
+                except BaseException as exc:
+                    result_queue.put(("error", exc))
+
+            threading.Thread(target=read_pipe, daemon=True).start()
+            try:
+                kind, value = result_queue.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise subprocess.TimeoutExpired(command, 30)
+            if kind == "too_large":
+                raise ValueError("command output too large")
+            if kind == "error":
+                assert isinstance(value, BaseException)
+                raise value
+            assert isinstance(value, bytes)
+            returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
+            return subprocess.CompletedProcess(command, returncode, value, b"")
+
+        stdout_fd = stdout.fileno()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -58,16 +102,19 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
         returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         return subprocess.CompletedProcess(command, returncode, bytes(output), b"")
     except (Exception,):
-        process.kill()
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
+        if process is not None:
             process.kill()
-            process.wait()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
         raise
     finally:
-        selector.close()
-        process.stdout.close()
+        if selector is not None:
+            selector.close()
+        if stdout is not None:
+            stdout.close()
 
 
 def _records(
