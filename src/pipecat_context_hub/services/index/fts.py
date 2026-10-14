@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import stat
 import threading
@@ -81,6 +82,34 @@ END;
 """
 
 
+def _identity(info: os.stat_result | None) -> tuple[int, int] | None:
+    return None if info is None else (info.st_dev, info.st_ino)
+
+
+def _sidecar_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"unsafe SQLite sidecar path: {path.name}") from exc
+    if is_reparse_link(path) or not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"unsafe SQLite sidecar path: {path.name}")
+    return (info.st_dev, info.st_ino)
+
+
+def _checked_sidecar(path: Path, label: str) -> os.stat_result | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"unsafe SQLite {label} path") from exc
+    if is_reparse_link(path) or not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"unsafe SQLite {label} path")
+    return info
+
+
 class FTSIndex:
     """SQLite FTS5 keyword index for full-text search.
 
@@ -92,32 +121,29 @@ class FTSIndex:
         self._sqlite_path = sqlite_path
         self._read_only = read_only
         self._lock = threading.RLock()
+        self._sidecar_identities: dict[Path, tuple[int, int] | None] = {}
+        sidecar_identities: dict[Path, tuple[int, int] | None] = {}
+        initial_identity: tuple[int, int] | None = None
         if read_only:
             # ``mode=ro`` (rather than immutable mode) asks SQLite to replay a
             # committed WAL without creating or writing any sidecars. A live
             # writer is coordinated by the index generation lock; a WAL
             # reparse point is always rejected before SQLite sees it.
             wal_path = sqlite_path.with_name(f"{sqlite_path.name}-wal")
-            try:
-                wal_info = wal_path.lstat()
-            except FileNotFoundError:
-                wal_info = None
-            except OSError as exc:
-                raise ValueError("unsafe SQLite WAL path") from exc
-            if wal_info is not None:
-                if is_reparse_link(wal_path) or not stat.S_ISREG(wal_info.st_mode):
-                    raise ValueError("unsafe SQLite WAL path")
+            wal_info = _checked_sidecar(wal_path, "WAL")
             shm_path = sqlite_path.with_name(f"{sqlite_path.name}-shm")
+            shm_info = _checked_sidecar(shm_path, "SHM")
+            sidecar_identities = {
+                wal_path: _identity(wal_info),
+                shm_path: _identity(shm_info),
+            }
             try:
-                shm_info = shm_path.lstat()
-            except FileNotFoundError:
-                shm_info = None
+                initial_info = sqlite_path.lstat()
             except OSError as exc:
-                raise ValueError("unsafe SQLite SHM path") from exc
-            if shm_info is not None and (
-                is_reparse_link(shm_path) or not stat.S_ISREG(shm_info.st_mode)
-            ):
-                raise ValueError("unsafe SQLite SHM path")
+                raise ValueError("unsafe SQLite database path") from exc
+            if is_reparse_link(sqlite_path) or not stat.S_ISREG(initial_info.st_mode):
+                raise ValueError("unsafe SQLite database path")
+            initial_identity = (initial_info.st_dev, initial_info.st_ino)
             query = "mode=ro" if wal_info is not None else "mode=ro&immutable=1"
             uri = f"file:{quote(str(sqlite_path), safe='/')}?{query}"
             self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
@@ -133,11 +159,25 @@ class FTSIndex:
         if is_reparse_link(sqlite_path) or not stat.S_ISREG(info.st_mode):
             self._conn.close()
             raise ValueError("unsafe SQLite database path")
-        self._identity = (info.st_dev, info.st_ino)
+        identity = (info.st_dev, info.st_ino)
+        if initial_identity is not None and identity != initial_identity:
+            self._conn.close()
+            raise ValueError("SQLite database path changed while opening")
+        if sidecar_identities and any(
+            _sidecar_identity(path) != expected for path, expected in sidecar_identities.items()
+        ):
+            self._conn.close()
+            raise ValueError("SQLite WAL/SHM path changed while opening")
         if not read_only:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.commit()
+        self._identity = identity
+        tracked_sidecars = (
+            sqlite_path.with_name(f"{sqlite_path.name}-wal"),
+            sqlite_path.with_name(f"{sqlite_path.name}-shm"),
+        )
+        self._sidecar_identities = {path: _sidecar_identity(path) for path in tracked_sidecars}
         logger.info("FTSIndex initialized at %s", sqlite_path)
 
     def close(self) -> None:
@@ -148,7 +188,7 @@ class FTSIndex:
             self._conn.close()
             self._closed = True
 
-    def reopen_if_replaced(self) -> None:
+    def reopen_if_replaced(self) -> bool:
         """Reopen after another process publishes a new SQLite generation."""
         with self._lock:
             try:
@@ -158,13 +198,23 @@ class FTSIndex:
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
                 raise ValueError("unsafe SQLite database path")
             identity = (info.st_dev, info.st_ino)
-            if identity == self._identity:
-                return
+            current_sidecars = {
+                self._sqlite_path.with_name(f"{self._sqlite_path.name}-wal"),
+                self._sqlite_path.with_name(f"{self._sqlite_path.name}-shm"),
+            }
+            sidecars_changed = any(
+                _sidecar_identity(path) != self._sidecar_identities.get(path)
+                for path in current_sidecars
+            )
+            if identity == self._identity and not sidecars_changed:
+                return False
             self.close()
             replacement = FTSIndex(self._sqlite_path, read_only=self._read_only)
             self._conn = replacement._conn
             self._closed = False
             self._identity = replacement._identity
+            self._sidecar_identities = replacement._sidecar_identities
+            return True
 
     def reopen(self) -> None:
         """Reopen even when the database inode is unchanged.

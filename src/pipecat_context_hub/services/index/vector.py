@@ -422,6 +422,50 @@ def _copy_tree_no_follow(source: Path, destination: Path) -> None:
         os.close(source_fd)
 
 
+def _remove_tree_no_follow(root: Path) -> None:
+    """Remove a directory through descriptor-relative, no-follow operations."""
+    if os.open not in getattr(os, "supports_dir_fd", set()):
+        raise ValueError("Secure Chroma reset is unavailable")
+    if is_reparse_link(root):
+        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
+    parent_fd = os.open(
+        str(root.parent),
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    root_fd = -1
+    try:
+        root_fd = os.open(
+            root.name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+
+        def remove_children(directory_fd: int) -> None:
+            for entry in os.scandir(directory_fd):
+                info = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode) and not is_reparse_link(Path(entry.path)):
+                    child_fd = os.open(
+                        entry.name,
+                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        remove_children(child_fd)
+                    finally:
+                        os.close(child_fd)
+                    os.rmdir(entry.name, dir_fd=directory_fd)
+                else:
+                    # Unlink links as links; never recurse through them.
+                    os.unlink(entry.name, dir_fd=directory_fd)
+
+        remove_children(root_fd)
+    finally:
+        if root_fd != -1:
+            os.close(root_fd)
+    os.rmdir(root.name, dir_fd=parent_fd)
+    os.close(parent_fd)
+
+
 class VectorIndex:
     """ChromaDB vector index for embedding similarity search.
 
@@ -611,11 +655,14 @@ class VectorIndex:
         with self._op_lock:
             with index_lock(self._chroma_path.parent, exclusive=True):
                 self._release_client()
-                shutil.rmtree(self._chroma_path)
+                _remove_tree_no_follow(self._chroma_path)
                 if self._chroma_path.exists() or self._chroma_path.is_symlink():
                     raise OSError(f"Chroma reset did not remove {self._chroma_path}")
-            self._open_client()
-            logger.info("VectorIndex reset at %s", self._chroma_path)
+                # Reopen before releasing the generation lock. A concurrent
+                # refresh must not publish a new generation between delete and
+                # collection creation.
+                self._open_client(lock_held=True)
+                logger.info("VectorIndex reset at %s", self._chroma_path)
 
     def clear(self) -> None:
         """Drop all records by deleting and recreating the collection."""

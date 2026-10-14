@@ -92,7 +92,9 @@ def test_reset_marker_is_recovered_before_writer_open(tmp_path: Path) -> None:
 
     _recover_reset_marker(config)
 
-    assert not marker.exists()
+    # Recovery keeps the fail-closed marker until the writer has reset both
+    # backends successfully; an open failure must remain recoverable.
+    assert marker.is_file()
     assert (tmp_path.parent / f".{tmp_path.name}.index.lock").is_file()
 
 
@@ -5793,6 +5795,14 @@ class TestDataDirSafetyFloor:
         data_dir = tmp_path / "hub-data"
         data_dir.mkdir()
         (data_dir / "marker").write_text("x")
+
+        _delete_local_index_storage(data_dir)
+
+        assert not data_dir.exists()
+
+    def test_absent_data_dir_is_a_successful_reset(self, monkeypatch, tmp_path: Path) -> None:
+        self._no_config_file(monkeypatch, tmp_path)
+        data_dir = tmp_path / "not-created-yet"
 
         _delete_local_index_storage(data_dir)
 

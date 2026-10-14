@@ -95,7 +95,9 @@ def _partial_index_detected(config: HubConfig) -> bool:
     return sqlite_exists != chroma_exists
 
 
-def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> IndexStore:
+def _open_index_store_or_exit(
+    config: HubConfig, logger: logging.Logger, *, allow_incomplete_reset: bool = False
+) -> IndexStore:
     """Open the on-disk index store, or exit with `_EXIT_INDEX_UNREADY`.
 
     Shared by both `refresh` call sites (pre-`--reset-index` fail-fast path
@@ -107,7 +109,7 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
     from pipecat_context_hub.services.index.store import IndexStore
 
     try:
-        return IndexStore(config.storage)
+        return IndexStore(config.storage, allow_incomplete_reset=allow_incomplete_reset)
     except (IncompatibleIndexFormatError, OSError, RuntimeError, ValueError) as exc:
         # A pre-1.0 Chroma dir cannot be opened by 1.x. exc.__str__ embeds
         # the absolute chroma_path; redact for front-door parity with the
@@ -139,7 +141,12 @@ def _with_refresh_generation_lock(
 
 
 def _recover_reset_marker(config: HubConfig) -> None:
-    """Remove a persisted reset marker before opening the writer store."""
+    """Validate a reset marker without clearing the fail-closed guard.
+
+    The writer is opened in explicit recovery mode and removes the marker
+    only after both backends have reset successfully.  Keeping the marker in
+    place means a failed open cannot make an interrupted reset look healthy.
+    """
     data_dir = config.storage.data_dir.expanduser().resolve()
     marker = data_dir / ".reset-state.json"
     if not marker.exists() and not marker.is_symlink():
@@ -147,7 +154,8 @@ def _recover_reset_marker(config: HubConfig) -> None:
     with index_lock(data_dir, exclusive=True):
         if marker.is_symlink() or (marker.exists() and not marker.is_file()):
             raise ValueError("Unsafe reset state path")
-        marker.unlink(missing_ok=True)
+        # Deliberately retain the marker until IndexStore.reset() completes.
+        return
 
 
 # Values of PIPECAT_HUB_WARMUP that disable pre-warm. Anything else
@@ -371,6 +379,11 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     with index_lock(resolved_data_dir, exclusive=True):
         try:
             shutil.rmtree(resolved_data_dir)
+        except FileNotFoundError:
+            # Reset is also the first-run recovery path.  The lock is still
+            # acquired above, but an already-absent directory is a successful
+            # deletion and must proceed to a fresh writer open.
+            return
         except OSError as exc:
             raise click.ClickException(
                 "Could not remove the existing index safely; refusing to rebuild a partial "
@@ -1091,7 +1104,9 @@ def refresh(
             # present. Recover the interrupted reset first, then open and
             # perform the complete paired-backend reset below.
             _recover_reset_marker(config)
-        index_store = _open_index_store_or_exit(config, logger)
+        index_store = _open_index_store_or_exit(
+            config, logger, allow_incomplete_reset=partial_index_recovery
+        )
         if partial_index_recovery:
             # The surviving backend cannot be reconciled from the other side:
             # FTS stores content but not embeddings, while Chroma has no

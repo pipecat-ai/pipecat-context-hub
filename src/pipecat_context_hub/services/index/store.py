@@ -162,10 +162,10 @@ class IndexStore:
     Reads are dispatched to the appropriate backend based on the search type.
     """
 
-    def __init__(self, config: StorageConfig) -> None:
+    def __init__(self, config: StorageConfig, *, allow_incomplete_reset: bool = False) -> None:
         data_dir = config.data_dir.expanduser().resolve()
         data_dir.mkdir(parents=True, exist_ok=True)
-        if _reset_state_exists(data_dir):
+        if _reset_state_exists(data_dir) and not allow_incomplete_reset:
             raise ValueError("index reset is incomplete; run refresh to recover it")
         config = config.model_copy(update={"data_dir": data_dir})
         self._data_dir = data_dir
@@ -407,8 +407,15 @@ class IndexStore:
         """Reopen both native readers when refresh publishes in place."""
         if not hasattr(self._fts, "get_metadata"):
             return
+        # A reset can replace metadata.db while this process remains alive.
+        # Reopen before reading the marker so the old connection cannot make a
+        # replaced generation look current.
+        metadata_replaced = False
+        reopen_if_replaced = getattr(self._fts, "reopen_if_replaced", None)
+        if callable(reopen_if_replaced):
+            metadata_replaced = bool(reopen_if_replaced())
         published = self._fts.get_metadata("index_generation")
-        if published == self._generation_id:
+        if published == self._generation_id and not metadata_replaced:
             return
         self._vector.reopen_if_replaced(lock_held=True, force=True)
         self._fts.reopen()

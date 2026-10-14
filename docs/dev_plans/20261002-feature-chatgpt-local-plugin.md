@@ -46,14 +46,14 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 
 - Crash prerequisite (2026-10-04): reject an oversized persisted HNSW graph before native loading; regress the actual `TTS + STT` query against a synthetic corrupt index and prove healthy persisted indexes still reopen and search. Agents must not initiate live index recovery or refresh. A user-performed refresh supplies a new read-only baseline. Conduct recomputes the review-marker hash on resume; record that hash update separately from a new plan review.
 - Retrieval outcome: resolve the installed hub interpreter, check index readiness without refresh, verify the CLI-first skill package and explore-skill activation. This gates Phase 2. The historical stdio initialize/status smoke is retained only in the evaluation record.
-- Execution outcome: separately check local shell availability with a harmless command, and inspect Pipecat CLI versions/help when installed. This gates Phase 3 only; absent shell access or CLI must not block working retrieval.
+- Execution outcome (historical/stale as of 2026-10-08; superseded by the execution-boundary correction below): separately check local shell availability with a harmless command, and inspect Pipecat CLI versions/help when installed. This gates Phase 3 only; absent shell access or CLI must not block working retrieval.
 - Cloud outcome: when the optional Cloud CLI is present, record command discovery; account/auth readiness remains a Phase 4 gate. Its absence does not block Phases 2 or 3.
 - Capture independent retrieval/execution/Cloud availability, host mode, versions, command/argv and pass/fail evidence without machine paths in committed templates.
 - If retrieval fails, stop the retrieval-dependent work and re-plan. If an optional capability is missing, mark only its dependent workflow unavailable and continue independent work. Do not substitute an untested execution adapter.
 
 ### Phase 2: Complete grounded exploration
 
-Depends only on Phase 1's retrieval outcome. Define idea and concept workflows, source citations, version/source preference mapping and ambiguity handling. Test read-only conversations, including unsupported-filter and unavailable-version cases. The package can ship exploration without local shell access, the Pipecat CLI or Cloud credentials.
+Depends only on Phase 1's retrieval outcome. Define idea and concept workflows, source citations, version/source preference mapping and ambiguity handling. Test read-only conversations, including unsupported-filter and unavailable-version cases. (Historical/stale as of 2026-10-08: the package can ship exploration without local shell access or the Pipecat CLI. The current CLI-first contract requires native execution and a populated index; see the execution-boundary correction below.)
 
 ### Phase 3: Add build and local verification
 
@@ -177,7 +177,7 @@ sequenceDiagram
 | Host MCP loader | Installed Codex `plugin/read` discovers the unique server; freeze the absolute-command rejection and verify the generated configuration passes the real loader, separately from desktop activation |
 | Destination exists or hub absent | Clear error, no overwrite or partial registration |
 | Host feasibility | Actual skill discovery and harmless shell execution in selected desktop mode; stdio initialize/status is historical and not a current package gate |
-| Optional shell/CLI absent | Retrieval still activates and answers with sources; build is unavailable without shell/Pipecat CLI, and Cloud absence does not block working exploration/build |
+| Optional shell/CLI absent (historical/stale) | Earlier plan expected retrieval to activate; current CLI-first contract reports setup guidance and leaves retrieval unavailable without native execution and a populated index |
 | Unrelated/shadow-module cwd | Packaged launch completes initialize/status using installed hub, not a same-named shadow module |
 | Idea versus concept prompts | Relevant retrieved material and sources precede Pipecat API assertions |
 | Unavailable version; empty/stale index | Limitation/remediation disclosure; no initiated refresh/replacement; before/after version and refresh metadata |
@@ -204,7 +204,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - Idea/concept workflows retrieve relevant evidence and disclose version/source limitations.
 - A build request produces a scaffolded app using installed CLI capabilities and verifies it locally.
 - Deployment preparation produces concrete reviewed configuration and proposed secret changes without Cloud mutation or exposure of credential values. Approved secret changes occur before the approved build/deploy.
-- Missing optional CLI, shell or Cloud prerequisites leave working exploration usable and disable only dependent workflows.
+- Missing optional CLI, shell or Cloud prerequisites leave only the dependent workflow usable; current CLI-first Explore requires native execution and a populated index (the earlier optional-shell criterion is historical/stale).
 - Live Cloud deployment runs only after target/payload approval and is verified ready; missing prerequisites remain explicitly untested.
 - All evaluation results distinguish observed passes, failures and untested behaviour.
 - Existing hub CLI/server registrations remain the compatibility boundary; this
@@ -311,8 +311,10 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
   wording was stale. Current refresh semantics include fail-closed absent/partial
   index recovery, generation locking before backend open/reset (including
   resolved symlink roots), read-only SQLite access (with committed WAL replay
-  when a WAL is present), and cross-platform
-  secure backend/snapshot paths. See the [index-recovery plan](20260324-bug-chroma-index-recovery.md)
+  when a WAL is present). Secure backend/snapshot operations require
+  POSIX descriptor-relative no-reparse primitives; Windows package/path smoke
+  remains supported, but populated index refresh, serve and semantic retrieval
+  are explicitly unsupported and fail closed. See the [index-recovery plan](20260324-bug-chroma-index-recovery.md)
   and focused regressions in `tests/unit/test_index_store.py` and
   `tests/unit/test_cli.py`.
 

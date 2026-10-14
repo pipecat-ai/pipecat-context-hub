@@ -59,6 +59,15 @@ remain unqualified. The earlier stdio experiment's local build and approved READ
 Cloud evidence remain dated in the [evaluation report](evaluations/pipecat-context-hub-plugin.md); they do not
 prove fresh-user, provider/session or ChatGPT Work support for this release.
 
+### Platform contract
+
+The persisted Chroma/SQLite index and semantic retrieval path currently require
+POSIX descriptor-relative, no-reparse filesystem operations. On Windows the
+package and path/ingest helpers remain installable, but `refresh`, `serve` and
+semantic queries fail closed with an index-safety error rather than using an
+unsafe pathname-only fallback. Do not treat the Windows CI package smoke as
+index support; use a POSIX host for a populated local index.
+
 ### Inside the Pipecat CLI
 
 Installing this package alongside `pipecat-ai[cli]` mounts it as `pipecat context-hub`,

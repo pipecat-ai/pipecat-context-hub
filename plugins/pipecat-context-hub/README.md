@@ -19,6 +19,12 @@ execution in the task's local or cloud environment. Installing on the web does n
 provision those capabilities. Environments without execution can show guidance but
 cannot run grounded queries or builds through this plugin.
 
+The local persisted index has the same platform boundary as Context Hub itself:
+its secure Chroma/SQLite open and snapshot paths are currently POSIX-only. On
+Windows, installation and path handling are supported, but refresh, serve and
+semantic retrieval fail closed until descriptor-relative no-reparse operations
+are available; use a POSIX execution host for grounded retrieval.
+
 ## Set up Context Hub
 
 After installing, ask **"Set up Pipecat Context Hub"**. The

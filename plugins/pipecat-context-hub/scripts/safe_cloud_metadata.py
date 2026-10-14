@@ -74,16 +74,21 @@ def _trusted_pipecat_path() -> Path | None:
     for file in dist.files or ():
         if Path(file).name not in names:
             continue
-        candidate = Path(dist.locate_file(file))
+        # Wheel RECORD entries commonly spell console scripts relative to the
+        # distribution directory (for example ``../../../bin/pipecat``).
+        # Normalize that spelling before comparing it with the resolved path;
+        # the spelling itself is still checked with lstat below so a launcher
+        # symlink cannot become the credential-bearing producer.
+        candidate = Path(os.path.abspath(os.path.normpath(os.fspath(dist.locate_file(file)))))
         try:
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(prefix)
-            # A package metadata entry that resolves through a symlink is not
-            # an interpreter-owned executable.  Reject the spelling as well as
-            # the target so a later replacement cannot turn it into a link.
+            # Check the executable spelling separately from its resolved
+            # target.  The interpreter prefix itself may be reached through a
+            # benign parent symlink (notably temporary virtualenv paths), but
+            # the actual console-script entry must not be a reparse point.
             if (
-                resolved != candidate
-                or not candidate.is_file()
+                not candidate.is_file()
                 or not os.access(candidate, os.X_OK)
             ):
                 continue

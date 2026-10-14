@@ -202,6 +202,35 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
                 raise
             raise ValueError("Unsafe index lock path") from exc
         if not create:
+            # A writer may have won the legacy-to-sibling transition while we
+            # waited for the shared directory lock.  Do not return holding
+            # the old inode: writers now coordinate through the sibling lock.
+            # The writer cannot create that sibling while this shared lock is
+            # held, so this recheck closes the transition race.
+            try:
+                sibling_info = lock_path.lstat()
+            except FileNotFoundError:
+                sibling_info = None
+            except OSError as exc:
+                raise ValueError("Unsafe index lock path") from exc
+            if sibling_info is not None and (
+                stat.S_ISLNK(sibling_info.st_mode) or not stat.S_ISREG(sibling_info.st_mode)
+            ):
+                raise ValueError("Unsafe index lock path")
+            sibling_now_exists = sibling_info is not None
+            if sibling_now_exists:
+                if os.name == "nt":
+                    msvcrt = __import__("msvcrt")
+                    msvcrt.locking(legacy_fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(legacy_fd, fcntl.LOCK_UN)
+                os.close(legacy_fd)
+                legacy_fd = -1
+                with index_lock(data_dir, exclusive=False, create=False):
+                    yield
+                return
             try:
                 yield
             finally:

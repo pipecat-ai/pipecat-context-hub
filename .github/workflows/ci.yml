@@ -65,14 +65,15 @@ jobs:
           test "$RESULT" = "success"
 
   windows-smoke:
-    name: Windows smoke (chromadb 1.x, py${{ matrix.python-version }})
+    name: Windows smoke (package and path handling, py${{ matrix.python-version }})
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        # 3.14 proves the cp314 compiled stack (onnxruntime/tokenizers)
-        # installs and the chromadb 1.x index paths work on Windows — the platform
-        # where cp314 wheel availability was least certain.
+        # 3.14 proves the compiled dependency stack installs on Windows. The
+        # persisted index is intentionally POSIX-only: its fail-closed
+        # descriptor-relative backend/snapshot operations are not available on
+        # Windows (see the platform contract in docs/README.md).
         python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4
@@ -87,18 +88,14 @@ jobs:
           version: "0.9.18"
 
       - name: Sync dependencies
-        # Proves chromadb 1.5.9 (and the rest of the stack) resolves and installs
-        # from wheels on Windows — the primary cross-platform risk of the 1.x bump.
+        # Proves the dependency stack resolves and installs from Windows wheels;
+        # this is package compatibility evidence, not persisted-index support.
         run: uv sync --frozen --extra dev --group dev
 
-      - name: ChromaDB index smoke
-        # Scope: the chromadb 1.5.9 cross-platform risk surface plus the
-        # path-handling tests that previously assumed POSIX separators. `Sync
-        # dependencies` above already proved the wheel installs on Windows; the
-        # chromadb tests then build real ChromaDB 1.x indexes in temp dirs and
-        # exercise the upsert/query/get paths + Client.close lifecycle, the
-        # non-mutating format-detection probe (reads chroma.sqlite3), and
-        # metadata typing.
+      - name: Windows-compatible smoke
+        # Scope: package installation and path/ingest/config handling only.
+        # Index-store and Chroma snapshot tests are excluded because the
+        # implementation deliberately refuses unsafe pathname-only fallback.
         #
         # test_taxonomy / test_github_ingest / test_cli / test_hub_status are now
         # included: the ingest layer normalizes logical repo-relative paths to
@@ -113,8 +110,6 @@ jobs:
         # POSIX-only select() on pipes); Linux CI runs everything.
         run: >-
           uv run pytest -v
-          tests/unit/test_index_store.py
-          tests/unit/test_format_detection.py
           tests/unit/test_metadata_types.py
           tests/unit/test_taxonomy.py
           tests/unit/test_github_ingest.py
