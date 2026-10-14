@@ -1483,6 +1483,15 @@ class TestMultiConceptSearch:
             def __init__(self):
                 self.queries = []
 
+            async def vector_search(self, query):
+                raise AssertionError("batched reader should use hybrid_search_many")
+
+            async def keyword_search(self, query):
+                raise AssertionError("batched reader should use hybrid_search_many")
+
+            async def hybrid_search(self, query):
+                raise AssertionError("batched reader should use hybrid_search_many")
+
             async def hybrid_search_many(self, queries):
                 self.queries.append(queries)
                 return [

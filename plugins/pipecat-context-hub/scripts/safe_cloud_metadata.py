@@ -376,6 +376,10 @@ def _safe_child_environment(extra: Mapping[str, str] | None = None) -> dict[str,
         or key in _SAFE_RUNTIME_ENV
         or (key.startswith("LC_") and not _SECRET_ENV.search(key))
     }
+    # The credential-bearing producer runs from a verified snapshot.  Keep
+    # user-site packages out of its import search path so an untrusted
+    # per-user module cannot influence the command while it holds the token.
+    environment["PYTHONNOUSERSITE"] = "1"
     if extra is not None:
         # Only the private import snapshot is allowed to add a child setting;
         # never inherit a caller-controlled PYTHONPATH or interpreter option.

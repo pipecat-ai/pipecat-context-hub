@@ -65,6 +65,10 @@ def _run_metadata_wrapper(
             or key in module._SAFE_RUNTIME_ENV
             or (key.startswith("LC_") and not module._SECRET_ENV.search(key))
         }
+        # Keep the subprocess fixture aligned with the production child
+        # environment.  The credential-bearing producer must not import from
+        # a user's site directory, which is outside the verified snapshot.
+        child_env["PYTHONNOUSERSITE"] = "1"
         if extra_env:
             child_env.update(extra_env)
         return subprocess.run(
@@ -74,8 +78,15 @@ def _run_metadata_wrapper(
     old_argv = sys.argv
     stdout, stderr = io.StringIO(), io.StringIO()
     try:
-        installed_pipecat = shutil.which("pipecat")
-        assert installed_pipecat is not None
+        # Use a local launcher-shaped fixture rather than requiring the
+        # developer's environment to have the Pipecat CLI installed.  The
+        # command execution is replaced above; this file only supplies the
+        # basename, absolute interpreter and verified-descriptor identity that
+        # the real wrapper validates before spawning a producer.
+        installed_path = producer.with_name("pipecat")
+        installed_path.write_text(f"#!{sys.executable}\npass\n")
+        installed_path.chmod(0o755)
+        installed_pipecat = str(installed_path)
         # The fixture replaces execution with a local producer; explicitly
         # inject the trusted executable identity rather than treating PATH as
         # an authority in the production wrapper.
