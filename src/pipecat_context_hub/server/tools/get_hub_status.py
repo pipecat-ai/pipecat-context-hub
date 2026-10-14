@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from pipecat_context_hub.shared.interfaces import IndexStatusReader
 from pipecat_context_hub.shared.types import HubStatusOutput, RerankerStatus
@@ -43,8 +44,15 @@ async def handle_get_hub_status(
     # Import here to use the same version string as the server.
     from pipecat_context_hub.server.main import _SERVER_VERSION
 
-    stats: dict[str, Any] = index_store.get_index_stats()
-    metadata: dict[str, str] = index_store.get_all_metadata()
+    # Both accessors synchronously acquire the generation lock.  A refresh
+    # may hold it for minutes, so never make an MCP event-loop task wait on
+    # either call directly.
+    stats_raw, metadata_raw = await asyncio.gather(
+        asyncio.to_thread(index_store.get_index_stats),
+        asyncio.to_thread(index_store.get_all_metadata),
+    )
+    stats = cast(dict[str, Any], stats_raw)
+    metadata = metadata_raw
 
     duration = _parse(metadata.get("last_refresh_duration_seconds"), float)
     commits_ahead = _parse(metadata.get("indexed_framework_commits_ahead"), int)

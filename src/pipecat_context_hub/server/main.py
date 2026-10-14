@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import contextlib
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -222,7 +223,7 @@ def create_server(
             ]
         )
 
-    def _annotate(result_json: str) -> str:
+    async def _annotate(result_json: str) -> str:
         """Attach the index_staleness footer when the index is old.
 
         Skipped for get_hub_status (it *is* the staleness report) by virtue
@@ -232,7 +233,10 @@ def create_server(
         """
         if index_store is None:
             return result_json
-        return annotate_response(result_json, index_store)
+        # Metadata reads acquire the cross-process generation lock.  Keep
+        # that synchronous wait out of the MCP event loop so an in-progress
+        # refresh cannot stall unrelated requests or watchdog progress.
+        return await asyncio.to_thread(annotate_response, result_json, index_store)
 
     async def call_tool(_ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
         # Mark the call in-flight so the idle watchdog treats the whole
@@ -273,16 +277,23 @@ def create_server(
                     if isinstance(data_dir, Path)
                     else contextlib.nullcontext()
                 )
-                with lock:
-                    dep_map = (
-                        DeprecationMap.load(map_path)
-                        if map_path is not None
-                        else getattr(retriever, "deprecation_map", None)
-                    )
-                    fw_version = resolve_framework_version(index_store, dep_map)
+
+                def load_deprecation_context() -> tuple[Any, str | None]:
+                    with lock:
+                        dep_map = (
+                            DeprecationMap.load(map_path)
+                            if map_path is not None
+                            else getattr(retriever, "deprecation_map", None)
+                        )
+                        return dep_map, resolve_framework_version(index_store, dep_map)
+
+                # Both the lock wait and synchronous metadata/map reads must
+                # run off the event loop; refresh can hold this lock for
+                # several minutes.
+                dep_map, fw_version = await asyncio.to_thread(load_deprecation_context)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return types.CallToolResult(
-                    content=[types.TextContent(type="text", text=_annotate(result_json))]
+                    content=[types.TextContent(type="text", text=await _annotate(result_json))]
                 )
 
             handler = get_tool_handler(name)
@@ -291,7 +302,7 @@ def create_server(
 
             result_json = await handler(args, retriever)
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=_annotate(result_json))]
+                content=[types.TextContent(type="text", text=await _annotate(result_json))]
             )
         except ValidationError as exc:
             return types.CallToolResult(

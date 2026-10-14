@@ -305,8 +305,9 @@ and docs come from the live `docs.pipecat.ai`, which is unversioned.
 
 External tooling — editor plugins, CI checks, the Pipecat CLI — often needs one
 cheap answer: *how old is this index, and which pipecat version is it for?*
-Lookup-only paths such as `status` and `check-deprecation` intentionally open
-only SQLite; semantic paths may additionally open ChromaDB. Importing the hub
+Lookup-only paths such as `status` and `check-deprecation` avoid constructing
+the native Chroma client, but still validate the persisted Chroma SQLite file
+and HNSW safety metadata; semantic paths additionally open ChromaDB. Importing the hub
 or shelling out to `status` is still too slow to run on every invocation of
 another tool, so the direct metadata contract remains useful.
 

@@ -46,6 +46,23 @@ def test_store_refuses_symlinked_backend_file(tmp_path: Path) -> None:
     assert target.read_bytes() == b"keep"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX WAL snapshot semantics")
+def test_read_only_fts_reopen_retains_wal_snapshot_owner(tmp_path: Path) -> None:
+    """Reopening a WAL reader must keep its private snapshot alive."""
+    db = tmp_path / "metadata.db"
+    writer = FTSIndex(db)
+    writer.set_metadata("snapshot", "alive")
+    reader = FTSIndex(db, read_only=True)
+    try:
+        assert reader._readonly_snapshot_dir is not None
+        reader.reopen()
+        assert reader._readonly_snapshot_dir is not None
+        assert reader.get_metadata("snapshot") == "alive"
+    finally:
+        reader.close()
+        writer.close()
+
+
 @pytest.mark.parametrize("sqlite_filename", ["../outside.db", str(Path("/tmp/outside.db"))])
 def test_store_refuses_sqlite_path_outside_data_dir(tmp_path: Path, sqlite_filename: str) -> None:
     """A missing configured SQLite path must not escape before existence checks."""

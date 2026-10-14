@@ -182,6 +182,18 @@ def test_new_index_without_persisted_graph_is_allowed(tmp_path: Path) -> None:
     validate_persisted_hnsw(tmp_path / "absent", "latest")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_symlinked_chroma_sqlite_is_rejected_before_probe(tmp_path: Path) -> None:
+    root = tmp_path / "chroma"
+    root.mkdir()
+    outside = tmp_path / "outside.sqlite3"
+    with sqlite3.connect(outside) as conn:
+        conn.execute("CREATE TABLE collections (id TEXT, name TEXT)")
+    (root / "chroma.sqlite3").symlink_to(outside)
+    with pytest.raises(IncompatibleIndexFormatError, match="unsafe chroma.sqlite3"):
+        validate_persisted_hnsw(root, "latest")
+
+
 def test_wal_presence_fails_closed_before_stale_probe(
     persisted_segment: tuple[Path, Path],
 ) -> None:

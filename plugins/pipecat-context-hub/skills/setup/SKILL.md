@@ -23,6 +23,11 @@ Skills supply instructions, not execution permissions or installation hooks.
    the web does not provision that environment. Record whether its runtime/index
    will persist between tasks. Cloud container paths, indexes and login do not
    configure or authenticate another execution host.
+   Before any index operation, require a POSIX host with descriptor-relative,
+   no-reparse filesystem support. Windows is package/path smoke only: do not
+   run `refresh`, `serve`, or semantic queries against a populated index there;
+   these operations must fail closed rather than falling back to pathname-based
+   deletion or opening.
    If native execution is unavailable, report setup and grounded retrieval
    unavailable and provide the user's remaining setup steps; do not install an adapter.
 2. Discover PCH through [Explore's CLI retrieval](../explore/SKILL.md#cli-retrieval):

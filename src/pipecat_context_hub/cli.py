@@ -12,7 +12,7 @@ import hashlib
 import json
 import logging
 import os
-import shutil
+import shutil  # noqa: F401 - retained as a patch seam for reset safety tests
 import stat
 import sys
 import time
@@ -152,8 +152,25 @@ def _recover_reset_marker(config: HubConfig) -> None:
     marker = data_dir / ".reset-state.json"
     if not marker.exists() and not marker.is_symlink():
         return
+    try:
+        marker_before = marker.lstat()
+    except OSError as exc:
+        raise ValueError("Unsafe reset state path") from exc
     with index_lock(data_dir, exclusive=True):
-        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+        try:
+            marker_after = marker.lstat()
+        except FileNotFoundError:
+            # A completed reset won the race while this recovery waited for
+            # the lock.  There is no incomplete state left to recover.
+            return
+        except OSError as exc:
+            raise ValueError("Unsafe reset state path") from exc
+        if (
+            is_reparse_link(marker)
+            or not stat.S_ISREG(marker_after.st_mode)
+            or (marker_after.st_dev, marker_after.st_ino)
+            != (marker_before.st_dev, marker_before.st_ino)
+        ):
             raise ValueError("Unsafe reset state path")
         # Deliberately retain the marker until IndexStore.reset() completes.
         return
@@ -413,10 +430,13 @@ def _delete_local_index_storage(data_dir: Path) -> None:
 
                 _remove_tree_no_follow(resolved_data_dir)
             else:
-                # Windows deliberately remains package/path smoke only; keep
-                # its existing bounded cleanup path rather than introducing a
-                # pathname fallback into the supported index implementation.
-                shutil.rmtree(resolved_data_dir)
+                # Windows deliberately remains package/path smoke only.  A
+                # pathname-recursive fallback would turn the preflight TOCTOU
+                # checks above into a destructive reparse/junction sink.
+                raise click.ClickException(
+                    "Index reset requires POSIX descriptor-relative filesystem support; "
+                    "Windows refresh is unsupported and the existing index was preserved."
+                )
         except FileNotFoundError:
             # Reset is also the first-run recovery path.  The lock is still
             # acquired above, but an already-absent directory is a successful

@@ -22,7 +22,11 @@ _generation_token: contextvars.ContextVar[object | None] = contextvars.ContextVa
 )
 _generation_leases: dict[tuple[Path, object], bool] = {}
 _generation_leases_guard = threading.Lock()
-_active_lock_identities: dict[Path, tuple[int, int]] = {}
+# Keep a holder count, not just one identity.  Multiple worker threads in the
+# same process can hold the same sibling inode concurrently; dropping the
+# entry when the first one exits would let a replacement inode split the
+# coordination domain while another descriptor is still locked.
+_active_lock_identities: dict[Path, tuple[tuple[int, int], int]] = {}
 _active_lock_identities_guard = threading.Lock()
 
 
@@ -157,9 +161,43 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
     # coordination domain: a contender must fail closed rather than acquire a
     # fresh sibling inode while the original descriptor is still held.
     with _active_lock_identities_guard:
-        active_identity = _active_lock_identities.get(lock_path)
+        active_entry = _active_lock_identities.get(lock_path)
+        active_identity = active_entry[0] if active_entry is not None else None
     if active_identity is not None and lock_identity != active_identity:
         raise ValueError("Unsafe index lock path")
+    # A sibling lock inode can be unlinked and recreated by another process;
+    # POSIX flock would then treat the replacement as an unrelated lock. Hold
+    # an exclusive descriptor lock on the stable parent directory for the
+    # complete sibling-lock lifetime so no contender can pass the path check
+    # while an older inode is still held. This intentionally serializes index
+    # operations across processes; correctness is more important than reader
+    # parallelism for the small local metadata/index critical sections.
+    parent_guard_fd = -1
+    if lock_info is not None and os.name != "nt":
+        try:
+            parent_guard_fd = os.open(
+                data_dir.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            import fcntl
+
+            fcntl.flock(parent_guard_fd, fcntl.LOCK_EX)
+            current_parent = data_dir.parent.lstat()
+            if (current_parent.st_dev, current_parent.st_ino) != (
+                lock_parent_info.st_dev,
+                lock_parent_info.st_ino,
+            ):
+                raise ValueError("Unsafe index lock path")
+        except (OSError, RuntimeError, ValueError) as exc:
+            if parent_guard_fd != -1:
+                with contextlib.suppress(OSError):
+                    import fcntl
+
+                    fcntl.flock(parent_guard_fd, fcntl.LOCK_UN)
+                os.close(parent_guard_fd)
+            if isinstance(exc, ValueError):
+                raise
+            raise ValueError("Unsafe index lock path") from exc
     legacy_fd = -1
     if lock_info is None:
         try:
@@ -268,7 +306,8 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
         if lock_identity is not None and opened_identity != lock_identity:
             raise ValueError("Unsafe index lock path")
         with _active_lock_identities_guard:
-            active_identity = _active_lock_identities.get(lock_path)
+            active_entry = _active_lock_identities.get(lock_path)
+            active_identity = active_entry[0] if active_entry is not None else None
         if active_identity is not None and opened_identity != active_identity:
             raise ValueError("Unsafe index lock path")
         if parent_info is not None:
@@ -278,11 +317,15 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
                 parent_info.st_ino,
             ):
                 raise ValueError("Unsafe index lock path")
-    except FileNotFoundError:
-        raise
     except (OSError, RuntimeError, ValueError) as exc:
         if fd != -1:
             os.close(fd)
+        if parent_guard_fd != -1:
+            with contextlib.suppress(OSError):
+                import fcntl
+
+                fcntl.flock(parent_guard_fd, fcntl.LOCK_UN)
+            os.close(parent_guard_fd)
         if legacy_fd != -1:
             try:
                 if os.name == "nt":
@@ -299,7 +342,24 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
         raise ValueError("Unsafe index lock path") from exc
     held[lock_path] = (fd, exclusive, 1, owner)
     with _active_lock_identities_guard:
-        _active_lock_identities[lock_path] = opened_identity
+        active_entry = _active_lock_identities.get(lock_path)
+        if active_entry is not None and active_entry[0] != opened_identity:
+            # A contender may have observed the old inode before another
+            # holder entered.  Never overwrite the active coordination
+            # identity with a replacement inode.
+            held.pop(lock_path, None)
+            os.close(fd)
+            if parent_guard_fd != -1:
+                with contextlib.suppress(OSError):
+                    import fcntl
+
+                    fcntl.flock(parent_guard_fd, fcntl.LOCK_UN)
+                os.close(parent_guard_fd)
+            raise ValueError("Unsafe index lock path")
+        _active_lock_identities[lock_path] = (
+            opened_identity,
+            1 if active_entry is None else active_entry[1] + 1,
+        )
     try:
         if os.name == "nt":
             msvcrt = __import__("msvcrt")
@@ -345,9 +405,17 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
             if held_entry[0] == fd and held_entry[3] == owner:
                 held.pop(lock_path, None)
         with _active_lock_identities_guard:
-            if _active_lock_identities.get(lock_path) == opened_identity:
-                _active_lock_identities.pop(lock_path, None)
+            active_entry = _active_lock_identities.get(lock_path)
+            if active_entry is not None and active_entry[0] == opened_identity:
+                if active_entry[1] <= 1:
+                    _active_lock_identities.pop(lock_path, None)
+                else:
+                    _active_lock_identities[lock_path] = (opened_identity, active_entry[1] - 1)
         os.close(fd)
+        if parent_guard_fd != -1:
+            with contextlib.suppress(OSError):
+                fcntl.flock(parent_guard_fd, fcntl.LOCK_UN)
+            os.close(parent_guard_fd)
         if legacy_fd != -1:
             try:
                 if os.name == "nt":

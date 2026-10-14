@@ -271,6 +271,12 @@ class FTSIndex:
             self.close()
             replacement = FTSIndex(self._sqlite_path, read_only=self._read_only)
             self._conn = replacement._conn
+            # A WAL-backed read-only connection may point at a private
+            # snapshot.  Transfer ownership of that directory together with
+            # the connection; otherwise ``replacement`` is finalized on
+            # return and deletes files still in use by ``self._conn``.
+            self._readonly_snapshot_dir = replacement._readonly_snapshot_dir
+            replacement._readonly_snapshot_dir = None
             self._closed = False
             self._identity = replacement._identity
             self._sidecar_identities = replacement._sidecar_identities
@@ -288,6 +294,8 @@ class FTSIndex:
             self.close()
             replacement = FTSIndex(self._sqlite_path, read_only=read_only)
             self._conn = replacement._conn
+            self._readonly_snapshot_dir = replacement._readonly_snapshot_dir
+            replacement._readonly_snapshot_dir = None
             self._closed = False
             self._identity = replacement._identity
             self._sidecar_identities = replacement._sidecar_identities

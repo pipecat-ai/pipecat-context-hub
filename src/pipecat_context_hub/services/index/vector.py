@@ -8,6 +8,7 @@ single namespace for v0.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from overrides import override
 from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
 from pipecat_context_hub.services.index.locking import index_lock
+from pipecat_context_hub.services.index.safe_sqlite import connect_readonly
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 from pipecat_context_hub.shared.paths import is_reparse_link
 
@@ -58,23 +60,45 @@ def _detect_incompatible_format(chroma_path: Path) -> None:
     no recognizable ``migrations`` table.
     """
     db_path = chroma_path / "chroma.sqlite3"
-    if not db_path.exists():
-        return
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
-    except sqlite3.Error:
+        db_info = db_path.lstat()
+    except FileNotFoundError:
         return
+    except OSError as exc:
+        if exc.errno == getattr(errno, "ENOTSUP", 95):
+            # Keep the established package-level diagnostic used when a
+            # read-only Chroma snapshot cannot be made safely.
+            raise ValueError(
+                "Secure Chroma snapshots require descriptor-relative SQLite opens"
+            ) from exc
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason="unable to inspect chroma.sqlite3; refusing native loading"
+        ) from exc
+    if is_reparse_link(db_path) or not stat.S_ISREG(db_info.st_mode):
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason="unsafe chroma.sqlite3 path; refusing native loading"
+        )
     try:
-        has_migrations = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='migrations'"
-        ).fetchone()
-        if has_migrations is None:
-            return
-        row = conn.execute("SELECT MAX(version) FROM migrations WHERE dir='sysdb'").fetchone()
-    except sqlite3.Error:
-        return
-    finally:
-        conn.close()
+        with connect_readonly(db_path, immutable=True) as conn:
+            try:
+                has_migrations = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='migrations'"
+                ).fetchone()
+                if has_migrations is None:
+                    return
+                row = conn.execute(
+                    "SELECT MAX(version) FROM migrations WHERE dir='sysdb'"
+                ).fetchone()
+            except sqlite3.Error:
+                return
+    except OSError as exc:
+        if exc.errno == getattr(errno, "ENOTSUP", 95):
+            raise ValueError(
+                "Secure Chroma snapshots require descriptor-relative SQLite opens"
+            ) from exc
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason="unsafe chroma.sqlite3 path; refusing native loading"
+        ) from exc
 
     max_version = row[0] if row else None
     if max_version is not None and max_version < _MIN_SUPPORTED_SYSDB_MIGRATION:

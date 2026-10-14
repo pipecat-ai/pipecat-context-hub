@@ -5799,6 +5799,20 @@ class TestDataDirSafetyFloor:
 
         assert not data_dir.exists()
 
+    def test_unsupported_descriptor_reset_preserves_existing_index(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        self._no_config_file(monkeypatch, tmp_path)
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        sentinel = data_dir / "sentinel"
+        sentinel.write_text("keep")
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+
+        with pytest.raises(click.ClickException, match="existing index was preserved"):
+            _delete_local_index_storage(data_dir)
+        assert sentinel.read_text() == "keep"
+
     def test_absent_data_dir_is_a_successful_reset(self, monkeypatch, tmp_path: Path) -> None:
         self._no_config_file(monkeypatch, tmp_path)
         data_dir = tmp_path / "not-created-yet"

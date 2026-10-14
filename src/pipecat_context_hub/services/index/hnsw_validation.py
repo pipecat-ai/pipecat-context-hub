@@ -16,6 +16,7 @@ from pathlib import Path
 from uuid import UUID
 
 from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
+from pipecat_context_hub.services.index.safe_sqlite import connect_readonly
 from pipecat_context_hub.shared.paths import is_reparse_link
 
 # Chroma's persisted HNSW v1 header (64-bit, little-endian), written by
@@ -84,8 +85,16 @@ def validate_persisted_hnsw(
     except OSError:
         return
     db_path = chroma_path / "chroma.sqlite3"
-    if not db_path.is_file():
+    try:
+        db_info = db_path.lstat()
+    except FileNotFoundError:
         return
+    except OSError as exc:
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason="unable to inspect chroma.sqlite3; refusing native loading"
+        ) from exc
+    if is_reparse_link(db_path) or not stat.S_ISREG(db_info.st_mode):
+        raise IncompatibleIndexFormatError(chroma_path, reason="unsafe chroma.sqlite3 path")
 
     # An uncoordinated caller must not validate the main database while
     # ignoring a WAL.  The index open path passes ``allow_wal`` only while it
@@ -125,20 +134,19 @@ def validate_persisted_hnsw(
     if shm_info is not None and (is_reparse_link(shm_path) or not stat.S_ISREG(shm_info.st_mode)):
         raise IncompatibleIndexFormatError(chroma_path, reason="unsafe chroma.sqlite3-shm path")
 
-    conn: sqlite3.Connection | None = None
     try:
-        uri_suffix = "?mode=ro" if allow_wal else "?mode=ro&immutable=1"
-        conn = sqlite3.connect(db_path.as_uri() + uri_suffix, uri=True)
-        segments = conn.execute(
-            "SELECT s.id FROM segments s JOIN collections c ON s.collection=c.id "
-            "WHERE s.type=? AND c.name=?",
-            (_SEGMENT_TYPE, collection_name),
-        ).fetchall()
+        with connect_readonly(db_path, immutable=not allow_wal) as conn:
+            segments = conn.execute(
+                "SELECT s.id FROM segments s JOIN collections c ON s.collection=c.id "
+                "WHERE s.type=? AND c.name=?",
+                (_SEGMENT_TYPE, collection_name),
+            ).fetchall()
+    except OSError as exc:
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason="unsafe chroma.sqlite3 path; refusing native loading"
+        ) from exc
     except sqlite3.Error:
         return
-    finally:
-        if conn is not None:
-            conn.close()
 
     # Without the coordination lock a WAL can arrive after the first check;
     # do not accept that stale probe.  Under the lock, a writer cannot change

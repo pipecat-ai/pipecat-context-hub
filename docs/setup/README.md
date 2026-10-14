@@ -26,8 +26,9 @@ uvx pipecat-ai-context-hub refresh
 
 # 2. Add config — see the client-specific guide
 
-# 3. Verify
-uvx pipecat-ai-context-hub serve --help
+# 3. Verify the stdio MCP handshake (the server must return an initialize response)
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"setup-check","version":"0.1.0"}}}' \
+  | uvx pipecat-ai-context-hub serve
 ```
 
 > **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat packages are `pipecat-ai*`); the command and MCP server name are `pipecat-context-hub`. Both spellings of the command resolve once installed.
