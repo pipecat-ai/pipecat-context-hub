@@ -684,10 +684,7 @@ class VectorIndex:
             opened_identity = self._source_identity()
             if not self._read_only and (
                 opened_identity[0] != native_identity[0]
-                or (
-                    native_identity[1] is not None
-                    and opened_identity[1] != native_identity[1]
-                )
+                or (native_identity[1] is not None and opened_identity[1] != native_identity[1])
             ):
                 try:
                     self._client.close()
