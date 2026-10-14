@@ -29,6 +29,23 @@ from pipecat_context_hub.shared.types import EvidenceReport, SearchDocsOutput
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _seed_persisted_index_for_mocked_store(tmp_path: Path, request: pytest.FixtureRequest) -> None:
+    """Let mocked IndexStore tests pass the real persisted-index precondition."""
+    if request.node.name == "test_existing_empty_data_directory_is_not_materialized":
+        return
+    data_dirs = [tmp_path]
+    if request.node.name not in {
+        "test_incompatible_index_format_exits_with_bug_report_hint",
+        "test_empty_index_redacts_data_dir",
+    }:
+        data_dirs.append(tmp_path / ".pipecat-context-hub")
+    for data_dir in data_dirs:
+        (data_dir / "chroma").mkdir(parents=True, exist_ok=True)
+        (data_dir / "chroma" / "chroma.sqlite3").touch()
+        (data_dir / "metadata.db").touch()
+
+
 def _assert_remediation_before_report_hint(stderr: str, remediation_substr: str, url: str) -> None:
     """Pin the 'name the fix before the URL' ordering, not just presence."""
     assert remediation_substr in stderr
@@ -232,6 +249,20 @@ class TestIndexUnready:
         assert result.stderr.count(BUG_REPORT_ISSUE_URL) == 1
         assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
 
+    def test_existing_empty_data_directory_is_not_materialized(self, tmp_path):
+        """Read-only status must not create backend files in an empty dir."""
+        before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore") as index_store,
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.stdout == ""
+        assert "refresh" in result.stderr
+        assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+        index_store.assert_not_called()
+
     def test_unopenable_index_exits_with_reset_hint(self):
         with patch(
             "pipecat_context_hub.services.index.store.IndexStore",
@@ -252,6 +283,9 @@ class TestIndexUnready:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         data_dir = tmp_path / ".pipecat-context-hub"
         data_dir.mkdir()
+        (data_dir / "metadata.db").touch()
+        (data_dir / "chroma").mkdir()
+        (data_dir / "chroma" / "chroma.sqlite3").touch()
         chroma_path = data_dir / "chroma"
         with (
             patch(
@@ -1149,6 +1183,9 @@ class TestHomeRedaction:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         data_dir = tmp_path / ".pipecat-context-hub"
         data_dir.mkdir()
+        (data_dir / "metadata.db").touch()
+        (data_dir / "chroma").mkdir()
+        (data_dir / "chroma" / "chroma.sqlite3").touch()
         with (
             patch(
                 "pipecat_context_hub.services.index.store.IndexStore",

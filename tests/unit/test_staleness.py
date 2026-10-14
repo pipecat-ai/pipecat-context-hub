@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import main
 from pipecat_context_hub.shared.staleness import annotate_response, staleness_info
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _seed_persisted_index_for_mocked_store(tmp_path: Path) -> None:
+    """Represent the persisted marker required before opening a mocked store."""
+    (tmp_path / "metadata.db").touch()
 
 
 def _store_refreshed_days_ago(days: float) -> MagicMock:

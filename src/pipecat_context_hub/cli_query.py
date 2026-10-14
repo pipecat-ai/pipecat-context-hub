@@ -327,7 +327,11 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     # IndexStore is a writer-capable abstraction whose constructor creates both
     # backends. Query commands must not turn a missing index into a new empty
     # index merely to report that retrieval is unavailable.
-    if not config.storage.data_dir.exists():
+    # Do this before constructing IndexStore.  Its writer-capable constructor
+    # creates missing directories and backend files, which would make a
+    # read-only query mutate an otherwise empty data directory.
+    storage = config.storage
+    if not (storage.sqlite_path.is_file() or (storage.chroma_path / "chroma.sqlite3").is_file()):
         _echo_stderr_warning(
             f"Error: the index at {config.storage.data_dir} does not exist.\n"
             "Run 'pipecat-context-hub refresh' first to build it "

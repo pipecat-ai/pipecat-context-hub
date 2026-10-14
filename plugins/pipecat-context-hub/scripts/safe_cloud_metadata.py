@@ -16,16 +16,16 @@ _FIELDS: dict[str, frozenset[str]] = {
     "agents": frozenset({"id", "name", "status", "region"}),
     "secret-sets": frozenset({"id", "name", "keys"}),
 }
-_CONTAINERS = frozenset({"data", "items", "results", *_FIELDS})
+_GENERIC_CONTAINERS = frozenset({"data", "items", "results"})
 _SCALARS = (str, int, float, bool)
 
 
-def _records(value: Any, fields: frozenset[str]) -> list[dict[str, Any]]:
+def _records(value: Any, fields: frozenset[str], kind: str) -> list[dict[str, Any]]:
     """Project recognized JSON objects onto one allowlisted metadata schema."""
     projected: list[dict[str, Any]] = []
     if isinstance(value, list):
         for item in value:
-            projected.extend(_records(item, fields))
+            projected.extend(_records(item, fields, kind))
         return projected
     if not isinstance(value, Mapping):
         return projected
@@ -45,8 +45,11 @@ def _records(value: Any, fields: frozenset[str]) -> list[dict[str, Any]]:
         projected.append(record)
 
     for key, candidate in value.items():
-        if key in _CONTAINERS:
-            projected.extend(_records(candidate, fields))
+        # Generic API envelopes may contain the requested resource.  A
+        # different resource-kind key is intentionally opaque: its records
+        # must never be reinterpreted as this request's kind.
+        if key in _GENERIC_CONTAINERS or key == kind:
+            projected.extend(_records(candidate, fields, kind))
     return projected
 
 
@@ -72,7 +75,7 @@ def main() -> int:
         if result.returncode != 0:
             raise ValueError("command failed")
         payload = json.loads(result.stdout)
-        records = _records(payload, _FIELDS[args.kind])
+        records = _records(payload, _FIELDS[args.kind], args.kind)
         if not records:
             raise ValueError("no allowlisted records")
     except (OSError, subprocess.SubprocessError, UnicodeError, json.JSONDecodeError, ValueError):

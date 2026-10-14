@@ -242,6 +242,61 @@ def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
+    "payload, expected",
+    [
+        (
+            {"organizations": [{"id": "org-0", "name": "Right"}], "regions": []},
+            {"organizations": [{"id": "org-0", "name": "Right"}]},
+        ),
+        (
+            {
+                "data": {
+                    "regions": [{"id": "wrong-region", "name": "Wrong"}],
+                    "organizations": [{"id": "org-1", "name": "Right"}],
+                }
+            },
+            {"organizations": [{"id": "org-1", "name": "Right"}]},
+        ),
+        (
+            {
+                "items": [
+                    {"regions": [{"id": "wrong-region", "name": "Wrong"}]},
+                    {"data": {"organizations": [{"id": "org-2", "name": "Right"}]}},
+                ]
+            },
+            {"organizations": [{"id": "org-2", "name": "Right"}]},
+        ),
+    ],
+)
+def test_cloud_metadata_wrapper_does_not_project_nested_wrong_kind_records(
+    tmp_path: Path, payload: dict[str, object], expected: dict[str, object] | None
+) -> None:
+    producer = tmp_path / "producer.py"
+    producer.write_text(f"import json\nprint(json.dumps({payload!r}))\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
+            "--kind",
+            "organizations",
+            "--",
+            sys.executable,
+            str(producer),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if expected is None:
+        assert result.returncode == 1
+        assert result.stdout == ""
+    else:
+        assert result.returncode == 0
+        assert json.loads(result.stdout) == expected
+
+
+@pytest.mark.parametrize(
     "body",
     [
         "raise SystemExit('credential in failure')",
