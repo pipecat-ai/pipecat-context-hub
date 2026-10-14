@@ -13,6 +13,11 @@ Pipecat Context Hub is a local-first MCP server that provides fresh Pipecat docu
 
 ## Quick Start
 
+The populated local index uses descriptor-relative, no-reparse filesystem
+operations and is supported on POSIX systems. Windows installations can run
+help and package checks, but refresh, serve, reset, and semantic queries fail
+closed rather than opening an unsafe index.
+
 Install [`uv`](https://docs.astral.sh/uv/), then follow three steps (the same for every client):
 
 1. **Build** the local index

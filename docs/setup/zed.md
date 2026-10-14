@@ -10,6 +10,10 @@ Connect Pipecat Context Hub to [Zed](https://zed.dev/) as an MCP server over std
 
 ## Build the Local Index
 
+Run the populated-index workflow on POSIX (macOS or Linux). Windows installs
+can inspect help and package metadata, but refresh and semantic index
+operations fail closed.
+
 Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash
@@ -45,7 +49,8 @@ Edit `~/.config/zed/settings.json` (open with `zed: open settings` from the comm
 2. The server should appear in the MCP server list. Check for any error indicators.
 3. Ask the agent a question about Pipecat — the server's tools should be invoked.
 
-You can also verify the server starts correctly from the command line:
+You can also inspect the server command from the command line (this is only a
+help check, not an MCP handshake):
 
 ```bash
 uvx pipecat-ai-context-hub serve --help

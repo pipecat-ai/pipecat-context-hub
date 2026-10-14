@@ -392,6 +392,20 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             "at a directory outside your project (or run from elsewhere), then retry "
             "--reset-index."
         )
+    # Capture the generation identities before acquiring the lock. Re-reading
+    # only after the lock would allow a replaced regular directory to become
+    # the target that reset considers authoritative.
+    try:
+        parent_before = resolved_data_dir.parent.lstat()
+        try:
+            target_before = resolved_data_dir.lstat()
+        except FileNotFoundError:
+            target_before = None
+    except OSError as exc:
+        raise click.ClickException(
+            "Could not verify the existing index safely; refusing to rebuild it."
+        ) from exc
+
     # The lock lives beside the index, so it survives this deletion and keeps
     # readers of the old generation coordinated with the next writer.
     with index_lock(resolved_data_dir, exclusive=True):
@@ -399,15 +413,24 @@ def _delete_local_index_storage(data_dir: Path) -> None:
         # target to the identities validated before the lock was acquired so
         # a local rename/reparse swap cannot redirect the destructive call.
         try:
-            parent_before = resolved_data_dir.parent.lstat()
-            try:
-                target_before = resolved_data_dir.lstat()
-            except FileNotFoundError:
-                target_before = None
-        except OSError as exc:
+            parent_now = resolved_data_dir.parent.lstat()
+            target_now = resolved_data_dir.lstat()
+        except FileNotFoundError:
+            target_now = None
+            parent_now = parent_before
+        if (parent_now.st_dev, parent_now.st_ino) != (parent_before.st_dev, parent_before.st_ino):
             raise click.ClickException(
-                "Could not verify the existing index safely; refusing to rebuild it."
-            ) from exc
+                "The index parent changed while reset was acquiring its lock; refusing to delete it."
+            )
+        if (target_before is None) != (target_now is None) or (
+            target_before is not None
+            and target_now is not None
+            and (target_before.st_dev, target_before.st_ino)
+            != (target_now.st_dev, target_now.st_ino)
+        ):
+            raise click.ClickException(
+                "The index path changed while reset was acquiring its lock; refusing to delete it."
+            )
         if (
             is_reparse_link(resolved_data_dir.parent)
             or not stat.S_ISDIR(parent_before.st_mode)
@@ -437,11 +460,6 @@ def _delete_local_index_storage(data_dir: Path) -> None:
                     "Index reset requires POSIX descriptor-relative filesystem support; "
                     "Windows refresh is unsupported and the existing index was preserved."
                 )
-        except FileNotFoundError:
-            # Reset is also the first-run recovery path.  The lock is still
-            # acquired above, but an already-absent directory is a successful
-            # deletion and must proceed to a fresh writer open.
-            return
         except OSError as exc:
             raise click.ClickException(
                 "Could not remove the existing index safely; refusing to rebuild a partial "

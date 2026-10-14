@@ -36,7 +36,14 @@ def _open_segment_file_without_dir_fd(
     raise OSError(errno.ENOTSUP, "secure persisted HNSW opens are unavailable")
 
 
-def _open_segment_file(root: Path, segment_name: str, filename: str) -> tuple[int, os.stat_result]:
+def _open_segment_file(
+    root: Path,
+    segment_name: str,
+    filename: str,
+    *,
+    expected_root: tuple[int, int] | None = None,
+    expected_segment: tuple[int, int] | None = None,
+) -> tuple[int, os.stat_result]:
     """Open an active segment file without following a swapped path component."""
     if os.name == "nt":
         return _open_segment_file_without_dir_fd(root, segment_name, filename)
@@ -47,6 +54,9 @@ def _open_segment_file(root: Path, segment_name: str, filename: str) -> tuple[in
     except NotImplementedError:
         return _open_segment_file_without_dir_fd(root, segment_name, filename)
     try:
+        root_info = os.fstat(root_fd)
+        if expected_root is not None and (root_info.st_dev, root_info.st_ino) != expected_root:
+            raise OSError(errno.ELOOP, "persisted HNSW root changed")
         try:
             segment_fd = os.open(
                 segment_name,
@@ -55,6 +65,12 @@ def _open_segment_file(root: Path, segment_name: str, filename: str) -> tuple[in
             )
         except NotImplementedError:
             return _open_segment_file_without_dir_fd(root, segment_name, filename)
+        segment_info = os.fstat(segment_fd)
+        if (
+            expected_segment is not None
+            and (segment_info.st_dev, segment_info.st_ino) != expected_segment
+        ):
+            raise OSError(errno.ELOOP, "persisted HNSW segment changed")
         try:
             fd = os.open(filename, flags, dir_fd=segment_fd)
         finally:
@@ -145,7 +161,12 @@ def validate_persisted_hnsw(
         raise IncompatibleIndexFormatError(
             chroma_path, reason="unsafe chroma.sqlite3 path; refusing native loading"
         ) from exc
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        if allow_wal and wal_info is not None:
+            raise IncompatibleIndexFormatError(
+                chroma_path,
+                reason="unable to validate WAL-backed SQLite state; refusing native loading",
+            ) from exc
         return
 
     # Without the coordination lock a WAL can arrive after the first check;
@@ -186,7 +207,17 @@ def validate_persisted_hnsw(
         segment_path = chroma_path / segment_name
         links_path = segment_path / "link_lists.bin"
         try:
-            links_fd, links_info = _open_segment_file(chroma_path, segment_name, "link_lists.bin")
+            segment_info = segment_path.lstat()
+            if is_reparse_link(segment_path) or not stat.S_ISDIR(segment_info.st_mode):
+                raise OSError(errno.ELOOP, "unsafe persisted HNSW segment")
+            expected_segment = (segment_info.st_dev, segment_info.st_ino)
+            links_fd, links_info = _open_segment_file(
+                chroma_path,
+                segment_name,
+                "link_lists.bin",
+                expected_root=(root_info.st_dev, root_info.st_ino),
+                expected_segment=expected_segment,
+            )
         except OSError as exc:
             if exc.errno == getattr(os, "ENOENT", 2):
                 continue
@@ -202,7 +233,11 @@ def validate_persisted_hnsw(
         try:
             try:
                 header_fd, _header_info = _open_segment_file(
-                    chroma_path, segment_name, "header.bin"
+                    chroma_path,
+                    segment_name,
+                    "header.bin",
+                    expected_root=(root_info.st_dev, root_info.st_ino),
+                    expected_segment=expected_segment,
                 )
             except OSError as exc:
                 if exc.errno in {getattr(os, "ELOOP", 62), getattr(os, "ENOTDIR", 20)}:

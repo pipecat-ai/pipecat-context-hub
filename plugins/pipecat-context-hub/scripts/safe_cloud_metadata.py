@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import queue
@@ -46,15 +48,13 @@ _SAFE_RUNTIME_ENV = frozenset(
 )
 
 
-_READ_ONLY_CLOUD_COMMANDS = frozenset(
-    {
-        ("organizations", "list"),
-        ("regions", "list"),
-        ("agent", "list"),
-        ("agent", "profiles", "list"),
-        ("secrets", "list"),
-    }
-)
+_READ_ONLY_CLOUD_COMMANDS = {
+    ("organizations", "list"): "organizations",
+    ("regions", "list"): "regions",
+    ("agent", "list"): "agents",
+    ("agent", "profiles", "list"): "profiles",
+    ("secrets", "list"): "secret-sets",
+}
 _READ_ONLY_OPTIONS = frozenset({"--organization", "--region"})
 
 
@@ -93,16 +93,41 @@ def _trusted_pipecat_path() -> Path | None:
                 continue
             if not stat.S_ISREG(candidate.lstat().st_mode):
                 continue
+            # Distribution metadata is not merely a name/permission check: if
+            # RECORD carries a digest, bind trust to the bytes that the wheel
+            # installed.  A modified launcher must never receive PIPECAT_TOKEN.
+            record = dist.read_text("RECORD")
+            if not record:
+                continue
+            record_digest = None
+            record_path = os.path.normpath(os.fspath(file)).replace(os.sep, "/")
+            for row in record.splitlines():
+                fields = row.split(",")
+                if (
+                    len(fields) >= 3
+                    and fields[0] == record_path
+                    and fields[1].startswith("sha256=")
+                ):
+                    record_digest = fields[1][len("sha256=") :]
+                    break
+            if not record_digest:
+                continue
+            digest = hashlib.sha256(candidate.read_bytes()).digest()
+            encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+            if encoded != record_digest:
+                continue
             # Return the canonical spelling used by the identity check below.
             # A symlinked virtualenv prefix is valid, but the executable itself
             # must resolve to the package-owned regular file.
             return resolved
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError, UnicodeError):
             continue
     return None
 
 
-def _validate_producer_command(command: list[str]) -> list[str]:
+def _validate_producer_command(
+    command: list[str], *, expected_kind: str | None = None
+) -> list[str]:
     """Allow only the installed Pipecat CLI and read-only Cloud commands.
 
     A basename check is not sufficient: ``/tmp/pipecat`` can be an arbitrary
@@ -162,8 +187,11 @@ def _validate_producer_command(command: list[str]) -> list[str]:
             raise ValueError("metadata command has an unapproved option")
         command_words.append(word)
         index += 1
-    if tuple(command_words) not in _READ_ONLY_CLOUD_COMMANDS:
+    command_kind = _READ_ONLY_CLOUD_COMMANDS.get(tuple(command_words))
+    if command_kind is None:
         raise ValueError("metadata command is not read-only")
+    if expected_kind is not None and command_kind != expected_kind:
+        raise ValueError("metadata command does not match requested metadata kind")
     return [str(installed), *command[1:]]
 
 
@@ -177,6 +205,13 @@ def _materialize_verified_producer(command: list[str]):
     launcher is replaced immediately afterwards.
     """
     source = Path(command[0])
+    trusted = _trusted_pipecat_path()
+    if trusted is None:
+        raise ValueError("metadata producer is not a trusted installed executable")
+    try:
+        trusted_info = trusted.lstat()
+    except OSError as exc:
+        raise ValueError("metadata producer is unavailable") from exc
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(source, flags)
     temporary = tempfile.TemporaryDirectory(prefix="pipecat-context-hub-cli-")
@@ -184,6 +219,8 @@ def _materialize_verified_producer(command: list[str]):
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("metadata producer is not a regular executable")
+        if (before.st_dev, before.st_ino) != (trusted_info.st_dev, trusted_info.st_ino):
+            raise ValueError("metadata producer changed after validation")
         snapshot = Path(temporary.name) / source.name
         with snapshot.open("wb") as output:
             while True:
@@ -426,7 +463,7 @@ def main() -> int:
         parser.error("a command is required after --")
 
     try:
-        validated = _validate_producer_command(command)
+        validated = _validate_producer_command(command, expected_kind=args.kind)
         with _materialize_verified_producer(validated) as safe_command:
             result = _run_bounded(safe_command)
         if result.returncode != 0:

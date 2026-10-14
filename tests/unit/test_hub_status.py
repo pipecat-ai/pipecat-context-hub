@@ -237,6 +237,22 @@ class TestHandleGetHubStatus:
         assert output.counts_by_type == {}
         assert output.commit_shas == []
 
+    async def test_status_uses_one_generation_snapshot(self):
+        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+        store = self._mock_index_store()
+        store.get_status_snapshot.return_value = (
+            {"total": 7, "counts_by_type": {"doc": 7}, "commit_shas": ["same"]},
+            {"last_refresh_at": "same", "indexed_framework_version": "same"},
+        )
+        result_json = await handle_get_hub_status({}, store)
+        output = HubStatusOutput.model_validate_json(result_json)
+        assert output.total_records == 7
+        assert output.last_refresh_at == "same"
+        store.get_status_snapshot.assert_called_once_with()
+        store.get_index_stats.assert_not_called()
+        store.get_all_metadata.assert_not_called()
+
     async def test_with_refresh_metadata(self):
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 

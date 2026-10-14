@@ -1159,7 +1159,8 @@ class TestIndexStore:
         finally:
             first.close()
 
-    def test_hybrid_search_keeps_vector_and_fts_in_one_generation_lock(
+    @pytest.mark.asyncio
+    async def test_public_hybrid_search_keeps_vector_and_fts_in_one_generation_lock(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A hybrid request cannot publish between its two backend reads."""
@@ -1198,7 +1199,7 @@ class TestIndexStore:
         typed_store._vector = Backend()
         typed_store._fts = Backend()
         monkeypatch.setattr(store_module, "index_lock", fake_lock)
-        result = store._locked_hybrid_search(IndexQuery(query_text="pipecat", limit=1))
+        result = await store.hybrid_search(IndexQuery(query_text="pipecat", limit=1))
         assert result == ([], [])
         assert observations == [1, 1]
 

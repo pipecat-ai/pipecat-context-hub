@@ -11,6 +11,10 @@ Connect Pipecat Context Hub to [VS Code](https://code.visualstudio.com/) as an M
 
 ## Build the Local Index
 
+Run the populated-index workflow on POSIX (macOS or Linux). Windows installs
+can inspect help and package metadata, but refresh and semantic index
+operations fail closed.
+
 Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash
@@ -65,7 +69,8 @@ Open your VS Code `settings.json` and add:
 2. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run **MCP: List Servers** to confirm `pipecat-context-hub` is listed.
 3. In Copilot Chat, set the mode to **Agent** and ask a question about Pipecat.
 
-You can also verify the server starts correctly from the command line:
+You can also inspect the server command from the command line (this is only a
+help check, not an MCP handshake):
 
 ```bash
 uvx pipecat-ai-context-hub serve --help

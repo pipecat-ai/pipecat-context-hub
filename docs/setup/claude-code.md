@@ -10,6 +10,10 @@ Connect Pipecat Context Hub to [Claude Code](https://code.claude.com/) as an MCP
 
 ## Build the Local Index
 
+Run the populated-index workflow on POSIX (macOS or Linux). Windows installs
+can inspect help and package metadata, but refresh and semantic index
+operations fail closed.
+
 Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash

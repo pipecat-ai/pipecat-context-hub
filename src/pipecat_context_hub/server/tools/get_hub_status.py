@@ -44,13 +44,24 @@ async def handle_get_hub_status(
     # Import here to use the same version string as the server.
     from pipecat_context_hub.server.main import _SERVER_VERSION
 
-    # Both accessors synchronously acquire the generation lock.  A refresh
-    # may hold it for minutes, so never make an MCP event-loop task wait on
-    # either call directly.
-    stats_raw, metadata_raw = await asyncio.gather(
-        asyncio.to_thread(index_store.get_index_stats),
-        asyncio.to_thread(index_store.get_all_metadata),
-    )
+    # The concrete stores expose one snapshot operation so refresh cannot
+    # publish between the statistics and provenance reads. Keep the fallback
+    # for small third-party/test readers that predate this method.
+    snapshot = getattr(index_store, "get_status_snapshot", None)
+    if callable(snapshot):
+        snapshot_raw = await asyncio.to_thread(snapshot)
+        if isinstance(snapshot_raw, tuple) and len(snapshot_raw) == 2:
+            stats_raw, metadata_raw = snapshot_raw
+        else:
+            stats_raw, metadata_raw = await asyncio.gather(
+                asyncio.to_thread(index_store.get_index_stats),
+                asyncio.to_thread(index_store.get_all_metadata),
+            )
+    else:
+        stats_raw, metadata_raw = await asyncio.gather(
+            asyncio.to_thread(index_store.get_index_stats),
+            asyncio.to_thread(index_store.get_all_metadata),
+        )
     stats = cast(dict[str, Any], stats_raw)
     metadata = metadata_raw
 

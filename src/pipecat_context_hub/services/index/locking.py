@@ -173,11 +173,14 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
     # operations across processes; correctness is more important than reader
     # parallelism for the small local metadata/index critical sections.
     parent_guard_fd = -1
-    if lock_info is not None and os.name != "nt":
+    if os.name != "nt" and (not create or not data_dir.exists()):
         try:
             parent_guard_fd = os.open(
                 data_dir.parent,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
             )
             import fcntl
 
@@ -207,7 +210,7 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
                 # lock its first byte without creating any read-side file.
                 legacy_target = data_dir / "metadata.db"
                 if legacy_target.is_file() and not is_reparse_link(legacy_target):
-                    legacy_fd = os.open(legacy_target, os.O_RDONLY)
+                    legacy_fd = os.open(legacy_target, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
                     msvcrt: Any = __import__("msvcrt")
                     mode = (
                         getattr(msvcrt, "LK_NBLCK", msvcrt.LK_LOCK)
@@ -226,7 +229,10 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
                 if data_dir.exists():
                     legacy_fd = os.open(
                         data_dir,
-                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                        os.O_RDONLY
+                        | getattr(os, "O_DIRECTORY", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | getattr(os, "O_CLOEXEC", 0),
                     )
                 else:
                     # A generation lock also coordinates creation of a fresh
@@ -297,7 +303,7 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
                 os.close(legacy_fd)
             return
     flags = (os.O_CREAT if create else 0) | (os.O_RDWR if exclusive else os.O_RDONLY)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     fd = -1
     try:
         fd = os.open(lock_path, flags, 0o600)

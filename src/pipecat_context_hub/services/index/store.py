@@ -210,7 +210,17 @@ class IndexStore:
                         _validate_existing_backend_file(backend_file, data_dir)
                 chroma_identities = _backend_path_identities(config.chroma_path, data_dir)
                 sqlite_identities = _backend_path_identities(config.sqlite_path, data_dir)
-                vector = VectorIndex(config.chroma_path)
+                vector_kwargs: dict[str, Any] = {}
+                if isinstance(VectorIndex, type):
+                    vector_kwargs["lock_held"] = True
+                try:
+                    vector = VectorIndex(config.chroma_path, **vector_kwargs)
+                except TypeError as exc:
+                    # Tests/embedders may replace the constructor with the
+                    # pre-lock-held signature; do not mask their real error.
+                    if "lock_held" not in str(exc):
+                        raise
+                    vector = VectorIndex(config.chroma_path)
                 self._vector = vector
                 _verify_backend_path_identities(config.chroma_path, chroma_identities)
                 _validate_backend_directory(config.chroma_path, data_dir)
@@ -466,6 +476,12 @@ class IndexStore:
             self._sync_generation_locked()
             return self._fts.get_index_stats()
 
+    def get_status_snapshot(self) -> tuple[dict[str, Any], dict[str, str]]:
+        """Read status statistics and provenance under one generation lock."""
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
+            return self._fts.get_index_stats(), self._fts.get_all_metadata()
+
     def close(self) -> None:
         """Close underlying database connections."""
         try:
@@ -585,7 +601,14 @@ class ReadOnlyIndexStore:
         fts: FTSIndex | None = None
         try:
             if include_vector:
-                vector = VectorIndex(config.chroma_path, read_only=True)
+                # Keep the outer legacy/sibling lock across the full reader
+                # lifetime.  The concrete backend can reuse that lock without
+                # opening a second descriptor; keep the mock-friendly call
+                # shape for tests and embedders that replace VectorIndex.
+                vector_kwargs: dict[str, Any] = {"read_only": True}
+                if isinstance(VectorIndex, type):
+                    vector_kwargs["lock_held"] = True
+                vector = VectorIndex(config.chroma_path, **vector_kwargs)
                 _verify_backend_path_identities(config.chroma_path, chroma_identities)
             fts = FTSIndex(config.sqlite_path, read_only=True)
             _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
@@ -626,6 +649,11 @@ class ReadOnlyIndexStore:
 
     def get_index_stats(self) -> dict[str, Any]:
         return self._fts.get_index_stats()
+
+    def get_status_snapshot(self) -> tuple[dict[str, Any], dict[str, str]]:
+        # ReadOnlyIndexStore holds its shared generation lock for its entire
+        # lifetime, so both reads are already one immutable snapshot.
+        return self._fts.get_index_stats(), self._fts.get_all_metadata()
 
     def close(self) -> None:
         try:

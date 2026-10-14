@@ -78,6 +78,10 @@ class IndexStatusReader(IndexReader, Protocol):
         """Return persisted index counts and provenance."""
         ...
 
+    def get_status_snapshot(self) -> tuple[dict[str, object], dict[str, str]]:
+        """Return statistics and metadata from one published generation."""
+        ...
+
     def close(self) -> None:
         """Release read handles."""
         ...

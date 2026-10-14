@@ -4,6 +4,11 @@ Project conventions and decisions for AI coding agents working on this codebase.
 
 ## Pre-Merge Live MCP Smoke Test
 
+Run populated-index, serve, watchdog, and semantic-query smoke items on POSIX
+systems only. Windows intentionally fails these operations closed because the
+descriptor-relative no-reparse filesystem contract is unavailable; Windows CI
+covers package and path-safety checks.
+
 Before merging any PR that touches retrieval, tool handlers, index backends,
 or types, reconnect the MCP server and run these queries against the live
 local index. Unit tests mock the retrieval layer and cannot catch page
@@ -246,8 +251,9 @@ the indexed pipecat version; re-verify against the current registry if they drif
     PID, then `kill -9` the shell (or close the terminal). The orphaned
     `serve` process must exit on its own within ~5s. Confirm with
     `pgrep -fl pipecat-context-hub` — no stale entry should remain.
-    A successful trigger logs `Shutting down: parent_died original_ppid=N
-    current_ppid=1` at INFO before exit.
+    A direct-parent launch logs `Shutting down: parent_died original_ppid=N
+    current_ppid=1`; an `uv run` launch uses the grandparent watchdog and
+    logs `Shutting down: client_died ...` instead.
 43. **Idle-timeout backstop smoke test** — exercises the idle watchdog
     in its explicit-override mode (since the default idle timeout is now
     auto-disabled under `uv run`, where the grandparent watchdog covers
@@ -276,7 +282,8 @@ the indexed pipecat version; re-verify against the current registry if they drif
     opt-out escape hatch works (matters on Windows CPU where cold
     loads once took 30-130s and could exceed Claude Code's
     tool-permission window; the ONNX backend loads in under a second,
-    so pre-warm is now an optimisation rather than a necessity).
+    so pre-warm is now an optimisation rather than a necessity. Run this
+    smoke on POSIX only because populated Windows index operations fail closed.)
 45. **`location` surfaced (PR #85).** A `deprecated: true` response carries a
     `location` field as `path/to/file.py` (relative to the pipecat repo
     root) pointing at the file holding the deprecation marker — e.g. `ResampyResampler` →

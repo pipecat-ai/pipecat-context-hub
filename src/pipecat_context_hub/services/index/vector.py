@@ -446,7 +446,12 @@ def _copy_tree_no_follow(source: Path, destination: Path) -> None:
         os.close(source_fd)
 
 
-def _remove_tree_no_follow(root: Path) -> None:
+def _remove_tree_no_follow(
+    root: Path,
+    *,
+    expected_parent: tuple[int, int] | None = None,
+    expected_root: tuple[int, int] | None = None,
+) -> None:
     """Remove a directory through descriptor-relative, no-follow operations."""
     if os.open not in getattr(os, "supports_dir_fd", set()):
         raise ValueError("Secure Chroma reset is unavailable")
@@ -462,6 +467,10 @@ def _remove_tree_no_follow(root: Path) -> None:
         raise ValueError(f"Unsafe Chroma reset path: {root.name}")
     if not stat.S_ISDIR(root_info.st_mode):
         raise ValueError(f"Unsafe Chroma reset path: {root.name}")
+    if expected_parent is not None and (parent_info.st_dev, parent_info.st_ino) != expected_parent:
+        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
+    if expected_root is not None and (root_info.st_dev, root_info.st_ino) != expected_root:
+        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
     parent_fd = os.open(
         str(root.parent),
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -474,6 +483,11 @@ def _remove_tree_no_follow(root: Path) -> None:
             parent_info.st_ino,
         ):
             raise ValueError(f"Unsafe Chroma reset path: {root.name}")
+        if (
+            expected_parent is not None
+            and (opened_parent.st_dev, opened_parent.st_ino) != expected_parent
+        ):
+            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
         root_fd = os.open(
             root.name,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -481,6 +495,8 @@ def _remove_tree_no_follow(root: Path) -> None:
         )
         opened_root = os.fstat(root_fd)
         if (opened_root.st_dev, opened_root.st_ino) != (root_info.st_dev, root_info.st_ino):
+            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
+        if expected_root is not None and (opened_root.st_dev, opened_root.st_ino) != expected_root:
             raise ValueError(f"Unsafe Chroma reset path: {root.name}")
 
         def remove_children(directory_fd: int, directory_path: Path) -> None:
@@ -527,9 +543,12 @@ class VectorIndex:
     so indexes survive process restarts.
     """
 
-    def __init__(self, chroma_path: Path, *, read_only: bool = False) -> None:
+    def __init__(
+        self, chroma_path: Path, *, read_only: bool = False, lock_held: bool = False
+    ) -> None:
         self._chroma_path = chroma_path
         self._read_only = read_only
+        self._lock_held = lock_held
         self._readonly_tempdir: tempfile.TemporaryDirectory[str] | None = None
         self._client: Any = None
         self._collection: Any = None
@@ -537,7 +556,7 @@ class VectorIndex:
         self._generation_identity: tuple[tuple[int, int], tuple[int, int] | None] | None = None
         self._op_lock = threading.RLock()
         try:
-            self._open_client()
+            self._open_client(lock_held=lock_held)
         except BaseException:
             if self._readonly_tempdir is not None:
                 self._readonly_tempdir.cleanup()
@@ -603,8 +622,12 @@ class VectorIndex:
                 create=not self._read_only,
             )
         )
+        # The format probe is read-only and can fail before taking a
+        # coordination lock (important for legacy/corrupt directories that
+        # have no sibling lock). Native opening and all later probes remain
+        # inside the generation lock below.
+        _detect_incompatible_format(self._chroma_path)
         with lock_context:
-            _detect_incompatible_format(self._chroma_path)
             validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME, allow_wal=True)
             client_path = self._chroma_path
             if self._read_only:
@@ -612,6 +635,12 @@ class VectorIndex:
                 validate_persisted_hnsw(client_path, COLLECTION_NAME, allow_wal=True)
             else:
                 self._chroma_path.mkdir(parents=True, exist_ok=True)
+            # Recheck the published root immediately before native Chroma
+            # opens it. The descriptor-safe probes above must not hand a
+            # replaced/symlinked path to a writer-oriented native library.
+            native_identity = self._source_identity()
+            if native_identity != self._source_identity():
+                raise ValueError("Chroma generation changed before native open")
             self._client = chromadb.PersistentClient(
                 path=str(client_path),
                 settings=ChromaSettings(
@@ -659,7 +688,7 @@ class VectorIndex:
             if not force and self._source_identity() == self._generation_identity:
                 return
             self._release_client()
-            self._open_client(lock_held=lock_held)
+            self._open_client(lock_held=lock_held or self._lock_held)
 
     def _release_client(self) -> None:
         """Release this client's Chroma resources via the public close API.
@@ -708,7 +737,13 @@ class VectorIndex:
         with self._op_lock:
             with index_lock(self._chroma_path.parent, exclusive=True):
                 self._release_client()
-                _remove_tree_no_follow(self._chroma_path)
+                parent_info = self._chroma_path.parent.lstat()
+                root_info = self._chroma_path.lstat()
+                _remove_tree_no_follow(
+                    self._chroma_path,
+                    expected_parent=(parent_info.st_dev, parent_info.st_ino),
+                    expected_root=(root_info.st_dev, root_info.st_ino),
+                )
                 if self._chroma_path.exists() or self._chroma_path.is_symlink():
                     raise OSError(f"Chroma reset did not remove {self._chroma_path}")
                 # Reopen before releasing the generation lock. A concurrent
