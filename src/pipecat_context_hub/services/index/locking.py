@@ -187,7 +187,7 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
             fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
 
-    if os.name != "nt" and (not create or not data_dir.exists() or lock_info is not None):
+    if os.name != "nt":
         try:
             parent_guard_fd = os.open(
                 data_dir.parent,

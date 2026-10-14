@@ -11,7 +11,6 @@ import contextlib
 import json
 import logging
 import os
-import shutil
 import stat
 import sys
 import tempfile
@@ -22,7 +21,11 @@ from typing import Any
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
 from pipecat_context_hub.services.index.locking import index_lock
-from pipecat_context_hub.services.index.vector import VectorIndex, _detect_incompatible_format
+from pipecat_context_hub.services.index.vector import (
+    VectorIndex,
+    _detect_incompatible_format,
+    _remove_tree_no_follow,
+)
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.paths import is_reparse_link
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
@@ -509,6 +512,26 @@ def _cleanup_created_backend_state(
     except ValueError:
         logger.warning("Skipping failed-index cleanup after backend path replacement")
         return
+
+    def unlink_backend_file(path: Path, identities: dict[Path, tuple[int, int]]) -> None:
+        """Unlink a created leaf through its stable parent descriptor."""
+        if os.open not in getattr(os, "supports_dir_fd", set()):
+            raise ValueError("Secure backend cleanup is unavailable")
+        expected = identities.get(path)
+        if expected is None:
+            raise ValueError(f"Missing identity for backend cleanup: {path.name}")
+        parent_fd = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            info = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if (info.st_dev, info.st_ino) != expected:
+                raise ValueError(f"Unsafe index backend path: {path.name}")
+            os.unlink(path.name, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+
     if created_sqlite:
         for path in (
             config.sqlite_path,
@@ -517,16 +540,22 @@ def _cleanup_created_backend_state(
         ):
             with contextlib.suppress(OSError, RuntimeError, ValueError):
                 if path.exists() and not is_reparse_link(path):
-                    path.unlink()
+                    unlink_backend_file(path, sqlite_identities)
     if created_chroma_db:
         path = config.chroma_path / "chroma.sqlite3"
         with contextlib.suppress(OSError, RuntimeError, ValueError):
             if path.exists() and not is_reparse_link(path):
-                path.unlink()
+                unlink_backend_file(path, chroma_identities)
     if not chroma_preexisting:
         with contextlib.suppress(OSError, RuntimeError, ValueError):
             if config.chroma_path.is_dir() and not is_reparse_link(config.chroma_path):
-                shutil.rmtree(config.chroma_path)
+                parent_identity = chroma_identities.get(config.chroma_path.parent)
+                root_identity = chroma_identities.get(config.chroma_path)
+                _remove_tree_no_follow(
+                    config.chroma_path,
+                    expected_parent=parent_identity,
+                    expected_root=root_identity,
+                )
 
 
 def _existing_index_config(

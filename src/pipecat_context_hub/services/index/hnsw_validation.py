@@ -65,13 +65,13 @@ def _open_segment_file(
             )
         except NotImplementedError:
             return _open_segment_file_without_dir_fd(root, segment_name, filename)
-        segment_info = os.fstat(segment_fd)
-        if (
-            expected_segment is not None
-            and (segment_info.st_dev, segment_info.st_ino) != expected_segment
-        ):
-            raise OSError(errno.ELOOP, "persisted HNSW segment changed")
         try:
+            segment_info = os.fstat(segment_fd)
+            if (
+                expected_segment is not None
+                and (segment_info.st_dev, segment_info.st_ino) != expected_segment
+            ):
+                raise OSError(errno.ELOOP, "persisted HNSW segment changed")
             fd = os.open(filename, flags, dir_fd=segment_fd)
         finally:
             os.close(segment_fd)

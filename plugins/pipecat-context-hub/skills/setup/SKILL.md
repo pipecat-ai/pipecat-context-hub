@@ -65,9 +65,13 @@ Skills supply instructions, not execution permissions or installation hooks.
 For authorised fresh full-plugin or Cloud setup, the
 [documented installation](https://docs.pipecat.ai/api-reference/cli/overview#installation)
 is `uv tool install "pipecat-ai[cli]" --with pipecatcloud`. This supplies the
-Pipecat CLI with its Cloud extension; current distributions also bundle PCH.
-For an explicitly local-build-only setup, `uv tool install "pipecat-ai[cli]"`
-is sufficient. PCH query commands do not replace the required build/deployment CLI.
+Pipecat CLI with its Cloud extension; verify whether the selected distribution
+also bundles PCH, otherwise add `--with pipecat-ai-context-hub`.
+For an explicitly local-build-only setup, install the standalone PCH package into
+the same tool environment: `uv tool install "pipecat-ai[cli]" --with
+pipecat-ai-context-hub`. The Pipecat CLI alone does not provide the required PCH
+retrieval on the qualified CLI version. PCH query commands do not replace the
+required build/deployment CLI.
 
 Reuse existing working CLI installations. Inspect tool-manager/package metadata
 before modifying an existing environment: `uv tool install --with` replaces the

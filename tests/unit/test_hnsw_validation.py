@@ -178,6 +178,26 @@ def test_malformed_header_closes_links_descriptor(
         assert after <= before + 1
 
 
+def test_segment_identity_rejection_closes_segment_descriptor(
+    persisted_segment: tuple[Path, Path],
+) -> None:
+    """A replaced segment must not leak its opened directory descriptor."""
+    root, segment = persisted_segment
+    before = len(os.listdir("/proc/self/fd")) if Path("/proc/self/fd").is_dir() else None
+    expected = (segment.stat().st_dev, segment.stat().st_ino + 1)
+    for _ in range(20):
+        with pytest.raises(OSError, match="segment changed"):
+            _open_segment_file(
+                root,
+                segment.name,
+                "link_lists.bin",
+                expected_segment=expected,
+            )
+    if before is not None:
+        after = len(os.listdir("/proc/self/fd"))
+        assert after <= before + 1
+
+
 def test_new_index_without_persisted_graph_is_allowed(tmp_path: Path) -> None:
     validate_persisted_hnsw(tmp_path / "absent", "latest")
 

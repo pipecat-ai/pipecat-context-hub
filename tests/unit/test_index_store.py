@@ -245,6 +245,30 @@ def test_store_rejects_new_backend_directory_replaced_during_open(tmp_path: Path
     vector.close.assert_called_once()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX hard-link fixture")
+def test_fts_writer_alias_stays_bound_when_published_path_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLite must not open an attacker-selected replacement database."""
+    database = tmp_path / "metadata.db"
+    outside = tmp_path / "outside.db"
+    real_connect = sqlite3.connect
+    swapped = False
+
+    def replace_published_path(path: str, **kwargs: Any):
+        nonlocal swapped
+        if not swapped and Path(path).name == "metadata.db":
+            swapped = True
+            database.rename(tmp_path / "metadata-original.db")
+            database.symlink_to(outside)
+        return real_connect(path, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", replace_published_path)
+    with pytest.raises(ValueError, match="unsafe SQLite database path"):
+        FTSIndex(database)
+    assert not outside.exists()
+
+
 def test_metadata_only_reader_does_not_construct_chroma(tmp_path: Path) -> None:
     """Status/deprecation reads must not snapshot or initialize Chroma."""
     data_dir = tmp_path / "index"

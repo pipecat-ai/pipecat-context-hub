@@ -8,6 +8,7 @@ fields for filtering.
 from __future__ import annotations
 
 import json
+import contextlib
 import logging
 import os
 import sqlite3
@@ -100,6 +101,66 @@ def _sidecar_identity(path: Path) -> tuple[int, int] | None:
     return (info.st_dev, info.st_ino)
 
 
+def _writer_alias(sqlite_path: Path) -> tuple[tempfile.TemporaryDirectory[str], Path, set[Path]]:
+    """Bind a writer connection to a descriptor-validated database inode.
+
+    SQLite accepts only pathnames, so opening the published pathname directly
+    leaves a replacement window between the caller's no-follow checks and the
+    native constructor. A same-filesystem hard link made after opening the
+    original descriptor pins the connection to that inode. Existing WAL/SHM
+    sidecars receive the same treatment; newly-created sidecars are published
+    back to the original names after the schema transaction commits.
+    """
+    if os.open not in getattr(os, "supports_dir_fd", set()):
+        raise OSError("secure SQLite writer aliases are unavailable")
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        db_fd = os.open(sqlite_path, flags)
+    except FileNotFoundError:
+        db_fd = os.open(
+            sqlite_path,
+            flags | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+    try:
+        db_info = os.fstat(db_fd)
+        if not stat.S_ISREG(db_info.st_mode):
+            raise ValueError("unsafe SQLite database path")
+        alias_dir = tempfile.TemporaryDirectory(
+            prefix=".pipecat-context-hub-writer-", dir=sqlite_path.parent
+        )
+        alias = Path(alias_dir.name) / sqlite_path.name
+        published: set[Path] = set()
+        try:
+            os.link(sqlite_path, alias, follow_symlinks=False)
+            alias_info = alias.lstat()
+            if (alias_info.st_dev, alias_info.st_ino) != (db_info.st_dev, db_info.st_ino):
+                raise ValueError("SQLite database path changed while opening")
+            for suffix in ("-wal", "-shm"):
+                source = sqlite_path.with_name(sqlite_path.name + suffix)
+                try:
+                    source_info = source.lstat()
+                except FileNotFoundError:
+                    continue
+                if is_reparse_link(source) or not stat.S_ISREG(source_info.st_mode):
+                    raise ValueError(f"unsafe SQLite {suffix[1:].upper()} path")
+                target = alias.with_name(alias.name + suffix)
+                os.link(source, target, follow_symlinks=False)
+                target_info = target.lstat()
+                if (target_info.st_dev, target_info.st_ino) != (
+                    source_info.st_dev,
+                    source_info.st_ino,
+                ):
+                    raise ValueError(f"SQLite {suffix[1:].upper()} path changed while opening")
+            return alias_dir, alias, published
+        except BaseException:
+            alias_dir.cleanup()
+            raise
+    finally:
+        os.close(db_fd)
+
+
 def _checked_sidecar(path: Path, label: str) -> os.stat_result | None:
     try:
         info = path.lstat()
@@ -124,6 +185,9 @@ class FTSIndex:
         self._read_only = read_only
         self._lock = threading.RLock()
         self._readonly_snapshot_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._writer_alias_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._writer_alias_path: Path | None = None
+        self._published_sidecars: set[Path] = set()
         self._sidecar_identities: dict[Path, tuple[int, int] | None] = {}
         sidecar_identities: dict[Path, tuple[int, int] | None] = {}
         initial_identity: tuple[int, int] | None = None
@@ -193,8 +257,16 @@ class FTSIndex:
                     self._readonly_snapshot_dir = None
                 raise
         else:
-            sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
+            self._writer_alias_dir, self._writer_alias_path, self._published_sidecars = (
+                _writer_alias(sqlite_path)
+            )
+            try:
+                self._conn = sqlite3.connect(str(self._writer_alias_path), check_same_thread=False)
+            except BaseException:
+                self._writer_alias_dir.cleanup()
+                self._writer_alias_dir = None
+                self._writer_alias_path = None
+                raise
         self._closed = False
         try:
             info = sqlite_path.lstat()
@@ -203,12 +275,20 @@ class FTSIndex:
             if self._readonly_snapshot_dir is not None:
                 self._readonly_snapshot_dir.cleanup()
                 self._readonly_snapshot_dir = None
+            if self._writer_alias_dir is not None:
+                self._writer_alias_dir.cleanup()
+                self._writer_alias_dir = None
+                self._writer_alias_path = None
             raise
         if is_reparse_link(sqlite_path) or not stat.S_ISREG(info.st_mode):
             self._conn.close()
             if self._readonly_snapshot_dir is not None:
                 self._readonly_snapshot_dir.cleanup()
                 self._readonly_snapshot_dir = None
+            if self._writer_alias_dir is not None:
+                self._writer_alias_dir.cleanup()
+                self._writer_alias_dir = None
+                self._writer_alias_path = None
             raise ValueError("unsafe SQLite database path")
         identity = (info.st_dev, info.st_ino)
         if initial_identity is not None and identity != initial_identity:
@@ -216,6 +296,10 @@ class FTSIndex:
             if self._readonly_snapshot_dir is not None:
                 self._readonly_snapshot_dir.cleanup()
                 self._readonly_snapshot_dir = None
+            if self._writer_alias_dir is not None:
+                self._writer_alias_dir.cleanup()
+                self._writer_alias_dir = None
+                self._writer_alias_path = None
             raise ValueError("SQLite database path changed while opening")
         if sidecar_identities and any(
             _sidecar_identity(path) != expected for path, expected in sidecar_identities.items()
@@ -229,6 +313,28 @@ class FTSIndex:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.commit()
+            alias_path = self._writer_alias_path
+            if alias_path is not None:
+                for suffix in ("-wal", "-shm"):
+                    alias_sidecar = alias_path.with_name(alias_path.name + suffix)
+                    if not alias_sidecar.exists():
+                        continue
+                    published = sqlite_path.with_name(sqlite_path.name + suffix)
+                    try:
+                        existing = published.lstat()
+                    except FileNotFoundError:
+                        os.link(alias_sidecar, published, follow_symlinks=False)
+                        self._published_sidecars.add(published)
+                    else:
+                        if is_reparse_link(published) or not stat.S_ISREG(existing.st_mode):
+                            raise ValueError(f"unsafe SQLite {suffix[1:].upper()} path")
+                        if (existing.st_dev, existing.st_ino) != (
+                            alias_sidecar.stat().st_dev,
+                            alias_sidecar.stat().st_ino,
+                        ):
+                            raise ValueError(
+                                f"SQLite {suffix[1:].upper()} path changed while opening"
+                            )
         self._identity = identity
         tracked_sidecars = (
             sqlite_path.with_name(f"{sqlite_path.name}-wal"),
@@ -244,9 +350,17 @@ class FTSIndex:
                 return
             self._conn.close()
             self._closed = True
+            for path in self._published_sidecars:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+            self._published_sidecars.clear()
             if self._readonly_snapshot_dir is not None:
                 self._readonly_snapshot_dir.cleanup()
                 self._readonly_snapshot_dir = None
+            if self._writer_alias_dir is not None:
+                self._writer_alias_dir.cleanup()
+                self._writer_alias_dir = None
+                self._writer_alias_path = None
 
     def reopen_if_replaced(self) -> bool:
         """Reopen after another process publishes a new SQLite generation."""
@@ -277,6 +391,12 @@ class FTSIndex:
             # return and deletes files still in use by ``self._conn``.
             self._readonly_snapshot_dir = replacement._readonly_snapshot_dir
             replacement._readonly_snapshot_dir = None
+            self._writer_alias_dir = replacement._writer_alias_dir
+            replacement._writer_alias_dir = None
+            self._writer_alias_path = replacement._writer_alias_path
+            replacement._writer_alias_path = None
+            self._published_sidecars = replacement._published_sidecars
+            replacement._published_sidecars = set()
             self._closed = False
             self._identity = replacement._identity
             self._sidecar_identities = replacement._sidecar_identities
@@ -296,6 +416,12 @@ class FTSIndex:
             self._conn = replacement._conn
             self._readonly_snapshot_dir = replacement._readonly_snapshot_dir
             replacement._readonly_snapshot_dir = None
+            self._writer_alias_dir = replacement._writer_alias_dir
+            replacement._writer_alias_dir = None
+            self._writer_alias_path = replacement._writer_alias_path
+            replacement._writer_alias_path = None
+            self._published_sidecars = replacement._published_sidecars
+            replacement._published_sidecars = set()
             self._closed = False
             self._identity = replacement._identity
             self._sidecar_identities = replacement._sidecar_identities

@@ -19,7 +19,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from collections.abc import Mapping
-from importlib.metadata import PackageNotFoundError, distribution, distributions
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any
 
@@ -58,25 +58,6 @@ _READ_ONLY_CLOUD_COMMANDS = {
 _READ_ONLY_OPTIONS = frozenset({"--organization", "--region"})
 
 
-def _tool_distribution(executable: Path):
-    """Find pipecat metadata in the environment owning an executable.
-
-    ``uv tool install`` puts the console script in an isolated environment,
-    while this helper is often run by the Context Hub environment. Looking up
-    only the helper interpreter's distributions therefore rejects a valid
-    package-owned Pipecat executable.
-    """
-    root = executable.absolute().parent.parent
-    site_dirs: list[Path] = []
-    for lib in (root / "lib", root / "Lib"):
-        site_dirs.extend([lib / "site-packages", *lib.glob("python*/site-packages")])
-    for site_dir in site_dirs:
-        for candidate in distributions(path=[str(site_dir)]):
-            if candidate.metadata.get("Name", "").casefold() == "pipecat-ai":
-                return candidate
-    return None
-
-
 def _trusted_pipecat_path(executable: Path | None = None) -> Path | None:
     """Find a package-owned CLI in this interpreter's installation prefix.
 
@@ -87,17 +68,27 @@ def _trusted_pipecat_path(executable: Path | None = None) -> Path | None:
     When those independently verifiable facts are unavailable, fail closed.
     """
     names = ("pipecat.exe", "pipecat") if os.name == "nt" else ("pipecat",)
+    try:
+        prefix = Path(sys.prefix).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
     if executable is None:
         try:
             dist = distribution("pipecat-ai")
         except PackageNotFoundError:
             return None
-        prefix = Path(sys.prefix).resolve(strict=True)
     else:
-        dist = _tool_distribution(executable)
-        if dist is None:
+        # A distribution name and RECORD file are self-authored metadata. They
+        # are useful for binding an executable to the current installation,
+        # but cannot establish trust for an arbitrary external environment.
+        # Only the interpreter environment running this helper may receive the
+        # credential-bearing token.
+        try:
+            if not executable.resolve(strict=True).is_relative_to(prefix):
+                return None
+            dist = distribution("pipecat-ai")
+        except (OSError, RuntimeError, ValueError, PackageNotFoundError):
             return None
-        prefix = executable.absolute().parent.parent.resolve(strict=True)
     for file in dist.files or ():
         if Path(file).name not in names:
             continue
@@ -173,12 +164,10 @@ def _trusted_path_for_command(command: list[str]) -> Path | None:
 
 def _record_digest_for_executable(executable: Path) -> str | None:
     """Return the wheel RECORD digest for an executable, if available."""
-    dist = _tool_distribution(executable)
-    if dist is None:
-        try:
-            dist = distribution("pipecat-ai")
-        except PackageNotFoundError:
-            return None
+    try:
+        dist = distribution("pipecat-ai")
+    except PackageNotFoundError:
+        return None
     try:
         resolved = executable.resolve(strict=True)
         for file in dist.files or ():
