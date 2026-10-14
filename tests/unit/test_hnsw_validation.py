@@ -111,7 +111,7 @@ def test_unreadable_header_refuses_native_open(
 def test_dir_fd_unavailable_uses_safe_path_fallback(
     persisted_segment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Windows' missing dir_fd support must not reject healthy active segments."""
+    """Missing dir_fd support must fail closed before reading a segment."""
     root, segment = persisted_segment
     real_open = os.open
 
@@ -123,25 +123,17 @@ def test_dir_fd_unavailable_uses_safe_path_fallback(
     monkeypatch.setattr(
         "pipecat_context_hub.services.index.hnsw_validation.os.open", no_dir_fd_open
     )
-    fd, info = _open_segment_file(root, segment.name, "link_lists.bin")
-    try:
-        assert info.st_size == 1000
-        assert os.fstat(fd).st_size == 1000
-    finally:
-        os.close(fd)
+    with pytest.raises(OSError, match="secure persisted HNSW"):
+        _open_segment_file(root, segment.name, "link_lists.bin")
 
 
-def test_windows_path_fallback_accepts_safe_regular_files(
+def test_windows_path_fallback_fails_closed_without_handle_relative_api(
     persisted_segment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, segment = persisted_segment
     monkeypatch.setattr(os, "name", "nt")
-    fd, info = _open_segment_file_without_dir_fd(root, segment.name, "link_lists.bin")
-    try:
-        assert info.st_size == 1000
-        assert os.fstat(fd).st_size == 1000
-    finally:
-        os.close(fd)
+    with pytest.raises(OSError, match="secure persisted HNSW"):
+        _open_segment_file_without_dir_fd(root, segment.name, "link_lists.bin")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
@@ -167,7 +159,7 @@ def test_path_fallback_rechecks_parent_identity_after_open(
         return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr("pipecat_context_hub.services.index.hnsw_validation.os.open", swap_parent)
-    with pytest.raises(OSError, match="regular file"):
+    with pytest.raises(OSError, match="secure persisted HNSW"):
         _open_segment_file_without_dir_fd(root, segment.name, "link_lists.bin")
 
 

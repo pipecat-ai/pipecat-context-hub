@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import quote
 
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
+from pipecat_context_hub.shared.paths import is_reparse_link
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +105,19 @@ class FTSIndex:
             except OSError as exc:
                 raise ValueError("unsafe SQLite WAL path") from exc
             if wal_info is not None:
-                if stat.S_ISLNK(wal_info.st_mode) or not stat.S_ISREG(wal_info.st_mode):
+                if is_reparse_link(wal_path) or not stat.S_ISREG(wal_info.st_mode):
                     raise ValueError("unsafe SQLite WAL path")
+            shm_path = sqlite_path.with_name(f"{sqlite_path.name}-shm")
+            try:
+                shm_info = shm_path.lstat()
+            except FileNotFoundError:
+                shm_info = None
+            except OSError as exc:
+                raise ValueError("unsafe SQLite SHM path") from exc
+            if shm_info is not None and (
+                is_reparse_link(shm_path) or not stat.S_ISREG(shm_info.st_mode)
+            ):
+                raise ValueError("unsafe SQLite SHM path")
             query = "mode=ro" if wal_info is not None else "mode=ro&immutable=1"
             uri = f"file:{quote(str(sqlite_path), safe='/')}?{query}"
             self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
@@ -118,7 +130,7 @@ class FTSIndex:
         except OSError:
             self._conn.close()
             raise
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        if is_reparse_link(sqlite_path) or not stat.S_ISREG(info.st_mode):
             self._conn.close()
             raise ValueError("unsafe SQLite database path")
         self._identity = (info.st_dev, info.st_ino)
@@ -150,6 +162,21 @@ class FTSIndex:
                 return
             self.close()
             replacement = FTSIndex(self._sqlite_path, read_only=self._read_only)
+            self._conn = replacement._conn
+            self._closed = False
+            self._identity = replacement._identity
+
+    def reopen(self) -> None:
+        """Reopen even when the database inode is unchanged.
+
+        Refresh publishes records in place, so inode identity alone cannot
+        tell a long-lived reader that its native SQLite/FTS state belongs to
+        the prior generation.
+        """
+        with self._lock:
+            read_only = self._read_only
+            self.close()
+            replacement = FTSIndex(self._sqlite_path, read_only=read_only)
             self._conn = replacement._conn
             self._closed = False
             self._identity = replacement._identity

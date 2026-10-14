@@ -31,51 +31,8 @@ _MAX_M = 1024
 def _open_segment_file_without_dir_fd(
     root: Path, segment_name: str, filename: str
 ) -> tuple[int, os.stat_result]:
-    """Windows-compatible path open with the same component safety checks."""
-    # Windows has no descriptor-relative open API here. The fallback is
-    # deliberately conservative: reject every reparse point and compare all
-    # checked identities before and after the open. If any component changes,
-    # close the descriptor and fail closed rather than consuming the result.
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    segment_path = root / segment_name
-    file_path = segment_path / filename
-    root_info = root.lstat()
-    segment_info = segment_path.lstat()
-    file_info = file_path.lstat()
-    if (
-        is_reparse_link(root)
-        or not stat.S_ISDIR(root_info.st_mode)
-        or is_reparse_link(segment_path)
-        or not stat.S_ISDIR(segment_info.st_mode)
-        or is_reparse_link(file_path)
-        or not stat.S_ISREG(file_info.st_mode)
-    ):
-        raise OSError(errno.ELOOP, "unsafe persisted HNSW path")
-    fd = os.open(file_path, flags)
-    try:
-        info = os.fstat(fd)
-        # ``O_NOFOLLOW`` protects only the final component.  On Windows the
-        # parent directory is opened by name, so compare every checked
-        # component again after the open to catch a replacement race before
-        # the descriptor is consumed.
-        current_root = root.lstat()
-        current_segment = segment_path.lstat()
-        current_file = file_path.lstat()
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino)
-            or (current_segment.st_dev, current_segment.st_ino)
-            != (segment_info.st_dev, segment_info.st_ino)
-            or (current_file.st_dev, current_file.st_ino) != (file_info.st_dev, file_info.st_ino)
-            or is_reparse_link(root)
-            or is_reparse_link(segment_path)
-            or is_reparse_link(file_path)
-        ):
-            raise OSError(errno.ELOOP, "persisted HNSW path is not a regular file")
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd, info
+    """Reject platforms without handle-relative, no-reparse opens."""
+    raise OSError(errno.ENOTSUP, "secure persisted HNSW opens are unavailable")
 
 
 def _open_segment_file(root: Path, segment_name: str, filename: str) -> tuple[int, os.stat_result]:
@@ -156,6 +113,18 @@ def validate_persisted_hnsw(
         if reason:
             raise IncompatibleIndexFormatError(chroma_path, reason=reason)
 
+    shm_path = db_path.with_name(f"{db_path.name}-shm")
+    try:
+        shm_info = shm_path.lstat()
+    except FileNotFoundError:
+        shm_info = None
+    except OSError as exc:
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason="unable to inspect chroma.sqlite3-shm; refusing native loading"
+        ) from exc
+    if shm_info is not None and (is_reparse_link(shm_path) or not stat.S_ISREG(shm_info.st_mode)):
+        raise IncompatibleIndexFormatError(chroma_path, reason="unsafe chroma.sqlite3-shm path")
+
     conn: sqlite3.Connection | None = None
     try:
         uri_suffix = "?mode=ro" if allow_wal else "?mode=ro&immutable=1"
@@ -188,6 +157,11 @@ def validate_persisted_hnsw(
                     "state cannot be validated safely"
                 ),
             )
+        final_shm_info = shm_path.lstat() if shm_path.exists() or shm_path.is_symlink() else None
+        if final_shm_info is not None and (
+            is_reparse_link(shm_path) or not stat.S_ISREG(final_shm_info.st_mode)
+        ):
+            raise IncompatibleIndexFormatError(chroma_path, reason="unsafe chroma.sqlite3-shm path")
     except OSError as exc:
         raise IncompatibleIndexFormatError(
             chroma_path, reason="unable to recheck chroma.sqlite3-wal; refusing native loading"

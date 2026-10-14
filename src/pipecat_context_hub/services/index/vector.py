@@ -355,51 +355,10 @@ def _copy_tree_no_follow(source: Path, destination: Path) -> None:
     instead of reading outside the published tree.
     """
     if os.open not in getattr(os, "supports_dir_fd", set()):
-        # Windows does not expose descriptor-relative opens. Keep the same
-        # no-link contract with a path-based traversal: every entry is
-        # lstat'ed before copying, links/reparse points are rejected, and the
-        # source is checked again after each copy. The enclosing index lock
-        # prevents normal Hub writers from racing this snapshot; checks fail
-        # closed for an external replacement.
-        def copy_path(source_dir: Path, target: Path) -> None:
-            target.mkdir(parents=True, exist_ok=True)
-            try:
-                entries = list(os.scandir(source_dir))
-            except OSError as exc:
-                raise ValueError(f"Unsafe read-only Chroma path: {source_dir.name}") from exc
-            for entry in entries:
-                source_path = source_dir / entry.name
-                target_path = target / entry.name
-                try:
-                    info = entry.stat(follow_symlinks=False)
-                except OSError as exc:
-                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}") from exc
-                if is_reparse_link(source_path) or stat.S_ISLNK(info.st_mode):
-                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}")
-                if stat.S_ISDIR(info.st_mode):
-                    copy_path(source_path, target_path)
-                elif stat.S_ISREG(info.st_mode):
-                    shutil.copyfile(source_path, target_path)
-                else:
-                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}")
-                try:
-                    after = source_path.stat()
-                except OSError as exc:
-                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}") from exc
-                if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino):
-                    raise ValueError(f"Unsafe read-only Chroma path: {entry.name}")
-
-        source_info = source.lstat()
-        if is_reparse_link(source) or not stat.S_ISDIR(source_info.st_mode):
-            raise ValueError(f"Unsafe read-only Chroma path: {source.name}")
-        copy_path(source, destination)
-        after_source = source.lstat()
-        if (after_source.st_dev, after_source.st_ino) != (
-            source_info.st_dev,
-            source_info.st_ino,
-        ) or is_reparse_link(source):
-            raise ValueError(f"Unsafe read-only Chroma path: {source.name}")
-        return
+        # Pathname copies cannot make the parent no-reparse guarantee on
+        # Windows. Refuse the snapshot rather than copying bytes through a
+        # junction that can be swapped after lstat().
+        raise ValueError("Secure Chroma snapshots are unavailable")
 
     def copy_dir(source_fd: int, source_name: str, target: Path) -> None:
         target.mkdir(parents=True, exist_ok=True)
@@ -597,10 +556,10 @@ class VectorIndex:
         self._generation_identity = self._source_identity()
         logger.info("VectorIndex initialized at %s", self._chroma_path)
 
-    def reopen_if_replaced(self, *, lock_held: bool = False) -> None:
-        """Reopen a client after another process publishes a new generation."""
+    def reopen_if_replaced(self, *, lock_held: bool = False, force: bool = False) -> None:
+        """Reopen after replacement, or force a new in-place generation."""
         with self._op_lock:
-            if self._source_identity() == self._generation_identity:
+            if not force and self._source_identity() == self._generation_identity:
                 return
             self._release_client()
             self._open_client(lock_held=lock_held)
@@ -652,7 +611,9 @@ class VectorIndex:
         with self._op_lock:
             with index_lock(self._chroma_path.parent, exclusive=True):
                 self._release_client()
-                shutil.rmtree(self._chroma_path, ignore_errors=True)
+                shutil.rmtree(self._chroma_path)
+                if self._chroma_path.exists() or self._chroma_path.is_symlink():
+                    raise OSError(f"Chroma reset did not remove {self._chroma_path}")
             self._open_client()
             logger.info("VectorIndex reset at %s", self._chroma_path)
 

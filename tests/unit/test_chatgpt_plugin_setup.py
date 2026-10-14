@@ -70,6 +70,10 @@ def _run_metadata_wrapper(
     try:
         installed_pipecat = shutil.which("pipecat")
         assert installed_pipecat is not None
+        # The fixture replaces execution with a local producer; explicitly
+        # inject the trusted executable identity rather than treating PATH as
+        # an authority in the production wrapper.
+        setattr(module, "_trusted_pipecat_path", lambda: Path(installed_pipecat).resolve())
         setattr(module, "_run_bounded", run_fixture)
         sys.argv = [
             str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
@@ -222,8 +226,8 @@ def test_render_uses_windows_safe_fallback_without_secure_directory_descriptors(
     source.write_text("safe")
     monkeypatch.setattr(renderer.os, "supports_dir_fd", set())
     target = tmp_path / "copy.txt"
-    renderer._copy_resource(source, target)
-    assert target.read_text() == "safe"
+    with pytest.raises(ValueError, match="Secure package-resource copying"):
+        renderer._copy_resource(source, target)
 
 
 def test_render_finishes_windows_safe_fallback_rename(
@@ -231,8 +235,8 @@ def test_render_finishes_windows_safe_fallback_rename(
 ) -> None:
     destination = tmp_path / "prepared"
     monkeypatch.setattr(renderer.os, "supports_dir_fd", set())
-    assert renderer.prepare_local(destination) == destination
-    assert (destination / "plugin.json").is_file()
+    with pytest.raises(ValueError, match="Secure package-resource"):
+        renderer.prepare_local(destination)
 
 
 @pytest.mark.parametrize("skill", ["explore", "build", "deploy", "setup"])

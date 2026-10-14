@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import os
 import shutil
 import stat
@@ -90,8 +89,7 @@ def _validate_destination_parents(destination: Path) -> None:
 def _copy_resource(source: Path, target: Path) -> None:
     """Copy a resource from an already-validated path without following links."""
     if os.open not in getattr(os, "supports_dir_fd", set()):
-        _copy_resource_path_fallback(source, target)
-        return
+        raise ValueError("Secure package-resource copying is unavailable")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     before = source.lstat()
     if _is_reparse_point(source) or not stat.S_ISREG(before.st_mode):
@@ -147,51 +145,14 @@ def _open_directory_chain(path: Path) -> int:
 
 
 def _copy_resource_path_fallback(source: Path, target: Path) -> None:
-    """Copy safely enough on Windows, where descriptor-relative APIs are absent.
-
-    The destination is a private staging tree.  Validate every existing source
-    parent and compare the source identity before/after the copy so a replaced
-    resource fails closed.  Windows has no portable ``O_NOFOLLOW`` equivalent
-    exposed by Python, hence the explicit post-copy identity check.
-    """
-    source = source.absolute()
-    target = target.absolute()
-    _validate_destination_parents(source)
-    before = source.lstat()
-    if _is_reparse_point(source) or not stat.S_ISREG(before.st_mode):
-        raise ValueError(f"Package resource must be a regular file: {source.name}")
-    # Keep a narrow open-time identity probe even on Windows.  It catches the
-    # common replacement race before the path-based copy begins; the final
-    # lstat below covers replacements during the copy itself.
-    probe_fd = os.open(source, os.O_RDONLY)
-    os.close(probe_fd)
-    if _is_reparse_point(source):
-        raise ValueError(f"Package resource changed during copy: {source.name}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
-    try:
-        after = source.lstat()
-        if _is_reparse_point(source) or (before.st_dev, before.st_ino) != (
-            after.st_dev,
-            after.st_ino,
-        ):
-            raise ValueError(f"Package resource changed during copy: {source.name}")
-    except BaseException:
-        with contextlib.suppress(OSError):
-            target.unlink()
-        raise
+    """Reject platforms without handle-relative, no-reparse file opens."""
+    raise ValueError("Secure package-resource copying is unavailable")
 
 
 def _rename_no_symlink(source: Path, destination: Path) -> None:
     """Rename within securely opened parent directories where supported."""
     if os.open not in getattr(os, "supports_dir_fd", set()):
-        # The staging directory is private and the destination was checked
-        # before copying.  Recheck both parents immediately before the
-        # path-based rename for platforms (notably Windows) without dir_fd.
-        if _is_reparse_point(source.parent) or _is_reparse_point(destination.parent):
-            raise ValueError("Destination path is invalid")
-        source.rename(destination)
-        return
+        raise ValueError("Secure package-resource publication is unavailable")
     source_parent_fd = _open_directory_chain(source.parent)
     destination_parent_fd = _open_directory_chain(destination.parent)
     try:

@@ -122,16 +122,10 @@ def _create_backend_file(path: Path) -> bool:
     parent_fd = _open_directory_chain(path.parent)
     try:
         if parent_fd == -1:
-            # Windows and a few POSIX runtimes do not expose descriptor-
-            # relative opens. O_EXCL prevents a pre-existing leaf link from
-            # being followed; the caller's component identity checks protect
-            # the resulting file before either backend opens it.
-            try:
-                fd = os.open(str(path), flags, 0o600)
-            except FileExistsError:
-                return False
-            os.close(fd)
-            return True
+            # O_EXCL only protects the leaf. Without a handle-relative,
+            # no-reparse parent walk, a junction swap can redirect creation
+            # outside the published index between validation and this open.
+            raise ValueError("Secure backend file creation is unavailable")
         fd = os.open(path.name, flags, 0o600, dir_fd=parent_fd)
     except FileExistsError:
         return False
@@ -221,6 +215,7 @@ class IndexStore:
                     )
                 fts = FTSIndex(config.sqlite_path)
                 self._fts = fts
+                self._generation_id = fts.get_metadata("index_generation")
                 _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
                 _validate_existing_backend_file(config.sqlite_path, data_dir)
             except Exception:
@@ -273,14 +268,15 @@ class IndexStore:
                 _write_reset_state(self._data_dir, {"vector_reset": True, "fts_reset": False})
             except Exception as exc:
                 vector_error = exc
-            try:
-                self._fts.reset()
-                _write_reset_state(
-                    self._data_dir,
-                    {"vector_reset": vector_error is None, "fts_reset": True},
-                )
-            except Exception as exc:
-                fts_error = exc
+            if vector_error is None:
+                try:
+                    self._fts.reset()
+                    _write_reset_state(
+                        self._data_dir,
+                        {"vector_reset": True, "fts_reset": True},
+                    )
+                except Exception as exc:
+                    fts_error = exc
             if vector_error is not None and fts_error is not None:
                 raise vector_error from fts_error
             if fts_error is not None:
@@ -387,19 +383,36 @@ class IndexStore:
 
     def _locked_vector_search(self, query: IndexQuery) -> list[IndexResult]:
         """Run one synchronous vector read under its own worker-thread lock."""
-        with index_lock(self._data_dir, exclusive=False):
+        # Reopening a writer-oriented native backend may perform migrations;
+        # use the exclusive generation lock so in-place refresh detection and
+        # reopen stay one safe publication window.
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
             return self._vector.search(query)
 
     def _locked_keyword_search(self, query: IndexQuery) -> list[IndexResult]:
         """Run one synchronous FTS read under its own worker-thread lock."""
-        with index_lock(self._data_dir, exclusive=False):
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
             return self._fts.search(query)
 
     def _locked_hybrid_search(
         self, query: IndexQuery
     ) -> tuple[list[IndexResult], list[IndexResult]]:
-        with index_lock(self._data_dir, exclusive=False):
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
             return self._vector.search(query), self._fts.search(query)
+
+    def _sync_generation_locked(self) -> None:
+        """Reopen both native readers when refresh publishes in place."""
+        if not hasattr(self._fts, "get_metadata"):
+            return
+        published = self._fts.get_metadata("index_generation")
+        if published == self._generation_id:
+            return
+        self._vector.reopen_if_replaced(lock_held=True, force=True)
+        self._fts.reopen()
+        self._generation_id = published
 
     def set_metadata(self, key: str, value: str) -> None:
         """Store a key-value pair in persistent index metadata."""

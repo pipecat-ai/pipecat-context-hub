@@ -12,7 +12,8 @@ report retrieval unavailable and offer [Context Hub setup](../setup/SKILL.md).
 Cloud credentials are not required for exploration.
 
 Exploration is read-only. An idea or concept question authorises retrieval and
-discussion, not dependency installation, indexing, scaffolding, local file writes,
+discussion, not dependency installation, indexing, scaffolding, persistent local file writes
+(semantic retrieval may use a temporary private Chroma snapshot),
 execution of examples, builds, secret access/uploads or deployment.
 After an explicit build request, hand off to the build skill to check native
 execution, installed CLI and material project choices. After a deployment

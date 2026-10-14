@@ -903,12 +903,10 @@ class TestIndexStoreInitRollback:
     def test_writer_backend_creation_without_descriptor_relative_open(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The path-based Windows creation fallback still opens a fresh index."""
+        """Backend creation fails closed without secure directory descriptors."""
         monkeypatch.setattr(os, "supports_dir_fd", set())
-        store = IndexStore(StorageConfig(data_dir=tmp_path / "windows-style"))
-        store.close()
-        assert (tmp_path / "windows-style" / "metadata.db").is_file()
-        assert (tmp_path / "windows-style" / "chroma" / "chroma.sqlite3").is_file()
+        with pytest.raises(ValueError, match="Secure backend file creation"):
+            IndexStore(StorageConfig(data_dir=tmp_path / "windows-style"))
 
     def test_backend_placeholders_are_removed_when_vector_init_fails(
         self, tmp_path: Path, monkeypatch
@@ -982,8 +980,8 @@ class TestIndexStoreInitRollback:
         monkeypatch.setattr(
             "pipecat_context_hub.services.index.store._open_directory_chain", lambda _path: -1
         )
-        assert _create_backend_file(path)
-        assert path.is_file()
+        with pytest.raises(ValueError, match="Secure backend file creation"):
+            _create_backend_file(path)
 
     def test_windows_snapshot_uses_safe_path_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -993,8 +991,8 @@ class TestIndexStoreInitRollback:
         (source / "chroma.sqlite3").write_bytes(b"safe")
         monkeypatch.setattr(os, "name", "nt")
         monkeypatch.setattr(os, "supports_dir_fd", set())
-        _copy_tree_no_follow(source, tmp_path / "snapshot")
-        assert (tmp_path / "snapshot" / "chroma.sqlite3").read_bytes() == b"safe"
+        with pytest.raises(ValueError, match="Secure Chroma snapshots"):
+            _copy_tree_no_follow(source, tmp_path / "snapshot")
 
     @pytest.mark.asyncio
     async def test_concurrent_async_searches_do_not_share_lock_reentrancy(
@@ -1029,11 +1027,7 @@ class TestIndexStoreInitRollback:
         chroma_files = [path for path in (data_dir / "chroma").rglob("*") if path.is_file()]
         before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in chroma_files}
         reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
-        try:
-            assert reader._vector is not None
-            assert reader._vector._collection.count() == 1
-        finally:
-            reader.close()
+        reader.close()
         assert {
             path: (path.read_bytes(), path.stat().st_mtime_ns) for path in chroma_files
         } == before
@@ -1046,12 +1040,8 @@ class TestIndexStoreInitRollback:
         writer._vector.upsert([_make_record()])
         writer.close()
         monkeypatch.setattr(os, "supports_dir_fd", set())
-        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
-        try:
-            assert reader._vector is not None
-            assert reader._vector._collection.count() == 1
-        finally:
-            reader.close()
+        with pytest.raises(ValueError, match="Secure Chroma snapshots"):
+            ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
 
     def test_read_only_open_rejects_missing_collection_without_recreating_it(
         self, tmp_path: Path
@@ -1151,6 +1141,49 @@ class TestIndexStore:
             assert first._vector.search(query) == []
         finally:
             first.close()
+
+    def test_hybrid_search_keeps_vector_and_fts_in_one_generation_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hybrid request cannot publish between its two backend reads."""
+        import pipecat_context_hub.services.index.store as store_module
+
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        store = object.__new__(IndexStore)
+        store._data_dir = data_dir
+        store._generation_id = None
+        lock_depth = 0
+        observations: list[int] = []
+
+        class Lock:
+            def __enter__(self):
+                nonlocal lock_depth
+                lock_depth += 1
+
+            def __exit__(self, *_args):
+                nonlocal lock_depth
+                lock_depth -= 1
+
+        def fake_lock(_path: Path, *, exclusive: bool):
+            assert exclusive is True
+            return Lock()
+
+        class Backend:
+            def get_metadata(self, _key: str) -> None:
+                return None
+
+            def search(self, _query: IndexQuery) -> list[IndexResult]:
+                observations.append(lock_depth)
+                return []
+
+        typed_store = cast(Any, store)
+        typed_store._vector = Backend()
+        typed_store._fts = Backend()
+        monkeypatch.setattr(store_module, "index_lock", fake_lock)
+        result = store._locked_hybrid_search(IndexQuery(query_text="pipecat", limit=1))
+        assert result == ([], [])
+        assert observations == [1, 1]
 
     @pytest.mark.asyncio
     async def test_upsert_and_keyword_search(self, store: IndexStore):
@@ -1366,7 +1399,7 @@ class TestIndexStore:
         with pytest.raises(RuntimeError, match="vector reset failed"):
             store.reset()
 
-        assert calls == ["vector", "fts"]
+        assert calls == ["vector"]
         assert (store.data_dir / ".reset-state.json").is_file()
 
     def test_reset_state_is_removed_only_after_both_backends_succeed(self, store: IndexStore):

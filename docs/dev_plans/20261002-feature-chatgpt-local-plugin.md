@@ -263,7 +263,8 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
   and acceptance-criteria claim that CLI/server retrieval semantics were
   unchanged is retained only as historical scope. Current refresh and
   read-only behaviour includes absent/partial-index recovery, generation
-  locking, immutable SQLite access and bounded Chroma safety checks; see the
+  locking, SQLite read-only access (with committed WAL replay when a WAL is
+  present) and bounded Chroma safety checks; see the
   [index-recovery plan](20260324-bug-chroma-index-recovery.md) and the focused
   regressions in `tests/unit/test_index_store.py` and `tests/unit/test_cli.py`.
   The registered command names and shared handlers remain the compatibility
@@ -309,7 +310,8 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
 - **2026-10-14 — index safety correction:** the earlier unchanged-semantics
   wording was stale. Current refresh semantics include fail-closed absent/partial
   index recovery, generation locking before backend open/reset (including
-  resolved symlink roots), immutable read-only SQLite access, and cross-platform
+  resolved symlink roots), read-only SQLite access (with committed WAL replay
+  when a WAL is present), and cross-platform
   secure backend/snapshot paths. See the [index-recovery plan](20260324-bug-chroma-index-recovery.md)
   and focused regressions in `tests/unit/test_index_store.py` and
   `tests/unit/test_cli.py`.

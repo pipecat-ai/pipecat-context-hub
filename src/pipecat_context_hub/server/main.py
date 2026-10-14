@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+import contextlib
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from mcp import types
@@ -17,6 +19,7 @@ from pipecat_context_hub.server.tools.check_deprecation import (
 )
 from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+from pipecat_context_hub.services.index.locking import index_lock
 from pipecat_context_hub.server.dispatch import (
     BASE_TOOLS,
     HUB_STATUS_TOOL_TUPLE,
@@ -256,12 +259,23 @@ def create_server(
             # indexed framework version as the default for version-relative status.
             if name == "check_deprecation":
                 map_path = getattr(retriever, "_deprecation_map_path", None)
-                dep_map = (
-                    DeprecationMap.load(map_path)
-                    if map_path is not None
-                    else getattr(retriever, "deprecation_map", None)
+                # Refresh holds the exclusive generation lock while replacing
+                # records, metadata, and the map. Keep the map load and
+                # provenance read in one shared-generation window so a request
+                # cannot pair a new map with old records (or vice versa).
+                data_dir = getattr(index_store, "data_dir", None)
+                lock = (
+                    index_lock(data_dir, exclusive=False)
+                    if isinstance(data_dir, Path)
+                    else contextlib.nullcontext()
                 )
-                fw_version = resolve_framework_version(index_store, dep_map)
+                with lock:
+                    dep_map = (
+                        DeprecationMap.load(map_path)
+                        if map_path is not None
+                        else getattr(retriever, "deprecation_map", None)
+                    )
+                    fw_version = resolve_framework_version(index_store, dep_map)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return types.CallToolResult(
                     content=[types.TextContent(type="text", text=_annotate(result_json))]

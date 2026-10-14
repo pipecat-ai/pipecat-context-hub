@@ -80,7 +80,8 @@ controls flags, including source/version preferences. Compatibility annotations
 are not a different source snapshot or proof of compatibility when unknown.
 A `latest` pin is not proof of today's latest release.
 
-Exploration is read-only: no installs, indexing, file creation, example execution,
+Exploration is read-only: no installs, indexing, or persistent project/index file
+creation (semantic queries may create a temporary private Chroma snapshot), example execution,
 secret access or deployment. Missing runtime/index offers explicit Setup. CLI
 status before/after confirms unchanged index/version provenance; no refresh occurs.
 A stale index can provide dated evidence with a stated coverage limit. Neither PCH

@@ -10,11 +10,12 @@ import re
 import subprocess
 import sys
 import selectors
-import shutil
 import signal
+import stat
 import threading
 import time
 from collections.abc import Mapping
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any
 
@@ -56,48 +57,42 @@ _READ_ONLY_OPTIONS = frozenset({"--organization", "--region"})
 
 
 def _trusted_pipecat_path() -> Path | None:
-    """Find the CLI installed beside this interpreter, never via ambient PATH."""
+    """Find a package-owned CLI in this interpreter's installation prefix.
+
+    PATH and launcher source text are not identity proofs: either can be
+    supplied by a project or an attacker.  Require the ``pipecat-ai``
+    distribution metadata to enumerate the console script, and require the
+    resulting file to be a non-reparse regular file below ``sys.prefix``.
+    When those independently verifiable facts are unavailable, fail closed.
+    """
     names = ("pipecat.exe", "pipecat") if os.name == "nt" else ("pipecat",)
-    # Keep the launcher spelling: uv and virtualenvs commonly expose a
-    # symlinked interpreter whose resolved system path is not the environment
-    # containing the console script.
-    roots = (Path(sys.executable).parent, Path(sys.prefix) / "bin")
-    if os.name == "nt":
-        roots += (Path(sys.prefix) / "Scripts",)
-    for root in roots:
-        for name in names:
-            candidate = root / name
-            try:
-                if candidate.is_file() and os.access(candidate, os.X_OK):
-                    return candidate.resolve(strict=True)
-            except (OSError, RuntimeError):
-                continue
-    # A separately managed uv/pipx tool may place its console script outside
-    # this interpreter's prefix. Accept only the canonical generated launcher
-    # shape, never an arbitrary PATH executable. The launcher must delegate to
-    # the installed ``pipecat_cli`` app; a shadow script that can receive the
-    # token does not pass this structural check.
-    discovered = shutil.which("pipecat")
-    if discovered is None:
-        return None
-    candidate = Path(discovered)
     try:
-        if (
-            not candidate.is_absolute()
-            or not candidate.is_file()
-            or not os.access(candidate, os.X_OK)
-        ):
-            return None
-        lines = candidate.read_text(encoding="utf-8").splitlines()
-        if len(lines) < 6 or not lines[0].startswith("#!"):
-            return None
-        if not any("from pipecat_cli.main import app" in line for line in lines) or not any(
-            "sys.exit(app())" in line for line in lines
-        ):
-            return None
-        return candidate.resolve(strict=True)
-    except (OSError, UnicodeError, RuntimeError):
+        dist = distribution("pipecat-ai")
+    except PackageNotFoundError:
         return None
+    prefix = Path(sys.prefix).resolve(strict=True)
+    for file in dist.files or ():
+        if Path(file).name not in names:
+            continue
+        candidate = Path(dist.locate_file(file))
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(prefix)
+            # A package metadata entry that resolves through a symlink is not
+            # an interpreter-owned executable.  Reject the spelling as well as
+            # the target so a later replacement cannot turn it into a link.
+            if (
+                resolved != candidate
+                or not candidate.is_file()
+                or not os.access(candidate, os.X_OK)
+            ):
+                continue
+            if not stat.S_ISREG(candidate.lstat().st_mode):
+                continue
+            return candidate
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return None
 
 
 def _validate_producer_command(command: list[str]) -> None:

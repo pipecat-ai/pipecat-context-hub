@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -368,7 +369,18 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     # The lock lives beside the index, so it survives this deletion and keeps
     # readers of the old generation coordinated with the next writer.
     with index_lock(resolved_data_dir, exclusive=True):
-        shutil.rmtree(resolved_data_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(resolved_data_dir)
+        except OSError as exc:
+            raise click.ClickException(
+                "Could not remove the existing index safely; refusing to rebuild a partial "
+                "generation. Close other Context Hub processes and retry --reset-index."
+            ) from exc
+        if resolved_data_dir.exists() or resolved_data_dir.is_symlink():
+            raise click.ClickException(
+                "Index reset did not remove the existing storage; refusing to rebuild a "
+                "partial generation. Close other Context Hub processes and retry --reset-index."
+            )
         if data_dir_was_symlink:
             # See the docstring: the symlink survives, its target does not. Put
             # the target back so `PIPECAT_HUB_DATA_DIR=<symlink>` still resolves
@@ -967,6 +979,11 @@ def refresh(
     allow several minutes. Deprecation data comes from Pipecat's machine-
     readable deprecation and removal registries in the framework checkout.
     """
+    # Every successful refresh publishes a new generation token in the same
+    # metadata transaction as its provenance. Long-lived readers use it to
+    # reopen both native backends even when refresh updated files in place.
+    refresh_generation = uuid.uuid4().hex
+
     from pipecat_context_hub.services.embedding import (
         EmbeddingIndexWriter,
         EmbeddingService,
@@ -1886,6 +1903,7 @@ def refresh(
             metadata_to_delete.extend(_FRAMEWORK_PROVENANCE_METADATA_KEYS)
 
         metadata_to_set["last_refresh_at"] = now
+        metadata_to_set["index_generation"] = refresh_generation
         if all_errors:
             metadata_to_set["last_refresh_errored_at"] = now
 
