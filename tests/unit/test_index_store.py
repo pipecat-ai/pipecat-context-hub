@@ -1132,6 +1132,33 @@ class TestIndexStoreInitRollback:
         assert not (data_dir / "metadata.db-wal").exists()
         assert not (data_dir / "metadata.db-shm").exists()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX writer alias fixture")
+    def test_fts_constructor_failure_closes_connection_and_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Schema setup failures release the native connection and alias directory."""
+        path = tmp_path / "metadata.db"
+        opened: list[sqlite3.Connection] = []
+        real_connect = sqlite3.connect
+
+        def tracking_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            connection = real_connect(*args, **kwargs)
+            opened.append(connection)
+            return connection
+
+        # ``fts`` and this test share the stdlib module object; patching the
+        # imported module avoids reaching through a private module attribute
+        # that mypy deliberately does not export.
+        monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+        monkeypatch.setattr(fts_module, "_SCHEMA_SQL", "CREATE TABLE broken(")
+        with pytest.raises(sqlite3.OperationalError):
+            FTSIndex(path)
+
+        assert opened
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened[0].execute("SELECT 1")
+        assert not list(tmp_path.glob(".pipecat-context-hub-writer-*"))
+
     def test_writer_backend_creation_without_descriptor_relative_open(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -352,7 +352,9 @@ def _launcher_interpreter(launcher: Path) -> Path:
         shebang = shlex.split(first_line[2:].decode("utf-8"))
     except (UnicodeError, ValueError) as exc:
         raise ValueError("metadata producer has an invalid interpreter") from exc
-    if len(shebang) != 1 or not shebang[0].startswith("/"):
+    if len(shebang) != 1 or not (
+        shebang[0].startswith("/") or (os.name == "nt" and Path(shebang[0]).is_absolute())
+    ):
         raise ValueError("metadata producer must name an absolute interpreter")
     interpreter = Path(shebang[0])
     try:
@@ -387,6 +389,38 @@ def _copy_verified_file(source: Path, destination: Path) -> None:
             after.st_size,
         ):
             raise ValueError("metadata producer package changed while being copied")
+        destination.chmod(stat.S_IMODE(before.st_mode))
+    finally:
+        os.close(fd)
+
+
+def _copy_record_verified_file(source: Path, destination: Path, record_digest: str) -> None:
+    """Copy a package file and bind the copy to its wheel RECORD digest."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(source, flags)
+    digest = hashlib.sha256()
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("metadata producer package contains a non-file")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as output:
+            while True:
+                chunk = os.read(fd, 64 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+                digest.update(chunk)
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_size) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+        ):
+            raise ValueError("metadata producer package changed while being copied")
+        encoded = base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode("ascii")
+        if encoded != record_digest:
+            raise ValueError("metadata producer package is not RECORD-verified")
         destination.chmod(stat.S_IMODE(before.st_mode))
     finally:
         os.close(fd)
@@ -474,13 +508,27 @@ def _materialize_verified_producer(command: list[str]):
         if encoded != record_digest:
             raise ValueError("metadata producer bytes are not RECORD-verified")
         snapshot.chmod(stat.S_IMODE(before.st_mode) | stat.S_IXUSR)
-        interpreter = _launcher_interpreter(trusted)
         env_root = trusted.parent.parent
         package_roots = [root for root in _site_packages_for_environment(env_root) if root.is_dir()]
         if not package_roots:
             raise ValueError("metadata producer package environment is unavailable")
         package_snapshot = Path(temporary.name) / "site-packages"
         _snapshot_site_packages(package_roots, package_snapshot)
+        if os.name == "nt" and trusted.suffix.casefold() == ".exe":
+            # Standard Windows console-script launchers are small PE files
+            # next to a ``<name>-script.py`` companion.  They do not carry a
+            # POSIX shebang, so invoke the verified launcher itself and copy
+            # its companion beside it.  The companion is independently bound
+            # to the same distribution's RECORD digest before it receives a
+            # credential-bearing environment.
+            script = trusted.with_name(f"{trusted.stem}-script.py")
+            script_digest = _record_digest_for_executable(script)
+            if script_digest is None:
+                raise ValueError("metadata producer Windows launcher script is unavailable")
+            _copy_record_verified_file(script, Path(temporary.name) / script.name, script_digest)
+            yield [str(snapshot), *command[1:]], {"PYTHONPATH": str(package_snapshot)}
+            return
+        interpreter = _launcher_interpreter(trusted)
         # Invoke the interpreter explicitly rather than relying on the copied
         # launcher's shebang. ``-P`` also prevents a mutable working directory
         # from being inserted ahead of the private package snapshot.

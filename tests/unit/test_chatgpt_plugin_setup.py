@@ -544,6 +544,55 @@ def test_external_cli_snapshots_imported_producer_code(tmp_path: Path) -> None:
     assert json.loads(result.stdout) == {"organizations": [{"id": "snapshot", "name": "Team"}]}
 
 
+def test_windows_console_launcher_snapshots_record_verified_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normal Windows ``.exe`` launcher is supported without trusting a mutable script."""
+    module = _load_safe_metadata_module()
+    env_root = tmp_path / "windows-tool"
+    site_packages = env_root / "Lib" / "site-packages"
+    dist_info = site_packages / "fixture_cli-1.0.dist-info"
+    scripts = env_root / "Scripts"
+    launcher = scripts / "pipecat.exe"
+    script = scripts / "pipecat-script.py"
+    site_packages.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    launcher.write_bytes(b"MZ trusted console launcher")
+    launcher.chmod(0o755)
+    script.write_text("from pipecat.cli import app\n")
+    (site_packages / "fixture_module.py").write_text("VALUE = 'snapshot'\n")
+
+    def digest(path: Path) -> str:
+        """Return the wheel RECORD digest spelling for a fixture file."""
+        return (
+            base64.urlsafe_b64encode(hashlib.sha256(path.read_bytes()).digest())
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text("Metadata-Version: 2.3\nName: pipecat-ai\n")
+    (dist_info / "RECORD").write_text(
+        "../../Scripts/pipecat.exe,sha256="
+        f"{digest(launcher)},{launcher.stat().st_size}\n"
+        "../../Scripts/pipecat-script.py,sha256="
+        f"{digest(script)},{script.stat().st_size}\n"
+    )
+    (env_root / "pyvenv.cfg").write_text("home = C:\\Python311\nversion_info = 3.11.0\n")
+    # Keep this cross-platform emulation on POSIX path semantics; pathlib
+    # selects WindowsPath dynamically from os.name on newer Python versions.
+    monkeypatch.setattr(module, "Path", type(tmp_path))
+    monkeypatch.setattr(module.os, "name", "nt")
+
+    command = [str(launcher), "cloud", "--output", "json", "organizations", "list"]
+    with module._materialize_verified_producer(command) as (safe_command, extra_env):
+        copied_launcher = type(tmp_path)(safe_command[0])
+        assert copied_launcher.suffix == ".exe"
+        assert copied_launcher.read_bytes() == launcher.read_bytes()
+        assert copied_launcher.with_name("pipecat-script.py").read_bytes() == script.read_bytes()
+        assert extra_env["PYTHONPATH"]
+
+
 @pytest.mark.parametrize("name", ["AWS_ACCESS_KEY_ID", "DOCKER_AUTH_CONFIG"])
 def test_cloud_metadata_wrapper_filters_credential_like_environment(
     tmp_path: Path, name: str

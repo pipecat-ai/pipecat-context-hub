@@ -393,89 +393,75 @@ class FTSIndex:
         self._closed = False
         try:
             info = sqlite_path.lstat()
-        except OSError:
-            self._conn.close()
+            if is_reparse_link(sqlite_path) or not stat.S_ISREG(info.st_mode):
+                raise ValueError("unsafe SQLite database path")
+            identity = (info.st_dev, info.st_ino)
+            if initial_identity is not None and identity != initial_identity:
+                raise ValueError("SQLite database path changed while opening")
+            if sidecar_identities and any(
+                _sidecar_identity(path) != expected for path, expected in sidecar_identities.items()
+            ):
+                raise ValueError("SQLite WAL/SHM path changed while opening")
+            if not read_only:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.executescript(_SCHEMA_SQL)
+                self._conn.commit()
+                alias_path = self._writer_alias_path
+                alias_dir = self._writer_alias_dir
+                if alias_path is not None and alias_dir is not None:
+                    for suffix in ("-wal", "-shm"):
+                        sidecar_name = f"{alias_path.name}{suffix}"
+                        try:
+                            alias_sidecar_info = alias_dir.stat(sidecar_name)
+                        except FileNotFoundError:
+                            continue
+                        published = sqlite_path.with_name(sqlite_path.name + suffix)
+                        try:
+                            existing = alias_dir.stat_parent(published.name)
+                        except FileNotFoundError:
+                            alias_dir.link_to_parent(sidecar_name, published.name)
+                            self._published_sidecars.add(published)
+                        else:
+                            if not stat.S_ISREG(existing.st_mode):
+                                raise ValueError(f"unsafe SQLite {suffix[1:].upper()} path")
+                            if (existing.st_dev, existing.st_ino) != (
+                                alias_sidecar_info.st_dev,
+                                alias_sidecar_info.st_ino,
+                            ):
+                                raise ValueError(
+                                    f"SQLite {suffix[1:].upper()} path changed while opening"
+                                )
+            self._identity = identity
+            # ``lock_held`` only describes the lock used while constructing this
+            # connection.  The constructor returns after that generation lock has
+            # been released, so retaining the flag would let ``close`` unlink
+            # published WAL/SHM sidecars without reacquiring it.
+            self._lock_held = False
+            tracked_sidecars = (
+                sqlite_path.with_name(f"{sqlite_path.name}-wal"),
+                sqlite_path.with_name(f"{sqlite_path.name}-shm"),
+            )
+            self._sidecar_identities = {path: _sidecar_identity(path) for path in tracked_sidecars}
+            logger.info("FTSIndex initialized at %s", sqlite_path)
+        except BaseException:
+            # The native connection and the descriptor-owned alias are both
+            # live before schema setup and sidecar publication finish.  Any
+            # validation, PRAGMA, schema, or publication failure must release
+            # both so a retry cannot inherit a leaked connection or alias.
+            with contextlib.suppress(BaseException):
+                self._conn.close()
             if self._readonly_snapshot_dir is not None:
-                self._readonly_snapshot_dir.cleanup()
+                with contextlib.suppress(BaseException):
+                    self._readonly_snapshot_dir.cleanup()
                 self._readonly_snapshot_dir = None
             if self._writer_alias_dir is not None:
-                self._writer_alias_dir.cleanup()
+                with contextlib.suppress(BaseException):
+                    self._writer_alias_dir.cleanup()
                 self._writer_alias_dir = None
                 self._writer_alias_path = None
                 self._writer_connection_path = None
+            self._closed = True
             raise
-        if is_reparse_link(sqlite_path) or not stat.S_ISREG(info.st_mode):
-            self._conn.close()
-            if self._readonly_snapshot_dir is not None:
-                self._readonly_snapshot_dir.cleanup()
-                self._readonly_snapshot_dir = None
-            if self._writer_alias_dir is not None:
-                self._writer_alias_dir.cleanup()
-                self._writer_alias_dir = None
-                self._writer_alias_path = None
-                self._writer_connection_path = None
-            raise ValueError("unsafe SQLite database path")
-        identity = (info.st_dev, info.st_ino)
-        if initial_identity is not None and identity != initial_identity:
-            self._conn.close()
-            if self._readonly_snapshot_dir is not None:
-                self._readonly_snapshot_dir.cleanup()
-                self._readonly_snapshot_dir = None
-            if self._writer_alias_dir is not None:
-                self._writer_alias_dir.cleanup()
-                self._writer_alias_dir = None
-                self._writer_alias_path = None
-                self._writer_connection_path = None
-            raise ValueError("SQLite database path changed while opening")
-        if sidecar_identities and any(
-            _sidecar_identity(path) != expected for path, expected in sidecar_identities.items()
-        ):
-            self._conn.close()
-            if self._readonly_snapshot_dir is not None:
-                self._readonly_snapshot_dir.cleanup()
-                self._readonly_snapshot_dir = None
-            raise ValueError("SQLite WAL/SHM path changed while opening")
-        if not read_only:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.executescript(_SCHEMA_SQL)
-            self._conn.commit()
-            alias_path = self._writer_alias_path
-            alias_dir = self._writer_alias_dir
-            if alias_path is not None and alias_dir is not None:
-                for suffix in ("-wal", "-shm"):
-                    sidecar_name = f"{alias_path.name}{suffix}"
-                    try:
-                        alias_sidecar_info = alias_dir.stat(sidecar_name)
-                    except FileNotFoundError:
-                        continue
-                    published = sqlite_path.with_name(sqlite_path.name + suffix)
-                    try:
-                        existing = alias_dir.stat_parent(published.name)
-                    except FileNotFoundError:
-                        alias_dir.link_to_parent(sidecar_name, published.name)
-                        self._published_sidecars.add(published)
-                    else:
-                        if not stat.S_ISREG(existing.st_mode):
-                            raise ValueError(f"unsafe SQLite {suffix[1:].upper()} path")
-                        if (existing.st_dev, existing.st_ino) != (
-                            alias_sidecar_info.st_dev,
-                            alias_sidecar_info.st_ino,
-                        ):
-                            raise ValueError(
-                                f"SQLite {suffix[1:].upper()} path changed while opening"
-                            )
-        self._identity = identity
-        # ``lock_held`` only describes the lock used while constructing this
-        # connection.  The constructor returns after that generation lock has
-        # been released, so retaining the flag would let ``close`` unlink
-        # published WAL/SHM sidecars without reacquiring it.
-        self._lock_held = False
-        tracked_sidecars = (
-            sqlite_path.with_name(f"{sqlite_path.name}-wal"),
-            sqlite_path.with_name(f"{sqlite_path.name}-shm"),
-        )
-        self._sidecar_identities = {path: _sidecar_identity(path) for path in tracked_sidecars}
-        logger.info("FTSIndex initialized at %s", sqlite_path)
 
     def close(self) -> None:
         """Close the database connection."""
