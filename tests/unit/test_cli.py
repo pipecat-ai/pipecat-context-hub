@@ -2667,8 +2667,8 @@ class TestRefreshProvenanceMetadata:
         tmp_path,
         monkeypatch,
     ):
-        """The end-of-refresh metadata pass calls `set_metadata_batch` exactly
-        once and never falls back to bare `set_metadata` for those related
+        """The end-of-refresh metadata pass uses one final batch and never
+        falls back to bare `set_metadata` for those related
         keys — guards against a regression to per-key writes that could leave
         a reader observing a partially-updated related-key set."""
         mock_store, written = self._run_refresh(
@@ -2678,8 +2678,13 @@ class TestRefreshProvenanceMetadata:
             monkeypatch,
         )
 
-        mock_store.set_metadata_batch.assert_called_once()
-        batch_pairs, batch_kwargs = mock_store.set_metadata_batch.call_args
+        assert mock_store.set_metadata_batch.call_count == 2
+        start_pairs = mock_store.set_metadata_batch.call_args_list[0].args[0]
+        assert start_pairs == {
+            "index_generation": written["index_generation"],
+            "refresh_state": "in_progress",
+        }
+        batch_pairs, batch_kwargs = mock_store.set_metadata_batch.call_args_list[-1]
         end_of_refresh_keys = {
             "metadata_contract_version",
             "last_refresh_duration_seconds",

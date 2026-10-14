@@ -161,6 +161,24 @@ class HybridRetriever:
             len(keyword_results),
         )
 
+        return await self._rerank_raw(
+            vector_results,
+            keyword_results,
+            query_text,
+            filters,
+            limit,
+            pipecat_version,
+        )
+
+    async def _rerank_raw(
+        self,
+        vector_results: list[IndexResult],
+        keyword_results: list[IndexResult],
+        query_text: str,
+        filters: dict[str, Any],
+        limit: int,
+        pipecat_version: str | None,
+    ) -> tuple[list[IndexResult], dict[str, str]]:
         if not vector_results and not keyword_results:
             return [], {}
 
@@ -216,14 +234,52 @@ class HybridRetriever:
             limit,
         )
 
-        raw_results = await asyncio.gather(
-            *(
-                self._single_concept_search(
-                    c, filters, per_concept, pipecat_version=pipecat_version
+        # IndexStore exposes a batched hybrid read that holds one generation
+        # lock across all concepts. This prevents a refresh from publishing
+        # between the per-concept reads and producing a mixed-generation answer.
+        batch_search = getattr(type(self._index), "hybrid_search_many", None)
+        if batch_search is not None:
+            batch_search = getattr(self._index, "hybrid_search_many")
+        if callable(batch_search):
+
+            async def embed_concept(concept: str) -> list[float] | None:
+                if self._embedding is None:
+                    return None
+                return await asyncio.to_thread(self._embedding.embed_query, concept)
+
+            embeddings = await asyncio.gather(*(embed_concept(concept) for concept in concepts))
+            queries = [
+                IndexQuery(
+                    query_text=c,
+                    query_embedding=embedding,
+                    filters=filters,
+                    limit=per_concept,
                 )
-                for c in concepts
+                for c, embedding in zip(concepts, embeddings, strict=True)
+            ]
+            raw_pairs = await batch_search(queries)
+            raw_results = [
+                await self._rerank_raw(
+                    vector_results,
+                    keyword_results,
+                    concept,
+                    filters,
+                    per_concept,
+                    pipecat_version,
+                )
+                for concept, (vector_results, keyword_results) in zip(
+                    concepts, raw_pairs, strict=True
+                )
+            ]
+        else:
+            raw_results = await asyncio.gather(
+                *(
+                    self._single_concept_search(
+                        c, filters, per_concept, pipecat_version=pipecat_version
+                    )
+                    for c in concepts
+                )
             )
-        )
         concept_results = [r for r, _ in raw_results]
         merged_compat: dict[str, str] = {}
         for _, cm in raw_results:

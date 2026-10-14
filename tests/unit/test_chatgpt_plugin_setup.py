@@ -519,14 +519,14 @@ def test_external_cli_requires_pipecat_distribution_metadata(
     assert module._trusted_pipecat_path(launcher) is None
 
 
-def test_external_cli_discovers_its_own_python_minor(tmp_path: Path) -> None:
-    """An external 3.99 venv must not use the helper's Python minor."""
+def test_external_cli_is_rejected_even_with_pipecat_metadata(tmp_path: Path) -> None:
+    """A separate venv never receives the credential-bearing token."""
     module = _load_safe_metadata_module()
     launcher, _ = _external_cli_fixture(tmp_path, python_minor="3.99")
-    assert module._trusted_pipecat_path(launcher) == launcher.resolve()
+    assert module._trusted_pipecat_path(launcher) is None
 
 
-def test_external_cli_snapshots_imported_producer_code(tmp_path: Path) -> None:
+def test_external_cli_cannot_materialize_unverified_imports(tmp_path: Path) -> None:
     module = _load_safe_metadata_module()
     launcher, site_packages = _external_cli_fixture(tmp_path)
     command = [
@@ -537,14 +537,12 @@ def test_external_cli_snapshots_imported_producer_code(tmp_path: Path) -> None:
         "organizations",
         "list",
     ]
-    with module._materialize_verified_producer(command) as (safe_command, extra_env):
-        (site_packages / "fixture_module.py").write_text("VALUE = 'mutable-source'\n")
-        result = module._run_bounded(safe_command, extra_env=extra_env)
-    assert result.returncode == 0
-    assert json.loads(result.stdout) == {"organizations": [{"id": "snapshot", "name": "Team"}]}
+    with pytest.raises(ValueError, match="trusted installed executable"):
+        with module._materialize_verified_producer(command):
+            pass
 
 
-def test_windows_console_launcher_snapshots_record_verified_script(
+def test_windows_external_console_launcher_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A normal Windows ``.exe`` launcher is supported without trusting a mutable script."""
@@ -584,13 +582,7 @@ def test_windows_console_launcher_snapshots_record_verified_script(
     monkeypatch.setattr(module, "Path", type(tmp_path))
     monkeypatch.setattr(module.os, "name", "nt")
 
-    command = [str(launcher), "cloud", "--output", "json", "organizations", "list"]
-    with module._materialize_verified_producer(command) as (safe_command, extra_env):
-        copied_launcher = type(tmp_path)(safe_command[0])
-        assert copied_launcher.suffix == ".exe"
-        assert copied_launcher.read_bytes() == launcher.read_bytes()
-        assert copied_launcher.with_name("pipecat-script.py").read_bytes() == script.read_bytes()
-        assert extra_env["PYTHONPATH"]
+    assert module._trusted_pipecat_path(launcher) is None
 
 
 @pytest.mark.parametrize("name", ["AWS_ACCESS_KEY_ID", "DOCKER_AUTH_CONFIG"])

@@ -184,7 +184,6 @@ class IndexStore:
 
     def __init__(self, config: StorageConfig, *, allow_incomplete_reset: bool = False) -> None:
         data_dir = config.data_dir.expanduser().resolve()
-        data_dir.mkdir(parents=True, exist_ok=True)
         if _reset_state_exists(data_dir) and not allow_incomplete_reset:
             raise ValueError("index reset is incomplete; run refresh to recover it")
         config = config.model_copy(update={"data_dir": data_dir})
@@ -199,7 +198,7 @@ class IndexStore:
         # Validation, placeholder creation, backend opening, and rollback all
         # share one generation lock. A second writer cannot publish a newer
         # path between our failed open and cleanup of the placeholders.
-        with index_lock(data_dir, exclusive=True):
+        with index_lock(data_dir, exclusive=True, create_target=True):
             try:
                 # The first check is only a fast fail. A reset may acquire the
                 # lock while this constructor waits, write its marker, and
@@ -423,6 +422,12 @@ class IndexStore:
         """
         return await asyncio.to_thread(self._locked_hybrid_search, query)
 
+    async def hybrid_search_many(
+        self, queries: list[IndexQuery]
+    ) -> list[tuple[list[IndexResult], list[IndexResult]]]:
+        """Read several hybrid queries from one published generation."""
+        return await asyncio.to_thread(self._locked_hybrid_search_many, queries)
+
     def _locked_vector_search(self, query: IndexQuery) -> list[IndexResult]:
         """Run one synchronous vector read under its own worker-thread lock."""
         # Reopening a writer-oriented native backend may perform migrations;
@@ -444,6 +449,13 @@ class IndexStore:
         with index_lock(self._data_dir, exclusive=True):
             self._sync_generation_locked()
             return self._vector.search(query), self._fts.search(query)
+
+    def _locked_hybrid_search_many(
+        self, queries: list[IndexQuery]
+    ) -> list[tuple[list[IndexResult], list[IndexResult]]]:
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
+            return [(self._vector.search(query), self._fts.search(query)) for query in queries]
 
     def _sync_generation_locked(self) -> None:
         """Reopen both native readers when refresh publishes in place."""
@@ -697,6 +709,15 @@ class ReadOnlyIndexStore:
             raise RuntimeError("hybrid search is unavailable on a metadata-only index reader")
         return await asyncio.to_thread(
             lambda: (self._vector.search(query), self._fts.search(query))
+        )
+
+    async def hybrid_search_many(
+        self, queries: list[IndexQuery]
+    ) -> list[tuple[list[IndexResult], list[IndexResult]]]:
+        if self._vector is None:
+            raise RuntimeError("hybrid search is unavailable on a metadata-only index reader")
+        return await asyncio.to_thread(
+            lambda: [(self._vector.search(query), self._fts.search(query)) for query in queries]
         )
 
     def get_all_metadata(self) -> dict[str, str]:

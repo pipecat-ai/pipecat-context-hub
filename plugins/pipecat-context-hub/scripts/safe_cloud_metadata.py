@@ -20,7 +20,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from collections.abc import Mapping
-from importlib.metadata import PackageNotFoundError, PathDistribution, distribution
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any
 
@@ -74,106 +74,65 @@ def _trusted_pipecat_path(executable: Path | None = None) -> Path | None:
     except (OSError, RuntimeError, ValueError):
         return None
 
-    def candidates() -> list[tuple[Path, Any]]:
-        """Return package metadata in the selected interpreter environment.
-
-        A Pipecat CLI may intentionally live in a different uv tool or venv
-        from this helper.  ``importlib.metadata.distribution`` only searches
-        this interpreter's ``sys.path``; for an absolute external console
-        script, discover metadata only in the conventional, descriptor-safe
-        site-packages directory belonging to that script's venv.  We still
-        require a RECORD entry for the exact console script and its digest
-        below, so an arbitrary executable path is never trusted merely because
-        it happens to be named ``pipecat``.
-        """
-        if executable is None:
-            try:
-                dist = distribution("pipecat-ai")
-                if _is_pipecat_distribution(dist):
-                    return [(prefix, dist)]
-                return []
-            except PackageNotFoundError:
-                return []
-        try:
-            resolved = executable.resolve(strict=True)
-            if not stat.S_ISREG(resolved.lstat().st_mode):
-                return []
-            # uv tools and virtualenvs expose console scripts from bin/ (or
-            # Scripts\\ on Windows) and carry a pyvenv.cfg at the environment
-            # root.  Do not search arbitrary ancestors or the whole filesystem.
-            env_root = resolved.parent.parent
-            if not (env_root / "pyvenv.cfg").is_file():
-                return []
-            found: list[tuple[Path, Any]] = []
-            for package_root in _site_packages_for_environment(env_root):
-                if not package_root.is_dir() or package_root.is_symlink():
-                    continue
-                for metadata_dir in package_root.glob("*.dist-info"):
-                    if not metadata_dir.is_dir() or metadata_dir.is_symlink():
-                        continue
-                    try:
-                        dist = PathDistribution(metadata_dir)
-                        if _is_pipecat_distribution(dist):
-                            found.append((env_root, dist))
-                    except (OSError, ValueError):
-                        continue
-            return found
-        except (OSError, RuntimeError, ValueError):
-            return []
+    try:
+        dist = distribution("pipecat-ai")
+    except PackageNotFoundError:
+        return None
+    if not _is_pipecat_distribution(dist):
+        return None
 
     selected = executable.resolve(strict=True) if executable is not None else None
-    for env_root, dist in candidates():
-        for file in dist.files or ():
-            if Path(file).name not in names:
+    for file in dist.files or ():
+        if Path(file).name not in names:
+            continue
+        # Wheel RECORD entries commonly spell console scripts relative to the
+        # distribution directory (for example ``../../../bin/pipecat``).
+        # Normalize that spelling before comparing it with the resolved path;
+        # the spelling itself is still checked with lstat below so a launcher
+        # symlink cannot become the credential-bearing producer.
+        candidate = Path(os.path.abspath(os.path.normpath(os.fspath(dist.locate_file(file)))))
+        if executable is not None and candidate.resolve(strict=True) != selected:
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(prefix)
+            # Check the executable spelling separately from its resolved
+            # target.  The interpreter prefix itself may be reached through a
+            # benign parent symlink (notably temporary virtualenv paths), but
+            # the actual console-script entry must not be a reparse point.
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
                 continue
-            # Wheel RECORD entries commonly spell console scripts relative to the
-            # distribution directory (for example ``../../../bin/pipecat``).
-            # Normalize that spelling before comparing it with the resolved path;
-            # the spelling itself is still checked with lstat below so a launcher
-            # symlink cannot become the credential-bearing producer.
-            candidate = Path(os.path.abspath(os.path.normpath(os.fspath(dist.locate_file(file)))))
-            if executable is not None and candidate.resolve(strict=True) != selected:
+            if not stat.S_ISREG(candidate.lstat().st_mode):
                 continue
-            try:
-                resolved = candidate.resolve(strict=True)
-                resolved.relative_to(env_root)
-                # Check the executable spelling separately from its resolved
-                # target.  The interpreter prefix itself may be reached through a
-                # benign parent symlink (notably temporary virtualenv paths), but
-                # the actual console-script entry must not be a reparse point.
-                if not candidate.is_file() or not os.access(candidate, os.X_OK):
-                    continue
-                if not stat.S_ISREG(candidate.lstat().st_mode):
-                    continue
-                # Distribution metadata is not merely a name/permission check: if
-                # RECORD carries a digest, bind trust to the bytes that the wheel
-                # installed.  A modified launcher must never receive PIPECAT_TOKEN.
-                record = dist.read_text("RECORD")
-                if not record:
-                    continue
-                record_digest = None
-                record_path = os.path.normpath(os.fspath(file)).replace(os.sep, "/")
-                for row in record.splitlines():
-                    fields = row.split(",")
-                    if (
-                        len(fields) >= 3
-                        and fields[0] == record_path
-                        and fields[1].startswith("sha256=")
-                    ):
-                        record_digest = fields[1][len("sha256=") :]
-                        break
-                if not record_digest:
-                    continue
-                digest = hashlib.sha256(candidate.read_bytes()).digest()
-                encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-                if encoded != record_digest:
-                    continue
-                # Return the canonical spelling used by the identity check below.
-                # A symlinked virtualenv prefix is valid, but the executable itself
-                # must resolve to the package-owned regular file.
-                return resolved
-            except (OSError, RuntimeError, ValueError, UnicodeError):
+            # Distribution metadata is not merely a name/permission check: if
+            # RECORD carries a digest, bind trust to the bytes that the wheel
+            # installed.  A modified launcher must never receive PIPECAT_TOKEN.
+            record = dist.read_text("RECORD")
+            if not record:
                 continue
+            record_digest = None
+            record_path = os.path.normpath(os.fspath(file)).replace(os.sep, "/")
+            for row in record.splitlines():
+                fields = row.split(",")
+                if (
+                    len(fields) >= 3
+                    and fields[0] == record_path
+                    and fields[1].startswith("sha256=")
+                ):
+                    record_digest = fields[1][len("sha256=") :]
+                    break
+            if not record_digest:
+                continue
+            digest = hashlib.sha256(candidate.read_bytes()).digest()
+            encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+            if encoded != record_digest:
+                continue
+            # Return the canonical spelling used by the identity check below.
+            # A symlinked virtualenv prefix is valid, but the executable itself
+            # must resolve to the package-owned regular file.
+            return resolved
+        except (OSError, RuntimeError, ValueError, UnicodeError):
+            continue
     return None
 
 
@@ -184,37 +143,18 @@ def _is_pipecat_distribution(dist: Any) -> bool:
     return normalized == "pipecat-ai"
 
 
-def _site_packages_for_environment(env_root: Path) -> list[Path]:
-    """Find site-packages using the selected environment's Python layout.
-
-    The helper may run under a different Python minor than an external uv tool.
-    Enumerating the environment's own ``python*/site-packages`` directories
-    avoids coupling external CLI discovery to the helper interpreter.
-    """
-    roots: list[Path] = []
-    lib = env_root / "lib"
-    if lib.is_dir() and not lib.is_symlink():
-        roots.extend(sorted(lib.glob("python*/site-packages")))
-        roots.append(lib / "site-packages")
-    roots.append(env_root / "Lib" / "site-packages")
-    return list(dict.fromkeys(roots))
-
-
 def _trusted_path_for_command(command: list[str]) -> Path | None:
     """Resolve trust against the environment selected by an absolute command."""
     requested = Path(command[0]) if command else Path()
     installed = _trusted_pipecat_path()
-    if requested.is_absolute():
-        try:
-            if installed is None or requested.resolve(strict=True) != installed.resolve(
-                strict=True
-            ):
-                selected = _trusted_pipecat_path(requested)
-                if selected is not None:
-                    return selected
-        except (OSError, RuntimeError, ValueError):
-            return None
-    return installed
+    if installed is None or not requested.is_absolute():
+        return None
+    try:
+        return (
+            installed if requested.resolve(strict=True) == installed.resolve(strict=True) else None
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def _record_digest_for_executable(executable: Path) -> str | None:
@@ -224,51 +164,33 @@ def _record_digest_for_executable(executable: Path) -> str | None:
     except (OSError, RuntimeError, ValueError):
         return None
 
-    distributions: list[Any] = []
     try:
         current = distribution("pipecat-ai")
-        if _is_pipecat_distribution(current):
-            distributions.append(current)
+        if not _is_pipecat_distribution(current):
+            return None
     except PackageNotFoundError:
-        pass
-    # The selected CLI may belong to a separate uv tool/venv.  Reuse the same
-    # narrowly-scoped environment discovery as _trusted_pipecat_path so the
-    # later private snapshot still binds to its RECORD digest.
-    env_root = resolved.parent.parent
-    if (env_root / "pyvenv.cfg").is_file():
-        for package_root in _site_packages_for_environment(env_root):
-            if not package_root.is_dir() or package_root.is_symlink():
+        return None
+    try:
+        for file in current.files or ():
+            if Path(file).name != executable.name:
                 continue
-            for metadata_dir in package_root.glob("*.dist-info"):
-                if metadata_dir.is_dir() and not metadata_dir.is_symlink():
-                    try:
-                        dist = PathDistribution(metadata_dir)
-                        if _is_pipecat_distribution(dist):
-                            distributions.append(dist)
-                    except (OSError, ValueError):
-                        continue
-    for dist in distributions:
-        try:
-            for file in dist.files or ():
-                if Path(file).name != executable.name:
-                    continue
-                candidate = Path(
-                    os.path.abspath(os.path.normpath(os.fspath(dist.locate_file(file))))
-                )
-                if candidate.resolve(strict=True) != resolved:
-                    continue
-                record_path = os.path.normpath(os.fspath(file)).replace(os.sep, "/")
-                record = dist.read_text("RECORD") or ""
-                for row in record.splitlines():
-                    fields = row.split(",")
-                    if (
-                        len(fields) >= 3
-                        and fields[0] == record_path
-                        and fields[1].startswith("sha256=")
-                    ):
-                        return fields[1][len("sha256=") :]
-        except (OSError, RuntimeError, ValueError, UnicodeError):
-            continue
+            candidate = Path(
+                os.path.abspath(os.path.normpath(os.fspath(current.locate_file(file))))
+            )
+            if candidate.resolve(strict=True) != resolved:
+                continue
+            record_path = os.path.normpath(os.fspath(file)).replace(os.sep, "/")
+            record = current.read_text("RECORD") or ""
+            for row in record.splitlines():
+                fields = row.split(",")
+                if (
+                    len(fields) >= 3
+                    and fields[0] == record_path
+                    and fields[1].startswith("sha256=")
+                ):
+                    return fields[1][len("sha256=") :]
+    except (OSError, RuntimeError, ValueError, UnicodeError):
+        return None
     return None
 
 
@@ -367,95 +289,9 @@ def _launcher_interpreter(launcher: Path) -> Path:
     return resolved
 
 
-def _copy_verified_file(source: Path, destination: Path) -> None:
-    """Copy one regular file while detecting replacement during the read."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(source, flags)
-    try:
-        before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode):
-            raise ValueError("metadata producer package contains a non-file")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("wb") as output:
-            while True:
-                chunk = os.read(fd, 64 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-        after = os.fstat(fd)
-        if (before.st_dev, before.st_ino, before.st_size) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-        ):
-            raise ValueError("metadata producer package changed while being copied")
-        destination.chmod(stat.S_IMODE(before.st_mode))
-    finally:
-        os.close(fd)
-
-
-def _copy_record_verified_file(source: Path, destination: Path, record_digest: str) -> None:
-    """Copy a package file and bind the copy to its wheel RECORD digest."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(source, flags)
-    digest = hashlib.sha256()
-    try:
-        before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode):
-            raise ValueError("metadata producer package contains a non-file")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("wb") as output:
-            while True:
-                chunk = os.read(fd, 64 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-                digest.update(chunk)
-        after = os.fstat(fd)
-        if (before.st_dev, before.st_ino, before.st_size) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-        ):
-            raise ValueError("metadata producer package changed while being copied")
-        encoded = base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode("ascii")
-        if encoded != record_digest:
-            raise ValueError("metadata producer package is not RECORD-verified")
-        destination.chmod(stat.S_IMODE(before.st_mode))
-    finally:
-        os.close(fd)
-
-
-def _snapshot_site_packages(roots: list[Path], destination: Path) -> None:
-    """Snapshot all importable files before handing a token to the CLI."""
-    for root in roots:
-        if not root.is_dir() or root.is_symlink():
-            raise ValueError("metadata producer package root is unsafe")
-        for current, directories, files in os.walk(root, followlinks=False):
-            current_path = Path(current)
-            for name in directories:
-                path = current_path / name
-                if path.is_symlink():
-                    raise ValueError("metadata producer package contains a symlink")
-            for name in files:
-                source = current_path / name
-                if source.is_symlink():
-                    raise ValueError("metadata producer package contains a symlink")
-                relative = source.relative_to(root)
-                _copy_verified_file(source, destination / relative)
-
-
 @contextmanager
 def _materialize_verified_producer(command: list[str]):
-    """Execute a private snapshot of the verified launcher and its imports.
-
-    Validation and ``Popen`` cannot make a pathname execution atomic. Copying
-    the checked regular file through an open descriptor binds the launcher to
-    the bytes that were verified.  The launcher is run with its verified
-    interpreter and a private snapshot of the selected environment's
-    site-packages first on ``PYTHONPATH``; otherwise a mutable package module
-    could receive the token after the launcher itself was verified.
-    """
+    """Execute the verified launcher in this interpreter's environment only."""
     source = Path(command[0])
     trusted = _trusted_path_for_command(command)
     if trusted is None:
@@ -508,33 +344,23 @@ def _materialize_verified_producer(command: list[str]):
         if encoded != record_digest:
             raise ValueError("metadata producer bytes are not RECORD-verified")
         snapshot.chmod(stat.S_IMODE(before.st_mode) | stat.S_IXUSR)
-        env_root = trusted.parent.parent
-        package_roots = [root for root in _site_packages_for_environment(env_root) if root.is_dir()]
-        if not package_roots:
-            raise ValueError("metadata producer package environment is unavailable")
-        package_snapshot = Path(temporary.name) / "site-packages"
-        _snapshot_site_packages(package_roots, package_snapshot)
         if os.name == "nt" and trusted.suffix.casefold() == ".exe":
-            # Standard Windows console-script launchers are small PE files
-            # next to a ``<name>-script.py`` companion.  They do not carry a
-            # POSIX shebang, so invoke the verified launcher itself and copy
-            # its companion beside it.  The companion is independently bound
-            # to the same distribution's RECORD digest before it receives a
-            # credential-bearing environment.
-            script = trusted.with_name(f"{trusted.stem}-script.py")
-            script_digest = _record_digest_for_executable(script)
-            if script_digest is None:
-                raise ValueError("metadata producer Windows launcher script is unavailable")
-            _copy_record_verified_file(script, Path(temporary.name) / script.name, script_digest)
-            yield [str(snapshot), *command[1:]], {"PYTHONPATH": str(package_snapshot)}
+            yield [str(snapshot), *command[1:]], {}
             return
         interpreter = _launcher_interpreter(trusted)
+        try:
+            if interpreter.resolve(strict=True) != Path(sys.executable).resolve(strict=True):
+                raise ValueError("metadata producer must use this interpreter environment")
+        except (OSError, RuntimeError, ValueError) as exc:
+            if isinstance(exc, ValueError) and str(exc).startswith("metadata producer"):
+                raise
+            raise ValueError("metadata producer interpreter is unavailable") from exc
         # Invoke the interpreter explicitly rather than relying on the copied
-        # launcher's shebang. ``-P`` also prevents a mutable working directory
-        # from being inserted ahead of the private package snapshot.
+        # launcher's shebang. ``-P`` prevents a mutable working directory from
+        # being inserted ahead of this environment's normal imports.
         yield (
             [str(interpreter), "-P", str(snapshot), *command[1:]],
-            {"PYTHONPATH": str(package_snapshot)},
+            {},
         )
     finally:
         os.close(fd)

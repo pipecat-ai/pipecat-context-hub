@@ -405,6 +405,10 @@ def _delete_local_index_storage(data_dir: Path) -> None:
         raise click.ClickException(
             "Could not verify the existing index safely; refusing to rebuild it."
         ) from exc
+    if target_before is None:
+        # There is no persisted generation to remove. Avoid asking the lock
+        # helper to materialise a target solely for a no-op reset.
+        return
 
     # The lock lives beside the index, so it survives this deletion and keeps
     # readers of the old generation coordinated with the next writer.
@@ -1875,6 +1879,14 @@ def refresh(
             )
 
     try:
+        # Publish the generation identity before mutating records. Readers
+        # that were opened before this refresh will therefore reopen after the
+        # lock is released even if the final metadata transaction fails.
+        # Keep the state explicit so status callers do not mistake a failed
+        # final publication for the previous healthy generation.
+        index_store.set_metadata_batch(
+            {"index_generation": refresh_generation, "refresh_state": "in_progress"}
+        )
         asyncio.run(_run_refresh())
 
         duration = round(time.monotonic() - start, 1)
@@ -2012,10 +2024,29 @@ def refresh(
 
         metadata_to_set["last_refresh_at"] = now
         metadata_to_set["index_generation"] = refresh_generation
+        metadata_to_set["refresh_state"] = "published"
         if all_errors:
             metadata_to_set["last_refresh_errored_at"] = now
 
-        index_store.set_metadata_batch(metadata_to_set, delete_keys=metadata_to_delete)
+        try:
+            index_store.set_metadata_batch(metadata_to_set, delete_keys=metadata_to_delete)
+        except Exception:
+            # The record writes may already be durable when SQLite reports a
+            # commit failure. Best-effort publication of an explicit failure
+            # state prevents long-lived readers from retaining the old
+            # generation token; if this second write also fails, the original
+            # exception remains the actionable error.
+            try:
+                index_store.set_metadata_batch(
+                    {
+                        "index_generation": refresh_generation,
+                        "refresh_state": "failed",
+                        "last_refresh_errored_at": datetime.now(UTC).isoformat(),
+                    }
+                )
+            except Exception:
+                logger.exception("Could not publish failed refresh state")
+            raise
 
         # ----- Summary table -----
         _print_refresh_summary(

@@ -125,7 +125,9 @@ execution tool. Invoke the packaged `scripts/safe_cloud_metadata.py` wrapper wit
 `--kind organizations` and pass the installed read-only JSON command after `--`.
 Resolve the `pipecat` executable to its absolute installed path first; the
 wrapper rejects bare PATH-relative names so a shadow executable cannot receive
-`PIPECAT_TOKEN`.
+`PIPECAT_TOKEN`. It also requires the CLI and wrapper to use the same Python
+environment; separate virtualenv/uv-tool CLIs are rejected rather than
+executing copied, unverified packages with the token.
 The wrapper captures raw stdout/stderr inside its subprocess and emits only
 schema-validated org IDs/names. Treat a nonzero wrapper exit or schema mismatch
 as unresolved; do not retry by printing raw output. Do not use `auth whoami`, auth

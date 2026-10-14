@@ -63,7 +63,10 @@ when they are absent; preparation does not install them silently.
    `scripts/safe_cloud_metadata.py` wrapper with the matching `--kind` and pass
    the installed read-only JSON command after `--`. Resolve `pipecat` to its
    absolute installed path first; bare PATH-relative names are rejected to
-   prevent a shadow executable receiving `PIPECAT_TOKEN`. The wrapper captures raw
+   prevent a shadow executable receiving `PIPECAT_TOKEN`. The wrapper only accepts
+   a CLI installed in the same Python environment as the wrapper; it rejects a
+   separate uv tool or virtualenv instead of copying unverified packages into a
+   credential-bearing subprocess. The wrapper captures raw
    stdout/stderr inside its subprocess and emits only schema-validated allowlisted
    fields. Treat a nonzero wrapper exit or schema mismatch as unresolved; do not
    retry by printing raw output. Never use `auth whoami`, local auth config or

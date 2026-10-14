@@ -51,7 +51,7 @@ def generation_lock(data_dir: Path) -> Iterator[None]:
     data_dir.parent.mkdir(parents=True, exist_ok=True)
     lock_path = _lock_path(data_dir)
     token = object()
-    with index_lock(data_dir, exclusive=True):
+    with index_lock(data_dir, exclusive=True, create_target=True):
         marker = _generation_token.set(token)
         with _generation_leases_guard:
             _generation_leases[(lock_path, token)] = True
@@ -83,7 +83,9 @@ def _held_locks() -> dict[Path, tuple[int, bool, int, tuple[str, int]]]:
 
 
 @contextlib.contextmanager
-def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Iterator[None]:
+def index_lock(
+    data_dir: Path, *, exclusive: bool, create: bool = True, create_target: bool = False
+) -> Iterator[None]:
     """Hold the index lock while a backend is opened or its files are copied.
 
     POSIX uses ``flock``; Windows uses the CRT byte-range lock.  The lock file
@@ -210,6 +212,27 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
             if isinstance(exc, ValueError):
                 raise
             raise ValueError("Unsafe index lock path") from exc
+    # A first generation may not have a data directory yet. Create that
+    # directory through the retained parent descriptor before opening the
+    # sibling lock, so a rename/replacement of the pathname cannot redirect
+    # either coordination or the first writer's files. Windows has no safe
+    # equivalent for this descriptor-relative operation; fail closed there.
+    if parent_info is None:
+        if not create_target or parent_guard_fd == -1:
+            release_parent_guard()
+            raise ValueError("Unsafe index lock path")
+        try:
+            os.mkdir(data_dir.name, 0o700, dir_fd=parent_guard_fd)
+            parent_info = data_dir.lstat()
+        except FileExistsError:
+            try:
+                parent_info = data_dir.lstat()
+            except OSError as exc:
+                release_parent_guard()
+                raise ValueError("Unsafe index lock path") from exc
+        except (OSError, RuntimeError, ValueError) as exc:
+            release_parent_guard()
+            raise ValueError("Unsafe index lock path") from exc
     legacy_fd = -1
 
     def release_legacy_fd() -> None:
@@ -322,7 +345,10 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     fd = -1
     try:
-        fd = os.open(lock_path, flags, 0o600)
+        if parent_guard_fd != -1:
+            fd = os.open(lock_path.name, flags, 0o600, dir_fd=parent_guard_fd)
+        else:
+            fd = os.open(lock_path, flags, 0o600)
         opened_info = os.fstat(fd)
         opened_identity = (opened_info.st_dev, opened_info.st_ino)
         if lock_identity is not None and opened_identity != lock_identity:
