@@ -9,11 +9,10 @@ This repository report is not copied into the installed plugin package.
 
 The user reports submitting the preceding 0.2.3 listing-fix ZIP. A fresh single
 read-only reviewer then found one P3: the packaged README linked to the feature
-branch, which the normal merge-and-delete workflow would remove. The source link
-now pins evaluation evidence to the exact submitted commit
-`ad8a73c06942d78e5310d893cfd8b1f92cf067b4`. Local Git confirms the report exists at
-that commit, GitHub's commit API resolves it and the pinned page returns HTTP 200.
-Regular merging preserves this commit in repository ancestry after branch deletion.
+branch, which the normal merge-and-delete workflow would remove. The packaged
+README now links to the report on the repository's public `main` branch; the
+link is intentionally not pinned to an unpublished commit. The exact historical
+source snapshot remains recorded in local Git history.
 
 The prepared replacement remains 0.2.3:
 `~/Downloads/pipecat-context-hub-0.2.3-durable-link.zip` (33,208 bytes), SHA-256

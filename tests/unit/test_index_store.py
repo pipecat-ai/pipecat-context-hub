@@ -360,6 +360,32 @@ class TestVectorIndex:
             "pipecat_context_hub.services.index.vector.NoOpProductTelemetryClient"
         )
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
+    def test_native_open_replacement_fails_closed_and_closes_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pathname-only Chroma API must not leave a swapped client alive."""
+        chroma = tmp_path / "chroma"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        replacement = tmp_path / "chroma-original"
+        mock_client = Mock()
+        mock_client.get_or_create_collection.return_value = Mock()
+
+        def race(*, path: str, settings: Any) -> Mock:
+            assert Path(path) == chroma
+            chroma.rename(replacement)
+            chroma.symlink_to(outside, target_is_directory=True)
+            return mock_client
+
+        monkeypatch.setattr(
+            "pipecat_context_hub.services.index.vector.chromadb.PersistentClient", race
+        )
+        with pytest.raises(ValueError, match="unsafe Chroma generation path"):
+            VectorIndex(chroma)
+        mock_client.close.assert_called_once()
+        assert not (outside / "chroma.sqlite3").exists()
+
     def test_upsert_and_search(self, vector_index: VectorIndex):
         records = _make_records(3)
         count = vector_index.upsert(records)
@@ -1003,6 +1029,21 @@ class TestFTSIndex:
         assert len(results) == 1
         idx2.close()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX hard-link fixture")
+    def test_close_does_not_remove_sidecars_used_by_another_writer(self, tmp_path: Path) -> None:
+        """A writer close must not detach another connection's WAL/SHM aliases."""
+        path = tmp_path / "metadata.db"
+        first = FTSIndex(path)
+        second = FTSIndex(path)
+        try:
+            first.close()
+            assert path.with_name(path.name + "-wal").exists()
+            assert path.with_name(path.name + "-shm").exists()
+        finally:
+            second.close()
+        assert not path.with_name(path.name + "-wal").exists()
+        assert not path.with_name(path.name + "-shm").exists()
+
     def test_result_limit(self, fts_index: FTSIndex):
         records = [
             _make_record(chunk_id=f"lim-{i}", content=f"pipecat content {i}") for i in range(5)
@@ -1052,6 +1093,25 @@ class TestIndexStoreInitRollback:
         with pytest.raises(RuntimeError, match="sqlite boom"):
             IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
         fake_vector.close.assert_called_once()
+
+    def test_failed_fts_open_removes_new_sqlite_sidecars(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WAL/SHM created before a failed FTS constructor cannot poison retry."""
+        from pipecat_context_hub.services.index import store as store_mod
+
+        def fail_after_wal(path: Path, **_kwargs: Any) -> None:
+            path.with_name(path.name + "-wal").write_bytes(b"failed generation")
+            path.with_name(path.name + "-shm").write_bytes(b"failed generation")
+            raise RuntimeError("sqlite boom")
+
+        monkeypatch.setattr(store_mod, "FTSIndex", fail_after_wal)
+        data_dir = tmp_path / "hub-data"
+        with pytest.raises(RuntimeError, match="sqlite boom"):
+            IndexStore(StorageConfig(data_dir=data_dir))
+        assert not (data_dir / "metadata.db").exists()
+        assert not (data_dir / "metadata.db-wal").exists()
+        assert not (data_dir / "metadata.db-shm").exists()
 
     def test_writer_backend_creation_without_descriptor_relative_open(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

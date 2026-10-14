@@ -604,11 +604,11 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   CI job proves package installation and path/ingest helpers only; it does not
   provide a supported populated index. Run the hub on a POSIX host instead of
   deleting the Windows cache and retrying `refresh`.
-- **`UnicodeEncodeError` in the refresh summary** — the summary table uses
-  box-drawing characters that some Windows code pages (cp1252, cp1254,
-  etc.) cannot encode. The server falls back to ASCII automatically. To
-  opt into the full Unicode output, set `PYTHONIOENCODING=utf-8` before
-  invoking `refresh`, or use Windows Terminal (which defaults to UTF-8).
+- Windows does not produce a populated refresh summary: populated index
+  operations fail closed before the refresh crawl. If a summary from an older
+  POSIX run is being displayed through a Windows console, set
+  `PYTHONIOENCODING=utf-8` or use Windows Terminal for Unicode output; run the
+  actual refresh on a supported POSIX host.
 
 ### Can't see which config a `serve` session actually used
 

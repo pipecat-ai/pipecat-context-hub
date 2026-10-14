@@ -681,7 +681,19 @@ class VectorIndex:
             # Native Chroma accepts only a pathname. Bind the resulting
             # client to the identities validated immediately before opening
             # and fail closed if a replacement won the final open window.
-            opened_identity = self._source_identity()
+            try:
+                opened_identity = self._source_identity()
+            except BaseException:
+                # A native client may have opened a pathname that was swapped
+                # during construction. Release it before surfacing the
+                # fail-closed identity error; the pathname API cannot undo
+                # bytes a hostile native open may already have touched.
+                try:
+                    self._client.close()
+                finally:
+                    self._client = None
+                    self._collection = None
+                raise
             if not self._read_only and (
                 opened_identity[0] != native_identity[0]
                 or (native_identity[1] is not None and opened_identity[1] != native_identity[1])

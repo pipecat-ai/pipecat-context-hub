@@ -279,11 +279,12 @@ the indexed pipecat version; re-verify against the current registry if they drif
     pipecat-context-hub serve` — the pre-warm lines must be absent
     and replaced by `Model pre-warm skipped: PIPECAT_HUB_WARMUP=0`.
     Confirms the first-query cold-start fix is active on boot and the
-    opt-out escape hatch works (matters on Windows CPU where cold
-    loads once took 30-130s and could exceed Claude Code's
-    tool-permission window; the ONNX backend loads in under a second,
-    so pre-warm is now an optimisation rather than a necessity. Run this
-    smoke on POSIX only because populated Windows index operations fail closed.)
+    opt-out escape hatch works. Older Windows CPU measurements once showed
+    30-130s cold loads; that is historical context only. The current Windows
+    contract is package/path smoke, while populated index operations
+    (including serve and pre-warm) fail closed. The ONNX backend loads in
+    under a second on supported POSIX hosts, so pre-warm is now an
+    optimisation rather than a necessity. Run this smoke on POSIX only.)
 45. **`location` surfaced (PR #85).** A `deprecated: true` response carries a
     `location` field as `path/to/file.py` (relative to the pipecat repo
     root) pointing at the file holding the deprecation marker — e.g. `ResampyResampler` →

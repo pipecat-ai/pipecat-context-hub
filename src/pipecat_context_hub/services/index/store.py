@@ -69,6 +69,23 @@ def _verify_backend_path_identities(path: Path, identities: dict[Path, tuple[int
         raise ValueError(f"Unsafe index backend path: {path.name}") from exc
 
 
+def _capture_sqlite_sidecar_identities(
+    sqlite_path: Path, identities: dict[Path, tuple[int, int]]
+) -> None:
+    """Record newly materialised WAL/SHM files before failed-open rollback."""
+    for suffix in ("-wal", "-shm"):
+        sidecar = sqlite_path.with_name(sqlite_path.name + suffix)
+        try:
+            info = sidecar.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        if is_reparse_link(sidecar) or not stat.S_ISREG(info.st_mode):
+            continue
+        identities[sidecar] = (info.st_dev, info.st_ino)
+
+
 def _validate_existing_backend_file(
     path: Path, data_dir: Path, *, allow_empty: bool = False
 ) -> None:
@@ -232,12 +249,18 @@ class IndexStore:
                     _validate_existing_backend_file(
                         chroma_file, data_dir, allow_empty=created_chroma_db
                     )
-                fts = FTSIndex(config.sqlite_path)
+                fts = FTSIndex(config.sqlite_path, lock_held=True)
                 self._fts = fts
                 self._generation_id = fts.get_metadata("index_generation")
                 _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
                 _validate_existing_backend_file(config.sqlite_path, data_dir)
             except Exception:
+                # FTSIndex can fail after enabling WAL but before returning an
+                # object whose close() would remove the aliases. Capture the
+                # sidecar identities while they still exist so rollback can
+                # unlink only this failed generation.
+                if fts is None and created_sqlite:
+                    _capture_sqlite_sidecar_identities(config.sqlite_path, sqlite_identities)
                 # Roll back the already-opened vector backend so callers don't
                 # inherit a leaked Chroma handle/lock on a half-constructed store.
                 if vector is not None:
@@ -639,7 +662,7 @@ class ReadOnlyIndexStore:
                     vector_kwargs["lock_held"] = True
                 vector = VectorIndex(config.chroma_path, **vector_kwargs)
                 _verify_backend_path_identities(config.chroma_path, chroma_identities)
-            fts = FTSIndex(config.sqlite_path, read_only=True)
+            fts = FTSIndex(config.sqlite_path, read_only=True, lock_held=True)
             _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
             # Metadata-only readers intentionally leave this unset; keep the
             # private field dynamically typed because callers/tests inspect the

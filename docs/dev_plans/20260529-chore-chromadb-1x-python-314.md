@@ -9,6 +9,16 @@
 
 > **2026-10-14 correction:** The v0.1.0 implementation subset and its Phase 4/7 evidence are retained here as a decision record. The unchecked release-blocker phases (prerequisites, parity, performance, and migration) were not completed by that work and must not be inferred from the historical status; the current status above intentionally leaves those gates open.
 
+**Current interpretation (2026-10-14):** This record documents the subset that
+was merged, not an open release plan. The package currently validates only the
+persisted Chroma 1.5.x format (`chromadb>=1.5,<1.6`); widening that range is a
+new compatibility project. The historical Phase 4 and Phase 7 observations
+are dated evidence, not a claim that the remaining release checklist closed.
+The unchecked checklist and merge/tag notes below describe that historic v0.1.0
+release process; they are not current release blockers. Windows support is
+currently limited to package/path smoke; populated index creation and semantic
+operations fail closed there.
+
 ## Why
 
 `v0.0.20` capped `requires-python` to `<3.14` (PR #65) because two upstream blockers prevent Python 3.14 support today:
@@ -89,7 +99,7 @@ Each item below needs to be verified during the spike, **not assumed**. The list
 
 ## Files to Modify
 
-- `pyproject.toml` — chromadb pin `>=0.6,<1.0` → **`>=1.5,<2.0`** (consistent throughout; do not weaken to `>=1.0`); version `0.0.20` → `0.1.0`
+- `pyproject.toml` — chromadb pin `>=0.6,<1.0` → **`>=1.5,<1.6`** (the validated persisted format; widening it requires a new compatibility project); version `0.0.20` → `0.1.0`
 - `src/pipecat_context_hub/server/main.py` — `_SERVER_VERSION` `0.0.20` → `0.1.0` only; do **not** add storage-open policy here
 - `src/pipecat_context_hub/services/index/errors.py` (new) — define typed `IncompatibleIndexFormatError` and shared remediation text containing literal `refresh --force --reset-index`
 - `src/pipecat_context_hub/services/index/vector.py` — imports, Settings construction (drop or retarget `chroma_product_telemetry_impl` per Phase 2 finding), telemetry no-op stub, `_release_client` private-API audit (prefer public `client.close()` / `client.reset()` if exposed in 1.x; otherwise re-pin), query/get call sites, `collection.upsert` semantics, **non-mutating format detection probe before `PersistentClient` construction** (new) — raise typed `IncompatibleIndexFormatError` on 0.6-format directory before `VectorIndex._open_client` creates/opens Chroma state
@@ -148,7 +158,7 @@ These steps MUST complete on `main` (or a 0.6 worktree) before bumping the chrom
 
 ### Phase 1: Spike — does the import even work?
 
-In an isolated worktree (`git worktree add` or `Agent isolation=worktree`), bump the chromadb pin to `>=1.5,<2.0`, re-lock, and run:
+In an isolated worktree (`git worktree add` or `Agent isolation=worktree`), bump the chromadb pin to the validated `>=1.5,<1.6` range, re-lock, and run:
 
 ```bash
 uv lock
@@ -327,7 +337,7 @@ If steps 3-6 are not all in the same commit, CI may green-light a Python version
 
 ## Notes
 
-- chromadb 1.x release timeline: 1.0.0 (2025-04-03), current 1.5.9 (2026-05-05). Pin: `>=1.5,<2.0` everywhere — do not weaken to `>=1.0,<2.0`.
+- chromadb 1.x release timeline: 1.0.0 (2025-04-03), current 1.5.9 (2026-05-05). The current package pin is `>=1.5,<1.6`; widening beyond 1.5.x requires explicit persisted-format validation and belongs to a follow-up plan.
 - The current `Settings` construction passes **only** `anonymized_telemetry=False` and `chroma_product_telemetry_impl="...NoOpProductTelemetryClient"`. It does **not** pass `allow_reset=True` (the v1 draft of this plan claimed it did; that was incorrect — caught by Codex review).
 - The `requires-python` ceiling, CHANGELOG entry, and CI matrix must all move together when the cap lifts. v0.0.20 established this convention.
 - This plan deliberately leaves out "consider switching vector backends" — that's `docs/decisions/vector-backend.md`, re-open separately if 1.x reveals fundamental problems.
@@ -352,7 +362,7 @@ _Workspace below the review marker — does not affect the contract hash. Driven
 - [x] **Phase 0.2 version bump** — `0.0.20`→`0.1.0` (pyproject + `main.py::_SERVER_VERSION` + uv.lock; consistency test passes) + CHANGELOG `[0.1.0]` (`a3c93c7`).
 - [x] **Branches merged** — `spike/chromadb-1x` → `chore/chromadb-1x-python-314` (`c034f5a`, conflict-free regular merge). All Phases 0–3 now on one branch. **Env flipped: next `uv run` in the main worktree syncs `.venv` to chromadb 1.5.9; the live `~/.pipecat-context-hub` 0.6 index now needs `refresh --force --reset-index`.**
 - [x] **`main` merged into branch** — brought in PR #67 (default sources: +`pipecat-flows`, `small-webrtc-prebuilt`→`pipecat-prebuilt`, −`flows-editor`/`web-client-ui`) and PR #69 (grandparent-death watchdog + idle-as-fallback). Only CHANGELOG conflicted; `uv.lock` auto-merged and verified consistent (`uv lock --check` clean, chromadb 1.5.9, posthog absent). Full suite **1068 passed, 6 skipped**; mypy + ruff clean. Also fixed latent mypy-strict errors in the Phase 0/3 benchmark harnesses (`dict`→`dict[str, Any]`, `Popen[object]`→`Popen[Any]`, Optional `distances` guards) — CI had never run with those files present.
-- [x] **Phase 4 — DONE.**
+- [x] **Phase 4 — historical evidence recorded (not a release-gate completion claim).**
   - Dashboard scripts routed through `StorageConfig().chroma_path` (honour `PIPECAT_HUB_DATA_DIR`) — `fb564f5`.
   - Integration suite green (real index build + `serve` lifetime + tool handlers).
   - `refresh --force --reset-index` on isolated `/tmp/chroma-1x-e2e`: 39,613 upserted, 0 errors, 355.9s.
@@ -361,8 +371,8 @@ _Workspace below the review marker — does not affect the contract hash. Driven
   - Concurrent reader covered by `test_runtime_stability::test_concurrent_search_rounds`.
 - [x] **Phase 5 — PASS** vs committed `baselines/v0.0.20.json` (1.x report `/tmp/phase5-1x.json`, 39,598 records). index_build 378.2s (−6.6%, ±20%); refresh RSS 1.67 GB (+8.4%, ±30%); **query p50 2.58 ms (−58%) / p95 3.28 ms (−52%)** — notably faster (1.x Rust core); dashboard RSS 2.58 GB (+7.7%, ±50%). All within tolerance.
 - [x] **Phase 6 — PASS** (e2e). `serve` against a restored `/tmp/chroma-0.6-snapshot` exits non-zero with `ERROR Incompatible ChromaDB index format … written by chromadb 0.6 (pre-1.0 on-disk format) … found pre-1.0 sysdb schema migration 9; chromadb 1.x requires migration 10+. … refresh --force --reset-index`. Refusal is fast (probe runs before model pre-warm); the 0.6 snapshot is byte-identical before/after (no mutation). Recovery via `--reset-index` proven by the e2e build.
-- [x] **Phase 7 — representative subset PASS (7/7)** against the 1.x index: `get_hub_status` (v0.1.0, recent refresh), `get_doc` assembled page (13 KB) + section slice, `search_api` `send_dtmf`/`DailyTransport` (prefix + class filter), `search_examples domain=backend`, `search_docs "TTS + STT"` (multi-concept), `search_api WebSocketTransport` (TS). **The full 40-item AGENTS.md live smoke remains a maintainer step** — it requires the reconnected MCP client; run it against the rebuilt live index before merge/tag.
-- [x] **Docs/CI** — Windows smoke job added to `.github/workflows/ci.yml` (validates chromadb 1.5.9 wheels on Windows + runs unit/integration suite that builds a real index, exercises the probe, boots `serve`, queries; a full network `refresh` is intentionally not CI-gated). `docs/dev_plans/README.md` row → "In Review". CLAUDE.md "Windows tips" reviewed: all three items are git-clone-recovery / console-encoding / model-prewarm — none are chromadb-0.6-specific, nothing to remove. `docs/README.md` says "ChromaDB + SQLite FTS5" (no version) — no material change.
+- [x] **Phase 7 — historical representative subset evidence (7/7), not the full maintainer gate.** The complete reconnect-required smoke list remains a separate current-maintainer step.
+- [x] **Docs/CI (historic evidence)** — Windows smoke job added to `.github/workflows/ci.yml`; its supported scope was subsequently narrowed to Chroma wheel installation and package/path safety because populated index creation, `serve`, reset, and semantic operations fail closed on Windows. `CLAUDE.md` and `docs/README.md` were reviewed against that current contract.
 - [x] **Release housekeeping** — parked PR #67/#69 work folded into CHANGELOG `[0.1.0]` (Added/Changed/Fixed), `[Unreleased]` left empty.
 - [x] **PR opened — #70** (`chore/chromadb-1x-python-314` → `main`). CI green after three fixes found post-open: (1) the Windows-job insertion had dropped the `security:` job header — a duplicate `steps:` key that `yaml.safe_load` silently collapses but GitHub Actions rejects; (2) `pip-audit` flagged **CVE-2026-45829** (chromadb server-mode pre-auth RCE, no fixed release) — unreachable here (embedded `PersistentClient`, no server/endpoint/embedding-functions), ignored with justification + CHANGELOG Security note; (3) the Windows job's full `tests/unit/` run surfaced ~27 pre-existing POSIX path-assumption failures — scoped the job to the chromadb tests (index_store / format_detection / metadata_types, all green on Windows) since `Sync dependencies` already proves the 1.5.9 wheel installs.
 - [x] **Live MCP smoke — PASS (20/20)** against the rebuilt 1.x index (37,169
@@ -371,8 +381,9 @@ _Workspace below the review marker — does not affect the contract hash. Driven
   multi-concept `search_docs`, `search_examples` domain + version scoring, the
   new `pipecat-flows` items (33a/33b/33c), and `check_deprecation` 34–37.
 - [x] **Two hardening fixes landed on-branch before tag** (see below).
-- [ ] **Remaining** — (maintainer) merge #70 (regular `--merge`, not squash);
-  move the `docs/dev_plans/README.md` row to Completed; tag v0.1.0.
+- [x] **Historic release follow-up** — The former merge/tag steps are retained as
+  decision-record history; current release status is tracked by the repository
+  changelog and release tooling.
 
 ### Pre-tag hardening (landed on this branch)
 
