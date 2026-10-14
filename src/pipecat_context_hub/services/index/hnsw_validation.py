@@ -32,11 +32,10 @@ def _open_segment_file_without_dir_fd(
     root: Path, segment_name: str, filename: str
 ) -> tuple[int, os.stat_result]:
     """Windows-compatible path open with the same component safety checks."""
-    # Windows has no descriptor-relative open API here. A pathname can cross
-    # a junction replacement between the checks and ``os.open``; fail closed
-    # rather than claiming this fallback provides the POSIX guarantee.
-    if os.name == "nt":
-        raise OSError(errno.ENOTSUP, "descriptor-relative HNSW validation is unavailable")
+    # Windows has no descriptor-relative open API here. The fallback is
+    # deliberately conservative: reject every reparse point and compare all
+    # checked identities before and after the open. If any component changes,
+    # close the descriptor and fail closed rather than consuming the result.
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     segment_path = root / segment_name
     file_path = segment_path / filename
@@ -144,15 +143,18 @@ def validate_persisted_hnsw(
         raise IncompatibleIndexFormatError(
             chroma_path, reason="unable to inspect chroma.sqlite3-wal; refusing native loading"
         ) from exc
-    if wal_info is not None and not allow_wal:
+    if wal_info is not None:
         if is_reparse_link(wal_path) or not stat.S_ISREG(wal_info.st_mode):
             reason = "unsafe chroma.sqlite3-wal path"
-        else:
+        elif not allow_wal:
             reason = (
                 "chroma.sqlite3-WAL is present; uncheckpointed Chroma state cannot be "
                 "validated safely"
             )
-        raise IncompatibleIndexFormatError(chroma_path, reason=reason)
+        else:
+            reason = ""
+        if reason:
+            raise IncompatibleIndexFormatError(chroma_path, reason=reason)
 
     conn: sqlite3.Connection | None = None
     try:
@@ -173,7 +175,12 @@ def validate_persisted_hnsw(
     # do not accept that stale probe.  Under the lock, a writer cannot change
     # the generation, so a pre-existing WAL is valid and remains visible.
     try:
-        if not allow_wal and (wal_path.exists() or wal_path.is_symlink()):
+        final_wal_info = wal_path.lstat() if wal_path.exists() or wal_path.is_symlink() else None
+        if final_wal_info is not None and (
+            is_reparse_link(wal_path) or not stat.S_ISREG(final_wal_info.st_mode)
+        ):
+            raise IncompatibleIndexFormatError(chroma_path, reason="unsafe chroma.sqlite3-wal path")
+        if not allow_wal and final_wal_info is not None:
             raise IncompatibleIndexFormatError(
                 chroma_path,
                 reason=(

@@ -295,9 +295,11 @@ and docs come from the live `docs.pipecat.ai`, which is unversioned.
 ## Index Metadata Contract
 
 External tooling — editor plugins, CI checks, the Pipecat CLI — often needs one
-cheap answer: *how old is this index, and which pipecat version is it for?* Every
-in-process query path opens ChromaDB, so importing the hub or shelling out to
-`status` is too slow to run on every invocation of another tool.
+cheap answer: *how old is this index, and which pipecat version is it for?*
+Lookup-only paths such as `status` and `check-deprecation` intentionally open
+only SQLite; semantic paths may additionally open ChromaDB. Importing the hub
+or shelling out to `status` is still too slow to run on every invocation of
+another tool, so the direct metadata contract remains useful.
 
 The `index_metadata` table in `<data dir>/metadata.db` is therefore a **published
 read contract**. Read it directly, read-only, with the standard library:

@@ -12,9 +12,9 @@ Test a local desktop plugin that helps users describe a voice-agent idea, discov
 
 ## Scope
 
-Ship one plugin with explore, build and deploy skills. Context Hub supplies concepts, docs, definitions, examples and compatibility evidence over local stdio. The installed Pipecat CLI supplies scaffolding and Cloud operations through the host's local execution tools. Neither CLI is bundled as a copied executable or made a mandatory dependency of the hub's Python package.
+Ship one plugin with explore, build and deploy skills. Context Hub supplies concepts, docs, definitions, examples and compatibility evidence through its installed CLI query commands. The installed Pipecat CLI supplies scaffolding and Cloud operations through the host's local execution tools. Neither CLI is bundled as a copied executable or made a mandatory dependency of the hub's Python package.
 
-Target ChatGPT desktop Work with local execution, and Codex local execution. Discussion-only usage may retrieve material but must not claim it can create files or deploy without execution tools. Native Plugin Settings, a dedicated UI, hosted retrieval and a new CLI-execution MCP adapter are outside this experiment. Start with framework-version and source preferences stated in the conversation. If the host lacks required local execution or stdio support, stop that workflow and report the missing capability; an adapter would require a separate design.
+Target ChatGPT desktop Work with local execution, and Codex local execution. Discussion-only usage may retrieve material but must not claim it can create files or deploy without execution tools. Native Plugin Settings, a dedicated UI, hosted retrieval and a new CLI-execution MCP adapter are outside this experiment. Start with framework-version and source preferences stated in the conversation. If the host lacks required local execution, stop that workflow and report the missing capability. The earlier stdio/MCP renderer is historical and is not a current acceptance gate.
 
 Queries must not silently refresh or replace the index. Discussing an idea does not authorise scaffolding, uploading secrets or deploying. Prepare concrete files and validation evidence before asking for final deployment approval.
 
@@ -45,7 +45,7 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 ### Phase 1: Prove the desktop and installed-tool path
 
 - Crash prerequisite (2026-10-04): reject an oversized persisted HNSW graph before native loading; regress the actual `TTS + STT` query against a synthetic corrupt index and prove healthy persisted indexes still reopen and search. Agents must not initiate live index recovery or refresh. A user-performed refresh supplies a new read-only baseline. Conduct recomputes the review-marker hash on resume; record that hash update separately from a new plan review.
-- Retrieval outcome: resolve the installed hub interpreter, check index readiness without refresh, add the minimal plugin template and local renderer, then prove desktop discovery, explore-skill activation and stdio initialize/status. This gates Phase 2.
+- Retrieval outcome: resolve the installed hub interpreter, check index readiness without refresh, verify the CLI-first skill package and explore-skill activation. This gates Phase 2. The historical stdio initialize/status smoke is retained only in the evaluation record.
 - Execution outcome: separately check local shell availability with a harmless command, and inspect Pipecat CLI versions/help when installed. This gates Phase 3 only; absent shell access or CLI must not block working retrieval.
 - Cloud outcome: when the optional Cloud CLI is present, record command discovery; account/auth readiness remains a Phase 4 gate. Its absence does not block Phases 2 or 3.
 - Capture independent retrieval/execution/Cloud availability, host mode, versions, command/argv and pass/fail evidence without machine paths in committed templates.
@@ -69,7 +69,7 @@ Evaluate each workflow as its prerequisites become available; finish the live bu
 
 ## Technical Specifications
 
-### New files to create
+### New files to create (historical renderer entries are not current package requirements)
 
 - `plugins/pipecat-context-hub/plugin.json`: portable plugin identity; OpenAI presentation metadata only where supported by current schema.
 - `plugins/pipecat-context-hub/mcp.template.json`: source template for the uniquely named `pipecat-context-hub-chatgpt-plugin` stdio entry, with explicit interpreter-name and interpreter-directory placeholders; never register this unresolved template directly.
@@ -87,7 +87,7 @@ Evaluate each workflow as its prerequisites become available; finish the live bu
 
 ### Architecture decisions
 
-Use a generated local copy to bind the installed interpreter; keep machine-specific paths out of the portable source package. Portable stdio commands use an executable name plus a generated `PATH` containing only the installed interpreter directory, rather than an absolute command rejected by the host loader. The packaged MCP server has a unique identity; keep the standalone registration unchanged. Evaluation reports stay under `docs/evaluations/` and are excluded from generated packages. The renderer is a setup operation, not a tool invoked during queries. Re-render into a fresh local copy after plugin/interpreter updates and use the host's documented refresh/reinstall flow.
+The current package is a four-skill, CLI-first distribution. Keep machine-specific paths out of the portable source package, use native local execution for Context Hub and Pipecat CLI commands, and keep evaluation reports under `docs/evaluations/` excluded from generated packages. The generated stdio renderer and portable MCP manifest below are historical feasibility notes, not current setup requirements.
 
 Use native local shell tools in desktop Work/Codex for the Pipecat CLI; skills are instructions, not executable permissions. The Cloud optional extension is installed separately when a user needs deployment. Help-derived capability checks take precedence over assumptions from newer docs. Builds and Cloud operations occur in the user's app workspace, not this repository.
 
@@ -95,7 +95,7 @@ Retrieval, local execution/Pipecat CLI and Cloud readiness are separate gates. M
 
 Secret mutation is an explicit approved Cloud operation, distinct from read-only deployment preparation. Include proposed secret creation/update in the same concrete approval payload as the deployment. Preapproval checks expose only key names and secret-set metadata; after approval, supported local tooling transfers secret values directly without returning them to model context. Upload secrets before starting the approved build/deploy so required runtime secrets are available at startup.
 
-### Integration Seams
+### Integration Seams (historical renderer diagram; current package is CLI-first)
 
 | Producer | Consumer | Contract |
 |---|---|---|
@@ -105,7 +105,7 @@ Secret mutation is an explicit approved Cloud operation, distinct from read-only
 | Pipecat scaffold | Build skill | Generated structure, dependency pins and named environment requirements |
 | Local Cloud CLI | Pipecat Cloud | Read-only metadata inspection before approval; approved secret creation/update precedes approved build/deploy; identity/config, authentication, readiness and redacted diagnostics |
 
-## Architecture & Call Flow
+## Architecture & Call Flow (historical stdio experiment)
 
 ```mermaid
 graph LR
@@ -169,14 +169,14 @@ sequenceDiagram
 | Write secrets | Concrete payload approval, when changes are needed | Redacted result and approved key names | Approved Cloud secret set; values stay out of chat | After approval, before build/deploy |
 | Deploy | Concrete user approval | Deployment identity, readiness and redacted diagnostics | Cloud deployment and recorded result | Approval and tool rounds |
 
-## Testing Notes
+## Testing Notes (historical renderer checks retained for provenance)
 
 | Case | Expected evidence |
 |---|---|
 | Template rendering | Portable root files, exactly the unique packaged MCP server, bare executable with `PATH` restricted to its installed directory and safe argv; no unresolved placeholder or repository evaluation report in generated package |
 | Host MCP loader | Installed Codex `plugin/read` discovers the unique server; freeze the absolute-command rejection and verify the generated configuration passes the real loader, separately from desktop activation |
 | Destination exists or hub absent | Clear error, no overwrite or partial registration |
-| Host feasibility | Actual skill discovery, stdio initialize/status and harmless shell execution in selected desktop mode |
+| Host feasibility | Actual skill discovery and harmless shell execution in selected desktop mode; stdio initialize/status is historical and not a current package gate |
 | Optional shell/CLI absent | Retrieval still activates and answers with sources; build is unavailable without shell/Pipecat CLI, and Cloud absence does not block working exploration/build |
 | Unrelated/shadow-module cwd | Packaged launch completes initialize/status using installed hub, not a same-named shadow module |
 | Idea versus concept prompts | Relevant retrieved material and sources precede Pipecat API assertions |
@@ -192,7 +192,7 @@ sequenceDiagram
 
 Each run records prompt, host mode, CLI/framework versions, actual tool calls, cited response, latency and pass/fail/untested outcomes. Freeze at least 12 prompts across these cases. Local setup tests cannot establish model activation or successful Cloud behaviour.
 
-Before a PR run `uv run ruff format src/ tests/`, `uv run ruff check src/ tests/`, `uv run mypy src/ tests/` and `uv run pytest tests/ -q`; review formatter changes and preserve unrelated work. Include the renderer path in formatting/lint checks. Retrieval handlers are unchanged; the new package still requires a real stdio smoke using its generated command.
+Before a PR run `uv run ruff format src/ tests/`, `uv run ruff check src/ tests/`, `uv run mypy src/ tests/` and `uv run pytest tests/ -q`; review formatter changes and preserve unrelated work. The current package is CLI-first; renderer and generated-stdio checks are historical provenance only.
 
 ## Review Focus
 
@@ -200,7 +200,7 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 
 ## Acceptance Criteria
 
-- Actual desktop discovery and stdio connection are demonstrated with the rendered local package.
+- Actual skill-package discovery and CLI-first retrieval are demonstrated; the earlier rendered-stdio connection remains explicitly historical/untested in the current package.
 - Idea/concept workflows retrieve relevant evidence and disclose version/source limitations.
 - A build request produces a scaffolded app using installed CLI capabilities and verifies it locally.
 - Deployment preparation produces concrete reviewed configuration and proposed secret changes without Cloud mutation or exposure of credential values. Approved secret changes occur before the approved build/deploy.

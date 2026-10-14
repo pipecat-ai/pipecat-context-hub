@@ -856,6 +856,7 @@ def serve(ctx: click.Context) -> None:
 
         dep_map_path = config.storage.data_dir / "deprecation_map.json"
         retriever.deprecation_map = DeprecationMap.load(dep_map_path)
+        retriever._deprecation_map_path = dep_map_path
         if retriever.deprecation_map.entries:
             logger.info(
                 "Loaded deprecation map: %d entries", len(retriever.deprecation_map.entries)

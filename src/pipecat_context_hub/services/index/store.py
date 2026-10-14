@@ -122,16 +122,10 @@ def _create_backend_file(path: Path) -> bool:
     parent_fd = _open_directory_chain(path.parent)
     try:
         if parent_fd == -1:
-            # Windows does not expose descriptor-relative opens. A junction
-            # replacement can redirect this pathname between the parent
-            # checks and the create, so fail closed instead of creating an
-            # index outside data_dir.
-            if os.name == "nt":
-                raise OSError("descriptor-relative backend creation is unavailable")
-            # Test doubles and other POSIX platforms without dir_fd support
-            # retain the leaf O_EXCL fallback. O_EXCL prevents a pre-existing
-            # link from being followed, while identity checks protect the
-            # resulting file before either backend opens it.
+            # Windows and a few POSIX runtimes do not expose descriptor-
+            # relative opens. O_EXCL prevents a pre-existing leaf link from
+            # being followed; the caller's component identity checks protect
+            # the resulting file before either backend opens it.
             try:
                 fd = os.open(str(path), flags, 0o600)
             except FileExistsError:
@@ -382,6 +376,15 @@ class IndexStore:
         """
         return await asyncio.to_thread(self._locked_keyword_search, query)
 
+    async def hybrid_search(self, query: IndexQuery) -> tuple[list[IndexResult], list[IndexResult]]:
+        """Read vector and FTS results from one published generation.
+
+        Hybrid retrieval otherwise issues two independently locked reads; a
+        refresh can publish between those calls and produce a mixed response.
+        Keep both backend reads under one shared generation lock.
+        """
+        return await asyncio.to_thread(self._locked_hybrid_search, query)
+
     def _locked_vector_search(self, query: IndexQuery) -> list[IndexResult]:
         """Run one synchronous vector read under its own worker-thread lock."""
         with index_lock(self._data_dir, exclusive=False):
@@ -391,6 +394,12 @@ class IndexStore:
         """Run one synchronous FTS read under its own worker-thread lock."""
         with index_lock(self._data_dir, exclusive=False):
             return self._fts.search(query)
+
+    def _locked_hybrid_search(
+        self, query: IndexQuery
+    ) -> tuple[list[IndexResult], list[IndexResult]]:
+        with index_lock(self._data_dir, exclusive=False):
+            return self._vector.search(query), self._fts.search(query)
 
     def set_metadata(self, key: str, value: str) -> None:
         """Store a key-value pair in persistent index metadata."""
@@ -574,6 +583,13 @@ class ReadOnlyIndexStore:
 
     async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
         return await asyncio.to_thread(self._fts.search, query)
+
+    async def hybrid_search(self, query: IndexQuery) -> tuple[list[IndexResult], list[IndexResult]]:
+        if self._vector is None:
+            raise RuntimeError("hybrid search is unavailable on a metadata-only index reader")
+        return await asyncio.to_thread(
+            lambda: (self._vector.search(query), self._fts.search(query))
+        )
 
     def get_all_metadata(self) -> dict[str, str]:
         return self._fts.get_all_metadata()

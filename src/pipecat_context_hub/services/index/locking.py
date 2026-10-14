@@ -13,6 +13,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from pipecat_context_hub.shared.paths import is_reparse_link
+
 
 _held = threading.local()
 _generation_token: contextvars.ContextVar[object | None] = contextvars.ContextVar(
@@ -134,17 +136,84 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
                     held[lock_path] = (current[0], current[1], current[2] - 1, current[3])
             return
 
-    # Read-only callers must not create a coordination inode. If a legacy
-    # index has no lock yet, there is no stable object to lock; immutable
-    # backend readers still validate their generation before consuming it.
-    # Writers create the sibling inode and retain it across index deletion.
+    # Read-only callers must not create a coordination inode. Legacy indexes
+    # may predate the sibling lock, so coordinate through the existing index
+    # directory itself until a writer publishes the stable sibling lock. This
+    # keeps the read-only contract (no new files) while preventing a writer
+    # from creating the lock and replacing the generation mid-snapshot.
     try:
         lock_info = lock_path.lstat()
     except FileNotFoundError:
-        if not create:
-            yield
-            return
         lock_info = None
+    legacy_fd = -1
+    if lock_info is None:
+        try:
+            if os.name == "nt":
+                # CRT byte-range locks cannot target a directory. A legacy
+                # populated index does have a stable metadata database, so
+                # lock its first byte without creating any read-side file.
+                legacy_target = data_dir / "metadata.db"
+                if legacy_target.is_file() and not is_reparse_link(legacy_target):
+                    legacy_fd = os.open(legacy_target, os.O_RDONLY)
+                    msvcrt: Any = __import__("msvcrt")
+                    mode = (
+                        getattr(msvcrt, "LK_NBLCK", msvcrt.LK_LOCK)
+                        if create
+                        else getattr(msvcrt, "LK_NBRLCK", msvcrt.LK_RLCK)
+                    )
+                    while True:
+                        try:
+                            msvcrt.locking(legacy_fd, mode, 1)
+                            break
+                        except OSError:
+                            time.sleep(1)
+                elif not create:
+                    raise ValueError("legacy index has no coordination lock")
+            else:
+                if data_dir.exists():
+                    legacy_fd = os.open(
+                        data_dir,
+                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                    )
+                else:
+                    # A generation lock also coordinates creation of a fresh
+                    # index; there is no directory to lock until the writer
+                    # creates it under this parent-level lock.
+                    legacy_fd = -1
+                if legacy_fd == -1:
+                    if not create:
+                        raise ValueError("legacy index has no coordination lock")
+                else:
+                    import fcntl
+
+                    fcntl.flock(legacy_fd, fcntl.LOCK_EX if create else fcntl.LOCK_SH)
+        except (OSError, RuntimeError, ValueError) as exc:
+            if legacy_fd != -1:
+                with contextlib.suppress(OSError):
+                    if os.name == "nt":
+                        msvcrt = __import__("msvcrt")
+                        msvcrt.locking(legacy_fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(legacy_fd, fcntl.LOCK_UN)
+                os.close(legacy_fd)
+            if isinstance(exc, ValueError) and str(exc) == "legacy index has no coordination lock":
+                raise
+            raise ValueError("Unsafe index lock path") from exc
+        if not create:
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    msvcrt = __import__("msvcrt")
+                    msvcrt.locking(legacy_fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(legacy_fd, fcntl.LOCK_UN)
+                os.close(legacy_fd)
+            return
     if lock_info is not None and (
         stat.S_ISLNK(lock_info.st_mode) or not stat.S_ISREG(lock_info.st_mode)
     ):
@@ -166,13 +235,24 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
     except (OSError, RuntimeError, ValueError) as exc:
         if fd != -1:
             os.close(fd)
+        if legacy_fd != -1:
+            try:
+                if os.name == "nt":
+                    msvcrt = __import__("msvcrt")
+                    msvcrt.locking(legacy_fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(legacy_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(legacy_fd)
         if isinstance(exc, ValueError) and str(exc) == "Unsafe index lock path":
             raise
         raise ValueError("Unsafe index lock path") from exc
     held[lock_path] = (fd, exclusive, 1, owner)
     try:
         if os.name == "nt":
-            msvcrt: Any = __import__("msvcrt")
+            msvcrt = __import__("msvcrt")
 
             # Lock one byte at the start of the file.  The descriptor is kept
             # open for the whole context, so the lock cannot be released early.
@@ -209,3 +289,14 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
             if held_entry[0] == fd and held_entry[3] == owner:
                 held.pop(lock_path, None)
         os.close(fd)
+        if legacy_fd != -1:
+            try:
+                if os.name == "nt":
+                    msvcrt = __import__("msvcrt")
+                    msvcrt.locking(legacy_fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(legacy_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(legacy_fd)

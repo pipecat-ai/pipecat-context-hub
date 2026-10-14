@@ -16,6 +16,7 @@ from pipecat_context_hub.server.tools.check_deprecation import (
     resolve_framework_version,
 )
 from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 from pipecat_context_hub.server.dispatch import (
     BASE_TOOLS,
     HUB_STATUS_TOOL_TUPLE,
@@ -254,7 +255,12 @@ def create_server(
             # check_deprecation dispatches via retriever.deprecation_map, with the
             # indexed framework version as the default for version-relative status.
             if name == "check_deprecation":
-                dep_map = getattr(retriever, "deprecation_map", None)
+                map_path = getattr(retriever, "_deprecation_map_path", None)
+                dep_map = (
+                    DeprecationMap.load(map_path)
+                    if map_path is not None
+                    else getattr(retriever, "deprecation_map", None)
+                )
                 fw_version = resolve_framework_version(index_store, dep_map)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return types.CallToolResult(

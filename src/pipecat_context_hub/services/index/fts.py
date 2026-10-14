@@ -92,9 +92,10 @@ class FTSIndex:
         self._read_only = read_only
         self._lock = threading.RLock()
         if read_only:
-            # Immutable mode deliberately ignores a companion WAL. Refusing
-            # that state is safer than silently returning a stale generation
-            # while Chroma reflects rows committed in the WAL.
+            # ``mode=ro`` (rather than immutable mode) asks SQLite to replay a
+            # committed WAL without creating or writing any sidecars. A live
+            # writer is coordinated by the index generation lock; a WAL
+            # reparse point is always rejected before SQLite sees it.
             wal_path = sqlite_path.with_name(f"{sqlite_path.name}-wal")
             try:
                 wal_info = wal_path.lstat()
@@ -105,10 +106,8 @@ class FTSIndex:
             if wal_info is not None:
                 if stat.S_ISLNK(wal_info.st_mode) or not stat.S_ISREG(wal_info.st_mode):
                     raise ValueError("unsafe SQLite WAL path")
-                raise ValueError(
-                    "SQLite WAL is present; read-only FTS access cannot validate its generation"
-                )
-            uri = f"file:{quote(str(sqlite_path), safe='/')}?mode=ro&immutable=1"
+            query = "mode=ro" if wal_info is not None else "mode=ro&immutable=1"
+            uri = f"file:{quote(str(sqlite_path), safe='/')}?{query}"
             self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         else:
             sqlite_path.parent.mkdir(parents=True, exist_ok=True)

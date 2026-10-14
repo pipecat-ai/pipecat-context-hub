@@ -57,6 +57,10 @@ class IndexReader(Protocol):
         """Return results ranked by FTS5 keyword relevance."""
         ...
 
+    async def hybrid_search(self, query: IndexQuery) -> tuple[list[IndexResult], list[IndexResult]]:
+        """Return vector and keyword results from one generation when supported."""
+        ...
+
 
 class IndexStatusReader(IndexReader, Protocol):
     """Read-only index surface needed by status and one-shot query callers."""

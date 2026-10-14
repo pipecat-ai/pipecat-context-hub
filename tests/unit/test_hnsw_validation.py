@@ -131,13 +131,17 @@ def test_dir_fd_unavailable_uses_safe_path_fallback(
         os.close(fd)
 
 
-def test_windows_path_fallback_fails_closed(
+def test_windows_path_fallback_accepts_safe_regular_files(
     persisted_segment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, segment = persisted_segment
     monkeypatch.setattr(os, "name", "nt")
-    with pytest.raises(OSError, match="descriptor-relative"):
-        _open_segment_file_without_dir_fd(root, segment.name, "link_lists.bin")
+    fd, info = _open_segment_file_without_dir_fd(root, segment.name, "link_lists.bin")
+    try:
+        assert info.st_size == 1000
+        assert os.fstat(fd).st_size == 1000
+    finally:
+        os.close(fd)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")

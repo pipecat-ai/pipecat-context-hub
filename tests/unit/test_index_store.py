@@ -632,13 +632,16 @@ class TestFTSIndex:
         assert not path.with_name(path.name + "-shm").exists()
         assert not path.with_name(path.name + "-wal").exists()
 
-    def test_read_only_open_rejects_uncheckpointed_wal(self, tmp_path: Path) -> None:
+    def test_read_only_open_reads_committed_wal(self, tmp_path: Path) -> None:
         path = tmp_path / "metadata.db"
         writer = FTSIndex(path)
         writer.upsert([_make_record()])
         try:
-            with pytest.raises(ValueError, match="SQLite WAL"):
-                FTSIndex(path, read_only=True)
+            reader = FTSIndex(path, read_only=True)
+            try:
+                assert reader.search(IndexQuery(query_text="pipecat", limit=1))
+            finally:
+                reader.close()
         finally:
             writer.close()
 
@@ -970,7 +973,7 @@ class TestIndexStoreInitRollback:
         with pytest.raises(ValueError, match="reset is incomplete"):
             IndexStore(StorageConfig(data_dir=data_dir))
 
-    def test_windows_backend_creation_fails_closed_without_dir_fd(
+    def test_windows_backend_creation_uses_safe_path_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         path = tmp_path / "nested" / "metadata.db"
@@ -979,10 +982,10 @@ class TestIndexStoreInitRollback:
         monkeypatch.setattr(
             "pipecat_context_hub.services.index.store._open_directory_chain", lambda _path: -1
         )
-        with pytest.raises(OSError, match="descriptor-relative"):
-            _create_backend_file(path)
+        assert _create_backend_file(path)
+        assert path.is_file()
 
-    def test_windows_snapshot_fails_closed_without_dir_fd(
+    def test_windows_snapshot_uses_safe_path_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         source = tmp_path / "source"
@@ -990,8 +993,8 @@ class TestIndexStoreInitRollback:
         (source / "chroma.sqlite3").write_bytes(b"safe")
         monkeypatch.setattr(os, "name", "nt")
         monkeypatch.setattr(os, "supports_dir_fd", set())
-        with pytest.raises(ValueError, match="descriptor-relative"):
-            _copy_tree_no_follow(source, tmp_path / "snapshot")
+        _copy_tree_no_follow(source, tmp_path / "snapshot")
+        assert (tmp_path / "snapshot" / "chroma.sqlite3").read_bytes() == b"safe"
 
     @pytest.mark.asyncio
     async def test_concurrent_async_searches_do_not_share_lock_reentrancy(

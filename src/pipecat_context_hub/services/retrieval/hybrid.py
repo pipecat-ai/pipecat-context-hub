@@ -84,6 +84,7 @@ class HybridRetriever:
         self._keyword_weight = keyword_weight
         self._cross_encoder = cross_encoder
         self.deprecation_map: Any = None  # Set externally after refresh
+        self._deprecation_map_path: Any = None
         logger.debug(
             "HybridRetriever init: rrf_k=%d vector_weight=%.2f keyword_weight=%.2f cross_encoder=%s",
             rrf_k,
@@ -142,10 +143,17 @@ class HybridRetriever:
             "Single-concept search: query=%r filters=%r limit=%d", query_text, filters, limit
         )
 
-        vector_results, keyword_results = await asyncio.gather(
-            self._index.vector_search(query),
-            self._index.keyword_search(query),
-        )
+        # IndexStore can hold one shared generation lock across both reads.
+        # Keep the fallback for lightweight test doubles and third-party
+        # readers that implement only the original two-method protocol.
+        hybrid_search = getattr(type(self._index), "hybrid_search", None)
+        if hybrid_search is not None:
+            vector_results, keyword_results = await self._index.hybrid_search(query)
+        else:
+            vector_results, keyword_results = await asyncio.gather(
+                self._index.vector_search(query),
+                self._index.keyword_search(query),
+            )
 
         logger.debug(
             "Raw results: vector=%d keyword=%d",
