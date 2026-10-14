@@ -84,6 +84,13 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
             return subprocess.CompletedProcess(command, returncode, value, b"")
 
+        # ``SelectSelector`` cannot wait on anonymous subprocess pipes on
+        # Windows.  Choose the blocking reader before constructing a selector
+        # so the platform never enters a selector loop that is guaranteed to
+        # fail on its first ``select()`` call.
+        if os.name == "nt":
+            return read_blocking()
+
         try:
             os.set_blocking(stdout_fd, False)
             selector = selectors.DefaultSelector()
@@ -119,7 +126,7 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
                 raise ValueError("command output too large")
         returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         return subprocess.CompletedProcess(command, returncode, bytes(output), b"")
-    except (Exception,):
+    except BaseException:
         if process is not None:
             _terminate_process_tree(process)
             try:

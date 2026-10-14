@@ -250,6 +250,18 @@ def test_render_rejects_symlink_loop_destination_without_path_leak(
     assert str(tmp_path) not in str(error.value)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_copy_resource_rejects_swapped_parent_directory(
+    renderer: ModuleType, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = tmp_path / "resource"
+    source.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OSError):
+        renderer._copy_resource(source / "file.txt", tmp_path / "copy.txt")
+
+
 def test_skills_only_manifest_and_onboarding(renderer: ModuleType, tmp_path: Path) -> None:
     destination = renderer.prepare_local(tmp_path / "prepared")
     manifest = json.loads((destination / "plugin.json").read_text())
@@ -338,6 +350,66 @@ def test_cloud_metadata_wrapper_reaches_thread_fallback_when_nonblocking_fails(
         result = module._run_bounded([sys.executable, str(producer)])
     assert result.returncode == 0
     assert json.loads(result.stdout) == {"organizations": [{"id": "o"}]}
+
+
+def test_cloud_metadata_wrapper_uses_blocking_reader_on_windows(
+    tmp_path: Path,
+) -> None:
+    """Windows must not enter ``SelectSelector`` for anonymous pipes."""
+    spec = importlib.util.spec_from_file_location(
+        "safe_cloud_metadata", _SOURCE / "scripts" / "safe_cloud_metadata.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    producer = tmp_path / "producer.py"
+    producer.write_text("import json; print(json.dumps({'organizations': [{'id': 'o'}]}))\n")
+
+    class UnexpectedSelector:
+        def __init__(self):
+            raise AssertionError("Windows anonymous pipes must use the blocking reader")
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(module.os, "name", "nt")
+        monkeypatch.setattr(module.selectors, "DefaultSelector", UnexpectedSelector)
+        result = module._run_bounded([sys.executable, str(producer)])
+    assert json.loads(result.stdout) == {"organizations": [{"id": "o"}]}
+
+
+def test_cloud_metadata_wrapper_cleans_up_on_cancellation(tmp_path: Path) -> None:
+    """Cancellation must terminate the detached producer process group."""
+    spec = importlib.util.spec_from_file_location(
+        "safe_cloud_metadata", _SOURCE / "scripts" / "safe_cloud_metadata.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    producer = tmp_path / "producer.py"
+    producer.write_text("import time; time.sleep(60)\n")
+
+    class CancelledSelector:
+        def register(self, *_args, **_kwargs):
+            return None
+
+        def select(self, *_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        def close(self):
+            return None
+
+    calls: list[int] = []
+    terminate = module._terminate_process_tree
+
+    def record_and_terminate(process: subprocess.Popen[bytes]) -> None:
+        calls.append(process.pid)
+        terminate(process)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(module.selectors, "DefaultSelector", CancelledSelector)
+        monkeypatch.setattr(module, "_terminate_process_tree", record_and_terminate)
+        with pytest.raises(KeyboardInterrupt):
+            module._run_bounded([sys.executable, str(producer)])
+    assert calls
 
 
 def test_cloud_metadata_wrapper_terminates_process_group_on_bounded_failure(

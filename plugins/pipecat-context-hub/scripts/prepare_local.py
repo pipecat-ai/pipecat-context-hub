@@ -61,7 +61,7 @@ def prepare_local(destination: Path) -> Path:
             _copy_resource(path, target)
         if destination.exists():
             destination.rmdir()  # Refuses if anything appeared since preflight.
-        staged.rename(destination)
+        _rename_no_symlink(staged, destination)
     return destination
 
 
@@ -92,20 +92,83 @@ def _copy_resource(source: Path, target: Path) -> None:
     before = source.lstat()
     if source.is_symlink() or not stat.S_ISREG(before.st_mode):
         raise ValueError(f"Package resource must be a regular file: {source.name}")
-    fd = os.open(source, flags)
+    # Probe the spelling once with ``O_NOFOLLOW`` as well.  Besides preserving
+    # the preflight-to-open identity check for a replaced leaf, the actual
+    # copy below still uses descriptor-relative opens for every parent.
+    probe_fd = os.open(source, flags)
+    os.close(probe_fd)
+    source_parent_fd = _open_directory_chain(source.parent)
+    target_parent_fd = _open_directory_chain(target.parent)
+    fd = -1
+    output_fd = -1
     try:
+        if source_parent_fd == -1:
+            fd = os.open(source, flags)
+        else:
+            fd = os.open(source.name, flags, dir_fd=source_parent_fd)
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode) or (
             before.st_dev,
             before.st_ino,
         ) != (opened.st_dev, opened.st_ino):
             raise ValueError(f"Package resource changed during copy: {source.name}")
-        with os.fdopen(fd, "rb") as stream, target.open("wb") as output:
+        target_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        if target_parent_fd == -1:
+            output_fd = os.open(target, target_flags, 0o600)
+        else:
+            output_fd = os.open(target.name, target_flags, 0o600, dir_fd=target_parent_fd)
+        with os.fdopen(fd, "rb") as stream, os.fdopen(output_fd, "wb") as output:
             fd = -1
+            output_fd = -1
             shutil.copyfileobj(stream, output)
     finally:
         if fd != -1:
             os.close(fd)
+        if output_fd != -1:
+            os.close(output_fd)
+        if source_parent_fd != -1:
+            os.close(source_parent_fd)
+        if target_parent_fd != -1:
+            os.close(target_parent_fd)
+
+
+def _open_directory_chain(path: Path) -> int:
+    """Open every directory component without following symlinks."""
+    if os.open not in getattr(os, "supports_dir_fd", set()):
+        return -1
+    path = path.absolute()
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path.anchor, flags)
+    try:
+        for component in path.parts[1:]:
+            next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _rename_no_symlink(source: Path, destination: Path) -> None:
+    """Rename within securely opened parent directories where supported."""
+    source_parent_fd = _open_directory_chain(source.parent)
+    destination_parent_fd = _open_directory_chain(destination.parent)
+    try:
+        if source_parent_fd == -1 or destination_parent_fd == -1:
+            source.rename(destination)
+            return
+        os.rename(
+            source.name,
+            destination.name,
+            src_dir_fd=source_parent_fd,
+            dst_dir_fd=destination_parent_fd,
+        )
+    finally:
+        if source_parent_fd != -1:
+            os.close(source_parent_fd)
+        if destination_parent_fd != -1:
+            os.close(destination_parent_fd)
 
 
 def main() -> int:

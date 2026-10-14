@@ -85,6 +85,25 @@ def test_store_rejects_backend_root_replaced_during_open(tmp_path: Path) -> None
     vector.close.assert_called_once()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
+def test_store_rejects_new_backend_directory_replaced_during_open(tmp_path: Path) -> None:
+    """A newly materialised backend must not become an external symlink."""
+    data_dir = tmp_path / "index"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    vector = Mock()
+
+    def race(path: Path) -> Mock:
+        path.rename(tmp_path / "chroma-original")
+        path.symlink_to(outside, target_is_directory=True)
+        return vector
+
+    with patch("pipecat_context_hub.services.index.store.VectorIndex", side_effect=race):
+        with pytest.raises(ValueError, match="Unsafe index backend path"):
+            IndexStore(StorageConfig(data_dir=data_dir))
+    vector.close.assert_called_once()
+
+
 def _random_embedding(seed: int = 0) -> list[float]:
     """Generate a deterministic pseudo-random embedding vector."""
     rng = random.Random(seed)

@@ -49,6 +49,20 @@ def test_partial_index_detection_forces_reconciliation(tmp_path: Path) -> None:
     assert not _partial_index_detected(config)
 
 
+@pytest.mark.parametrize("error", [OSError("invalid data dir"), RuntimeError("symlink loop")])
+def test_refresh_open_failure_is_controlled_for_invalid_data_dir(error: Exception) -> None:
+    """Malformed storage paths must use the controlled index-unready exit."""
+    config = HubConfig()
+    logger = MagicMock()
+    with patch(
+        "pipecat_context_hub.services.index.store.IndexStore",
+        side_effect=error,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            cli_module._open_index_store_or_exit(config, logger)
+    assert exc_info.value.code == 2
+
+
 class TestWriteServeDebugProbe:
     """`_write_serve_debug_probe()` must never crash `serve` on failure —
     including when `Path.home()` itself raises (RuntimeError, not OSError),
@@ -336,11 +350,15 @@ class TestRefreshCommand:
         mock_ref_tainted.return_value = False
         monkeypatch.setattr(cli_module, "_partial_index_detected", lambda _config: True)
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(tmp_path / "hub-data"))
+        (tmp_path / "hub-data").mkdir()
+        (tmp_path / "hub-data" / "deprecation_map.json").write_text("stale")
 
         result = CliRunner().invoke(main, ["refresh"])
 
         assert result.exit_code == 0, result.output
         mock_store.reset.assert_called_once_with()
+        assert not (tmp_path / "hub-data" / "deprecation_map.json").exists()
         assert mock_crawler.ingest.call_count == 1
         assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
 

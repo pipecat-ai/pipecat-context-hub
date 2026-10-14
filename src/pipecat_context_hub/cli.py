@@ -101,7 +101,7 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
 
     try:
         return IndexStore(config.storage)
-    except (IncompatibleIndexFormatError, ValueError) as exc:
+    except (IncompatibleIndexFormatError, OSError, RuntimeError, ValueError) as exc:
         # A pre-1.0 Chroma dir cannot be opened by 1.x. exc.__str__ embeds
         # the absolute chroma_path; redact for front-door parity with the
         # serve / cli_query error sites.
@@ -1032,6 +1032,18 @@ def refresh(
             # recoverable source metadata. Reset both backends and metadata
             # before rebuilding so no FTS-only/vector-only records remain.
             index_store.reset()
+            # The map is a sidecar to the framework records, not independent
+            # index metadata.  A reset removes those records, so retaining the
+            # old map would let a subsequent partial rebuild answer
+            # ``check_deprecation`` from a detached framework revision.
+            dep_map_path = config.storage.data_dir / "deprecation_map.json"
+            try:
+                dep_map_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise click.ClickException(
+                    "Partial index recovery could not remove the stale deprecation map; "
+                    "refusing to rebuild with detached provenance."
+                ) from exc
             logger.warning("Partial index recovery reset both backends before rebuild")
 
     if reset_index:

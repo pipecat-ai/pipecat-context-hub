@@ -40,6 +40,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   builds/deployment, and distinguishes readiness from session verification.
 
 ### Fixed
+- Partial-backend recovery now removes the detached deprecation-map sidecar
+  before rebuilding. Recovery intentionally resets both stores, including
+  records from repositories not configured in that invocation, because a
+  surviving backend cannot reconstruct the missing embeddings or source rows;
+  this consistency reset is distinct from normal repository pruning and is
+  documented here so it is not mistaken for implicit `--prune` behavior.
 - Keep grounded Explore read-only on a missing index, correct discussion-only
   guidance, treat retrieved content as untrusted evidence, and filter Cloud
   account metadata through a fail-closed packaged wrapper before agent-visible
