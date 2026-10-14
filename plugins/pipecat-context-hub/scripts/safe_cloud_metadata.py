@@ -29,14 +29,21 @@ _MAX_OUTPUT_BYTES = 1_048_576
 _MAX_RECORDS = 1_000
 _MAX_DEPTH = 32
 _SECRET_ENV = re.compile(
-    r"(?:TOKEN|API[_-]?KEY|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|CREDENTIAL)",
+    r"(?:TOKEN|API[_-]?KEY|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|CREDENTIAL|"
+    r"ACCESS[_-]?KEY|AUTH(?:ORIZATION|[_-]?TOKEN)?|DOCKER[_-]?AUTH|"
+    r"GOOGLE_APPLICATION_CREDENTIALS|SSH_AUTH_SOCK)",
     re.IGNORECASE,
 )
+_PASSTHROUGH_ENV = frozenset({"PIPECAT_TOKEN"})
 
 
 def _safe_child_environment() -> dict[str, str]:
     """Pass only non-secret process settings to the untrusted producer."""
-    return {key: value for key, value in os.environ.items() if not _SECRET_ENV.search(key)}
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key in _PASSTHROUGH_ENV or not _SECRET_ENV.search(key)
+    }
 
 
 def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:

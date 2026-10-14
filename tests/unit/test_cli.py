@@ -23,6 +23,7 @@ from pipecat_context_hub.cli import (
     _log_serve_cwd,
     _prewarm_models,
     _partial_index_detected,
+    _recover_reset_marker,
     _print_refresh_summary,
     _prune_enabled,
     _redact_home,
@@ -53,6 +54,17 @@ def test_partial_index_detection_recovers_persisted_reset_state(tmp_path: Path) 
     config = HubConfig.model_validate({"storage": {"data_dir": str(tmp_path)}})
     (tmp_path / ".reset-state.json").write_text('{"vector_reset": true}')
     assert _partial_index_detected(config)
+
+
+def test_reset_marker_is_recovered_before_writer_open(tmp_path: Path) -> None:
+    config = HubConfig.model_validate({"storage": {"data_dir": str(tmp_path)}})
+    marker = tmp_path / ".reset-state.json"
+    marker.write_text('{"vector_reset": true, "fts_reset": false}')
+
+    _recover_reset_marker(config)
+
+    assert not marker.exists()
+    assert (tmp_path.parent / f".{tmp_path.name}.index.lock").is_file()
 
 
 @pytest.mark.parametrize("error", [OSError("invalid data dir"), RuntimeError("symlink loop")])

@@ -250,32 +250,36 @@ class IndexStore:
 
     def reset(self) -> None:
         """Delete all persisted search data and cached metadata."""
-        _write_reset_state(self._data_dir, {"vector_reset": False, "fts_reset": False})
-        vector_error: Exception | None = None
-        fts_error: Exception | None = None
-        try:
-            self._vector.reset()
-            _write_reset_state(self._data_dir, {"vector_reset": True, "fts_reset": False})
-        except Exception as exc:
-            vector_error = exc
-        try:
-            self._fts.reset()
-            _write_reset_state(
-                self._data_dir,
-                {"vector_reset": vector_error is None, "fts_reset": True},
-            )
-        except Exception as exc:
-            fts_error = exc
-        if vector_error is not None and fts_error is not None:
-            raise vector_error from fts_error
-        if fts_error is not None:
-            raise fts_error
-        if vector_error is not None:
-            raise vector_error
-        marker = self._data_dir / _RESET_STATE_FILENAME
-        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
-            raise ValueError("Unsafe reset state path")
-        marker.unlink(missing_ok=True)
+        # Keep one generation lock across both backends. The nested backend
+        # locks are reentrant for this synchronous owner, while readers in
+        # worker threads cannot observe a vector/FTS hybrid reset.
+        with index_lock(self._data_dir, exclusive=True):
+            _write_reset_state(self._data_dir, {"vector_reset": False, "fts_reset": False})
+            vector_error: Exception | None = None
+            fts_error: Exception | None = None
+            try:
+                self._vector.reset()
+                _write_reset_state(self._data_dir, {"vector_reset": True, "fts_reset": False})
+            except Exception as exc:
+                vector_error = exc
+            try:
+                self._fts.reset()
+                _write_reset_state(
+                    self._data_dir,
+                    {"vector_reset": vector_error is None, "fts_reset": True},
+                )
+            except Exception as exc:
+                fts_error = exc
+            if vector_error is not None and fts_error is not None:
+                raise vector_error from fts_error
+            if fts_error is not None:
+                raise fts_error
+            if vector_error is not None:
+                raise vector_error
+            marker = self._data_dir / _RESET_STATE_FILENAME
+            if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+                raise ValueError("Unsafe reset state path")
+            marker.unlink(missing_ok=True)
         logger.info("IndexStore reset")
 
     async def upsert(self, records: list[ChunkedRecord]) -> int:
@@ -351,8 +355,7 @@ class IndexStore:
         Offloads the synchronous ChromaDB HNSW query to a thread so it
         doesn't block the event loop during concurrent MCP tool calls.
         """
-        with index_lock(self._data_dir, exclusive=False):
-            return await asyncio.to_thread(self._vector.search, query)
+        return await asyncio.to_thread(self._locked_vector_search, query)
 
     async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
         """Return results ranked by FTS5 keyword relevance.
@@ -360,8 +363,17 @@ class IndexStore:
         Offloads the synchronous SQLite FTS5 query to a thread so it
         doesn't block the event loop during concurrent MCP tool calls.
         """
+        return await asyncio.to_thread(self._locked_keyword_search, query)
+
+    def _locked_vector_search(self, query: IndexQuery) -> list[IndexResult]:
+        """Run one synchronous vector read under its own worker-thread lock."""
         with index_lock(self._data_dir, exclusive=False):
-            return await asyncio.to_thread(self._fts.search, query)
+            return self._vector.search(query)
+
+    def _locked_keyword_search(self, query: IndexQuery) -> list[IndexResult]:
+        """Run one synchronous FTS read under its own worker-thread lock."""
+        with index_lock(self._data_dir, exclusive=False):
+            return self._fts.search(query)
 
     def set_metadata(self, key: str, value: str) -> None:
         """Store a key-value pair in persistent index metadata."""

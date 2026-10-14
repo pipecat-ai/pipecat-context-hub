@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import os
 from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -893,11 +894,10 @@ class TestIndexStoreInitRollback:
         data_dir = tmp_path / "hub-data"
         writer = IndexStore(StorageConfig(data_dir=data_dir))
         writer.close()
-        (data_dir / ".index.lock").unlink()
-
         reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
         try:
             assert not (data_dir / ".index.lock").exists()
+            assert (data_dir.parent / f".{data_dir.name}.index.lock").exists()
         finally:
             reader.close()
 
@@ -907,6 +907,28 @@ class TestIndexStoreInitRollback:
         (data_dir / ".reset-state.json").write_text('{"vector_reset": true}')
         with pytest.raises(ValueError, match="reset is incomplete"):
             IndexStore(StorageConfig(data_dir=data_dir))
+
+    @pytest.mark.asyncio
+    async def test_concurrent_async_searches_do_not_share_lock_reentrancy(
+        self, tmp_path: Path
+    ) -> None:
+        """Each blocking search owns its lock in its worker thread."""
+        data_dir = tmp_path / "hub-data"
+        data_dir.mkdir()
+        store = object.__new__(IndexStore)
+        store._data_dir = data_dir
+
+        class FakeBackend:
+            def search(self, _query: IndexQuery) -> list[IndexResult]:
+                return []
+
+        typed_store = cast(Any, store)
+        typed_store._vector = FakeBackend()
+        typed_store._fts = FakeBackend()
+        query = IndexQuery(query_text="pipecat", limit=1)
+
+        results = await asyncio.gather(store.vector_search(query), store.keyword_search(query))
+        assert all(result == [] for result in results)
 
     def test_read_only_open_preserves_persisted_chroma_bytes_and_mtimes(
         self, tmp_path: Path

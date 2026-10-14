@@ -338,7 +338,7 @@ def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) ->
     assert "private@example.com" not in result.stdout + result.stderr
 
 
-def test_cloud_metadata_wrapper_does_not_inherit_cloud_token(tmp_path: Path) -> None:
+def test_cloud_metadata_wrapper_preserves_headless_cloud_token(tmp_path: Path) -> None:
     producer = tmp_path / "producer.py"
     producer.write_text(
         "import json, os\n"
@@ -355,6 +355,34 @@ def test_cloud_metadata_wrapper_does_not_inherit_cloud_token(tmp_path: Path) -> 
             str(producer),
         ],
         env={**os.environ, "PIPECAT_TOKEN": "must-not-leak"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["organizations"][0]["id"] == "must-not-leak"
+
+
+@pytest.mark.parametrize("name", ["AWS_ACCESS_KEY_ID", "DOCKER_AUTH_CONFIG"])
+def test_cloud_metadata_wrapper_filters_credential_like_environment(
+    tmp_path: Path, name: str
+) -> None:
+    producer = tmp_path / "producer.py"
+    producer.write_text(
+        "import json, os\n"
+        f"print(json.dumps({{'organizations': [{{'id': os.environ.get('{name}', 'missing'), 'name': 'Team'}}]}}))\n"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
+            "--kind",
+            "organizations",
+            "--",
+            sys.executable,
+            str(producer),
+        ],
+        env={**os.environ, name: "must-not-leak"},
         capture_output=True,
         text=True,
         check=False,

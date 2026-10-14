@@ -38,6 +38,7 @@ from pipecat_context_hub.shared.versioning import (
     is_head_sentinel,
     is_sentinel_pin,
 )
+from pipecat_context_hub.services.index.locking import index_lock
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
@@ -110,6 +111,18 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
         # serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+
+
+def _recover_reset_marker(config: HubConfig) -> None:
+    """Remove a persisted reset marker before opening the writer store."""
+    data_dir = config.storage.data_dir.expanduser().resolve()
+    marker = data_dir / ".reset-state.json"
+    if not marker.exists() and not marker.is_symlink():
+        return
+    with index_lock(data_dir, exclusive=True):
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise ValueError("Unsafe reset state path")
+        marker.unlink(missing_ok=True)
 
 
 # Values of PIPECAT_HUB_WARMUP that disable pre-warm. Anything else
@@ -328,22 +341,25 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             "at a directory outside your project (or run from elsewhere), then retry "
             "--reset-index."
         )
-    shutil.rmtree(resolved_data_dir, ignore_errors=True)
-    if data_dir_was_symlink:
-        # See the docstring: the symlink survives, its target does not. Put
-        # the target back so `PIPECAT_HUB_DATA_DIR=<symlink>` still resolves
-        # to a directory for the rebuild that immediately follows.
-        try:
-            resolved_data_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            # Never fatal: the rebuild's own mkdir gets the next attempt, and
-            # a reset that deleted successfully has already done its job.
-            _module_logger.warning(
-                "Could not recreate %s after reset (%s); the symlinked data dir may "
-                "need to be recreated manually",
-                redact_home(resolved_data_dir),
-                exc,
-            )
+    # The lock lives beside the index, so it survives this deletion and keeps
+    # readers of the old generation coordinated with the next writer.
+    with index_lock(resolved_data_dir, exclusive=True):
+        shutil.rmtree(resolved_data_dir, ignore_errors=True)
+        if data_dir_was_symlink:
+            # See the docstring: the symlink survives, its target does not. Put
+            # the target back so `PIPECAT_HUB_DATA_DIR=<symlink>` still resolves
+            # to a directory for the rebuild that immediately follows.
+            try:
+                resolved_data_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                # Never fatal: the rebuild's own mkdir gets the next attempt, and
+                # a reset that deleted successfully has already done its job.
+                _module_logger.warning(
+                    "Could not recreate %s after reset (%s); the symlinked data dir may "
+                    "need to be recreated manually",
+                    redact_home(resolved_data_dir),
+                    exc,
+                )
 
 
 async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: str) -> bool:
@@ -1027,6 +1043,11 @@ def refresh(
         preflight_recovered_repos = set(preflight_github.recovered_repos)
 
     if not reset_index:
+        if partial_index_recovery:
+            # IndexStore intentionally refuses to open while the marker is
+            # present. Recover the interrupted reset first, then open and
+            # perform the complete paired-backend reset below.
+            _recover_reset_marker(config)
         index_store = _open_index_store_or_exit(config, logger)
         if partial_index_recovery:
             # The surviving backend cannot be reconciled from the other side:
@@ -1038,7 +1059,12 @@ def refresh(
             # index metadata.  A reset removes those records, so retaining the
             # old map would let a subsequent partial rebuild answer
             # ``check_deprecation`` from a detached framework revision.
-            dep_map_path = config.storage.data_dir / "deprecation_map.json"
+            # The real writer store exposes its normalized data directory;
+            # retain the config fallback for lightweight test doubles.
+            store_data_dir = index_store.data_dir
+            if not isinstance(store_data_dir, Path):
+                store_data_dir = config.storage.data_dir.expanduser().resolve()
+            dep_map_path = store_data_dir / "deprecation_map.json"
             try:
                 dep_map_path.unlink(missing_ok=True)
             except OSError as exc:
