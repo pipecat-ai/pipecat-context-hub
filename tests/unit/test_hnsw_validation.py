@@ -124,6 +124,36 @@ def test_unreadable_links_file_uses_recovery_error(
         validate_persisted_hnsw(root, "latest")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+@pytest.mark.parametrize("name", ["header.bin", "link_lists.bin"])
+def test_symlinked_hnsw_files_are_rejected(
+    persisted_segment: tuple[Path, Path], name: str, tmp_path: Path
+) -> None:
+    root, segment = persisted_segment
+    target = tmp_path / f"outside-{name}"
+    target.write_bytes((segment / name).read_bytes())
+    (segment / name).unlink()
+    (segment / name).symlink_to(target)
+    with pytest.raises(IncompatibleIndexFormatError, match="unsafe persisted HNSW"):
+        validate_persisted_hnsw(root, "latest")
+
+
+@pytest.mark.parametrize("field", ["capacity", "max_level", "max_m"])
+def test_implausible_hnsw_header_values_are_rejected(
+    persisted_segment: tuple[Path, Path], field: str
+) -> None:
+    root, segment = persisted_segment
+    values = [1, 0, 8, 4, 152, 144, 132, 2, 0, 16, 32, 16, 0.36, 100]
+    values[{"capacity": 2, "max_level": 7, "max_m": 9}[field]] = {
+        "capacity": 100_000_001,
+        "max_level": 65,
+        "max_m": 1025,
+    }[field]
+    (segment / "header.bin").write_bytes(struct.pack("<i6Qii3QdQ", *values))
+    with pytest.raises(IncompatibleIndexFormatError, match="unsupported persisted HNSW header"):
+        validate_persisted_hnsw(root, "latest")
+
+
 def test_healthy_native_graph_reopens_and_queries(tmp_path: Path) -> None:
     """Verify compatibility against actual Chroma persistence, not a mocked header."""
     root = tmp_path / "native"

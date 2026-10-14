@@ -19,6 +19,20 @@ from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatErr
 # https://github.com/chroma-core/chroma/issues/7510
 _HEADER = struct.Struct("<i6Qii3QdQ")
 _SEGMENT_TYPE = "urn:chroma:segment/vector/hnsw-local-persisted"
+_MAX_CAPACITY = 100_000_000
+_MAX_LEVEL = 64
+_MAX_M = 1024
+
+
+def _safe_path(path: Path, root: Path) -> bool:
+    """Reject links and paths whose resolved target escapes the Chroma root."""
+    try:
+        if path.is_symlink():
+            return False
+        path.resolve(strict=True).relative_to(root.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
 
 
 def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
@@ -57,6 +71,16 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
         segment_path = chroma_path / segment_name
         links_path = segment_path / "link_lists.bin"
         try:
+            links_is_symlink = links_path.is_symlink()
+        except OSError as exc:
+            raise IncompatibleIndexFormatError(
+                chroma_path, reason=f"unreadable persisted HNSW links in segment {segment_name}"
+            ) from exc
+        if links_is_symlink:
+            raise IncompatibleIndexFormatError(
+                chroma_path, reason=f"unsafe persisted HNSW links in segment {segment_name}"
+            )
+        try:
             links_present = links_path.is_file()
         except OSError as exc:
             raise IncompatibleIndexFormatError(
@@ -64,7 +88,21 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
             ) from exc
         if not links_present:
             continue
+        if not _safe_path(links_path, chroma_path):
+            raise IncompatibleIndexFormatError(
+                chroma_path, reason=f"unsafe persisted HNSW links in segment {segment_name}"
+            )
         header_path = segment_path / "header.bin"
+        try:
+            header_is_symlink = header_path.is_symlink()
+        except OSError as exc:
+            raise IncompatibleIndexFormatError(
+                chroma_path, reason=f"unreadable persisted HNSW header in segment {segment_name}"
+            ) from exc
+        if header_is_symlink or not _safe_path(header_path, chroma_path):
+            raise IncompatibleIndexFormatError(
+                chroma_path, reason=f"unsafe persisted HNSW header in segment {segment_name}"
+            )
         try:
             with header_path.open("rb") as stream:
                 header = stream.read(_HEADER.size + 1)
@@ -84,7 +122,16 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
             fields[7],
             fields[9],
         )
-        if version != 1 or capacity < count or max_level < -1 or max_m == 0:
+        if (
+            version != 1
+            or capacity < count
+            or capacity > _MAX_CAPACITY
+            or count > _MAX_CAPACITY
+            or max_level < -1
+            or max_level > _MAX_LEVEL
+            or max_m == 0
+            or max_m > _MAX_M
+        ):
             raise IncompatibleIndexFormatError(
                 chroma_path, reason=f"unsupported persisted HNSW header in segment {segment_name}"
             )

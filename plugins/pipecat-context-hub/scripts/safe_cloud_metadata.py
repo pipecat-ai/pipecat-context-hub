@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import selectors
@@ -31,6 +32,8 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
         command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True
     )
     assert process.stdout is not None
+    stdout_fd = process.stdout.fileno()
+    os.set_blocking(stdout_fd, False)
     output = bytearray()
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
@@ -43,7 +46,10 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
             events = selector.select(remaining)
             if not events:
                 raise subprocess.TimeoutExpired(command, 30)
-            chunk = process.stdout.read(64 * 1024)
+            try:
+                chunk = os.read(stdout_fd, 64 * 1024)
+            except BlockingIOError:
+                continue
             if not chunk:
                 break
             output.extend(chunk)
@@ -53,7 +59,11 @@ def _run_bounded(command: list[str]) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(command, returncode, bytes(output), b"")
     except (Exception,):
         process.kill()
-        process.wait()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         raise
     finally:
         selector.close()

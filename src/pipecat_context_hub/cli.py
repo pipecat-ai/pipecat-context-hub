@@ -101,7 +101,7 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
 
     try:
         return IndexStore(config.storage)
-    except IncompatibleIndexFormatError as exc:
+    except (IncompatibleIndexFormatError, ValueError) as exc:
         # A pre-1.0 Chroma dir cannot be opened by 1.x. exc.__str__ embeds
         # the absolute chroma_path; redact for front-door parity with the
         # serve / cli_query error sites.
@@ -969,16 +969,23 @@ def refresh(
     # the pin pre-flight validates the pin before destroying the existing
     # index (deliberate — see the pre-flight's own comment above).
     index_store: IndexStore
+    partial_index = False
     if not reset_index:
         # A surviving SQLite metadata store paired with a missing Chroma
         # directory is a partial index.  Opening the writer creates an empty
         # vector backend; unchanged-source shortcuts would then preserve only
         # metadata and silently skip rebuilding semantic retrieval.
         if _partial_index_detected(config):
+            partial_index = True
             force = True
             logger.warning("Partial index detected; forcing a complete rebuild")
     if not reset_index:
         index_store = _open_index_store_or_exit(config, logger)
+        if partial_index:
+            # A partial pair can contain records that have no counterpart in
+            # the surviving backend.  Clear both sides before rebuilding so
+            # the normal pruning policy cannot preserve an inconsistent tail.
+            index_store.clear()
 
     # ----- 0. Validate an explicit framework pin -----
     # Resolve a concrete pin before any indexing work, so a typo costs one

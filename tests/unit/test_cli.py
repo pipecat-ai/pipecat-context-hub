@@ -5057,6 +5057,20 @@ class TestRefreshIncompatibleIndex:
         assert str(chroma_path) not in caplog.text
         assert str(tmp_path) not in caplog.text
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_unsafe_backend_exits_with_same_redacted_remediation(
+        self, mock_is_cls, tmp_path, monkeypatch, caplog
+    ):
+        from pipecat_context_hub.shared.support_links import BUG_REPORT_ISSUE_URL
+
+        mock_is_cls.side_effect = ValueError("Unsafe index backend path: metadata.db")
+        monkeypatch.chdir(tmp_path)
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh"])
+        assert result.exit_code == 2
+        assert "Unsafe index backend path" in caplog.text
+        assert BUG_REPORT_ISSUE_URL in caplog.text
+
 
 class TestServeEmptyIndex:
     """Serve must fail fast on empty or unopenable indexes rather than hang.
