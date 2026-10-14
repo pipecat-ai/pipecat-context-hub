@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -377,8 +378,45 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     # The lock lives beside the index, so it survives this deletion and keeps
     # readers of the old generation coordinated with the next writer.
     with index_lock(resolved_data_dir, exclusive=True):
+        # `shutil.rmtree` is pathname based. Bind both the parent directory and
+        # target to the identities validated before the lock was acquired so
+        # a local rename/reparse swap cannot redirect the destructive call.
         try:
-            shutil.rmtree(resolved_data_dir)
+            parent_before = resolved_data_dir.parent.lstat()
+            try:
+                target_before = resolved_data_dir.lstat()
+            except FileNotFoundError:
+                target_before = None
+        except OSError as exc:
+            raise click.ClickException(
+                "Could not verify the existing index safely; refusing to rebuild it."
+            ) from exc
+        if (
+            is_reparse_link(resolved_data_dir.parent)
+            or not stat.S_ISDIR(parent_before.st_mode)
+            or (
+                target_before is not None
+                and (is_reparse_link(resolved_data_dir) or not stat.S_ISDIR(target_before.st_mode))
+            )
+        ):
+            raise click.ClickException(
+                "The index path changed while reset was acquiring its lock; refusing to delete it."
+            )
+        if target_before is None:
+            return
+        try:
+            if os.open in getattr(os, "supports_dir_fd", set()):
+                # The POSIX implementation binds every parent/child directory
+                # to descriptor identities, so a rename/reparse swap during
+                # deletion cannot redirect the reset outside this generation.
+                from pipecat_context_hub.services.index.vector import _remove_tree_no_follow
+
+                _remove_tree_no_follow(resolved_data_dir)
+            else:
+                # Windows deliberately remains package/path smoke only; keep
+                # its existing bounded cleanup path rather than introducing a
+                # pathname fallback into the supported index implementation.
+                shutil.rmtree(resolved_data_dir)
         except FileNotFoundError:
             # Reset is also the first-run recovery path.  The lock is still
             # acquired above, but an already-absent directory is a successful
@@ -389,6 +427,19 @@ def _delete_local_index_storage(data_dir: Path) -> None:
                 "Could not remove the existing index safely; refusing to rebuild a partial "
                 "generation. Close other Context Hub processes and retry --reset-index."
             ) from exc
+        try:
+            parent_after = resolved_data_dir.parent.lstat()
+        except OSError as exc:
+            raise click.ClickException(
+                "The index parent changed during reset; refusing to rebuild a partial generation."
+            ) from exc
+        if (parent_after.st_dev, parent_after.st_ino) != (
+            parent_before.st_dev,
+            parent_before.st_ino,
+        ):
+            raise click.ClickException(
+                "The index parent changed during reset; refusing to rebuild a partial generation."
+            )
         if resolved_data_dir.exists() or resolved_data_dir.is_symlink():
             raise click.ClickException(
                 "Index reset did not remove the existing storage; refusing to rebuild a "

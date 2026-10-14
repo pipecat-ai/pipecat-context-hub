@@ -426,7 +426,17 @@ def _remove_tree_no_follow(root: Path) -> None:
     """Remove a directory through descriptor-relative, no-follow operations."""
     if os.open not in getattr(os, "supports_dir_fd", set()):
         raise ValueError("Secure Chroma reset is unavailable")
+    root = root.absolute()
     if is_reparse_link(root):
+        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
+    try:
+        parent_info = root.parent.lstat()
+        root_info = root.lstat()
+    except OSError as exc:
+        raise ValueError(f"Unsafe Chroma reset path: {root.name}") from exc
+    if not stat.S_ISDIR(parent_info.st_mode) or is_reparse_link(root.parent):
+        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
+    if not stat.S_ISDIR(root_info.st_mode):
         raise ValueError(f"Unsafe Chroma reset path: {root.name}")
     parent_fd = os.open(
         str(root.parent),
@@ -434,36 +444,55 @@ def _remove_tree_no_follow(root: Path) -> None:
     )
     root_fd = -1
     try:
+        opened_parent = os.fstat(parent_fd)
+        if (opened_parent.st_dev, opened_parent.st_ino) != (
+            parent_info.st_dev,
+            parent_info.st_ino,
+        ):
+            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
         root_fd = os.open(
             root.name,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=parent_fd,
         )
+        opened_root = os.fstat(root_fd)
+        if (opened_root.st_dev, opened_root.st_ino) != (root_info.st_dev, root_info.st_ino):
+            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
 
-        def remove_children(directory_fd: int) -> None:
+        def remove_children(directory_fd: int, directory_path: Path) -> None:
             for entry in os.scandir(directory_fd):
                 info = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
-                if stat.S_ISDIR(info.st_mode) and not is_reparse_link(Path(entry.path)):
+                entry_path = directory_path / entry.name
+                if stat.S_ISDIR(info.st_mode) and not is_reparse_link(entry_path):
                     child_fd = os.open(
                         entry.name,
                         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
                         dir_fd=directory_fd,
                     )
                     try:
-                        remove_children(child_fd)
+                        child_info = os.fstat(child_fd)
+                        if (child_info.st_dev, child_info.st_ino) != (info.st_dev, info.st_ino):
+                            raise ValueError(f"Unsafe Chroma reset path: {entry.name}")
+                        remove_children(child_fd, entry_path)
                     finally:
                         os.close(child_fd)
+                    after = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                    if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino):
+                        raise ValueError(f"Unsafe Chroma reset path: {entry.name}")
                     os.rmdir(entry.name, dir_fd=directory_fd)
                 else:
                     # Unlink links as links; never recurse through them.
                     os.unlink(entry.name, dir_fd=directory_fd)
 
-        remove_children(root_fd)
+        remove_children(root_fd, root)
+        current_root = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino):
+            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
+        os.rmdir(root.name, dir_fd=parent_fd)
     finally:
         if root_fd != -1:
             os.close(root_fd)
-    os.rmdir(root.name, dir_fd=parent_fd)
-    os.close(parent_fd)
+        os.close(parent_fd)
 
 
 class VectorIndex:

@@ -265,7 +265,11 @@ def create_server(
                 # cannot pair a new map with old records (or vice versa).
                 data_dir = getattr(index_store, "data_dir", None)
                 lock = (
-                    index_lock(data_dir, exclusive=False)
+                    # Metadata access synchronizes a long-lived writer store
+                    # when a refresh publishes in place; hold the exclusive
+                    # generation lock for the map + provenance pair so the
+                    # nested accessor can safely reopen before reading.
+                    index_lock(data_dir, exclusive=True)
                     if isinstance(data_dir, Path)
                     else contextlib.nullcontext()
                 )

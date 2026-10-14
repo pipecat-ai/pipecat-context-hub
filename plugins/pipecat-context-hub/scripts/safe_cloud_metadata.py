@@ -13,7 +13,9 @@ import selectors
 import signal
 import stat
 import threading
+import tempfile
 import time
+from contextlib import contextmanager
 from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -87,20 +89,20 @@ def _trusted_pipecat_path() -> Path | None:
             # target.  The interpreter prefix itself may be reached through a
             # benign parent symlink (notably temporary virtualenv paths), but
             # the actual console-script entry must not be a reparse point.
-            if (
-                not candidate.is_file()
-                or not os.access(candidate, os.X_OK)
-            ):
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
                 continue
             if not stat.S_ISREG(candidate.lstat().st_mode):
                 continue
-            return candidate
+            # Return the canonical spelling used by the identity check below.
+            # A symlinked virtualenv prefix is valid, but the executable itself
+            # must resolve to the package-owned regular file.
+            return resolved
         except (OSError, RuntimeError, ValueError):
             continue
     return None
 
 
-def _validate_producer_command(command: list[str]) -> None:
+def _validate_producer_command(command: list[str]) -> list[str]:
     """Allow only the installed Pipecat CLI and read-only Cloud commands.
 
     A basename check is not sufficient: ``/tmp/pipecat`` can be an arbitrary
@@ -125,7 +127,9 @@ def _validate_producer_command(command: list[str]) -> None:
         # comparing it with ``which`` here leaves a shadow executable able to
         # receive PIPECAT_TOKEN between validation and Popen, so require the
         # exact installed executable as an absolute path.
-        if not requested.is_absolute() or requested.resolve() != installed:
+        if not requested.is_absolute() or requested.resolve(strict=True) != installed.resolve(
+            strict=True
+        ):
             raise ValueError("metadata producer must be the installed pipecat CLI")
     except (OSError, RuntimeError, ValueError) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("metadata producer"):
@@ -160,6 +164,45 @@ def _validate_producer_command(command: list[str]) -> None:
         index += 1
     if tuple(command_words) not in _READ_ONLY_CLOUD_COMMANDS:
         raise ValueError("metadata command is not read-only")
+    return [str(installed), *command[1:]]
+
+
+@contextmanager
+def _materialize_verified_producer(command: list[str]):
+    """Execute a private snapshot of the verified launcher.
+
+    Validation and ``Popen`` cannot make a pathname execution atomic. Copying
+    the checked regular file through an open descriptor binds the credential-
+    bearing process to the bytes that were verified, even if the installed
+    launcher is replaced immediately afterwards.
+    """
+    source = Path(command[0])
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(source, flags)
+    temporary = tempfile.TemporaryDirectory(prefix="pipecat-context-hub-cli-")
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("metadata producer is not a regular executable")
+        snapshot = Path(temporary.name) / source.name
+        with snapshot.open("wb") as output:
+            while True:
+                chunk = os.read(fd, 64 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_size) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+        ):
+            raise ValueError("metadata producer changed while being verified")
+        snapshot.chmod(stat.S_IMODE(before.st_mode) | stat.S_IXUSR)
+        yield [str(snapshot), *command[1:]]
+    finally:
+        os.close(fd)
+        temporary.cleanup()
 
 
 def _safe_child_environment() -> dict[str, str]:
@@ -295,11 +338,22 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     if os.name == "nt":
         # ``CREATE_NEW_PROCESS_GROUP`` groups descendants on Windows; taskkill
         # is the supported way to terminate that tree from Python 3.11.
+        system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+        if not system_root:
+            raise RuntimeError("Windows SystemRoot is unavailable; refusing PATH cleanup")
+        taskkill = Path(system_root) / "System32" / "taskkill.exe"
+        if not taskkill.is_file() or taskkill.is_symlink():
+            raise RuntimeError("trusted Windows taskkill is unavailable")
         subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            env={
+                key: value
+                for key, value in _safe_child_environment().items()
+                if key in _SAFE_RUNTIME_ENV
+            },
         )
         return
     try:
@@ -372,8 +426,9 @@ def main() -> int:
         parser.error("a command is required after --")
 
     try:
-        _validate_producer_command(command)
-        result = _run_bounded(command)
+        validated = _validate_producer_command(command)
+        with _materialize_verified_producer(validated) as safe_command:
+            result = _run_bounded(safe_command)
         if result.returncode != 0:
             raise ValueError("command failed")
         if len(result.stdout) > _MAX_OUTPUT_BYTES:

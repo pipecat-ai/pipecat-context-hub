@@ -527,6 +527,29 @@ class TestHybridRetrieverSearchDocs:
         assert len(output.hits) == 0
         assert output.evidence.confidence == 0.0
 
+    async def test_public_search_uses_generation_safe_hybrid_reader(self):
+        """The production reader's public hybrid operation is not bypassed."""
+        result = _make_result("hybrid", content="generation-safe result")
+
+        class GenerationSafeReader:
+            def __init__(self) -> None:
+                self.hybrid_calls = 0
+
+            async def hybrid_search(self, _query):
+                self.hybrid_calls += 1
+                return [result], []
+
+            async def vector_search(self, _query):
+                raise AssertionError("vector fallback bypassed hybrid reader")
+
+            async def keyword_search(self, _query):
+                raise AssertionError("keyword fallback bypassed hybrid reader")
+
+        reader = GenerationSafeReader()
+        output = await HybridRetriever(reader).search_docs(SearchDocsInput(query="generation"))
+        assert output.hits
+        assert reader.hybrid_calls == 1
+
 
 class TestHybridRetrieverGetDoc:
     """Tests for HybridRetriever.get_doc()."""

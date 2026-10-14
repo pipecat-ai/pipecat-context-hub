@@ -181,6 +181,12 @@ class IndexStore:
         # path between our failed open and cleanup of the placeholders.
         with index_lock(data_dir, exclusive=True):
             try:
+                # The first check is only a fast fail. A reset may acquire the
+                # lock while this constructor waits, write its marker, and
+                # fail before releasing it. Recheck under the lock so a
+                # waiting writer never opens a partial generation.
+                if _reset_state_exists(data_dir) and not allow_incomplete_reset:
+                    raise ValueError("index reset is incomplete; run refresh to recover it")
                 _validate_backend_directory(config.chroma_path, data_dir)
                 _validate_configured_backend_path(config.sqlite_path, data_dir)
                 chroma_preexisting = config.chroma_path.exists()
@@ -428,7 +434,8 @@ class IndexStore:
 
     def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key, or None if not found."""
-        with index_lock(self._data_dir, exclusive=False):
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
             return self._fts.get_metadata(key)
 
     def delete_metadata(self, key: str) -> None:
@@ -443,17 +450,20 @@ class IndexStore:
 
     def get_all_metadata(self) -> dict[str, str]:
         """Return all persistent index metadata as a dict."""
-        with index_lock(self._data_dir, exclusive=False):
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
             return self._fts.get_all_metadata()
 
     def get_counts_by_repo(self) -> dict[str, int]:
         """Return record counts grouped by repo."""
-        with index_lock(self._data_dir, exclusive=False):
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
             return self._fts.get_counts_by_repo()
 
     def get_index_stats(self) -> dict[str, Any]:
         """Return index statistics (counts by type, total, commit SHAs)."""
-        with index_lock(self._data_dir, exclusive=False):
+        with index_lock(self._data_dir, exclusive=True):
+            self._sync_generation_locked()
             return self._fts.get_index_stats()
 
     def close(self) -> None:

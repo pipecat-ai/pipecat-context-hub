@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import sys
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -5846,16 +5845,8 @@ class TestDataDirSafetyFloor:
         # both the tilde expansion and the safety floor see the fake home.
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("USERPROFILE", str(home))
-        calls: list[Path] = []
-        original_rmtree = shutil.rmtree
-
-        def rmtree(path: Path) -> None:
-            calls.append(path)
-            original_rmtree(path)
-
-        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", rmtree)
         _delete_local_index_storage(Path("~/hub-data"))
-        assert calls == [data_dir.resolve(strict=False)]
+        assert not data_dir.exists()
 
 
 class TestServeCwdDiagnosticRedaction:

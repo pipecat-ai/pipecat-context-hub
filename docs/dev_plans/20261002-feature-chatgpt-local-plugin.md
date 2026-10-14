@@ -91,7 +91,7 @@ The current package is a four-skill, CLI-first distribution. Keep machine-specif
 
 Use native local shell tools in desktop Work/Codex for the Pipecat CLI; skills are instructions, not executable permissions. The Cloud optional extension is installed separately when a user needs deployment. Help-derived capability checks take precedence over assumptions from newer docs. Builds and Cloud operations occur in the user's app workspace, not this repository.
 
-Retrieval, local execution/Pipecat CLI and Cloud readiness are separate gates. Missing optional capabilities disable only the workflows that require them; working hub retrieval remains usable without local shell or either optional CLI.
+Retrieval, local execution/Pipecat CLI and Cloud readiness are separate gates. The hub's grounded retrieval workflow requires native local execution, a compatible runtime, and a populated index; missing those capabilities disables retrieval rather than silently substituting an ungrounded path. The optional Pipecat CLI and Cloud capabilities remain independently gated.
 
 Secret mutation is an explicit approved Cloud operation, distinct from read-only deployment preparation. Include proposed secret creation/update in the same concrete approval payload as the deployment. Preapproval checks expose only key names and secret-set metadata; after approval, supported local tooling transfers secret values directly without returning them to model context. Upload secrets before starting the approved build/deploy so required runtime secrets are available at startup.
 

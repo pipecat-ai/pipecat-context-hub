@@ -13,6 +13,8 @@ import os
 import sqlite3
 import stat
 import threading
+import tempfile
+import shutil
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -121,6 +123,7 @@ class FTSIndex:
         self._sqlite_path = sqlite_path
         self._read_only = read_only
         self._lock = threading.RLock()
+        self._readonly_snapshot_dir: tempfile.TemporaryDirectory[str] | None = None
         self._sidecar_identities: dict[Path, tuple[int, int] | None] = {}
         sidecar_identities: dict[Path, tuple[int, int] | None] = {}
         initial_identity: tuple[int, int] | None = None
@@ -144,9 +147,51 @@ class FTSIndex:
             if is_reparse_link(sqlite_path) or not stat.S_ISREG(initial_info.st_mode):
                 raise ValueError("unsafe SQLite database path")
             initial_identity = (initial_info.st_dev, initial_info.st_ino)
+            connection_path = sqlite_path
+            if wal_info is not None:
+                # Python's sqlite wrapper cannot open a pathname relative to
+                # an already-validated directory descriptor. Snapshot the
+                # validated main/WAL/SHM files through no-follow descriptors,
+                # then let SQLite open only that private, identity-stable copy.
+                # This prevents a concurrent sidecar replacement from being
+                # consumed before the identity check runs.
+                snapshot_dir = tempfile.TemporaryDirectory(prefix="pipecat-context-hub-fts-")
+                snapshot_root = Path(snapshot_dir.name)
+                try:
+                    sources = [sqlite_path, wal_path]
+                    if shm_info is not None:
+                        sources.append(shm_path)
+                    for source in sources:
+                        source_info = source.lstat()
+                        expected = _identity(source_info)
+                        fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                        try:
+                            opened = os.fstat(fd)
+                            if expected != _identity(opened):
+                                raise ValueError("SQLite path changed while snapshotting")
+                            destination = snapshot_root / source.name
+                            with destination.open("wb") as output:
+                                with os.fdopen(os.dup(fd), "rb") as input_stream:
+                                    shutil.copyfileobj(input_stream, output)
+                            after = os.fstat(fd)
+                            if _identity(after) != expected:
+                                raise ValueError("SQLite path changed while snapshotting")
+                        finally:
+                            os.close(fd)
+                except BaseException:
+                    snapshot_dir.cleanup()
+                    raise
+                self._readonly_snapshot_dir = snapshot_dir
+                connection_path = snapshot_root / sqlite_path.name
             query = "mode=ro" if wal_info is not None else "mode=ro&immutable=1"
-            uri = f"file:{quote(str(sqlite_path), safe='/')}?{query}"
-            self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+            uri = f"file:{quote(str(connection_path), safe='/')}?{query}"
+            try:
+                self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+            except BaseException:
+                if self._readonly_snapshot_dir is not None:
+                    self._readonly_snapshot_dir.cleanup()
+                    self._readonly_snapshot_dir = None
+                raise
         else:
             sqlite_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
@@ -155,18 +200,30 @@ class FTSIndex:
             info = sqlite_path.lstat()
         except OSError:
             self._conn.close()
+            if self._readonly_snapshot_dir is not None:
+                self._readonly_snapshot_dir.cleanup()
+                self._readonly_snapshot_dir = None
             raise
         if is_reparse_link(sqlite_path) or not stat.S_ISREG(info.st_mode):
             self._conn.close()
+            if self._readonly_snapshot_dir is not None:
+                self._readonly_snapshot_dir.cleanup()
+                self._readonly_snapshot_dir = None
             raise ValueError("unsafe SQLite database path")
         identity = (info.st_dev, info.st_ino)
         if initial_identity is not None and identity != initial_identity:
             self._conn.close()
+            if self._readonly_snapshot_dir is not None:
+                self._readonly_snapshot_dir.cleanup()
+                self._readonly_snapshot_dir = None
             raise ValueError("SQLite database path changed while opening")
         if sidecar_identities and any(
             _sidecar_identity(path) != expected for path, expected in sidecar_identities.items()
         ):
             self._conn.close()
+            if self._readonly_snapshot_dir is not None:
+                self._readonly_snapshot_dir.cleanup()
+                self._readonly_snapshot_dir = None
             raise ValueError("SQLite WAL/SHM path changed while opening")
         if not read_only:
             self._conn.execute("PRAGMA journal_mode=WAL")
@@ -187,6 +244,9 @@ class FTSIndex:
                 return
             self._conn.close()
             self._closed = True
+            if self._readonly_snapshot_dir is not None:
+                self._readonly_snapshot_dir.cleanup()
+                self._readonly_snapshot_dir = None
 
     def reopen_if_replaced(self) -> bool:
         """Reopen after another process publishes a new SQLite generation."""
@@ -230,6 +290,7 @@ class FTSIndex:
             self._conn = replacement._conn
             self._closed = False
             self._identity = replacement._identity
+            self._sidecar_identities = replacement._sidecar_identities
 
     def clear(self) -> None:
         """Delete all records from the chunks table (triggers sync FTS)."""
