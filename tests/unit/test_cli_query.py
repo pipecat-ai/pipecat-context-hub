@@ -290,6 +290,21 @@ class TestIndexUnready:
         assert result.stdout == ""
         assert target.read_bytes() == b"must remain unchanged"
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_symlinked_chroma_directory_is_rejected_before_child_probe(self, tmp_path):
+        data_dir = tmp_path / "linked-dir"
+        data_dir.mkdir()
+        target = tmp_path / "external-chroma"
+        target.mkdir()
+        (target / "chroma.sqlite3").write_bytes(b"external data")
+        (data_dir / "chroma").symlink_to(target, target_is_directory=True)
+        (data_dir / "metadata.db").write_bytes(b"marker")
+        with patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.stdout == ""
+        assert (target / "chroma.sqlite3").read_bytes() == b"external data"
+
     def test_data_dir_resolution_failure_is_redacted(self, tmp_path, monkeypatch):
         data_dir = tmp_path / "loop"
         original_resolve = Path.resolve

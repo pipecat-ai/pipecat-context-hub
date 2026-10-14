@@ -36,6 +36,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -350,22 +351,42 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     # Keep the non-mutating Chroma probes active even when the FTS marker is
     # missing: a corrupt vector backend must be diagnosed as corrupt rather
     # than being hidden behind the partial-index readiness error.
-    backend_paths = (storage.sqlite_path, storage.chroma_path / "chroma.sqlite3")
+    # Reject the Chroma directory itself before probing any child.  Calling
+    # ``is_file``/``stat`` on a child first would follow a directory symlink
+    # and inspect an external database before the later safety rejection.
     try:
-        backend_valid = all(
-            path.relative_to(data_dir) is not None
-            and not path.is_symlink()
-            and path.is_file()
-            and path.stat().st_size > 0
-            and path.resolve(strict=True).is_relative_to(data_dir)
-            for path in backend_paths
+        chroma_dir_info = storage.chroma_path.lstat()
+        chroma_dir_safe = (
+            stat.S_ISDIR(chroma_dir_info.st_mode)
+            and not stat.S_ISLNK(chroma_dir_info.st_mode)
+            and storage.chroma_path.resolve(strict=True).is_relative_to(data_dir)
         )
     except (OSError, RuntimeError, ValueError):
+        chroma_dir_safe = False
+    backend_paths = (storage.sqlite_path, storage.chroma_path / "chroma.sqlite3")
+    if not chroma_dir_safe:
         backend_valid = False
+    else:
+        try:
+            backend_valid = all(
+                path.relative_to(data_dir) is not None
+                and not path.is_symlink()
+                and path.is_file()
+                and path.stat().st_size > 0
+                and path.resolve(strict=True).is_relative_to(data_dir)
+                for path in backend_paths
+            )
+        except (OSError, RuntimeError, ValueError):
+            backend_valid = False
     # Keep the non-mutating Chroma probes active when the backend file is a
     # valid regular file, even if the FTS marker is missing.
     chroma_file = backend_paths[1]
-    if chroma_file.is_file() and not chroma_file.is_symlink() and chroma_file.stat().st_size > 0:
+    if (
+        chroma_dir_safe
+        and chroma_file.is_file()
+        and not chroma_file.is_symlink()
+        and chroma_file.stat().st_size > 0
+    ):
         try:
             _detect_incompatible_format(storage.chroma_path)
             validate_persisted_hnsw(storage.chroma_path, "latest")

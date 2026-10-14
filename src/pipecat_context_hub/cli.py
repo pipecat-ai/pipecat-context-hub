@@ -962,31 +962,18 @@ def refresh(
     )
     start = time.monotonic()
 
-    # Fail fast on an incompatible on-disk index before spending a network
-    # round-trip on the framework-pin pre-flight below. Skipped when
-    # --reset-index will delete storage anyway — that branch opens the index
-    # store after the delete, further down, preserving today's order where
-    # the pin pre-flight validates the pin before destroying the existing
-    # index (deliberate — see the pre-flight's own comment above).
+    # A concrete framework pin is validated before opening or mutating the
+    # existing index. This keeps invalid input fail-closed even when recovery
+    # detected a partial backend pair.
     index_store: IndexStore
-    partial_index = False
     if not reset_index:
         # A surviving SQLite metadata store paired with a missing Chroma
         # directory is a partial index.  Opening the writer creates an empty
         # vector backend; unchanged-source shortcuts would then preserve only
         # metadata and silently skip rebuilding semantic retrieval.
         if _partial_index_detected(config):
-            partial_index = True
             force = True
             logger.warning("Partial index detected; forcing a complete rebuild")
-    if not reset_index:
-        index_store = _open_index_store_or_exit(config, logger)
-        if partial_index:
-            # A partial pair can contain records that have no counterpart in
-            # the surviving backend.  Clear both sides before rebuilding so
-            # the normal pruning policy cannot preserve an inconsistent tail.
-            index_store.clear()
-
     # ----- 0. Validate an explicit framework pin -----
     # Resolve a concrete pin before any indexing work, so a typo costs one
     # fetch rather than a full docs crawl followed by a warning the run then
@@ -1034,6 +1021,13 @@ def refresh(
                 exc_info=True,
             )
         preflight_recovered_repos = set(preflight_github.recovered_repos)
+
+    if not reset_index:
+        index_store = _open_index_store_or_exit(config, logger)
+        # A partial pair forces every configured source through its normal
+        # delete-and-reingest path below.  Do not clear the whole store here:
+        # the no-prune contract requires records for unconfigured repos to
+        # survive.
 
     if reset_index:
         logger.warning("Deleting local index storage before refresh")

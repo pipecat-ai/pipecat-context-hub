@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import sqlite3
 import struct
+import os
+import stat
 from pathlib import Path
 from uuid import UUID
 
@@ -24,15 +26,30 @@ _MAX_LEVEL = 64
 _MAX_M = 1024
 
 
-def _safe_path(path: Path, root: Path) -> bool:
-    """Reject links and paths whose resolved target escapes the Chroma root."""
+def _open_segment_file(root: Path, segment_name: str, filename: str) -> tuple[int, os.stat_result]:
+    """Open an active segment file without following a swapped path component."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    root_fd = os.open(
+        root,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
     try:
-        if path.is_symlink():
-            return False
-        path.resolve(strict=True).relative_to(root.resolve(strict=True))
-    except (OSError, RuntimeError, ValueError):
-        return False
-    return True
+        segment_fd = os.open(
+            segment_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_fd,
+        )
+        try:
+            fd = os.open(filename, flags, dir_fd=segment_fd)
+        finally:
+            os.close(segment_fd)
+    finally:
+        os.close(root_fd)
+    info = os.fstat(fd)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        os.close(fd)
+        raise OSError("persisted HNSW path is not a regular file")
+    return fd, info
 
 
 def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
@@ -43,6 +60,12 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
     persisted graph yet. Unrecognized SQLite schemas are left to Chroma's
     existing format checks.
     """
+    try:
+        root_info = chroma_path.lstat()
+        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+            return
+    except OSError:
+        return
     db_path = chroma_path / "chroma.sqlite3"
     if not db_path.is_file():
         return
@@ -71,45 +94,33 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
         segment_path = chroma_path / segment_name
         links_path = segment_path / "link_lists.bin"
         try:
-            links_is_symlink = links_path.is_symlink()
+            links_fd, links_info = _open_segment_file(chroma_path, segment_name, "link_lists.bin")
         except OSError as exc:
-            raise IncompatibleIndexFormatError(
-                chroma_path, reason=f"unreadable persisted HNSW links in segment {segment_name}"
-            ) from exc
-        if links_is_symlink:
-            raise IncompatibleIndexFormatError(
-                chroma_path, reason=f"unsafe persisted HNSW links in segment {segment_name}"
-            )
+            if exc.errno == getattr(os, "ENOENT", 2):
+                continue
+            if exc.errno in {getattr(os, "ELOOP", 62), getattr(os, "ENOTDIR", 20)}:
+                reason = f"unsafe persisted HNSW links in segment {segment_name}"
+            else:
+                reason = f"unreadable persisted HNSW links in segment {segment_name}"
+            raise IncompatibleIndexFormatError(chroma_path, reason=reason) from exc
         try:
-            links_present = links_path.is_file()
+            header_fd, _header_info = _open_segment_file(chroma_path, segment_name, "header.bin")
         except OSError as exc:
-            raise IncompatibleIndexFormatError(
-                chroma_path, reason=f"unreadable persisted HNSW links in segment {segment_name}"
-            ) from exc
-        if not links_present:
-            continue
-        if not _safe_path(links_path, chroma_path):
-            raise IncompatibleIndexFormatError(
-                chroma_path, reason=f"unsafe persisted HNSW links in segment {segment_name}"
-            )
-        header_path = segment_path / "header.bin"
+            os.close(links_fd)
+            if exc.errno in {getattr(os, "ELOOP", 62), getattr(os, "ENOTDIR", 20)}:
+                reason = f"unsafe persisted HNSW header in segment {segment_name}"
+            else:
+                reason = f"unreadable persisted HNSW header in segment {segment_name}"
+            raise IncompatibleIndexFormatError(chroma_path, reason=reason) from exc
         try:
-            header_is_symlink = header_path.is_symlink()
+            header = os.read(header_fd, _HEADER.size + 1)
         except OSError as exc:
+            os.close(header_fd)
+            os.close(links_fd)
             raise IncompatibleIndexFormatError(
                 chroma_path, reason=f"unreadable persisted HNSW header in segment {segment_name}"
             ) from exc
-        if header_is_symlink or not _safe_path(header_path, chroma_path):
-            raise IncompatibleIndexFormatError(
-                chroma_path, reason=f"unsafe persisted HNSW header in segment {segment_name}"
-            )
-        try:
-            with header_path.open("rb") as stream:
-                header = stream.read(_HEADER.size + 1)
-        except OSError as exc:
-            raise IncompatibleIndexFormatError(
-                chroma_path, reason=f"unreadable persisted HNSW header in segment {segment_name}"
-            ) from exc
+        os.close(header_fd)
         if len(header) != _HEADER.size:
             raise IncompatibleIndexFormatError(
                 chroma_path, reason=f"unreadable persisted HNSW header in segment {segment_name}"
@@ -140,12 +151,26 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
         # Use capacity (rather than count) and one extra level conservatively,
         # allowing retained storage without accepting the observed runaway file.
         upper_bound = capacity * (4 + (max_m * 4 + 4) * (max(max_level, 0) + 1))
+        # Keep the descriptor as the authority across a path swap.  The
+        # pathname stat is only a compatibility probe for tests and older
+        # callers; its inode must still match the already-open descriptor.
         try:
-            size = links_path.stat().st_size
+            observed = links_path.stat()
         except OSError as exc:
+            os.close(links_fd)
             raise IncompatibleIndexFormatError(
                 chroma_path, reason=f"unreadable persisted HNSW links in segment {segment_name}"
             ) from exc
+        size = (
+            observed.st_size
+            if (observed.st_dev, observed.st_ino)
+            == (
+                links_info.st_dev,
+                links_info.st_ino,
+            )
+            else links_info.st_size
+        )
+        os.close(links_fd)
         if size > upper_bound:
             raise IncompatibleIndexFormatError(
                 chroma_path,

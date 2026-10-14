@@ -138,6 +138,22 @@ def test_symlinked_hnsw_files_are_rejected(
         validate_persisted_hnsw(root, "latest")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_symlinked_hnsw_segment_directory_is_rejected(
+    persisted_segment: tuple[Path, Path], tmp_path: Path
+) -> None:
+    root, segment = persisted_segment
+    outside = tmp_path / "outside-segment"
+    outside.mkdir()
+    (outside / "header.bin").write_bytes((segment / "header.bin").read_bytes())
+    (outside / "link_lists.bin").write_bytes((segment / "link_lists.bin").read_bytes())
+    segment_name = segment.name
+    segment.rename(root / f"{segment_name}.real")
+    (root / segment_name).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(IncompatibleIndexFormatError, match="unsafe persisted HNSW links"):
+        validate_persisted_hnsw(root, "latest")
+
+
 @pytest.mark.parametrize("field", ["capacity", "max_level", "max_m"])
 def test_implausible_hnsw_header_values_are_rejected(
     persisted_segment: tuple[Path, Path], field: str
