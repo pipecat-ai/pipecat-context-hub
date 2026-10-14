@@ -173,7 +173,7 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
     # operations across processes; correctness is more important than reader
     # parallelism for the small local metadata/index critical sections.
     parent_guard_fd = -1
-    if os.name != "nt" and (not create or not data_dir.exists()):
+    if os.name != "nt" and (not create or not data_dir.exists() or lock_info is not None):
         try:
             parent_guard_fd = os.open(
                 data_dir.parent,

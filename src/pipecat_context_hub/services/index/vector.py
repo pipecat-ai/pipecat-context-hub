@@ -678,6 +678,23 @@ class VectorIndex:
                         "process writes to a 1.x index directory"
                     ),
                 ) from exc
+            # Native Chroma accepts only a pathname. Bind the resulting
+            # client to the identities validated immediately before opening
+            # and fail closed if a replacement won the final open window.
+            opened_identity = self._source_identity()
+            if not self._read_only and (
+                opened_identity[0] != native_identity[0]
+                or (
+                    native_identity[1] is not None
+                    and opened_identity[1] != native_identity[1]
+                )
+            ):
+                try:
+                    self._client.close()
+                finally:
+                    self._client = None
+                    self._collection = None
+                raise ValueError("Chroma generation changed during native open")
         self._closed = False
         self._generation_identity = self._source_identity()
         logger.info("VectorIndex initialized at %s", self._chroma_path)
@@ -735,14 +752,24 @@ class VectorIndex:
         if self._read_only:
             raise RuntimeError("read-only VectorIndex cannot reset")
         with self._op_lock:
+            try:
+                parent_before = self._chroma_path.parent.lstat()
+                root_before = self._chroma_path.lstat()
+            except OSError as exc:
+                raise ValueError("Unsafe Chroma reset path") from exc
+            if (
+                is_reparse_link(self._chroma_path.parent)
+                or not stat.S_ISDIR(parent_before.st_mode)
+                or is_reparse_link(self._chroma_path)
+                or not stat.S_ISDIR(root_before.st_mode)
+            ):
+                raise ValueError("Unsafe Chroma reset path")
             with index_lock(self._chroma_path.parent, exclusive=True):
                 self._release_client()
-                parent_info = self._chroma_path.parent.lstat()
-                root_info = self._chroma_path.lstat()
                 _remove_tree_no_follow(
                     self._chroma_path,
-                    expected_parent=(parent_info.st_dev, parent_info.st_ino),
-                    expected_root=(root_info.st_dev, root_info.st_ino),
+                    expected_parent=(parent_before.st_dev, parent_before.st_ino),
+                    expected_root=(root_before.st_dev, root_before.st_ino),
                 )
                 if self._chroma_path.exists() or self._chroma_path.is_symlink():
                     raise OSError(f"Chroma reset did not remove {self._chroma_path}")

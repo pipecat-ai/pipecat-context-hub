@@ -133,4 +133,4 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
   (project-scoped, for teams) should you check `.mcp.json` at the project root
   (not inside `.claude/`) instead.
 - **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
-- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
+- **Empty results**: On macOS or Linux, run `uvx pipecat-ai-context-hub refresh` to populate the index. Windows populated refresh and semantic index operations are unsupported; run the refresh on a POSIX machine instead.

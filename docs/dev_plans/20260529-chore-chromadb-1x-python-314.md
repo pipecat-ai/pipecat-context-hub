@@ -1,11 +1,13 @@
 # chromadb 1.x migration + Python 3.14 support
 
 **Component**: services/index (vector store)
-**Status**: Complete (v0.1.0; retained as a historic decision record)
+**Status**: Implemented subset (v0.1.0; retained as a historic decision record; release-blocker checklist remains open)
 **Type**: chore
 **Created**: 2026-05-29
 **Branch**: `chore/chromadb-1x-python-314`
 **Target version**: TBD — likely `v0.1.0` (on-disk format break is a minor bump under the project's pre-1.0 SemVer convention; see "Versioning policy" below)
+
+> **2026-10-14 correction:** The v0.1.0 implementation subset and its Phase 4/7 evidence are retained here as a decision record. The unchecked release-blocker phases (prerequisites, parity, performance, and migration) were not completed by that work and must not be inferred from the historical status; the current status above intentionally leaves those gates open.
 
 ## Why
 
@@ -226,7 +228,7 @@ Plus these sub-steps:
 - **Windows smoke (CI):** the Windows runner covers package/path safety only. Populated refresh, serve, reset, and semantic queries fail closed because the required descriptor-relative no-reparse primitives are unavailable.
 - **Concurrent reader test:** two `serve` processes against the same data dir; both should return query results without locking errors.
 
-**Pass:** full pipeline works; `get_hub_status` returns expected counts; MCP `search_docs` returns sensible results; no network egress on boot; Windows CI green.
+**Pass:** POSIX full pipeline works; `get_hub_status` returns expected counts; MCP `search_docs` returns sensible results; no network egress on boot; Windows package/path-safety CI is green. Populated refresh, serve, reset, and semantic retrieval remain unsupported on Windows.
 
 ### Phase 5: Performance regression
 

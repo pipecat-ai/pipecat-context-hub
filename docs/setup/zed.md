@@ -60,5 +60,5 @@ uvx pipecat-ai-context-hub serve --help
 
 - **Server not appearing**: Ensure the `context_servers` key is at the top level of `settings.json` and that `"source": "custom"` is included.
 - **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
-- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
+- **Empty results**: On macOS or Linux, run `uvx pipecat-ai-context-hub refresh` to populate the index. Windows populated refresh and semantic index operations are unsupported; run the refresh on a POSIX machine instead.
 - **JSON parse errors**: Zed's `settings.json` contains other settings — make sure you merge the `context_servers` block rather than replacing the entire file.

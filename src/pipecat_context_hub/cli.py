@@ -451,7 +451,11 @@ def _delete_local_index_storage(data_dir: Path) -> None:
                 # deletion cannot redirect the reset outside this generation.
                 from pipecat_context_hub.services.index.vector import _remove_tree_no_follow
 
-                _remove_tree_no_follow(resolved_data_dir)
+                _remove_tree_no_follow(
+                    resolved_data_dir,
+                    expected_parent=(parent_before.st_dev, parent_before.st_ino),
+                    expected_root=(target_before.st_dev, target_before.st_ino),
+                )
             else:
                 # Windows deliberately remains package/path smoke only.  A
                 # pathname-recursive fallback would turn the preflight TOCTOU

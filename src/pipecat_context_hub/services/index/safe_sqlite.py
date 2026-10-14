@@ -45,6 +45,24 @@ def _link_open_fd(fd: int, target: Path) -> None:
     raise OSError(errno.ENOTSUP, "cannot preserve SQLite sidecar visibility") from last_error
 
 
+def _copy_open_fd(fd: int, target: Path) -> None:
+    """Copy bytes from an already-open descriptor into a private snapshot."""
+    output_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        while True:
+            chunk = os.read(fd, 64 * 1024)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                written = os.write(output_fd, view)
+                view = view[written:]
+        os.fsync(output_fd)
+    finally:
+        os.close(output_fd)
+
+
 @contextlib.contextmanager
 def connect_readonly(path: Path, *, immutable: bool) -> Iterator[sqlite3.Connection]:
     """Connect SQLite through an already-open, no-follow file descriptor.
@@ -56,7 +74,7 @@ def connect_readonly(path: Path, *, immutable: bool) -> Iterator[sqlite3.Connect
     """
     parent_fd = _open_directory_chain(path.parent)
     fd = -1
-    sidecar_fds: list[int] = []
+    sidecar_fds: list[tuple[str, int]] = []
     temporary: tempfile.TemporaryDirectory[str] | None = None
     conn: sqlite3.Connection | None = None
     try:
@@ -97,29 +115,48 @@ def connect_readonly(path: Path, *, immutable: bool) -> Iterator[sqlite3.Connect
                     if not stat.S_ISREG(sidecar_info.st_mode):
                         os.close(sidecar_fd)
                         raise OSError(errno.ELOOP, "SQLite sidecar is not a regular file")
-                    sidecar_fds.append(sidecar_fd)
+                    sidecar_fds.append((suffix, sidecar_fd))
                     _link_open_fd(sidecar_fd, snapshot.with_name(path.name + suffix))
-                conn = sqlite3.connect(f"file:{snapshot}?mode=ro", uri=True)
             except OSError:
-                # macOS does not permit hard-linking /dev/fd descriptors. The
-                # validated real path retains WAL visibility there; bind it to
-                # the opened identities before and after SQLite connects.
-                for sidecar_fd in sidecar_fds:
-                    os.close(sidecar_fd)
-                sidecar_fds.clear()
-                temporary.cleanup()
-                temporary = None
-                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-                current = path.lstat()
-                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                    raise OSError(errno.ELOOP, "SQLite database changed during open")
+                # macOS may reject hard-linking /dev/fd descriptors. Copy
+                # bytes from the descriptors already opened above instead of
+                # reopening the published pathname; this retains the main,
+                # WAL, SHM, and parent identity binding without a TOCTOU path.
+                with contextlib.suppress(OSError):
+                    snapshot.unlink()
+                for suffix in ("-wal", "-shm"):
+                    with contextlib.suppress(OSError):
+                        snapshot.with_name(path.name + suffix).unlink()
+                _copy_open_fd(fd, snapshot)
+                opened_sidecars = dict(sidecar_fds)
+                for suffix in ("-wal", "-shm"):
+                    existing_fd = opened_sidecars.get(suffix)
+                    if existing_fd is None:
+                        sidecar = path.with_name(path.name + suffix)
+                        try:
+                            opened_fd = os.open(
+                                sidecar.name,
+                                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                                dir_fd=parent_fd,
+                            )
+                        except FileNotFoundError:
+                            continue
+                        sidecar_info = os.fstat(opened_fd)
+                        if not stat.S_ISREG(sidecar_info.st_mode):
+                            os.close(opened_fd)
+                            raise OSError(errno.ELOOP, "SQLite sidecar is not a regular file")
+                        sidecar_fds.append((suffix, opened_fd))
+                    else:
+                        opened_fd = existing_fd
+                    _copy_open_fd(opened_fd, snapshot.with_name(path.name + suffix))
+            conn = sqlite3.connect(f"file:{snapshot}?mode=ro", uri=True)
         yield conn
     finally:
         if conn is not None:
             conn.close()
         if fd != -1:
             os.close(fd)
-        for sidecar_fd in sidecar_fds:
+        for _suffix, sidecar_fd in sidecar_fds:
             os.close(sidecar_fd)
         if temporary is not None:
             temporary.cleanup()

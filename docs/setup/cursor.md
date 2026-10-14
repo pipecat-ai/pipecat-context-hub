@@ -61,5 +61,5 @@ uvx pipecat-ai-context-hub serve --help
 
 - **Server not appearing**: Ensure `.cursor/mcp.json` exists in your project root directory.
 - **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
-- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
+- **Empty results**: On macOS or Linux, run `uvx pipecat-ai-context-hub refresh` to populate the index. Windows populated refresh and semantic index operations are unsupported; run the refresh on a POSIX machine instead.
 - **Red status indicator**: Check the Cursor MCP logs for error details.

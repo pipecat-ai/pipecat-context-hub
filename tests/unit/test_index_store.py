@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import random
 import os
+import sqlite3
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +30,7 @@ from pipecat_context_hub.services.index.vector import (
     _CHROMA_BATCH_SIZE,
     _copy_tree_no_follow,
 )
+from pipecat_context_hub.services.index import safe_sqlite
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
@@ -61,6 +65,67 @@ def test_read_only_fts_reopen_retains_wal_snapshot_owner(tmp_path: Path) -> None
     finally:
         reader.close()
         writer.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative SQLite opens")
+def test_sqlite_snapshot_fallback_never_reopens_published_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS-style hard-link failure must use descriptor bytes, not a pathname."""
+    db = tmp_path / "metadata.db"
+    with sqlite3.connect(db) as connection:
+        connection.execute("create table marker (value text)")
+        connection.execute("insert into marker values ('bound')")
+
+    calls: list[str] = []
+    original_connect = sqlite3.connect
+
+    def record_connect(database: str, **kwargs: Any):
+        calls.append(database)
+        return original_connect(database, uri=bool(kwargs.get("uri", False)))
+
+    monkeypatch.setattr(
+        safe_sqlite, "_link_open_fd", lambda *_args: (_ for _ in ()).throw(OSError())
+    )
+    monkeypatch.setattr(sqlite3, "connect", record_connect)
+    with safe_sqlite.connect_readonly(db, immutable=False) as connection:
+        assert connection.execute("select value from marker").fetchone() == ("bound",)
+    assert calls
+    assert str(db) not in calls[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative reset")
+def test_vector_reset_rejects_generation_replaced_while_waiting_for_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reset must delete only the generation captured before lock wait."""
+    chroma = tmp_path / "chroma"
+    chroma.mkdir()
+    (chroma / "original").write_text("keep")
+    replacement = tmp_path / "chroma-replacement"
+
+    index = object.__new__(VectorIndex)
+    index._chroma_path = chroma
+    index._read_only = False
+    index._op_lock = threading.RLock()
+    index._client = None
+    index._collection = None
+    index._closed = True
+    index._readonly_tempdir = None
+    index._lock_held = False
+
+    @contextmanager
+    def racing_lock(*_args: object, **_kwargs: object):
+        chroma.rename(replacement)
+        chroma.mkdir()
+        (chroma / "replacement").write_text("must survive")
+        yield
+
+    monkeypatch.setattr("pipecat_context_hub.services.index.vector.index_lock", racing_lock)
+    with pytest.raises(ValueError, match="Unsafe Chroma reset path"):
+        index.reset()
+    assert (replacement / "original").read_text() == "keep"
+    assert (chroma / "replacement").read_text() == "must survive"
 
 
 @pytest.mark.parametrize("sqlite_filename", ["../outside.db", str(Path("/tmp/outside.db"))])

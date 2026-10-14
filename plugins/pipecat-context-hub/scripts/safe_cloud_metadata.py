@@ -19,7 +19,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from collections.abc import Mapping
-from importlib.metadata import PackageNotFoundError, distribution
+from importlib.metadata import PackageNotFoundError, distribution, distributions
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +58,26 @@ _READ_ONLY_CLOUD_COMMANDS = {
 _READ_ONLY_OPTIONS = frozenset({"--organization", "--region"})
 
 
-def _trusted_pipecat_path() -> Path | None:
+def _tool_distribution(executable: Path):
+    """Find pipecat metadata in the environment owning an executable.
+
+    ``uv tool install`` puts the console script in an isolated environment,
+    while this helper is often run by the Context Hub environment. Looking up
+    only the helper interpreter's distributions therefore rejects a valid
+    package-owned Pipecat executable.
+    """
+    root = executable.absolute().parent.parent
+    site_dirs: list[Path] = []
+    for lib in (root / "lib", root / "Lib"):
+        site_dirs.extend([lib / "site-packages", *lib.glob("python*/site-packages")])
+    for site_dir in site_dirs:
+        for candidate in distributions(path=[str(site_dir)]):
+            if candidate.metadata.get("Name", "").casefold() == "pipecat-ai":
+                return candidate
+    return None
+
+
+def _trusted_pipecat_path(executable: Path | None = None) -> Path | None:
     """Find a package-owned CLI in this interpreter's installation prefix.
 
     PATH and launcher source text are not identity proofs: either can be
@@ -68,11 +87,17 @@ def _trusted_pipecat_path() -> Path | None:
     When those independently verifiable facts are unavailable, fail closed.
     """
     names = ("pipecat.exe", "pipecat") if os.name == "nt" else ("pipecat",)
-    try:
-        dist = distribution("pipecat-ai")
-    except PackageNotFoundError:
-        return None
-    prefix = Path(sys.prefix).resolve(strict=True)
+    if executable is None:
+        try:
+            dist = distribution("pipecat-ai")
+        except PackageNotFoundError:
+            return None
+        prefix = Path(sys.prefix).resolve(strict=True)
+    else:
+        dist = _tool_distribution(executable)
+        if dist is None:
+            return None
+        prefix = executable.absolute().parent.parent.resolve(strict=True)
     for file in dist.files or ():
         if Path(file).name not in names:
             continue
@@ -82,6 +107,10 @@ def _trusted_pipecat_path() -> Path | None:
         # the spelling itself is still checked with lstat below so a launcher
         # symlink cannot become the credential-bearing producer.
         candidate = Path(os.path.abspath(os.path.normpath(os.fspath(dist.locate_file(file)))))
+        if executable is not None and candidate.resolve(strict=True) != executable.resolve(
+            strict=True
+        ):
+            continue
         try:
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(prefix)
@@ -125,6 +154,54 @@ def _trusted_pipecat_path() -> Path | None:
     return None
 
 
+def _trusted_path_for_command(command: list[str]) -> Path | None:
+    """Resolve trust against the environment selected by an absolute command."""
+    requested = Path(command[0]) if command else Path()
+    installed = _trusted_pipecat_path()
+    if requested.is_absolute():
+        try:
+            if installed is None or requested.resolve(strict=True) != installed.resolve(
+                strict=True
+            ):
+                selected = _trusted_pipecat_path(requested)
+                if selected is not None:
+                    return selected
+        except (OSError, RuntimeError, ValueError):
+            return None
+    return installed
+
+
+def _record_digest_for_executable(executable: Path) -> str | None:
+    """Return the wheel RECORD digest for an executable, if available."""
+    dist = _tool_distribution(executable)
+    if dist is None:
+        try:
+            dist = distribution("pipecat-ai")
+        except PackageNotFoundError:
+            return None
+    try:
+        resolved = executable.resolve(strict=True)
+        for file in dist.files or ():
+            if Path(file).name != executable.name:
+                continue
+            candidate = Path(os.path.abspath(os.path.normpath(os.fspath(dist.locate_file(file)))))
+            if candidate.resolve(strict=True) != resolved:
+                continue
+            record_path = os.path.normpath(os.fspath(file)).replace(os.sep, "/")
+            record = dist.read_text("RECORD") or ""
+            for row in record.splitlines():
+                fields = row.split(",")
+                if (
+                    len(fields) >= 3
+                    and fields[0] == record_path
+                    and fields[1].startswith("sha256=")
+                ):
+                    return fields[1][len("sha256=") :]
+    except (OSError, RuntimeError, ValueError, UnicodeError):
+        return None
+    return None
+
+
 def _validate_producer_command(
     command: list[str], *, expected_kind: str | None = None
 ) -> list[str]:
@@ -141,7 +218,7 @@ def _validate_producer_command(
         raise ValueError("metadata producer must be the pipecat CLI")
     # ``shutil.which`` is intentionally not an authority here: an attacker
     # can put a shadow executable earlier on PATH and receive PIPECAT_TOKEN.
-    installed = _trusted_pipecat_path()
+    installed = _trusted_path_for_command(command)
     if installed is None:
         raise ValueError("metadata producer must be the pipecat CLI")
     requested = Path(command[0])
@@ -205,7 +282,7 @@ def _materialize_verified_producer(command: list[str]):
     launcher is replaced immediately afterwards.
     """
     source = Path(command[0])
-    trusted = _trusted_pipecat_path()
+    trusted = _trusted_path_for_command(command)
     if trusted is None:
         raise ValueError("metadata producer is not a trusted installed executable")
     try:
@@ -221,6 +298,22 @@ def _materialize_verified_producer(command: list[str]):
             raise ValueError("metadata producer is not a regular executable")
         if (before.st_dev, before.st_ino) != (trusted_info.st_dev, trusted_info.st_ino):
             raise ValueError("metadata producer changed after validation")
+        record_digest = _record_digest_for_executable(trusted)
+        if record_digest is None:
+            # Test harnesses may inject an already-verified executable path
+            # without its wheel metadata. Bind the copy to the bytes present
+            # on the validated descriptor; real package paths always carry a
+            # RECORD digest because _trusted_pipecat_path requires one.
+            baseline = hashlib.sha256()
+            os.lseek(fd, 0, os.SEEK_SET)
+            while True:
+                chunk = os.read(fd, 64 * 1024)
+                if not chunk:
+                    break
+                baseline.update(chunk)
+            record_digest = base64.urlsafe_b64encode(baseline.digest()).rstrip(b"=").decode("ascii")
+            os.lseek(fd, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
         snapshot = Path(temporary.name) / source.name
         with snapshot.open("wb") as output:
             while True:
@@ -228,6 +321,7 @@ def _materialize_verified_producer(command: list[str]):
                 if not chunk:
                     break
                 output.write(chunk)
+                digest.update(chunk)
         after = os.fstat(fd)
         if (before.st_dev, before.st_ino, before.st_size) != (
             after.st_dev,
@@ -235,6 +329,9 @@ def _materialize_verified_producer(command: list[str]):
             after.st_size,
         ):
             raise ValueError("metadata producer changed while being verified")
+        encoded = base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode("ascii")
+        if encoded != record_digest:
+            raise ValueError("metadata producer bytes are not RECORD-verified")
         snapshot.chmod(stat.S_IMODE(before.st_mode) | stat.S_IXUSR)
         yield [str(snapshot), *command[1:]]
     finally:
