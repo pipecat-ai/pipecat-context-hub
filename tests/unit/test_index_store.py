@@ -91,8 +91,6 @@ def test_legacy_read_rechecks_sibling_without_self_deadlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A sibling published during legacy setup is acquired through its lock."""
-    from pipecat_context_hub.services.index import locking
-
     data_dir = tmp_path / "hub-data"
     data_dir.mkdir()
     (data_dir / "metadata.db").touch()
@@ -111,7 +109,7 @@ def test_legacy_read_rechecks_sibling_without_self_deadlock(
                 raise
         return original_lstat(path)
 
-    monkeypatch.setattr(locking.Path, "lstat", publish_sibling)
+    monkeypatch.setattr(Path, "lstat", publish_sibling)
     with index_lock(data_dir, exclusive=False, create=False):
         assert lock_path.is_file()
 
