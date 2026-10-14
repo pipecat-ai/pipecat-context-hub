@@ -22,6 +22,7 @@ from pipecat_context_hub.cli import (
     _delete_local_index_storage,
     _log_serve_cwd,
     _prewarm_models,
+    _partial_index_detected,
     _print_refresh_summary,
     _prune_enabled,
     _redact_home,
@@ -30,11 +31,22 @@ from pipecat_context_hub.cli import (
     _write_serve_debug_probe,
     main,
 )
+
 from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
 from pipecat_context_hub.services.ingest.github_ingest import CloneResult, TagNotFoundError
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_global_config
+
+
+def test_partial_index_detection_forces_reconciliation(tmp_path: Path) -> None:
+    config = HubConfig.model_validate({"storage": {"data_dir": str(tmp_path)}})
+    config.storage.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    config.storage.sqlite_path.write_bytes(b"metadata")
+    assert _partial_index_detected(config)
+    config.storage.chroma_path.mkdir(parents=True)
+    (config.storage.chroma_path / "chroma.sqlite3").write_bytes(b"vector")
+    assert not _partial_index_detected(config)
 
 
 class TestWriteServeDebugProbe:

@@ -56,7 +56,13 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
             ) from exc
         segment_path = chroma_path / segment_name
         links_path = segment_path / "link_lists.bin"
-        if not links_path.is_file():
+        try:
+            links_present = links_path.is_file()
+        except OSError as exc:
+            raise IncompatibleIndexFormatError(
+                chroma_path, reason=f"unreadable persisted HNSW links in segment {segment_name}"
+            ) from exc
+        if not links_present:
             continue
         header_path = segment_path / "header.bin"
         try:
@@ -87,7 +93,12 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
         # Use capacity (rather than count) and one extra level conservatively,
         # allowing retained storage without accepting the observed runaway file.
         upper_bound = capacity * (4 + (max_m * 4 + 4) * (max(max_level, 0) + 1))
-        size = links_path.stat().st_size
+        try:
+            size = links_path.stat().st_size
+        except OSError as exc:
+            raise IncompatibleIndexFormatError(
+                chroma_path, reason=f"unreadable persisted HNSW links in segment {segment_name}"
+            ) from exc
         if size > upper_bound:
             raise IncompatibleIndexFormatError(
                 chroma_path,

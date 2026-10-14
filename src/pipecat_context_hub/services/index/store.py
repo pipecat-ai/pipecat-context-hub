@@ -39,6 +39,18 @@ def _validate_existing_backend_file(path: Path, data_dir: Path) -> None:
         raise ValueError(f"Unsafe index backend path: {path.name}")
 
 
+def _validate_backend_directory(path: Path, data_dir: Path) -> None:
+    """Reject backend directories that could redirect writes."""
+    try:
+        if path.is_symlink():
+            raise ValueError(f"Unsafe index backend path: {path.name}")
+        path.resolve(strict=False).relative_to(data_dir)
+    except (OSError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("Unsafe"):
+            raise
+        raise ValueError(f"Unsafe index backend path: {path.name}") from exc
+
+
 class IndexStore:
     """Unified index store satisfying both IndexWriter and IndexReader.
 
@@ -47,14 +59,17 @@ class IndexStore:
     """
 
     def __init__(self, config: StorageConfig) -> None:
-        config.data_dir.mkdir(parents=True, exist_ok=True)
-        self._data_dir = config.data_dir
+        data_dir = config.data_dir.expanduser().resolve()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        config = config.model_copy(update={"data_dir": data_dir})
+        self._data_dir = data_dir
+        _validate_backend_directory(config.chroma_path, data_dir)
         for backend_file in (
             config.sqlite_path,
             config.chroma_path / "chroma.sqlite3",
         ):
             if backend_file.exists() or backend_file.is_symlink():
-                _validate_existing_backend_file(backend_file, config.data_dir)
+                _validate_existing_backend_file(backend_file, data_dir)
         self._vector = VectorIndex(config.chroma_path)
         try:
             self._fts = FTSIndex(config.sqlite_path)

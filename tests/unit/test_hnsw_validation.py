@@ -108,6 +108,22 @@ def test_new_index_without_persisted_graph_is_allowed(tmp_path: Path) -> None:
     validate_persisted_hnsw(tmp_path / "absent", "latest")
 
 
+def test_unreadable_links_file_uses_recovery_error(
+    persisted_segment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, segment = persisted_segment
+    real_stat = Path.stat
+
+    def fail_links(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == segment / "link_lists.bin":
+            raise OSError("permission denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_links)
+    with pytest.raises(IncompatibleIndexFormatError, match="unreadable persisted HNSW links"):
+        validate_persisted_hnsw(root, "latest")
+
+
 def test_healthy_native_graph_reopens_and_queries(tmp_path: Path) -> None:
     """Verify compatibility against actual Chroma persistence, not a mocked header."""
     root = tmp_path / "native"

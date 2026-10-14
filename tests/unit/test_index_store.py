@@ -34,6 +34,27 @@ def test_store_refuses_symlinked_backend_file(tmp_path: Path) -> None:
     assert target.read_bytes() == b"keep"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_store_accepts_symlinked_data_root(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    store = IndexStore(StorageConfig(data_dir=linked))
+    store.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_store_refuses_symlinked_chroma_directory(tmp_path: Path) -> None:
+    data_dir = tmp_path / "index"
+    data_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (data_dir / "chroma").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="Unsafe index backend path"):
+        IndexStore(StorageConfig(data_dir=data_dir))
+
+
 def _random_embedding(seed: int = 0) -> list[float]:
     """Generate a deterministic pseudo-random embedding vector."""
     rng = random.Random(seed)

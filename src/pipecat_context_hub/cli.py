@@ -81,6 +81,13 @@ _EXIT_INDEX_UNREADY = 2
 _module_logger = logging.getLogger(__name__)
 
 
+def _partial_index_detected(config: HubConfig) -> bool:
+    """Return whether one persisted backend exists without its sibling."""
+    sqlite_exists = config.storage.sqlite_path.is_file()
+    chroma_exists = (config.storage.chroma_path / "chroma.sqlite3").is_file()
+    return sqlite_exists != chroma_exists
+
+
 def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> IndexStore:
     """Open the on-disk index store, or exit with `_EXIT_INDEX_UNREADY`.
 
@@ -962,6 +969,14 @@ def refresh(
     # the pin pre-flight validates the pin before destroying the existing
     # index (deliberate — see the pre-flight's own comment above).
     index_store: IndexStore
+    if not reset_index:
+        # A surviving SQLite metadata store paired with a missing Chroma
+        # directory is a partial index.  Opening the writer creates an empty
+        # vector backend; unchanged-source shortcuts would then preserve only
+        # metadata and silently skip rebuilding semantic retrieval.
+        if _partial_index_detected(config):
+            force = True
+            logger.warning("Partial index detected; forcing a complete rebuild")
     if not reset_index:
         index_store = _open_index_store_or_exit(config, logger)
 

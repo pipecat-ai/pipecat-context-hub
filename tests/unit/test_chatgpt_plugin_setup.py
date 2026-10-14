@@ -375,6 +375,33 @@ def test_cloud_metadata_wrapper_fails_closed_without_raw_output(tmp_path: Path, 
     )
 
 
+def test_cloud_metadata_wrapper_rejects_unbounded_records_and_nesting(tmp_path: Path) -> None:
+    producer = tmp_path / "producer.py"
+    producer.write_text(
+        "import json\n"
+        "value = {'id': 'x', 'name': 'x'}\n"
+        "for _ in range(1100): value = {'data': [value]}\n"
+        "print(json.dumps(value))\n"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
+            "--kind",
+            "organizations",
+            "--",
+            sys.executable,
+            str(producer),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
 def test_plugin_contract_requires_read_only_and_untrusted_evidence_guards() -> None:
     readme = (_SOURCE / "README.md").read_text()
     explore = (_SOURCE / "skills" / "explore" / "SKILL.md").read_text()
