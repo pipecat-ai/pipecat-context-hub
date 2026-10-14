@@ -7,6 +7,7 @@ single namespace for v0.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -360,6 +361,12 @@ def _copy_tree_no_follow(source: Path, destination: Path) -> None:
         # source is checked again after each copy.  The enclosing index lock
         # prevents normal Hub writers from racing this snapshot; the checks
         # fail closed for an external replacement.
+        if os.name == "nt":
+            raise ValueError(
+                "Unsafe read-only Chroma path: Windows cannot snapshot without "
+                "descriptor-relative opens"
+            )
+
         def copy_path(source_dir: Path, target: Path) -> None:
             target.mkdir(parents=True, exist_ok=True)
             try:
@@ -471,6 +478,7 @@ class VectorIndex:
         self._client: Any = None
         self._collection: Any = None
         self._closed = True
+        self._generation_identity: tuple[tuple[int, int], tuple[int, int] | None] | None = None
         self._op_lock = threading.RLock()
         try:
             self._open_client()
@@ -505,16 +513,41 @@ class VectorIndex:
         self._readonly_tempdir = tempdir
         return snapshot
 
-    def _open_client(self) -> None:
+    def _source_identity(self) -> tuple[tuple[int, int], tuple[int, int] | None]:
+        """Return the directory/database identity for the current generation."""
+        try:
+            directory = self._chroma_path.lstat()
+            if is_reparse_link(self._chroma_path) or not stat.S_ISDIR(directory.st_mode):
+                raise ValueError("unsafe Chroma generation path")
+            db_path = self._chroma_path / "chroma.sqlite3"
+            try:
+                db = db_path.lstat()
+            except FileNotFoundError:
+                db = None
+            if db is not None and (is_reparse_link(db_path) or not stat.S_ISREG(db.st_mode)):
+                raise ValueError("unsafe Chroma database path")
+            return (
+                (directory.st_dev, directory.st_ino),
+                None if db is None else (db.st_dev, db.st_ino),
+            )
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("Chroma generation is unavailable") from exc
+
+    def _open_client(self, *, lock_held: bool = False) -> None:
         """Open the persistent Chroma client and the ``latest`` collection."""
         # Validation, snapshotting, and native opening must observe one
         # generation. A writer lock also coordinates WAL-backed SQLite state;
         # ``allow_wal`` is safe only under this lock.
-        with index_lock(
-            self._chroma_path.parent,
-            exclusive=not self._read_only,
-            create=not self._read_only,
-        ):
+        lock_context = (
+            contextlib.nullcontext()
+            if lock_held
+            else index_lock(
+                self._chroma_path.parent,
+                exclusive=not self._read_only,
+                create=not self._read_only,
+            )
+        )
+        with lock_context:
             _detect_incompatible_format(self._chroma_path)
             validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME, allow_wal=True)
             client_path = self._chroma_path
@@ -561,7 +594,16 @@ class VectorIndex:
                     ),
                 ) from exc
         self._closed = False
+        self._generation_identity = self._source_identity()
         logger.info("VectorIndex initialized at %s", self._chroma_path)
+
+    def reopen_if_replaced(self, *, lock_held: bool = False) -> None:
+        """Reopen a client after another process publishes a new generation."""
+        with self._op_lock:
+            if self._source_identity() == self._generation_identity:
+                return
+            self._release_client()
+            self._open_client(lock_held=lock_held)
 
     def _release_client(self) -> None:
         """Release this client's Chroma resources via the public close API.
@@ -728,6 +770,9 @@ class VectorIndex:
             return []
 
         with self._op_lock:
+            # The outer IndexStore lock serializes this check with refresh;
+            # reopen in-place if another process replaced the Chroma tree.
+            self.reopen_if_replaced(lock_held=True)
             needs_post_filter = any(
                 k in query.filters
                 for k in ("path", "capability_tags", "class_name", "module_path", "yields", "calls")

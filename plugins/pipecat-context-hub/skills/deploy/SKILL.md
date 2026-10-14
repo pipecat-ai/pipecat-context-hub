@@ -61,7 +61,9 @@ when they are absent; preparation does not install them silently.
    credential-bearing Cloud metadata command directly through an agent-visible
    execution tool: some versions expose a Daily API key. Invoke the packaged
    `scripts/safe_cloud_metadata.py` wrapper with the matching `--kind` and pass
-   the installed read-only JSON command after `--`. The wrapper captures raw
+   the installed read-only JSON command after `--`. Resolve `pipecat` to its
+   absolute installed path first; bare PATH-relative names are rejected to
+   prevent a shadow executable receiving `PIPECAT_TOKEN`. The wrapper captures raw
    stdout/stderr inside its subprocess and emits only schema-validated allowlisted
    fields. Treat a nonzero wrapper exit or schema mismatch as unresolved; do not
    retry by printing raw output. Never use `auth whoami`, local auth config or

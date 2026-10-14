@@ -74,10 +74,11 @@ def _validate_producer_command(command: list[str]) -> None:
     if requested.name.casefold() not in {"pipecat", "pipecat.exe"}:
         raise ValueError("metadata producer must be the pipecat CLI")
     try:
-        if requested.is_absolute():
-            if requested.resolve() != Path(installed).resolve():
-                raise ValueError("metadata producer must be the installed pipecat CLI")
-        elif requested.parent != Path("."):
+        # A bare name is resolved through the caller's PATH at exec time. Even
+        # comparing it with ``which`` here leaves a shadow executable able to
+        # receive PIPECAT_TOKEN between validation and Popen, so require the
+        # exact installed executable as an absolute path.
+        if not requested.is_absolute() or requested.resolve() != Path(installed).resolve():
             raise ValueError("metadata producer must be the installed pipecat CLI")
     except (OSError, RuntimeError, ValueError) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("metadata producer"):

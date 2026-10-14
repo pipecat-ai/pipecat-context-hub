@@ -114,6 +114,9 @@ Cloud CLI, inspect authentication through the supported read-only organisation
 list. Never run that credential-bearing command directly through an agent-visible
 execution tool. Invoke the packaged `scripts/safe_cloud_metadata.py` wrapper with
 `--kind organizations` and pass the installed read-only JSON command after `--`.
+Resolve the `pipecat` executable to its absolute installed path first; the
+wrapper rejects bare PATH-relative names so a shadow executable cannot receive
+`PIPECAT_TOKEN`.
 The wrapper captures raw stdout/stderr inside its subprocess and emits only
 schema-validated org IDs/names. Treat a nonzero wrapper exit or schema mismatch
 as unresolved; do not retry by printing raw output. Do not use `auth whoami`, auth

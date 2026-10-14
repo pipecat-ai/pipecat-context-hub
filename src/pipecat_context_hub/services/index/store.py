@@ -122,13 +122,16 @@ def _create_backend_file(path: Path) -> bool:
     parent_fd = _open_directory_chain(path.parent)
     try:
         if parent_fd == -1:
-            # Windows does not expose descriptor-relative opens.  The caller
-            # has already validated the resolved directory and holds the
-            # exclusive index lock, so use O_EXCL for the leaf and validate
-            # the resulting file before opening either backend.  O_EXCL is
-            # important here: a pre-existing link cannot be followed by the
-            # create operation, and the subsequent identity checks still
-            # catch replacement of an existing file.
+            # Windows does not expose descriptor-relative opens. A junction
+            # replacement can redirect this pathname between the parent
+            # checks and the create, so fail closed instead of creating an
+            # index outside data_dir.
+            if os.name == "nt":
+                raise OSError("descriptor-relative backend creation is unavailable")
+            # Test doubles and other POSIX platforms without dir_fd support
+            # retain the leaf O_EXCL fallback. O_EXCL prevents a pre-existing
+            # link from being followed, while identity checks protect the
+            # resulting file before either backend opens it.
             try:
                 fd = os.open(str(path), flags, 0o600)
             except FileExistsError:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import stat
 import threading
 from collections.abc import Iterable
 from datetime import datetime
@@ -91,16 +92,37 @@ class FTSIndex:
         self._read_only = read_only
         self._lock = threading.RLock()
         if read_only:
-            # `mode=ro` still permits SQLite to create a -shm sidecar when a
-            # WAL exists.  Immutable mode is the published-index contract:
-            # readers never create or update files, and refresh owns the
-            # writer connection that checkpoints WAL state.
+            # Immutable mode deliberately ignores a companion WAL. Refusing
+            # that state is safer than silently returning a stale generation
+            # while Chroma reflects rows committed in the WAL.
+            wal_path = sqlite_path.with_name(f"{sqlite_path.name}-wal")
+            try:
+                wal_info = wal_path.lstat()
+            except FileNotFoundError:
+                wal_info = None
+            except OSError as exc:
+                raise ValueError("unsafe SQLite WAL path") from exc
+            if wal_info is not None:
+                if stat.S_ISLNK(wal_info.st_mode) or not stat.S_ISREG(wal_info.st_mode):
+                    raise ValueError("unsafe SQLite WAL path")
+                raise ValueError(
+                    "SQLite WAL is present; read-only FTS access cannot validate its generation"
+                )
             uri = f"file:{quote(str(sqlite_path), safe='/')}?mode=ro&immutable=1"
             self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         else:
             sqlite_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
         self._closed = False
+        try:
+            info = sqlite_path.lstat()
+        except OSError:
+            self._conn.close()
+            raise
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            self._conn.close()
+            raise ValueError("unsafe SQLite database path")
+        self._identity = (info.st_dev, info.st_ino)
         if not read_only:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA_SQL)
@@ -115,9 +137,28 @@ class FTSIndex:
             self._conn.close()
             self._closed = True
 
+    def reopen_if_replaced(self) -> None:
+        """Reopen after another process publishes a new SQLite generation."""
+        with self._lock:
+            try:
+                info = self._sqlite_path.lstat()
+            except OSError as exc:
+                raise ValueError("SQLite database generation is unavailable") from exc
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                raise ValueError("unsafe SQLite database path")
+            identity = (info.st_dev, info.st_ino)
+            if identity == self._identity:
+                return
+            self.close()
+            replacement = FTSIndex(self._sqlite_path, read_only=self._read_only)
+            self._conn = replacement._conn
+            self._closed = False
+            self._identity = replacement._identity
+
     def clear(self) -> None:
         """Delete all records from the chunks table (triggers sync FTS)."""
         with self._lock:
+            self.reopen_if_replaced()
             self._conn.execute("DELETE FROM chunks")
             self._conn.commit()
             logger.info("FTSIndex cleared")
@@ -125,6 +166,7 @@ class FTSIndex:
     def clear_metadata(self) -> None:
         """Delete all persisted index metadata."""
         with self._lock:
+            self.reopen_if_replaced()
             self._conn.execute("DELETE FROM index_metadata")
             self._conn.commit()
             logger.info("FTSIndex metadata cleared")
@@ -141,6 +183,7 @@ class FTSIndex:
             return 0
 
         with self._lock:
+            self.reopen_if_replaced()
             count = 0
             for record in records:
                 meta_json = json.dumps(record.metadata)
@@ -180,6 +223,7 @@ class FTSIndex:
     def delete_by_content_type(self, content_type: str) -> int:
         """Delete all records with a given content type. Returns count deleted."""
         with self._lock:
+            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 "SELECT COUNT(*) FROM chunks WHERE content_type = ?",
                 (content_type,),
@@ -202,6 +246,7 @@ class FTSIndex:
     def delete_by_repo(self, repo: str) -> int:
         """Delete all records with a given repo. Returns count deleted."""
         with self._lock:
+            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 "SELECT COUNT(*) FROM chunks WHERE repo = ?",
                 (repo,),
@@ -222,6 +267,7 @@ class FTSIndex:
     def delete_by_source(self, source_url: str) -> int:
         """Delete all records with a given source URL. Returns count deleted."""
         with self._lock:
+            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 "SELECT COUNT(*) FROM chunks WHERE source_url = ?",
                 (source_url,),
@@ -246,6 +292,7 @@ class FTSIndex:
         lookup and the FTS MATCH clause is skipped.
         """
         with self._lock:
+            self.reopen_if_replaced()
             # Direct lookup by chunk_id — bypass FTS MATCH
             if "chunk_id" in query.filters:
                 return self._get_by_chunk_id(query.filters["chunk_id"])
@@ -334,6 +381,7 @@ class FTSIndex:
     def _get_by_chunk_id(self, chunk_id: str) -> list[IndexResult]:
         """Direct lookup by chunk_id, bypassing FTS MATCH."""
         with self._lock:
+            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 """
                 SELECT chunk_id, content, content_type, source_url,
@@ -430,6 +478,7 @@ class FTSIndex:
     def set_metadata(self, key: str, value: str) -> None:
         """Upsert a key-value pair in the index_metadata table."""
         with self._lock:
+            self.reopen_if_replaced()
             now = datetime.now().astimezone().isoformat()
             self._conn.execute(
                 """
@@ -446,6 +495,7 @@ class FTSIndex:
     def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key, or None if not found."""
         with self._lock:
+            self.reopen_if_replaced()
             cursor = self._conn.execute("SELECT value FROM index_metadata WHERE key = ?", (key,))
             row = cursor.fetchone()
             return row[0] if row else None
@@ -453,6 +503,7 @@ class FTSIndex:
     def delete_metadata(self, key: str) -> None:
         """Remove a metadata key if it exists."""
         with self._lock:
+            self.reopen_if_replaced()
             self._conn.execute("DELETE FROM index_metadata WHERE key = ?", (key,))
             self._conn.commit()
 
@@ -465,6 +516,7 @@ class FTSIndex:
         observes a partially-updated related-key set.
         """
         with self._lock:
+            self.reopen_if_replaced()
             now = datetime.now().astimezone().isoformat()
             for key, value in pairs.items():
                 self._conn.execute(
@@ -484,12 +536,14 @@ class FTSIndex:
     def get_all_metadata(self) -> dict[str, str]:
         """Return all index_metadata as a dict."""
         with self._lock:
+            self.reopen_if_replaced()
             cursor = self._conn.execute("SELECT key, value FROM index_metadata")
             return dict(cursor.fetchall())
 
     def get_counts_by_repo(self) -> dict[str, int]:
         """Return record counts grouped by repo. Includes a 'docs' key for doc chunks."""
         with self._lock:
+            self.reopen_if_replaced()
             counts: dict[str, int] = {}
             # Doc chunks have no repo — count them separately
             cursor = self._conn.execute("SELECT COUNT(*) FROM chunks WHERE content_type = 'doc'")
@@ -506,6 +560,7 @@ class FTSIndex:
     def get_index_stats(self) -> dict[str, Any]:
         """Return record counts by content_type, total count, and distinct commit SHAs."""
         with self._lock:
+            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 "SELECT content_type, COUNT(*) FROM chunks GROUP BY content_type"
             )

@@ -4,7 +4,7 @@
 **Component**: plugin packaging, retrieval instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-02
-**Updated**: 2026-10-08
+**Updated**: 2026-10-14
 
 ## Objective
 
@@ -22,11 +22,11 @@ Queries must not silently refresh or replace the index. Discussing an idea does 
 
 - R1: Explore retrieves relevant concepts and sources before making Pipecat-specific API assertions; use ` + ` or ` & ` for multi-concept hub queries.
 - R2: Status establishes index readiness and indexed framework provenance. An unavailable requested version is a limitation, not permission to rebuild the index.
-- R3: Name the packaged MCP server `pipecat-context-hub-chatgpt-plugin`, independently of the standalone `pipecat-context-hub` registration. Bind hub startup to its installed Python using that executable's bare name and a generated `PATH` containing only its absolute interpreter directory, with `-P -m pipecat_context_hub serve`. The portable loader rejects absolute `command` values; startup must remain independent of desktop working directory and must not fall back to an ambient Python.
+- R3 (**historical/stale as of 2026-10-14; superseded by the CLI-first package**): Name the packaged MCP server `pipecat-context-hub-chatgpt-plugin`, independently of the standalone `pipecat-context-hub` registration. Bind hub startup to its installed Python using that executable's bare name and a generated `PATH` containing only its absolute interpreter directory, with `-P -m pipecat_context_hub serve`. The portable loader rejects absolute `command` values; startup must remain independent of desktop working directory and must not fall back to an ambient Python.
 - R4: Build discovers installed CLI capabilities, maps user choices to supported scaffold options, validates a dry run, and only creates an app after a build request. Never overwrite or re-scaffold an existing app.
 - R5: Deploy preparation validates the project, required runtime key names, selected Cloud organisation/region/agent identity, sizing and build path. Cloud inspection before approval is read-only: inspect existing secret-set metadata and prepare proposed key additions/updates without uploading or creating secrets. Do not print secret values or send them to model-visible context.
 - R6: Present one concrete approval payload covering the deployment target, build source, resources, secret-set name and proposed key additions/updates. After the user approves that payload, use supported local tooling to create/update the approved Cloud secrets, then build/deploy through the installed Cloud CLI, check readiness and inspect bounded diagnostic logs. If secrets are already available and no changes are needed, skip the secret write. Failure is not success merely because a command was issued.
-- R7: Existing Context Hub server handlers, CLI bridge, install registrations and retrieval semantics remain unchanged. A bounded exception permits a read-only pre-open check for oversized persisted HNSW link-list files, using the existing index-unready error/remediation path. This check must precede native Chroma client construction, must not repair or delete index files, and does not assert that other corruption shapes are detected. No general shell execution tool is added to the retrieval MCP.
+- R7 (**historical/stale as of 2026-10-14; compatibility boundary only**): Existing Context Hub server handlers, CLI bridge, install registrations and retrieval semantics remain unchanged. A bounded exception permits a read-only pre-open check for oversized persisted HNSW link-list files, using the existing index-unready error/remediation path. This check must precede native Chroma client construction, must not repair or delete index files, and does not assert that other corruption shapes are detected. No general shell execution tool is added to the retrieval MCP. The current safety/recovery semantics are recorded in the dated correction below.
 
 ## Verified facts and compatibility boundaries
 
@@ -207,7 +207,10 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - Missing optional CLI, shell or Cloud prerequisites leave working exploration usable and disable only dependent workflows.
 - Live Cloud deployment runs only after target/payload approval and is verified ready; missing prerequisites remain explicitly untested.
 - All evaluation results distinguish observed passes, failures and untested behaviour.
-- Existing hub CLI/server behavior and registrations are preserved.
+- Existing hub CLI/server registrations remain the compatibility boundary; this
+  unchanged-behaviour claim is historical/stale as of 2026-10-14. See the
+  [index-safety correction](#later-decisions-that-supersede-the-reviewed-contract)
+  and [index-recovery plan](20260324-bug-chroma-index-recovery.md).
 
 ## References
 
@@ -247,6 +250,25 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
 ## Findings
 
 ### Later decisions that supersede the reviewed contract
+
+- **2026-10-14 — superseded stdio renderer architecture:** the original
+  stdio/MCP renderer described in R3, the `mcp.template.json` file entry, the
+  stdio call-flow diagram and the renderer integration seam are historical
+  feasibility notes, not the current plugin architecture. The distributable
+  package is the four-skill, CLI-first package described in the
+  [evaluation report](../evaluations/pipecat-context-hub-plugin.md) and its
+  [README](../../plugins/pipecat-context-hub/README.md).
+
+- **2026-10-14 — preserved CLI/server behaviour wording is stale:** the old R7
+  and acceptance-criteria claim that CLI/server retrieval semantics were
+  unchanged is retained only as historical scope. Current refresh and
+  read-only behaviour includes absent/partial-index recovery, generation
+  locking, immutable SQLite access and bounded Chroma safety checks; see the
+  [index-recovery plan](20260324-bug-chroma-index-recovery.md) and the focused
+  regressions in `tests/unit/test_index_store.py` and `tests/unit/test_cli.py`.
+  The registered command names and shared handlers remain the compatibility
+  boundary, but the old unchanged-semantics claim must not be used as a
+  current requirement.
 
 - **2026-10-08 — execution boundary correction:** grounded Explore requires
   native execution plus a working PCH CLI and populated index; discussion-only

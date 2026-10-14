@@ -32,6 +32,11 @@ def _open_segment_file_without_dir_fd(
     root: Path, segment_name: str, filename: str
 ) -> tuple[int, os.stat_result]:
     """Windows-compatible path open with the same component safety checks."""
+    # Windows has no descriptor-relative open API here. A pathname can cross
+    # a junction replacement between the checks and ``os.open``; fail closed
+    # rather than claiming this fallback provides the POSIX guarantee.
+    if os.name == "nt":
+        raise OSError(errno.ENOTSUP, "descriptor-relative HNSW validation is unavailable")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     segment_path = root / segment_name
     file_path = segment_path / filename
@@ -196,7 +201,11 @@ def validate_persisted_hnsw(
         except OSError as exc:
             if exc.errno == getattr(os, "ENOENT", 2):
                 continue
-            if exc.errno in {getattr(os, "ELOOP", 62), getattr(os, "ENOTDIR", 20)}:
+            if exc.errno in {
+                getattr(os, "ELOOP", 62),
+                getattr(os, "ENOTDIR", 20),
+                getattr(errno, "ENOTSUP", 95),
+            }:
                 reason = f"unsafe persisted HNSW links in segment {segment_name}"
             else:
                 reason = f"unreadable persisted HNSW links in segment {segment_name}"
@@ -263,15 +272,15 @@ def validate_persisted_hnsw(
                 raise IncompatibleIndexFormatError(
                     chroma_path, reason=f"unreadable persisted HNSW links in segment {segment_name}"
                 ) from exc
-            size = (
-                observed.st_size
-                if (observed.st_dev, observed.st_ino)
-                == (
-                    links_info.st_dev,
-                    links_info.st_ino,
+            if (observed.st_dev, observed.st_ino) != (links_info.st_dev, links_info.st_ino):
+                raise IncompatibleIndexFormatError(
+                    chroma_path,
+                    reason=(
+                        f"unsafe persisted HNSW links in segment {segment_name}: "
+                        "link_lists.bin was replaced during validation"
+                    ),
                 )
-                else links_info.st_size
-            )
+            size = observed.st_size
             if size > upper_bound:
                 raise IncompatibleIndexFormatError(
                     chroma_path,

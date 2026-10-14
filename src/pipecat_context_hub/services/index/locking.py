@@ -36,6 +36,11 @@ def generation_lock(data_dir: Path) -> Iterator[None]:
     lock from a second worker-thread descriptor. Other processes still block on
     the descriptor held by the outer context.
     """
+    # Refresh may be the first operation for a nested custom path. Resolve the
+    # spelling before creating its missing parents so the lock itself is still
+    # beside the canonical generation and never follows a link at the target.
+    data_dir = data_dir.expanduser().resolve(strict=False)
+    data_dir.parent.mkdir(parents=True, exist_ok=True)
     lock_path = _lock_path(data_dir)
     token = object()
     with index_lock(data_dir, exclusive=True):
@@ -129,10 +134,23 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
                     held[lock_path] = (current[0], current[1], current[2] - 1, current[3])
             return
 
-    # A reader must create the stable coordination inode when opening a
-    # legacy index that predates locking. This mutates only the parent-side
-    # lock namespace, never the published index directory itself.
-    flags = (os.O_CREAT | os.O_RDWR) | getattr(os, "O_NOFOLLOW", 0)
+    # Read-only callers must not create a coordination inode. If a legacy
+    # index has no lock yet, there is no stable object to lock; immutable
+    # backend readers still validate their generation before consuming it.
+    # Writers create the sibling inode and retain it across index deletion.
+    try:
+        lock_info = lock_path.lstat()
+    except FileNotFoundError:
+        if not create:
+            yield
+            return
+        lock_info = None
+    if lock_info is not None and (
+        stat.S_ISLNK(lock_info.st_mode) or not stat.S_ISREG(lock_info.st_mode)
+    ):
+        raise ValueError("Unsafe index lock path")
+    flags = (os.O_CREAT if create else 0) | (os.O_RDWR if exclusive else os.O_RDONLY)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     fd = -1
     try:
         fd = os.open(lock_path, flags, 0o600)

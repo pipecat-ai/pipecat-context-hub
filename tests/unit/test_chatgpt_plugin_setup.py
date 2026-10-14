@@ -68,13 +68,15 @@ def _run_metadata_wrapper(
     old_argv = sys.argv
     stdout, stderr = io.StringIO(), io.StringIO()
     try:
+        installed_pipecat = shutil.which("pipecat")
+        assert installed_pipecat is not None
         setattr(module, "_run_bounded", run_fixture)
         sys.argv = [
             str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
             "--kind",
             "organizations",
             "--",
-            "pipecat",
+            installed_pipecat,
             "cloud",
             "--output",
             "json",

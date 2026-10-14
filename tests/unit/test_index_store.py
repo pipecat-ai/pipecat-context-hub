@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import random
 import os
+import subprocess
+import sys
 from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,8 +16,17 @@ from unittest.mock import Mock, patch
 import pytest
 
 from pipecat_context_hub.services.index.fts import FTSIndex
-from pipecat_context_hub.services.index.store import IndexStore, ReadOnlyIndexStore
-from pipecat_context_hub.services.index.vector import VectorIndex, _CHROMA_BATCH_SIZE
+from pipecat_context_hub.services.index.locking import generation_lock
+from pipecat_context_hub.services.index.store import (
+    IndexStore,
+    ReadOnlyIndexStore,
+    _create_backend_file,
+)
+from pipecat_context_hub.services.index.vector import (
+    VectorIndex,
+    _CHROMA_BATCH_SIZE,
+    _copy_tree_no_follow,
+)
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
@@ -621,6 +632,16 @@ class TestFTSIndex:
         assert not path.with_name(path.name + "-shm").exists()
         assert not path.with_name(path.name + "-wal").exists()
 
+    def test_read_only_open_rejects_uncheckpointed_wal(self, tmp_path: Path) -> None:
+        path = tmp_path / "metadata.db"
+        writer = FTSIndex(path)
+        writer.upsert([_make_record()])
+        try:
+            with pytest.raises(ValueError, match="SQLite WAL"):
+                FTSIndex(path, read_only=True)
+        finally:
+            writer.close()
+
     def test_upsert_empty(self, fts_index: FTSIndex):
         count = fts_index.upsert([])
         assert count == 0
@@ -924,12 +945,53 @@ class TestIndexStoreInitRollback:
         finally:
             reader.close()
 
+    def test_read_only_open_does_not_create_legacy_lock_file(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "hub-data"
+        writer = IndexStore(StorageConfig(data_dir=data_dir))
+        writer.close()
+        lock_path = data_dir.parent / f".{data_dir.name}.index.lock"
+        lock_path.unlink()
+        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
+        try:
+            assert not lock_path.exists()
+        finally:
+            reader.close()
+
+    def test_generation_lock_creates_missing_nested_parents(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "missing" / "nested" / "hub-data"
+        with generation_lock(data_dir):
+            assert data_dir.parent.is_dir()
+            assert data_dir.parent.parent.is_dir()
+
     def test_writer_open_refuses_incomplete_reset_marker(self, tmp_path: Path) -> None:
         data_dir = tmp_path / "hub-data"
         data_dir.mkdir()
         (data_dir / ".reset-state.json").write_text('{"vector_reset": true}')
         with pytest.raises(ValueError, match="reset is incomplete"):
             IndexStore(StorageConfig(data_dir=data_dir))
+
+    def test_windows_backend_creation_fails_closed_without_dir_fd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "nested" / "metadata.db"
+        path.parent.mkdir()
+        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(
+            "pipecat_context_hub.services.index.store._open_directory_chain", lambda _path: -1
+        )
+        with pytest.raises(OSError, match="descriptor-relative"):
+            _create_backend_file(path)
+
+    def test_windows_snapshot_fails_closed_without_dir_fd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "chroma.sqlite3").write_bytes(b"safe")
+        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+        with pytest.raises(ValueError, match="descriptor-relative"):
+            _copy_tree_no_follow(source, tmp_path / "snapshot")
 
     @pytest.mark.asyncio
     async def test_concurrent_async_searches_do_not_share_lock_reentrancy(
@@ -1057,6 +1119,35 @@ class TestIndexStore:
         results = await store.vector_search(query)
         assert len(results) == 3
         assert all(r.match_type == "vector" for r in results)
+
+    def test_long_lived_store_reopens_replaced_generation(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "hub-data"
+        first = IndexStore(StorageConfig(data_dir=data_dir))
+        record = _make_record(chunk_id="old-generation")
+        first._vector.upsert([record])
+        try:
+            reset_script = (
+                "import sys; "
+                "from pathlib import Path; "
+                "from pipecat_context_hub.services.index.store import IndexStore; "
+                "from pipecat_context_hub.shared.config import StorageConfig; "
+                "s=IndexStore(StorageConfig(data_dir=Path(sys.argv[1]))); "
+                "s.reset(); s.close()"
+            )
+            subprocess.run(
+                [sys.executable, "-c", reset_script, str(data_dir)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            query = IndexQuery(
+                query_text="pipecat",
+                query_embedding=record.embedding,
+                limit=10,
+            )
+            assert first._vector.search(query) == []
+        finally:
+            first.close()
 
     @pytest.mark.asyncio
     async def test_upsert_and_keyword_search(self, store: IndexStore):
