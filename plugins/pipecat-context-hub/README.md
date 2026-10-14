@@ -35,8 +35,9 @@ performs only authorised setup. No MCP registration or binding is required.
 | Deploy | Pipecat CLI with Cloud extension and PCH retrieval | Authenticated login required |
 
 The [fresh full-toolchain install](https://docs.pipecat.ai/api-reference/cli/overview#installation)
-is `uv tool install "pipecat-ai[cli]" --with pipecatcloud`. Current CLI distributions
-bundle PCH. Verify `pipecat context-hub --help`; older installations may need the
+is `uv tool install "pipecat-ai[cli]" --with pipecat-ai-context-hub --with pipecatcloud`. The
+additional `pipecat-ai-context-hub` package supplies the PCH CLI and Pipecat bridge;
+some current CLI distributions bundle PCH too. Verify `pipecat context-hub --help`; older installations may need the
 standalone `pipecat-context-hub` command supplied by `pipecat-ai-context-hub`.
 Setup retains existing working versions/extensions instead of silently replacing
 them. An explicitly retrieval-only setup can use standalone PCH without Pipecat

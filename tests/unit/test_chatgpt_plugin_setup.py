@@ -36,6 +36,16 @@ def _copy_source(renderer: ModuleType, tmp_path: Path, monkeypatch: pytest.Monke
     return source
 
 
+def _trusted_producer_command(tmp_path: Path, producer: Path) -> list[str]:
+    """Run fixture output through a test executable named like the CLI."""
+    launcher = tmp_path / "pipecat"
+    launcher.write_text(
+        f"#!{sys.executable}\nimport runpy, sys\nrunpy.run_path(sys.argv[1], run_name='__main__')\n"
+    )
+    launcher.chmod(0o700)
+    return [str(launcher), str(producer)]
+
+
 def test_prepare_runs_without_site_packages_or_hub(tmp_path: Path) -> None:
     destination = tmp_path / "prepared"
     result = subprocess.run(
@@ -324,8 +334,7 @@ def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) ->
             "--kind",
             "organizations",
             "--",
-            sys.executable,
-            str(producer),
+            *_trusted_producer_command(tmp_path, producer),
         ],
         capture_output=True,
         text=True,
@@ -351,8 +360,7 @@ def test_cloud_metadata_wrapper_preserves_headless_cloud_token(tmp_path: Path) -
             "--kind",
             "organizations",
             "--",
-            sys.executable,
-            str(producer),
+            *_trusted_producer_command(tmp_path, producer),
         ],
         env={**os.environ, "PIPECAT_TOKEN": "must-not-leak"},
         capture_output=True,
@@ -361,6 +369,31 @@ def test_cloud_metadata_wrapper_preserves_headless_cloud_token(tmp_path: Path) -
     )
     assert result.returncode == 0
     assert json.loads(result.stdout)["organizations"][0]["id"] == "must-not-leak"
+
+
+def test_cloud_metadata_wrapper_rejects_arbitrary_producer(tmp_path: Path) -> None:
+    producer = tmp_path / "producer.py"
+    producer.write_text(
+        "import json, os\n"
+        "print(json.dumps({'organizations': [{'id': os.environ['PIPECAT_TOKEN']}]}))\n"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_SOURCE / "scripts" / "safe_cloud_metadata.py"),
+            "--kind",
+            "organizations",
+            "--",
+            sys.executable,
+            str(producer),
+        ],
+        env={**os.environ, "PIPECAT_TOKEN": "must-not-leak"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "must-not-leak" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("name", ["AWS_ACCESS_KEY_ID", "DOCKER_AUTH_CONFIG"])
@@ -379,8 +412,7 @@ def test_cloud_metadata_wrapper_filters_credential_like_environment(
             "--kind",
             "organizations",
             "--",
-            sys.executable,
-            str(producer),
+            *_trusted_producer_command(tmp_path, producer),
         ],
         env={**os.environ, name: "must-not-leak"},
         capture_output=True,
@@ -589,8 +621,7 @@ def test_cloud_metadata_wrapper_does_not_project_nested_wrong_kind_records(
             "--kind",
             "organizations",
             "--",
-            sys.executable,
-            str(producer),
+            *_trusted_producer_command(tmp_path, producer),
         ],
         capture_output=True,
         text=True,
@@ -623,8 +654,7 @@ def test_cloud_metadata_wrapper_fails_closed_without_raw_output(tmp_path: Path, 
             "--kind",
             "organizations",
             "--",
-            sys.executable,
-            str(producer),
+            *_trusted_producer_command(tmp_path, producer),
         ],
         capture_output=True,
         text=True,
@@ -653,8 +683,7 @@ def test_cloud_metadata_wrapper_rejects_unbounded_records_and_nesting(tmp_path: 
             "--kind",
             "organizations",
             "--",
-            sys.executable,
-            str(producer),
+            *_trusted_producer_command(tmp_path, producer),
         ],
         capture_output=True,
         text=True,

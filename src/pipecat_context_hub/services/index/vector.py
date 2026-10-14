@@ -353,48 +353,71 @@ def _copy_tree_no_follow(source: Path, destination: Path) -> None:
     Descriptor reads plus identity checks make the copied snapshot fail closed
     instead of reading outside the published tree.
     """
-    source_info = source.lstat()
-    if is_reparse_link(source) or not stat.S_ISDIR(source_info.st_mode):
-        raise ValueError(f"Unsafe read-only Chroma path: {source.name}")
-    destination.mkdir(parents=True, exist_ok=True)
-    for entry in os.scandir(source):
-        source_path = Path(entry.path)
-        destination_path = destination / entry.name
-        entry_info = source_path.lstat()
-        if is_reparse_link(source_path):
-            raise ValueError(f"Unsafe read-only Chroma path: {source_path.name}")
-        if stat.S_ISDIR(entry_info.st_mode):
-            _copy_tree_no_follow(source_path, destination_path)
-            continue
-        if not stat.S_ISREG(entry_info.st_mode):
-            raise ValueError(f"Unsafe read-only Chroma path: {source_path.name}")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        source_fd = os.open(source_path, flags)
-        output_fd = -1
-        try:
-            opened = os.fstat(source_fd)
-            if (opened.st_dev, opened.st_ino) != (entry_info.st_dev, entry_info.st_ino):
-                raise ValueError(f"Unsafe read-only Chroma path: {source_path.name}")
-            output_fd = os.open(
-                destination_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-            )
-            with os.fdopen(source_fd, "rb") as input_stream, os.fdopen(output_fd, "wb") as output:
-                source_fd = -1
-                output_fd = -1
-                shutil.copyfileobj(input_stream, output)
-            after = source_path.lstat()
-            if is_reparse_link(source_path) or (after.st_dev, after.st_ino) != (
-                entry_info.st_dev,
-                entry_info.st_ino,
-            ):
-                raise ValueError(f"Unsafe read-only Chroma path: {source_path.name}")
-        finally:
-            if source_fd != -1:
-                os.close(source_fd)
-            if output_fd != -1:
-                os.close(output_fd)
+    if os.open not in getattr(os, "supports_dir_fd", set()):
+        # Path-based traversal cannot close the rename/junction window on
+        # Windows, where Python does not expose descriptor-relative opens.
+        raise ValueError("Secure directory descriptors are unavailable")
+
+    def copy_dir(source_fd: int, source_name: str, target: Path) -> None:
+        target.mkdir(parents=True, exist_ok=True)
+        for entry in os.scandir(source_fd):
+            name = entry.name
+            target_path = target / name
+            entry_info = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+            if stat.S_ISLNK(entry_info.st_mode):
+                raise ValueError(f"Unsafe read-only Chroma path: {name}")
+            if stat.S_ISDIR(entry_info.st_mode):
+                child_flags = (
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                )
+                child_fd = os.open(name, child_flags, dir_fd=source_fd)
+                try:
+                    opened = os.fstat(child_fd)
+                    if (opened.st_dev, opened.st_ino) != (entry_info.st_dev, entry_info.st_ino):
+                        raise ValueError(f"Unsafe read-only Chroma path: {name}")
+                    copy_dir(child_fd, name, target_path)
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(entry_info.st_mode):
+                raise ValueError(f"Unsafe read-only Chroma path: {name}")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            source_file_fd = os.open(name, flags, dir_fd=source_fd)
+            output_fd = -1
+            try:
+                opened = os.fstat(source_file_fd)
+                if (opened.st_dev, opened.st_ino) != (entry_info.st_dev, entry_info.st_ino):
+                    raise ValueError(f"Unsafe read-only Chroma path: {name}")
+                output_fd = os.open(
+                    target_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                with (
+                    os.fdopen(source_file_fd, "rb") as input_stream,
+                    os.fdopen(output_fd, "wb") as output,
+                ):
+                    source_file_fd = -1
+                    output_fd = -1
+                    shutil.copyfileobj(input_stream, output)
+                after = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+                if (after.st_dev, after.st_ino) != (entry_info.st_dev, entry_info.st_ino):
+                    raise ValueError(f"Unsafe read-only Chroma path: {name}")
+            finally:
+                if source_file_fd != -1:
+                    os.close(source_file_fd)
+                if output_fd != -1:
+                    os.close(output_fd)
+
+    source_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    source_fd = os.open(source, source_flags)
+    try:
+        source_info = os.fstat(source_fd)
+        if is_reparse_link(source) or not stat.S_ISDIR(source_info.st_mode):
+            raise ValueError(f"Unsafe read-only Chroma path: {source.name}")
+        copy_dir(source_fd, source.name, destination)
+    finally:
+        os.close(source_fd)
 
 
 class VectorIndex:

@@ -4,15 +4,50 @@ from __future__ import annotations
 
 import contextlib
 import asyncio
+import contextvars
 import os
 import stat
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 
 _held = threading.local()
+_generation_token: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "pipecat_hub_generation_lock", default=None
+)
+_generation_leases: dict[tuple[Path, object], bool] = {}
+_generation_leases_guard = threading.Lock()
+
+
+def _lock_path(data_dir: Path) -> Path:
+    data_dir = data_dir.absolute()
+    return data_dir.parent / f".{data_dir.name}.index.lock"
+
+
+@contextlib.contextmanager
+def generation_lock(data_dir: Path) -> Iterator[None]:
+    """Hold one exclusive generation lock across an async refresh.
+
+    ``asyncio.to_thread`` copies context variables, so backend operations made
+    by a refresh can reuse this lease without trying to acquire the same OS
+    lock from a second worker-thread descriptor. Other processes still block on
+    the descriptor held by the outer context.
+    """
+    lock_path = _lock_path(data_dir)
+    token = object()
+    with index_lock(data_dir, exclusive=True):
+        marker = _generation_token.set(token)
+        with _generation_leases_guard:
+            _generation_leases[(lock_path, token)] = True
+        try:
+            yield
+        finally:
+            with _generation_leases_guard:
+                _generation_leases.pop((lock_path, token), None)
+            _generation_token.reset(marker)
 
 
 def _lock_owner() -> tuple[str, int]:
@@ -47,7 +82,7 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
     # let a new generation create a second inode that no longer coordinates
     # with readers holding the old one.
     data_dir = data_dir.absolute()
-    lock_path = data_dir.parent / f".{data_dir.name}.index.lock"
+    lock_path = _lock_path(data_dir)
     try:
         lock_parent_info = data_dir.parent.lstat()
         if stat.S_ISLNK(lock_parent_info.st_mode) or not stat.S_ISDIR(lock_parent_info.st_mode):
@@ -64,6 +99,13 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("Unsafe index lock path") from exc
     lock_path = lock_path.absolute()
+    token = _generation_token.get()
+    if token is not None:
+        with _generation_leases_guard:
+            lease_exclusive = _generation_leases.get((lock_path, token))
+        if lease_exclusive:
+            yield
+            return
     held = _held_locks()
     owner = _lock_owner()
     existing = held.get(lock_path)
@@ -116,8 +158,21 @@ def index_lock(data_dir: Path, *, exclusive: bool, create: bool = True) -> Itera
 
             # Lock one byte at the start of the file.  The descriptor is kept
             # open for the whole context, so the lock cannot be released early.
-            mode = msvcrt.LK_LOCK if exclusive else msvcrt.LK_RLCK
-            msvcrt.locking(fd, mode, 1)
+            # CRT's LK_LOCK/LK_RLCK silently give up after ten one-second
+            # retries. Use the non-blocking variants in an unbounded loop so
+            # Windows readers and writers wait for long refreshes just like
+            # the POSIX flock path.
+            mode = (
+                getattr(msvcrt, "LK_NBLCK", msvcrt.LK_LOCK)
+                if exclusive
+                else getattr(msvcrt, "LK_NBRLCK", msvcrt.LK_RLCK)
+            )
+            while True:
+                try:
+                    msvcrt.locking(fd, mode, 1)
+                    break
+                except OSError:
+                    time.sleep(1)
             try:
                 yield
             finally:

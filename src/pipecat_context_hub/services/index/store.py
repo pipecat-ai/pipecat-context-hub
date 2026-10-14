@@ -122,9 +122,11 @@ def _create_backend_file(path: Path) -> bool:
     parent_fd = _open_directory_chain(path.parent)
     try:
         if parent_fd == -1:
-            fd = os.open(path, flags, 0o600)
-        else:
-            fd = os.open(path.name, flags, 0o600, dir_fd=parent_fd)
+            # There is no race-free way to create a file beneath a Windows
+            # junction (or any platform without descriptor-relative open).
+            # Never fall back to a path-based open for an index backend.
+            raise ValueError("Secure directory descriptors are unavailable")
+        fd = os.open(path.name, flags, 0o600, dir_fd=parent_fd)
     except FileExistsError:
         return False
     else:
@@ -167,38 +169,41 @@ class IndexStore:
             raise ValueError("index reset is incomplete; run refresh to recover it")
         config = config.model_copy(update={"data_dir": data_dir})
         self._data_dir = data_dir
-        _validate_backend_directory(config.chroma_path, data_dir)
-        _validate_configured_backend_path(config.sqlite_path, data_dir)
-        # Materialise both backend roots and their database leaves before
-        # opening either library.  This closes the absent-path window where a
-        # concurrent symlink insertion could redirect a constructor's first
-        # write outside ``data_dir``.
-        chroma_preexisting = config.chroma_path.exists()
-        try:
-            config.chroma_path.mkdir(parents=True, exist_ok=True)
-            config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise ValueError("Unsafe index backend path") from exc
-        _validate_backend_directory(config.chroma_path, data_dir)
-        created_sqlite = _create_backend_file(config.sqlite_path)
-        created_chroma_db = _create_backend_file(config.chroma_path / "chroma.sqlite3")
-        for backend_file in (
-            config.sqlite_path,
-            config.chroma_path / "chroma.sqlite3",
-        ):
-            if backend_file.exists() or backend_file.is_symlink():
-                if backend_file == config.sqlite_path and created_sqlite:
-                    continue
-                if backend_file == config.chroma_path / "chroma.sqlite3" and created_chroma_db:
-                    continue
-                _validate_existing_backend_file(backend_file, data_dir)
-        chroma_identities = _backend_path_identities(config.chroma_path, data_dir)
-        sqlite_identities = _backend_path_identities(config.sqlite_path, data_dir)
         vector: VectorIndex | None = None
         fts: FTSIndex | None = None
-        try:
-            # Open both backends under one generation lock.
-            with index_lock(data_dir, exclusive=True):
+        created_sqlite = False
+        created_chroma_db = False
+        chroma_preexisting = False
+        chroma_identities: dict[Path, tuple[int, int]] = {}
+        sqlite_identities: dict[Path, tuple[int, int]] = {}
+        # Validation, placeholder creation, backend opening, and rollback all
+        # share one generation lock. A second writer cannot publish a newer
+        # path between our failed open and cleanup of the placeholders.
+        with index_lock(data_dir, exclusive=True):
+            try:
+                _validate_backend_directory(config.chroma_path, data_dir)
+                _validate_configured_backend_path(config.sqlite_path, data_dir)
+                chroma_preexisting = config.chroma_path.exists()
+                config.chroma_path.mkdir(parents=True, exist_ok=True)
+                config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+                _validate_backend_directory(config.chroma_path, data_dir)
+                created_sqlite = _create_backend_file(config.sqlite_path)
+                created_chroma_db = _create_backend_file(config.chroma_path / "chroma.sqlite3")
+                for backend_file in (
+                    config.sqlite_path,
+                    config.chroma_path / "chroma.sqlite3",
+                ):
+                    if backend_file.exists() or backend_file.is_symlink():
+                        if backend_file == config.sqlite_path and created_sqlite:
+                            continue
+                        if (
+                            backend_file == config.chroma_path / "chroma.sqlite3"
+                            and created_chroma_db
+                        ):
+                            continue
+                        _validate_existing_backend_file(backend_file, data_dir)
+                chroma_identities = _backend_path_identities(config.chroma_path, data_dir)
+                sqlite_identities = _backend_path_identities(config.sqlite_path, data_dir)
                 vector = VectorIndex(config.chroma_path)
                 self._vector = vector
                 _verify_backend_path_identities(config.chroma_path, chroma_identities)
@@ -212,28 +217,28 @@ class IndexStore:
                 self._fts = fts
                 _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
                 _validate_existing_backend_file(config.sqlite_path, data_dir)
-        except Exception:
-            # Roll back the already-opened vector backend so callers don't
-            # inherit a leaked Chroma handle/lock on a half-constructed store.
-            if vector is not None:
-                try:
-                    vector.close()
-                except Exception:
-                    logger.exception("Vector backend close failed during rollback")
-            if fts is not None:
-                try:
-                    fts.close()
-                except Exception:
-                    logger.exception("FTS backend close failed during rollback")
-            _cleanup_created_backend_state(
-                config,
-                created_sqlite=created_sqlite,
-                created_chroma_db=created_chroma_db,
-                chroma_preexisting=chroma_preexisting,
-                chroma_identities=chroma_identities,
-                sqlite_identities=sqlite_identities,
-            )
-            raise
+            except Exception:
+                # Roll back the already-opened vector backend so callers don't
+                # inherit a leaked Chroma handle/lock on a half-constructed store.
+                if vector is not None:
+                    try:
+                        vector.close()
+                    except Exception:
+                        logger.exception("Vector backend close failed during rollback")
+                if fts is not None:
+                    try:
+                        fts.close()
+                    except Exception:
+                        logger.exception("FTS backend close failed during rollback")
+                _cleanup_created_backend_state(
+                    config,
+                    created_sqlite=created_sqlite,
+                    created_chroma_db=created_chroma_db,
+                    chroma_preexisting=chroma_preexisting,
+                    chroma_identities=chroma_identities,
+                    sqlite_identities=sqlite_identities,
+                )
+                raise
         logger.info("IndexStore initialized with data_dir=%s", config.data_dir)
 
     @property
@@ -470,8 +475,10 @@ def _existing_index_config(
     _validate_backend_directory(config.chroma_path, data_dir)
     chroma_db = config.chroma_path / "chroma.sqlite3"
     _validate_existing_backend_file(chroma_db, data_dir)
-    if include_vector:
-        _detect_incompatible_format(config.chroma_path)
+    # Metadata-only commands still need to reject a legacy Chroma format. They
+    # do not construct/snapshot VectorIndex, but reporting an index healthy
+    # here would defer the failure to the next semantic query.
+    _detect_incompatible_format(config.chroma_path)
     # The bounded HNSW header/size check is cheap and must also protect the
     # status front door; it does not construct Chroma or copy the tree.
     validate_persisted_hnsw(config.chroma_path, "latest", allow_wal=allow_wal)

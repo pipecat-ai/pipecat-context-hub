@@ -38,7 +38,7 @@ from pipecat_context_hub.shared.versioning import (
     is_head_sentinel,
     is_sentinel_pin,
 )
-from pipecat_context_hub.services.index.locking import index_lock
+from pipecat_context_hub.services.index.locking import generation_lock, index_lock
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
@@ -1723,6 +1723,11 @@ def refresh(
                 framework_slug,
             )
 
+    # Use the configured path rather than the store facade here: lightweight
+    # refresh test doubles need not expose the writer's normalized property,
+    # while IndexStore has already normalized and validated this same path.
+    generation_context = generation_lock(config.storage.data_dir)
+    generation_context.__enter__()
     try:
         asyncio.run(_run_refresh())
 
@@ -1875,7 +1880,10 @@ def refresh(
             unpruned_repo_count=unpruned_repo_count,
         )
     finally:
-        index_store.close()
+        try:
+            index_store.close()
+        finally:
+            generation_context.__exit__(*sys.exc_info())
 
 
 def _stdout_can_encode(text: str) -> bool:

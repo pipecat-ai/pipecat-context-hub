@@ -14,6 +14,7 @@ import signal
 import threading
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 _FIELDS: dict[str, frozenset[str]] = {
@@ -31,18 +32,35 @@ _MAX_DEPTH = 32
 _SECRET_ENV = re.compile(
     r"(?:TOKEN|API[_-]?KEY|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|CREDENTIAL|"
     r"ACCESS[_-]?KEY|AUTH(?:ORIZATION|[_-]?TOKEN)?|DOCKER[_-]?AUTH|"
-    r"GOOGLE_APPLICATION_CREDENTIALS|SSH_AUTH_SOCK)",
+    r"GOOGLE_APPLICATION_CREDENTIALS|SSH_AUTH_SOCK|DATABASE[_-]?URL|"
+    r"DSN|JWT|COOKIE|SESSION)",
     re.IGNORECASE,
 )
 _PASSTHROUGH_ENV = frozenset({"PIPECAT_TOKEN"})
+_SAFE_RUNTIME_ENV = frozenset(
+    {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE", "TMP", "TEMP"}
+)
+
+
+def _validate_producer_command(command: list[str]) -> None:
+    """Allow only the installed Pipecat CLI as a metadata producer.
+
+    The wrapper deliberately accepts no arbitrary interpreter, shell, or
+    caller-provided executable. Otherwise a producer could simply echo the
+    one supported credential, ``PIPECAT_TOKEN``, into an allowlisted field.
+    """
+    if not command or Path(command[0]).name.casefold() not in {"pipecat", "pipecat.exe"}:
+        raise ValueError("metadata producer must be the pipecat CLI")
 
 
 def _safe_child_environment() -> dict[str, str]:
-    """Pass only non-secret process settings to the untrusted producer."""
+    """Pass runtime settings plus only the documented PAT credential."""
     return {
         key: value
         for key, value in os.environ.items()
-        if key in _PASSTHROUGH_ENV or not _SECRET_ENV.search(key)
+        if key in _PASSTHROUGH_ENV
+        or key in _SAFE_RUNTIME_ENV
+        or (key.startswith("LC_") and not _SECRET_ENV.search(key))
     }
 
 
@@ -245,6 +263,7 @@ def main() -> int:
         parser.error("a command is required after --")
 
     try:
+        _validate_producer_command(command)
         result = _run_bounded(command)
         if result.returncode != 0:
             raise ValueError("command failed")
