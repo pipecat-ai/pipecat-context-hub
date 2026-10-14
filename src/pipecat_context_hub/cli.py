@@ -919,9 +919,8 @@ def refresh(
     """Rebuild the index, skipping unchanged sources when possible.
 
     The first run downloads local embedding models and indexes all sources —
-    allow several minutes. With an authenticated `gh` CLI, GitHub release
-    notes are also ingested for deprecation data; without it,
-    check-deprecation coverage is limited.
+    allow several minutes. Deprecation data comes from Pipecat's machine-
+    readable deprecation and removal registries in the framework checkout.
     """
     from pipecat_context_hub.services.embedding import (
         EmbeddingIndexWriter,

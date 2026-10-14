@@ -123,6 +123,31 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
     db_path = chroma_path / "chroma.sqlite3"
     if not db_path.is_file():
         return
+
+    # ``immutable=1`` deliberately ignores SQLite's WAL.  Reading the main
+    # database while Chroma can still see uncheckpointed collection/segment
+    # rows would make this guard validate a stale graph and re-open the crash
+    # path it is meant to prevent.  We cannot safely merge the WAL without
+    # allowing SQLite to create shared-memory state, so fail closed instead.
+    wal_path = db_path.with_name(f"{db_path.name}-wal")
+    try:
+        wal_info = wal_path.lstat()
+    except FileNotFoundError:
+        wal_info = None
+    except OSError as exc:
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason="unable to inspect chroma.sqlite3-wal; refusing native loading"
+        ) from exc
+    if wal_info is not None:
+        if is_reparse_link(wal_path) or not stat.S_ISREG(wal_info.st_mode):
+            reason = "unsafe chroma.sqlite3-wal path"
+        else:
+            reason = (
+                "chroma.sqlite3-WAL is present; uncheckpointed Chroma state cannot be "
+                "validated safely"
+            )
+        raise IncompatibleIndexFormatError(chroma_path, reason=reason)
+
     conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(db_path.as_uri() + "?mode=ro&immutable=1", uri=True)
@@ -136,6 +161,22 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
     finally:
         if conn is not None:
             conn.close()
+
+    # A WAL can arrive after the first check while another Chroma process is
+    # checkpointing.  Do not accept the probe's stale snapshot in that case.
+    try:
+        if wal_path.exists() or wal_path.is_symlink():
+            raise IncompatibleIndexFormatError(
+                chroma_path,
+                reason=(
+                    "chroma.sqlite3-wal appeared during validation; uncheckpointed Chroma "
+                    "state cannot be validated safely"
+                ),
+            )
+    except OSError as exc:
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason="unable to recheck chroma.sqlite3-wal; refusing native loading"
+        ) from exc
 
     for (segment_id,) in segments:
         # Persisted metadata must never turn this probe into a path traversal.

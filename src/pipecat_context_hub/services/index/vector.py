@@ -11,6 +11,8 @@ import json
 import logging
 import shutil
 import sqlite3
+import stat
+import tempfile
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -25,6 +27,7 @@ from overrides import override
 from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
+from pipecat_context_hub.shared.paths import is_reparse_link
 
 logger = logging.getLogger(__name__)
 
@@ -350,11 +353,52 @@ class VectorIndex:
     def __init__(self, chroma_path: Path, *, read_only: bool = False) -> None:
         self._chroma_path = chroma_path
         self._read_only = read_only
+        self._readonly_tempdir: tempfile.TemporaryDirectory[str] | None = None
         self._client: Any = None
         self._collection: Any = None
         self._closed = True
         self._op_lock = threading.RLock()
-        self._open_client()
+        try:
+            self._open_client()
+        except BaseException:
+            if self._readonly_tempdir is not None:
+                self._readonly_tempdir.cleanup()
+                self._readonly_tempdir = None
+            raise
+
+    def _copy_read_only_snapshot(self) -> Path:
+        """Copy a validated Chroma tree before opening the writer-oriented API.
+
+        Chroma's local ``PersistentClient`` has no read-only mode and may write
+        migrations, locks, or collection metadata while opening.  A private
+        snapshot keeps those writes away from the published index.  Symlinks
+        and reparse points are copied as links first, then rejected before the
+        snapshot is opened, so a read-only query cannot follow an external
+        path supplied by a corrupt or swapped index.
+        """
+        tempdir = tempfile.TemporaryDirectory(prefix="pipecat-context-hub-chroma-")
+        snapshot = Path(tempdir.name) / "chroma"
+        try:
+            shutil.copytree(self._chroma_path, snapshot, symlinks=True)
+            for path in snapshot.rglob("*"):
+                if is_reparse_link(path):
+                    raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
+                if not path.is_dir() and not stat.S_ISREG(path.stat().st_mode):
+                    raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
+            snapshot_wal = snapshot / "chroma.sqlite3-wal"
+            if snapshot_wal.exists() or snapshot_wal.is_symlink():
+                raise IncompatibleIndexFormatError(
+                    self._chroma_path,
+                    reason=(
+                        "chroma.sqlite3-WAL appeared while taking the read-only snapshot; "
+                        "uncheckpointed Chroma state cannot be validated safely"
+                    ),
+                )
+        except BaseException:
+            tempdir.cleanup()
+            raise
+        self._readonly_tempdir = tempdir
+        return snapshot
 
     def _open_client(self) -> None:
         """Open the persistent Chroma client and the ``latest`` collection."""
@@ -365,10 +409,13 @@ class VectorIndex:
         # observed oversized-graph corruption before the native client can
         # initialize successfully and later SIGSEGV on the first search.
         validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME)
-        if not self._read_only:
+        client_path = self._chroma_path
+        if self._read_only:
+            client_path = self._copy_read_only_snapshot()
+        else:
             self._chroma_path.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(
-            path=str(self._chroma_path),
+            path=str(client_path),
             settings=ChromaSettings(
                 anonymized_telemetry=False,
                 chroma_product_telemetry_impl=(
@@ -377,10 +424,13 @@ class VectorIndex:
             ),
         )
         try:
-            self._collection = self._client.get_or_create_collection(
-                name=COLLECTION_NAME,
-                metadata={"hnsw:space": "cosine"},
-            )
+            if self._read_only:
+                self._collection = self._client.get_collection(name=COLLECTION_NAME)
+            else:
+                self._collection = self._client.get_or_create_collection(
+                    name=COLLECTION_NAME,
+                    metadata={"hnsw:space": "cosine"},
+                )
         except (KeyError, ValueError) as exc:
             # The persisted collection configuration is unreadable. This is the
             # one corruption the pre-open sysdb-migration probe cannot catch:
@@ -429,6 +479,9 @@ class VectorIndex:
         self._collection = None
         self._client = None
         self._closed = True
+        if self._readonly_tempdir is not None:
+            self._readonly_tempdir.cleanup()
+            self._readonly_tempdir = None
 
     def close(self) -> None:
         """Release this client's Chroma resources."""
@@ -443,6 +496,8 @@ class VectorIndex:
         System from ChromaDB's shared cache, so the subsequent ``_open_client``
         rebuilds a fresh System over the recreated directory.
         """
+        if self._read_only:
+            raise RuntimeError("read-only VectorIndex cannot reset")
         with self._op_lock:
             self._release_client()
             shutil.rmtree(self._chroma_path, ignore_errors=True)
@@ -451,6 +506,8 @@ class VectorIndex:
 
     def clear(self) -> None:
         """Drop all records by deleting and recreating the collection."""
+        if self._read_only:
+            raise RuntimeError("read-only VectorIndex cannot clear")
         with self._op_lock:
             self._client.delete_collection(COLLECTION_NAME)
             self._collection = self._client.get_or_create_collection(
@@ -461,6 +518,8 @@ class VectorIndex:
 
     def upsert(self, records: list[ChunkedRecord]) -> int:
         """Upsert records into ChromaDB. Returns count of records written."""
+        if self._read_only:
+            raise RuntimeError("read-only VectorIndex cannot upsert")
         if not records:
             return 0
 
@@ -500,6 +559,8 @@ class VectorIndex:
 
     def delete_by_content_type(self, content_type: str) -> int:
         """Delete all records matching a content type. Returns count deleted."""
+        if self._read_only:
+            raise RuntimeError("read-only VectorIndex cannot delete records")
         with self._op_lock:
             where_clause: dict[str, Any] = {"content_type": {"$eq": content_type}}
             existing = self._collection.get(where=where_clause, include=[])
@@ -517,6 +578,8 @@ class VectorIndex:
 
     def delete_by_repo(self, repo: str) -> int:
         """Delete all records matching a repo. Returns count deleted."""
+        if self._read_only:
+            raise RuntimeError("read-only VectorIndex cannot delete records")
         with self._op_lock:
             where_clause: dict[str, Any] = {"repo": {"$eq": repo}}
             existing = self._collection.get(where=where_clause, include=[])
@@ -531,6 +594,8 @@ class VectorIndex:
 
     def delete_by_source(self, source_url: str) -> int:
         """Delete all records matching a source URL. Returns count deleted."""
+        if self._read_only:
+            raise RuntimeError("read-only VectorIndex cannot delete records")
         with self._op_lock:
             where_clause: dict[str, Any] = {"source_url": {"$eq": source_url}}
             existing = self._collection.get(where=where_clause, include=[])

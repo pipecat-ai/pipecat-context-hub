@@ -177,6 +177,16 @@ def test_new_index_without_persisted_graph_is_allowed(tmp_path: Path) -> None:
     validate_persisted_hnsw(tmp_path / "absent", "latest")
 
 
+def test_wal_presence_fails_closed_before_stale_probe(
+    persisted_segment: tuple[Path, Path],
+) -> None:
+    """The immutable probe must not ignore an uncheckpointed Chroma WAL."""
+    root, _ = persisted_segment
+    (root / "chroma.sqlite3-wal").write_bytes(b"uncheckpointed state")
+    with pytest.raises(IncompatibleIndexFormatError, match="WAL"):
+        validate_persisted_hnsw(root, "latest")
+
+
 def test_unreadable_links_file_uses_recovery_error(
     persisted_segment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

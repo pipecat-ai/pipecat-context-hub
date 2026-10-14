@@ -425,11 +425,15 @@ class ReadOnlyIndexStore:
     def __init__(self, config: StorageConfig) -> None:
         config = _existing_index_config(config)
         self._data_dir = config.data_dir
+        chroma_identities = _backend_path_identities(config.chroma_path, self._data_dir)
+        sqlite_identities = _backend_path_identities(config.sqlite_path, self._data_dir)
         vector: VectorIndex | None = None
         fts: FTSIndex | None = None
         try:
             vector = VectorIndex(config.chroma_path, read_only=True)
+            _verify_backend_path_identities(config.chroma_path, chroma_identities)
             fts = FTSIndex(config.sqlite_path, read_only=True)
+            _verify_backend_path_identities(config.sqlite_path, sqlite_identities)
             self._vector = vector
             self._fts = fts
         except Exception:

@@ -94,9 +94,10 @@ uvx pipecat-ai-context-hub refresh --force
 uvx pipecat-ai-context-hub refresh --force --reset-index
 ```
 
-> **Tip:** When `gh` CLI is authenticated, `refresh` also fetches GitHub release
-> notes for deprecation data. Without it, `check_deprecation` coverage will be
-> limited.
+> **Tip:** `refresh` reads Pipecat's machine-readable
+> `scripts/deprecations/deprecations.json` (and, when present,
+> `scripts/deprecations/removals.json`) from the indexed framework checkout.
+> `check_deprecation` therefore does not require GitHub CLI authentication.
 
 ## Start the Server
 

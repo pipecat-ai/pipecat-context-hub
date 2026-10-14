@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from pipecat_context_hub.services.index.fts import FTSIndex
-from pipecat_context_hub.services.index.store import IndexStore
+from pipecat_context_hub.services.index.store import IndexStore, ReadOnlyIndexStore
 from pipecat_context_hub.services.index.vector import VectorIndex, _CHROMA_BATCH_SIZE
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
@@ -864,8 +864,6 @@ class TestIndexStoreInitRollback:
         assert not (data_dir / "chroma").exists()
 
     def test_read_only_store_exposes_no_writer_methods(self, tmp_path: Path):
-        from pipecat_context_hub.services.index.store import ReadOnlyIndexStore
-
         # Build the persisted shape through the writer, then reopen through the
         # reader boundary and assert mutation methods are not part of its API.
         writer = IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
@@ -876,6 +874,71 @@ class TestIndexStoreInitRollback:
             assert not hasattr(reader, "upsert")
         finally:
             reader.close()
+
+    def test_read_only_open_preserves_persisted_chroma_bytes_and_mtimes(
+        self, tmp_path: Path
+    ) -> None:
+        data_dir = tmp_path / "hub-data"
+        writer = IndexStore(StorageConfig(data_dir=data_dir))
+        writer._vector.upsert([_make_record()])
+        writer.close()
+
+        chroma_files = [path for path in (data_dir / "chroma").rglob("*") if path.is_file()]
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in chroma_files}
+        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
+        try:
+            assert reader._vector._collection.count() == 1
+        finally:
+            reader.close()
+        assert {
+            path: (path.read_bytes(), path.stat().st_mtime_ns) for path in chroma_files
+        } == before
+
+    def test_read_only_open_rejects_missing_collection_without_recreating_it(
+        self, tmp_path: Path
+    ) -> None:
+        data_dir = tmp_path / "hub-data"
+        writer = IndexStore(StorageConfig(data_dir=data_dir))
+        writer.close()
+        import chromadb
+
+        client: Any = chromadb.PersistentClient(path=str(data_dir / "chroma"))
+        client.delete_collection("latest")
+        client.close()
+
+        with pytest.raises(Exception, match="not found|does not exist"):
+            ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
+        check: Any = chromadb.PersistentClient(path=str(data_dir / "chroma"))
+        try:
+            assert all(collection.name != "latest" for collection in check.list_collections())
+        finally:
+            check.close()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
+    def test_read_only_store_rechecks_backend_identity_after_vector_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data_dir = tmp_path / "hub-data"
+        writer = IndexStore(StorageConfig(data_dir=data_dir))
+        writer.close()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        replacement = tmp_path / "chroma-original"
+        fake_vector = Mock()
+
+        def race(_path: Path, *, read_only: bool) -> Mock:
+            assert read_only is True
+            chroma = data_dir / "chroma"
+            chroma.rename(replacement)
+            chroma.symlink_to(outside, target_is_directory=True)
+            return fake_vector
+
+        monkeypatch.setattr(
+            "pipecat_context_hub.services.index.store.VectorIndex", Mock(side_effect=race)
+        )
+        with pytest.raises(ValueError, match="Unsafe index backend path"):
+            ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
+        fake_vector.close.assert_called_once()
 
 
 class TestIndexStore:
