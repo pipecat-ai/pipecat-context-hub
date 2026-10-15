@@ -741,7 +741,8 @@ class TestServerInstructions:
         """
         from click.testing import CliRunner
 
-        from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY, main
+        from pipecat_context_hub.cli import main
+        from pipecat_context_hub.shared.index_lock import EXIT_INDEX_UNREADY
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
         from pipecat_context_hub.services.index import IncompatibleIndexFormatError
         from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
@@ -771,7 +772,7 @@ class TestServerInstructions:
         ):
             result = CliRunner().invoke(main, ["serve"])
 
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert emitted_remediation in caplog.text
         assert guided_remediation in _SERVER_INSTRUCTIONS.replace("``", "")
         assert "before MCP initialization" in _SERVER_INSTRUCTIONS

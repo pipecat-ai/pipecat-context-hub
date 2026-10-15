@@ -27,6 +27,7 @@ from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.index_lock import (
+    EXIT_INDEX_UNREADY,
     EXIT_REFRESH_IN_PROGRESS,
     REFRESH_LOCK,
     SERVE_LOCK,
@@ -86,15 +87,11 @@ def _framework_pin_not_found(fw_version: str, exc: TagNotFoundError) -> click.Cl
     return click.ClickException(f"--framework-version {fw_version!r}: {exc}")
 
 
-# Exit code for `serve` when the index cannot be used (unopenable or empty).
-# Documented in CHANGELOG 0.0.17 "Changed" section.
-_EXIT_INDEX_UNREADY = 2
-
 _module_logger = logging.getLogger(__name__)
 
 
 def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> IndexStore:
-    """Open the on-disk index store, or exit with `_EXIT_INDEX_UNREADY`.
+    """Open the on-disk index store, or exit with `EXIT_INDEX_UNREADY`.
 
     Shared by both `refresh` call sites (pre-`--reset-index` fail-fast path
     and the post-delete rebuild) so the `IncompatibleIndexFormatError`
@@ -113,7 +110,7 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
         # the absolute chroma_path; redact for front-door parity with the
         # serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
 
 
 # Free space `refresh` requires on the data-dir volume before it starts. The
@@ -804,7 +801,7 @@ def serve(ctx: click.Context) -> None:
         )
     except IndexUnavailableError as exc:
         logger.error("%s", exc)
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
 
     # Startup banner: one line so operators can confirm version, data dir,
     # and content-type shape from an MCP JSONL trace. Helps diagnose
@@ -1947,13 +1944,13 @@ def refresh(
         )
     except FatalIndexError as exc:
         # Only the post-write HNSW guard (during ingest or compaction) and a
-        # compaction swap that could not be rolled back raise this mid-run
+        # compaction swap that failed leaving no ``latest`` raise this mid-run
         # (the open-time checks fire in `_open_index_store_or_exit`). The
         # ingesters re-raise it so a corrupt index stops the refresh instead of
         # being recorded as one more per-source error while the remaining
         # sources keep writing into it.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
     finally:
         index_store.close()
 

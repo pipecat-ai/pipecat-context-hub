@@ -28,7 +28,7 @@ def seeded_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A tmp `$HOME` holding a minimal non-empty index.
 
     `cli.serve` fail-fasts with exit code 2 when the index is empty
-    (see `_EXIT_INDEX_UNREADY` in cli.py). The lifetime tests only care
+    (`EXIT_INDEX_UNREADY` in shared/index_lock.py). The lifetime tests only care
     that `serve` reaches the transport; they don't need real data. This
     fixture seeds one record into `<tmp_home>/.pipecat-context-hub/` so
     subprocesses launched with `env["HOME"]=<tmp_home>` find a usable

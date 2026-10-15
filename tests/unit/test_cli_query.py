@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner, Result
 
-from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY as _SERVE_EXIT_INDEX_UNREADY
 from pipecat_context_hub.cli import main
-from pipecat_context_hub.cli_query import _EXIT_BAD_INPUT, _EXIT_INDEX_UNREADY, _TOOL_TO_COMMAND
+from pipecat_context_hub.cli_query import _EXIT_BAD_INPUT, _TOOL_TO_COMMAND
 from pipecat_context_hub.server.dispatch import iter_tool_definitions
 from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL, create_server
 from pipecat_context_hub.services.index import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
+from pipecat_context_hub.shared.index_lock import EXIT_INDEX_UNREADY
 from pipecat_context_hub.shared.paths import redact_home_in_text as _real_redact_home_in_text
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
@@ -101,18 +101,13 @@ class TestToolCommandParity:
     def test_mapped_commands_are_registered_on_main(self):
         assert set(_TOOL_TO_COMMAND.values()) <= set(main.commands)
 
-    def test_index_unready_exit_code_matches_serve(self):
-        """CLI and serve must report 'index unready' with the same exit code."""
-        assert _EXIT_INDEX_UNREADY == _SERVE_EXIT_INDEX_UNREADY
-
     def test_refresh_in_progress_exit_code_is_shared(self):
         """Queries mid-refresh and a refresh refused by the lock are the same
         retry-later condition, so both exit with the shared code (75)."""
         from pipecat_context_hub import cli as hub_cli
-        from pipecat_context_hub.cli_query import _EXIT_REFRESH_IN_PROGRESS
         from pipecat_context_hub.shared.index_lock import EXIT_REFRESH_IN_PROGRESS
 
-        assert _EXIT_REFRESH_IN_PROGRESS == EXIT_REFRESH_IN_PROGRESS == 75
+        assert EXIT_REFRESH_IN_PROGRESS == 75
         assert hub_cli._RefreshLockBusy("x").exit_code == EXIT_REFRESH_IN_PROGRESS
 
     def test_semantic_meta_matches_needs_embeddings_call_sites(self):
@@ -236,7 +231,7 @@ class TestIndexUnready:
             return_value=_index_store_mock(total=0),
         ):
             result = runner.invoke(main, ["check-deprecation", "PipelineTask"])
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert result.stdout == ""
         _assert_remediation_before_report_hint(result.stderr, "refresh", BUG_REPORT_ISSUE_URL)
         assert result.stderr.count(BUG_REPORT_ISSUE_URL) == 1
@@ -248,7 +243,7 @@ class TestIndexUnready:
             side_effect=RuntimeError("corrupt"),
         ):
             result = runner.invoke(main, ["status"])
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert result.stdout == ""
         _assert_remediation_before_report_hint(result.stderr, "--reset-index", BUG_REPORT_ISSUE_URL)
         assert result.stderr.count(BUG_REPORT_ISSUE_URL) == 1
@@ -270,7 +265,7 @@ class TestIndexUnready:
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
         ):
             result = runner.invoke(main, ["status"])
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert result.stdout == ""
         _assert_remediation_before_report_hint(
             result.stderr, RESET_INDEX_REMEDIATION, BUG_REPORT_ISSUE_URL
@@ -293,7 +288,7 @@ class TestIndexUnready:
             side_effect=IndexUnavailableError("shared-open-message"),
         ):
             result = runner.invoke(main, ["status"])
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert "Error: shared-open-message" in result.stderr
 
         with patch(
@@ -1169,7 +1164,7 @@ class TestHomeRedaction:
         ):
             result = runner.invoke(main, ["status"])
 
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         # Redaction happened (tilde present) and nothing leaks the literal home.
         assert "~/" in result.stderr or "~" + os.sep in result.stderr
         assert str(tmp_path) not in result.stderr
@@ -1192,7 +1187,7 @@ class TestHomeRedaction:
         ):
             result = runner.invoke(main, ["status"])
 
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert "is empty" in result.stderr
         assert "~/" in result.stderr or "~" + os.sep in result.stderr
         assert str(tmp_path) not in result.stderr

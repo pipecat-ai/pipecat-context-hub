@@ -14,8 +14,8 @@ Design notes:
 - Output contract: stdout carries exactly the tool handler's JSON — the same
   payload an MCP client receives — so callers can pipe it to a parser. Logs
   and error messages go to stderr. Exit codes: 0 on success, 1 on invalid
-  input, ``_EXIT_INDEX_UNREADY`` (2) when the local index is missing, empty,
-  or unreadable, and ``_EXIT_REFRESH_IN_PROGRESS`` (75) when a ``refresh`` is
+  input, ``EXIT_INDEX_UNREADY`` (2) when the local index is missing, empty,
+  unreadable, or incompatible, and ``EXIT_REFRESH_IN_PROGRESS`` (75) when a ``refresh`` is
   rewriting the index (stderr says to retry in 60-120 seconds).
 - Quiet by default: query commands downgrade logging to WARNING (explicit
   ``--log-level`` wins) and silence third-party model-loading chatter, since
@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import click
 
 from pipecat_context_hub.shared.index_lock import (
+    EXIT_INDEX_UNREADY,
     EXIT_REFRESH_IN_PROGRESS,
     RefreshInProgressError,
     refresh_excluded,
@@ -76,12 +77,7 @@ def _echo_stderr_warning(text: str) -> None:
     click.echo(redact_home_in_text(text), err=True)
 
 
-# Exit code for a missing/empty/unreadable local index. Keep in sync with
-# ``cli._EXIT_INDEX_UNREADY`` (enforced by tests/unit/test_cli_query.py).
-_EXIT_INDEX_UNREADY = 2
 _EXIT_BAD_INPUT = 1
-# sysexits EX_TEMPFAIL: a `refresh` is rewriting the index; retry shortly.
-_EXIT_REFRESH_IN_PROGRESS = EXIT_REFRESH_IN_PROGRESS
 
 
 class _SemanticMeta(NamedTuple):
@@ -340,10 +336,10 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
             index_store = open_ready_index_store(config.storage)
     except RefreshInProgressError as exc:
         _echo_stderr_warning(f"Error: {exc}")
-        raise SystemExit(_EXIT_REFRESH_IN_PROGRESS) from exc
+        raise SystemExit(EXIT_REFRESH_IN_PROGRESS) from exc
     except IndexUnavailableError as exc:
         _echo_stderr_warning(f"Error: {exc}")
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
 
     try:
         embedding_svc = None
