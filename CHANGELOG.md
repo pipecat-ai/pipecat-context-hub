@@ -19,7 +19,7 @@ This project uses [Semantic Versioning](https://semver.org/).
   anything, so the next `refresh` restores the index. The old collection is parked under a backup name until
   the rebuilt one is in place; a swap interrupted by a crash is restored by the
   next `refresh` (readers never write to the index: until then they report it and
-  say to run `refresh`), and the staging writes get the same per-batch HNSW guard
+  say to run `refresh`; a restore that itself fails stops that refresh with exit 2), and the staging writes get the same per-batch HNSW guard
   as upserts.
 - **`serve` and the one-shot CLI open the index the same way.** Both go through
   one open-and-check, so an empty, unreadable, or incompatible index gets the same
@@ -41,8 +41,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   the same way (refresh exclusion plus the open-time checks), and exit with the
   `refresh` hint on a missing or empty index instead of creating one. Readers
   never create the index (only `refresh` does): a lost vector collection or a
-  missing keyword database is reported ("run `refresh --force`") rather than
-  recreated empty beside the populated other half. The stale handle is closed after its last call before the rebuilt
+  missing or uninitialized keyword database is reported ("run `refresh --force`") rather than
+  recreated empty beside the populated other half, and a plain `refresh` that finds the
+  vector collection lost beside a populated keyword database exits 2 with the same advice
+  instead of skipping unchanged sources and leaving vector search empty. The dashboard
+  scripts report any open failure (including an incompatible index) with the
+  operator message, not a traceback. The stale handle is closed after its last call before the rebuilt
   index is opened (calls in between are asked to retry in a few seconds):
   chromadb shares one native System per path, so a client opened beside the
   stale one served the stale graph. Spikes showed opening the index mid-refresh
@@ -64,8 +68,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   hnswlib's on-disk layout is private: on a chromadb release other than the
   verified 1.5.x, header and structure mismatches are logged and skipped (the
   size bound still applies) instead of refusing every healthy index. Lock files
-  are opened without following symlinks and ignored (with a warning) if another
-  user owns them or they are not a regular file with a single link.
+  are opened without following symlinks (on Windows, which lacks `O_NOFOLLOW`, a
+  symlinked lock file is refused before and after the open) and ignored (with a
+  warning, proceeding unlocked) if another user owns them or they are not a regular
+  file with a single link.
 - **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
   unsafe to keep using; the incompatible-format and corrupt-HNSW errors subclass
   it. Ingesters re-raise it rather than recording one more per-source error, so a

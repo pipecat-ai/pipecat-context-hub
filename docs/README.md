@@ -544,6 +544,10 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   takes an exclusive `refresh.lock` (a sibling file of the data dir,
   `<dirname>.refresh.lock`, e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
   it), so two refreshes can't interleave writes to the same Chroma HNSW files.
+  Locking is best-effort: if the lock file is a symlink, not a regular file,
+  has other hard links, or belongs to another user, it is not used and the
+  command logs `Lock file … continuing without a lock` and proceeds unlocked
+  (as it does where file locking is unsupported).
   **While a refresh runs, nothing reads the index:** `serve` answers every tool
   call with an error saying "retry in 60-120 seconds" (a `serve` started
   mid-refresh still connects, with the index unopened), and one-shot CLI
@@ -557,7 +561,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   index they exit with the `refresh` hint instead of creating one. Readers
   never create the index: if its vector collection or keyword database has gone
   missing, queries say to run `refresh --force` rather than returning empty
-  results. `serve`
+  results, and a plain `refresh` that finds the vector collection lost beside
+  a populated keyword database exits **2** with the same advice (it would
+  otherwise skip every unchanged source and leave vector search empty). `serve`
   reopens the rebuilt index (with the same readiness checks as at startup) and
   reloads the deprecation map by itself once the refresh ends, so no MCP client
   restart is needed; a call that lands while an earlier call still uses the old
