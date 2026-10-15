@@ -20,6 +20,7 @@ from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatErr
 # https://github.com/chroma-core/chroma/issues/7510
 _HEADER = struct.Struct("<i6Qii3QdQ")
 _SEGMENT_TYPE = "urn:chroma:segment/vector/hnsw-local-persisted"
+_U32 = struct.Struct("<I")
 
 
 def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
@@ -107,6 +108,77 @@ def check_hnsw_segment_dir(chroma_path: Path, segment_path: Path) -> None:
                 f"of {upper_bound} bytes"
             ),
         )
+    _walk_link_lists(chroma_path, segment_name, links_path, count, max_level, max_m)
+
+
+def _walk_link_lists(
+    chroma_path: Path,
+    segment_name: str,
+    links_path: Path,
+    count: int,
+    max_level: int,
+    max_m: int,
+) -> None:
+    """Structurally validate a within-bound ``link_lists.bin``.
+
+    The size bound alone misses the dangerous case: a graph left inconsistent
+    by two racing writers has the right size and header, but its next load or
+    persist either SIGSEGVs or grows the file without bound (spike, 2026-10-15;
+    upstream chroma#7510 — unvalidated ``linkListSize`` on load). The file is a
+    plain sequence of ``count`` records, each a uint32 byte length (0 = no
+    upper levels) followed by that many bytes made of ``max_m*4+4``-byte level
+    blocks (uint32 neighbour count, then neighbour ids). The walk is O(file
+    size), which the bound above already caps.
+    """
+    stride = max_m * 4 + 4
+    try:
+        data = links_path.read_bytes()
+    except OSError as exc:
+        raise IncompatibleIndexFormatError(
+            chroma_path, reason=f"unreadable persisted HNSW link lists in segment {segment_name}"
+        ) from exc
+    problem = _first_link_list_problem(data, count, max_level, max_m, stride)
+    if problem is not None:
+        raise IncompatibleIndexFormatError(
+            chroma_path,
+            reason=f"corrupt persisted HNSW segment {segment_name}: link_lists.bin {problem}",
+        )
+
+
+def _first_link_list_problem(
+    data: bytes, count: int, max_level: int, max_m: int, stride: int
+) -> str | None:
+    size = len(data)
+    pos = 0
+    for element in range(count):
+        if pos + 4 > size:
+            return f"is truncated at element {element} of {count}"
+        (length,) = _U32.unpack_from(data, pos)
+        pos += 4
+        if length == 0:
+            continue
+        if length % stride or length // stride > max_level:
+            return (
+                f"element {element} has link size {length}, not a multiple of the "
+                f"{stride}-byte level block within {max_level} levels"
+            )
+        if pos + length > size:
+            return f"element {element} runs past the end of the file"
+        for level in range(length // stride):
+            base = pos + level * stride
+            (neighbours,) = _U32.unpack_from(data, base)
+            neighbours &= 0xFFFF
+            if neighbours > max_m:
+                return f"element {element} level {level + 1} lists {neighbours} neighbours (max {max_m})"
+            for (neighbour,) in struct.iter_unpack(
+                "<I", data[base + 4 : base + 4 + 4 * neighbours]
+            ):
+                if neighbour >= count:
+                    return f"element {element} references neighbour {neighbour} >= {count}"
+        pos += length
+    if pos != size:
+        return f"has {size - pos} unexpected trailing bytes after {count} elements"
+    return None
 
 
 class HnswWriteGuard:

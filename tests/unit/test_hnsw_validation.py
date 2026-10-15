@@ -33,6 +33,24 @@ def _header(version: int = 1) -> bytes:
     return struct.pack("<i6Qii3QdQ", version, 0, 8, 4, 152, 144, 132, 2, 0, 16, 32, 16, 0.36, 100)
 
 
+def _links(levels: list[int], *, neighbours: int = 1, max_m: int = 16) -> bytes:
+    """A structurally valid link_lists.bin: one record per element.
+
+    ``levels[i]`` is element i's number of upper levels (0 = empty record).
+    Each level block is ``max_m*4+4`` bytes: uint32 neighbour count, neighbour
+    ids, zero padding.
+    """
+    out = b""
+    for n in levels:
+        if n == 0:
+            out += struct.pack("<I", 0)
+            continue
+        block = struct.pack("<I", neighbours) + struct.pack("<I", 0) * neighbours
+        block += b"\0" * (max_m * 4 + 4 - len(block))
+        out += struct.pack("<I", len(block) * n) + block * n
+    return out
+
+
 @pytest.fixture()
 def persisted_segment(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / "chroma"
@@ -49,7 +67,7 @@ def persisted_segment(tmp_path: Path) -> tuple[Path, Path]:
     segment = root / SEGMENT_ID
     segment.mkdir()
     (segment / "header.bin").write_bytes(_header())
-    (segment / "link_lists.bin").write_bytes(b"\0" * 1000)
+    (segment / "link_lists.bin").write_bytes(_links([0, 0, 0, 0]))
     return root, segment
 
 
@@ -211,3 +229,57 @@ def test_vector_upsert_checks_guard_after_every_batch(
         assert index._collection.count() == 5 + 2  # aborted after the first new batch
     finally:
         index.close()
+
+
+class TestStructuralWalk:
+    """A within-bound but inconsistent graph (two racing writers) must be rejected.
+
+    Spike, 2026-10-15: after racing refreshes the file had the healthy size and
+    header, yet the next load SIGSEGVed or ran away. A walk of the records
+    found the damage before that load.
+    """
+
+    def test_valid_records_with_upper_levels_pass(self, persisted_segment) -> None:
+        root, segment = persisted_segment
+        (segment / "link_lists.bin").write_bytes(_links([0, 1, 2, 0]))
+        validate_persisted_hnsw(root, "latest")
+
+    @pytest.mark.parametrize(
+        ("mutate", "match"),
+        [
+            (lambda d: d + b"\0\0\0\0", "trailing bytes"),
+            (lambda d: d[:-2], "truncated|past the end"),
+            (lambda d: struct.pack("<I", 13) + d[4:], "not a multiple"),
+            (lambda d: struct.pack("<I", 68 * 9) + d[4:], "not a multiple|levels"),
+        ],
+    )
+    def test_structural_damage_is_rejected(self, persisted_segment, mutate, match) -> None:
+        root, segment = persisted_segment
+        (segment / "link_lists.bin").write_bytes(mutate(_links([1, 0, 1, 0])))
+        with pytest.raises(
+            IncompatibleIndexFormatError, match=f"corrupt persisted HNSW.*({match})"
+        ):
+            validate_persisted_hnsw(root, "latest")
+
+    def test_neighbour_id_out_of_range_is_rejected(self, persisted_segment) -> None:
+        root, segment = persisted_segment
+        data = bytearray(_links([1, 0, 0, 0]))
+        struct.pack_into("<I", data, 8, 4)  # element 0, level 1, neighbour 0 -> id 4 (count is 4)
+        (segment / "link_lists.bin").write_bytes(bytes(data))
+        with pytest.raises(IncompatibleIndexFormatError, match="neighbour 4"):
+            validate_persisted_hnsw(root, "latest")
+
+    def test_neighbour_count_over_max_m_is_rejected(self, persisted_segment) -> None:
+        root, segment = persisted_segment
+        data = bytearray(_links([1, 0, 0, 0]))
+        struct.pack_into("<I", data, 4, 17)  # 17 > maxM 16
+        (segment / "link_lists.bin").write_bytes(bytes(data))
+        with pytest.raises(IncompatibleIndexFormatError, match="17 neighbours"):
+            validate_persisted_hnsw(root, "latest")
+
+    def test_write_guard_runs_the_walk(self, persisted_segment) -> None:
+        root, segment = persisted_segment
+        guard = HnswWriteGuard(root)
+        (segment / "link_lists.bin").write_bytes(struct.pack("<I", 13) + b"\0" * 12)
+        with pytest.raises(IncompatibleIndexFormatError, match="not a multiple"):
+            guard.check()
