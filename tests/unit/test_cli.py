@@ -2018,6 +2018,27 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         assert not sentinel_file.exists()
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    def test_reset_index_refuses_to_rebuild_over_undeleted_index_files(
+        self, mock_gh_cls, mock_is_cls, tmp_path, monkeypatch
+    ):
+        """Regression (cli.py:246): the delete ignores errors, so on Windows a
+        `serve` holding the index open left files behind and the rebuild ran
+        over them. Simulated with an rmtree that deletes nothing."""
+        data_dir = tmp_path / "data-home"
+        (data_dir / "chroma").mkdir(parents=True)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", lambda *_a, **_k: None)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 1, result.output
+        assert "could not delete" in result.output
+        assert "chroma" in result.output
+        mock_is_cls.assert_not_called()  # no rebuild over the leftovers
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
     @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
     @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
