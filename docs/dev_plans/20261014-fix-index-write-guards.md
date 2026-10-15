@@ -113,7 +113,10 @@ control, so the pre-load walk is the real defence.
   force re-verification.
 - Chroma's SQLite runs in rollback-journal (`delete`) mode, verified on 1.5.9
   with a writer open, so the validator's `immutable=1` read can't miss
-  WAL-only segment rows.
+  WAL-only segment rows. A leftover `chroma.sqlite3-journal` (a writer died
+  mid-transaction) would be ignored by `immutable=1`, so the probe then opens
+  the database read-write and SQLite rolls it back first, as Chroma's own
+  open would.
 - Upstream fix for chroma#7510 is in flight (not in 1.5.9, the latest release).
 - Windows (known limitation): `msvcrt` has no shared lock mode, so a second
   `serve` is not advertised to `refresh`, and a reader holding `refresh.lock`

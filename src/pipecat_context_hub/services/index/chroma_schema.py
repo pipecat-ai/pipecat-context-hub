@@ -58,11 +58,20 @@ def query_chroma_sqlite(
     ``refresh_excluded``; ``refresh``, the only writer, holds the lock
     exclusively). ``immutable=False`` takes SQLite's shared lock for a
     consistent snapshot: required before deleting anything based on it.
+
+    A rollback journal beside the database means a writer died mid-transaction
+    (Chroma runs in ``delete`` journal mode). ``immutable=1`` would ignore it
+    and read uncommitted pages, and a read-only connection cannot roll it back,
+    so the read then opens read-write (never creating the database): SQLite
+    rolls the journal back first, exactly as Chroma's own open is about to.
     """
     db_path = chroma_path / "chroma.sqlite3"
     if not db_path.is_file():
         return None
-    mode = "?mode=ro&immutable=1" if immutable else "?mode=ro"
+    if Path(f"{db_path}-journal").exists():
+        mode = "?mode=rw"
+    else:
+        mode = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     try:
         conn = sqlite3.connect(db_path.absolute().as_uri() + mode, uri=True)
     except sqlite3.Error:

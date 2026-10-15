@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 import struct
@@ -653,6 +654,34 @@ class TestQueryChromaSqlite:
         (tmp_path / "chroma.sqlite3").write_bytes(b"not a database")
         for immutable in (True, False):
             assert chroma_schema.query_chroma_sqlite(tmp_path, _MASTER, immutable=immutable) is None
+
+    def test_hot_journal_is_rolled_back_before_reading(self, tmp_path: Path) -> None:
+        """Regression (chroma_schema.py:65): a writer killed mid-transaction
+        leaves a hot rollback journal and uncommitted pages in the database.
+        ``immutable=1`` ignored the journal, so the pre-open probes read a
+        state Chroma never opens (it rolls the journal back first)."""
+        import subprocess
+        import sys
+
+        db = tmp_path / "chroma.sqlite3"
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, x)")
+            conn.executemany("INSERT INTO t VALUES (?, 'old')", [(i,) for i in range(5000)])
+        writer = (
+            "import os, sqlite3, sys\n"
+            "c = sqlite3.connect(sys.argv[1])\n"
+            "c.execute('PRAGMA cache_size=1')\n"  # spill dirty pages to the db file
+            "c.execute('BEGIN')\n"
+            "c.execute(\"UPDATE t SET x='new'\")\n"
+            "os._exit(0)\n"  # die mid-transaction
+        )
+        subprocess.run([sys.executable, "-c", writer, str(db)], check=True)
+        assert (tmp_path / "chroma.sqlite3-journal").exists()
+
+        rows = chroma_schema.query_chroma_sqlite(
+            tmp_path, "SELECT x, count(*) FROM t GROUP BY x", immutable=True
+        )
+        assert rows == [("old", 5000)]
 
     def test_relative_chroma_path_is_readable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
