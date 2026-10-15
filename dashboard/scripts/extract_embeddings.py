@@ -8,10 +8,9 @@ import time
 import numpy as np
 import umap
 
-from pipecat_context_hub.services.index.vector import VectorIndex
+from pipecat_context_hub.services.index.reopening import open_ready_vector_index
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.env_loading import load_env_layers
-from pipecat_context_hub.shared.index_lock import refresh_excluded
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 
 
@@ -34,17 +33,13 @@ def main() -> None:
     out_path = os.path.join(os.path.dirname(__file__), "..", "public", "embeddings_3d.json")
 
     print("Connecting to ChromaDB...")
-    # The reader open (format, HNSW-graph and interrupted-compaction checks;
-    # never creates a missing index), taken while no `refresh` can be
-    # rewriting the index.
+    # The shared reader open: refresh exclusion, the open-time checks, never
+    # creating a missing index, and refusing an empty one.
     try:
-        with refresh_excluded(storage.data_dir):
-            index = VectorIndex(storage.chroma_path, create=False)
+        index = open_ready_vector_index(storage)
     except IndexUnavailableError as exc:
         sys.exit(f"Error: {exc}")
     total = index.count()
-    if total == 0:
-        sys.exit("Error: the index is empty (0 records). Run 'uv run pipecat-context-hub refresh'.")
     print(f"Collection has {total:,} records")
 
     # Fetch all embeddings + metadata in batches

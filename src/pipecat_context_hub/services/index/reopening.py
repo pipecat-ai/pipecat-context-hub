@@ -34,6 +34,7 @@ from pipecat_context_hub.shared.types import IndexQuery, IndexResult
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.services.index.vector import VectorIndex
     from pipecat_context_hub.shared.config import StorageConfig
 
 logger = logging.getLogger(__name__)
@@ -80,12 +81,34 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
 
     if stats.get("total", 0) == 0:
         index_store.close()
-        raise IndexUnavailableError(
-            f"Index at {data_dir} is empty (0 records). Run 'uv run pipecat-context-hub "
-            "refresh' to build it (the first run downloads models and indexes sources; "
-            f"allow a few minutes). {bug_report_hint()}"
-        )
+        raise IndexUnavailableError(f"{_empty_index_message(storage)} {bug_report_hint()}")
     return index_store
+
+
+def _empty_index_message(storage: StorageConfig) -> str:
+    return (
+        f"Index at {redact_home(storage.data_dir)} is empty (0 records). Run 'uv run "
+        "pipecat-context-hub refresh' to build it (the first run downloads models and "
+        "indexes sources; allow a few minutes)."
+    )
+
+
+def open_ready_vector_index(storage: StorageConfig) -> VectorIndex:
+    """Open only the vector index for a bulk read (the dashboard scripts).
+
+    The same reader open as :func:`open_ready_index_store`, minus the keyword
+    index: under :func:`refresh_excluded` (taken here), never creating a
+    missing index, and refusing an empty one. Raises
+    ``IndexUnavailableError`` with the operator guidance.
+    """
+    from pipecat_context_hub.services.index.vector import VectorIndex as _VectorIndex
+
+    with refresh_excluded(storage.data_dir):
+        index = _VectorIndex(storage.chroma_path, create=False)
+    if index.count() == 0:
+        index.close()
+        raise IndexUnavailableError(_empty_index_message(storage))
+    return index
 
 
 @dataclass

@@ -565,14 +565,15 @@ def test_dashboard_scripts_open_through_the_reader_path(
 ) -> None:
     """Regression (reopening.py:47): the dashboard scripts opened Chroma with a
     bare PersistentClient, skipping refresh exclusion and the open-time checks.
-    They must refuse while a refresh holds the lock, and open via VectorIndex."""
+    They must refuse while a refresh holds the lock, and open via VectorIndex
+    (through the shared reopening.open_ready_vector_index)."""
     from tests.unit.test_config import _REPO_ROOT, _import_script
 
     module = _import_script(_REPO_ROOT / "dashboard" / "scripts" / f"{script}.py", script)
     data_dir = tmp_path / "hub"
     monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
     opened = MagicMock(side_effect=RuntimeError("opened"))
-    monkeypatch.setattr(module, "VectorIndex", opened)
+    monkeypatch.setattr("pipecat_context_hub.services.index.vector.VectorIndex", opened)
 
     with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
         with pytest.raises(SystemExit, match="Retry in 60-120 seconds"):
@@ -601,3 +602,11 @@ def test_dashboard_scripts_refuse_a_missing_index_without_creating_one(
     with pytest.raises(SystemExit, match="refresh"):
         module.main()
     assert not data_dir.exists()
+
+    # A built but empty index gets the same message as serve and the CLI.
+    from pipecat_context_hub.services.index.vector import VectorIndex
+    from pipecat_context_hub.shared.config import StorageConfig
+
+    VectorIndex(StorageConfig(data_dir=data_dir).chroma_path, create=True).close()
+    with pytest.raises(SystemExit, match=r"is empty \(0 records\)\. Run 'uv run"):
+        module.main()
