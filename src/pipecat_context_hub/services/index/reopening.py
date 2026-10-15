@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from pipecat_context_hub.shared.index_lock import (
     REFRESH_IN_PROGRESS_MESSAGE,
@@ -45,44 +45,85 @@ REOPEN_PENDING_MESSAGE = (
 )
 
 
+class _Closable(Protocol):
+    def close(self) -> None: ...
+
+
+_IndexT = TypeVar("_IndexT", bound=_Closable)
+
+
 def open_ready_index_store(storage: StorageConfig) -> IndexStore:
     """Open the index for reading and check it can answer queries.
 
     The one reader open path: ``serve``'s first open and every reopen, and
-    each one-shot CLI query. The caller holds :func:`refresh_excluded`.
+    each one-shot CLI query. The caller holds :func:`refresh_excluded`
+    (``serve`` and the CLI hold it around more than this open).
     Raises ``IndexUnavailableError`` (after closing whatever came up) when the
     index is missing, incompatible, unreadable, mid-compaction, or empty; its message is
     the home-redacted operator guidance, ending with the bug-report hint.
     """
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.store import IndexStore as _IndexStore
 
-    data_dir = redact_home(storage.data_dir)
-    index_store: IndexStore | None = None
+    return _open_ready(
+        storage,
+        lambda: _IndexStore(storage, create=False),  # a reader never creates the index
+        lambda store: int(store.get_index_stats().get("total", 0)),
+    )
+
+
+def open_ready_vector_index(storage: StorageConfig) -> VectorIndex:
+    """Open only the vector index for a bulk read (the dashboard scripts).
+
+    The same reader open as :func:`open_ready_index_store`, minus the keyword
+    index, with one difference: it takes :func:`refresh_excluded` itself (its
+    callers are standalone scripts that hold nothing else), so a running
+    refresh raises ``RefreshInProgressError``.
+    """
+    from pipecat_context_hub.services.index.vector import VectorIndex as _VectorIndex
+
+    with refresh_excluded(storage.data_dir):
+        return _open_ready(
+            storage,
+            lambda: _VectorIndex(storage.chroma_path, create=False),
+            lambda index: index.count(),
+        )
+
+
+def _open_ready(
+    storage: StorageConfig,
+    open_index: Callable[[], _IndexT],
+    count: Callable[[_IndexT], int],
+) -> _IndexT:
+    """Open with *open_index*, refuse an empty index, and turn every failure
+    into ``IndexUnavailableError`` with the operator guidance."""
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+
+    index: _IndexT | None = None
     try:
-        index_store = _IndexStore(storage, create=False)  # a reader never creates the index
-        stats = index_store.get_index_stats()
+        index = open_index()
+        total = count(index)
     except Exception as exc:
         # IndexStore.__init__ opens two backends (Chroma + SQLite) without
         # rolling back on partial failure; close() whatever did come up.
-        if index_store is not None:
+        if index is not None:
             with contextlib.suppress(Exception):
-                index_store.close()
+                index.close()
         if isinstance(exc, (IncompatibleIndexFormatError, IndexUnavailableError)):
             # Typed errors carry their own remediation (an incompatible or
             # corrupt graph: reset; an interrupted compaction: refresh).
             message = redact_home_in_text(str(exc))
         else:
             message = (
-                f"Failed to open index at {data_dir}: {redact_home_in_text(str(exc))}. "
+                f"Failed to open index at {redact_home(storage.data_dir)}: "
+                f"{redact_home_in_text(str(exc))}. "
                 "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild."
             )
         raise IndexUnavailableError(f"{message} {bug_report_hint()}") from exc
 
-    if stats.get("total", 0) == 0:
-        index_store.close()
+    if total == 0:
+        index.close()
         raise IndexUnavailableError(f"{_empty_index_message(storage)} {bug_report_hint()}")
-    return index_store
+    return index
 
 
 def _empty_index_message(storage: StorageConfig) -> str:
@@ -91,24 +132,6 @@ def _empty_index_message(storage: StorageConfig) -> str:
         "pipecat-context-hub refresh' to build it (the first run downloads models and "
         "indexes sources; allow a few minutes)."
     )
-
-
-def open_ready_vector_index(storage: StorageConfig) -> VectorIndex:
-    """Open only the vector index for a bulk read (the dashboard scripts).
-
-    The same reader open as :func:`open_ready_index_store`, minus the keyword
-    index: under :func:`refresh_excluded` (taken here), never creating a
-    missing index, and refusing an empty one. Raises
-    ``IndexUnavailableError`` with the operator guidance.
-    """
-    from pipecat_context_hub.services.index.vector import VectorIndex as _VectorIndex
-
-    with refresh_excluded(storage.data_dir):
-        index = _VectorIndex(storage.chroma_path, create=False)
-    if index.count() == 0:
-        index.close()
-        raise IndexUnavailableError(_empty_index_message(storage))
-    return index
 
 
 @dataclass

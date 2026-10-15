@@ -580,9 +580,37 @@ def test_dashboard_scripts_open_through_the_reader_path(
             module.main()
     opened.assert_not_called()
 
-    with pytest.raises(RuntimeError, match="opened"):
+    # Any open failure becomes the operator message, not a traceback.
+    with pytest.raises(SystemExit, match="opened"):
         module.main()
     opened.assert_called_once()
+
+
+@pytest.mark.parametrize("script", ["extract_dashboard", "extract_embeddings"])
+def test_dashboard_scripts_report_an_incompatible_index_without_a_traceback(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (reopening.py:96): open_ready_vector_index let
+    IncompatibleIndexFormatError (a FatalIndexError, not IndexUnavailableError)
+    escape, so the dashboard scripts crashed with a traceback instead of
+    printing the reset remediation that serve and the CLI give."""
+    import sqlite3
+
+    from pipecat_context_hub.shared.config import StorageConfig
+    from tests.unit.test_config import _REPO_ROOT, _import_script
+
+    module = _import_script(_REPO_ROOT / "dashboard" / "scripts" / f"{script}.py", script)
+    data_dir = tmp_path / "hub"
+    monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+    chroma_path = StorageConfig(data_dir=data_dir).chroma_path
+    chroma_path.mkdir(parents=True)
+    with sqlite3.connect(chroma_path / "chroma.sqlite3") as conn:  # a chromadb 0.6 sysdb
+        conn.execute("CREATE TABLE migrations (dir TEXT, version INTEGER)")
+        conn.execute("INSERT INTO migrations VALUES ('sysdb', 1)")
+    conn.close()
+
+    with pytest.raises(SystemExit, match="--reset-index"):
+        module.main()
 
 
 @pytest.mark.parametrize("script", ["extract_dashboard", "extract_embeddings"])
