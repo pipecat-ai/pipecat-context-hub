@@ -118,6 +118,19 @@ def _is_unreadable(exc: BaseException) -> bool:
     return code is not None and code & 0xFF not in _TRANSIENT_SQLITE_CODES
 
 
+def is_transient_open_error(exc: BaseException) -> bool:
+    """Whether an open failed for a reason of the moment (busy, locked, I/O,
+    permissions, ...) that retrying, not rebuilding the index, addresses."""
+    if isinstance(exc, OSError):
+        return True
+    code = getattr(exc, "sqlite_errorcode", None)
+    return (
+        isinstance(exc, sqlite3.Error)
+        and code is not None
+        and code & 0xFF in _TRANSIENT_SQLITE_CODES
+    )
+
+
 class FTSIndex:
     """SQLite FTS5 keyword index for full-text search.
 

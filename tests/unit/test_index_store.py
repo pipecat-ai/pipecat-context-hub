@@ -1032,6 +1032,35 @@ class TestIndexStoreReaderCreatesNothing:
             holder.rollback()
             holder.close()
 
+    @pytest.mark.parametrize("transient", [True, False])
+    def test_reader_open_advises_reset_only_for_a_damaged_index(
+        self, tmp_path: Path, transient: bool
+    ) -> None:
+        """Regression (reopening.py:80): every untyped open failure, including
+        a locked keyword database, was told to delete the index with
+        ``--reset-index``. A failure of the moment now gets a retry hint; an
+        unclassified one keeps the reset advice."""
+        import sqlite3
+
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        if transient:
+            exc: Exception = sqlite3.OperationalError("database is locked")
+            exc.sqlite_errorcode = sqlite3.SQLITE_BUSY  # type: ignore[attr-defined]
+        else:
+            exc = RuntimeError("something unexpected")
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        IndexStore(config, create=True).close()  # a built index
+        with (
+            patch("pipecat_context_hub.services.index.store.FTSIndex", side_effect=exc),
+            pytest.raises(IndexUnavailableError) as exc_info,
+        ):
+            open_ready_index_store(config)
+        message = str(exc_info.value)
+        assert ("--reset-index" in message) is not transient
+        assert ("retry" in message) is transient
+
 
 class TestIndexStore:
     @pytest.fixture()

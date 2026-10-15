@@ -61,6 +61,7 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
         RESET_INDEX_REMEDIATION,
         IndexNotBuiltError,
     )
+    from pipecat_context_hub.services.index.fts import is_transient_open_error
     from pipecat_context_hub.services.index.store import IndexStore as _IndexStore
 
     store: IndexStore | None = None
@@ -76,6 +77,14 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
             # Typed errors carry their own remediation (an incompatible or
             # corrupt graph: reset; an interrupted compaction: refresh).
             message = redact_home_in_text(str(exc))
+        elif is_transient_open_error(exc):
+            # Busy, locked, I/O or permissions: the index may be healthy, so
+            # never advise deleting it (refresh gives no reset advice either).
+            message = (
+                f"Failed to open index at {redact_home(storage.data_dir)}: "
+                f"{redact_home_in_text(str(exc))}. This looks temporary (busy, locked, "
+                "I/O or permissions): check the index files are readable, then retry."
+            )
         else:
             message = (
                 f"Failed to open index at {redact_home(storage.data_dir)}: "
