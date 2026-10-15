@@ -54,7 +54,7 @@ uv run pipecat-context-hub get-doc --path /guides/telephony/overview
 ```
 
 Exit codes: 0 success, 1 invalid input, 2 index missing/empty (stderr says to
-run `refresh`). A parity test (`tests/unit/test_cli_query.py`) enforces that
+run `refresh`), 75 a `refresh` is rewriting the index (retry in 60-120 seconds). A parity test (`tests/unit/test_cli_query.py`) enforces that
 every MCP tool has a CLI command.
 
 A `justfile` is also available as a task runner:
@@ -147,7 +147,7 @@ src/pipecat_context_hub/
 │   ├── embedding.py          # EmbeddingService
 │   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
 │   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS tree-sitter, taxonomy, version extraction, deprecation map
-│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, hnsw_validation (open-time + post-write runaway link_lists.bin guard)
+│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, ReopeningIndexStore (serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard)
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/
     ├── main.py               # MCP server setup (_SERVER_VERSION here)

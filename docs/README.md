@@ -538,10 +538,15 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   `--reset-index` the check runs after the delete has freed the space) and
   takes an exclusive `refresh.lock` (a hidden sibling file of the data dir,
   e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
-  it), so two refreshes can't
-  interleave writes to the same Chroma HNSW files. A running `serve` is only
-  warned about (restart your MCP client afterwards to reload the rebuilt
-  index). During writes the vector index re-checks the persisted HNSW graph
+  it), so two refreshes can't interleave writes to the same Chroma HNSW files.
+  **While a refresh runs, nothing reads the index:** `serve` answers every tool
+  call with an error saying "retry in 60-120 seconds" (a `serve` started
+  mid-refresh still connects, with the index unopened), and one-shot CLI
+  queries exit **75** (`EX_TEMPFAIL`) with the same message on stderr. `serve`
+  reopens the rebuilt index by itself once the refresh ends, so no MCP client
+  restart is needed. After a `--force` refresh the vector graph is rebuilt from
+  the live records (delete + re-add otherwise left dead elements that grew the
+  graph by the whole corpus each time). During writes the vector index re-checks the persisted HNSW graph
   and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
   header-derived bound — the runaway-file corruption that once filled a disk
   with 350 GB. Recover with `refresh --force --reset-index`.

@@ -7,7 +7,20 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **`refresh --force` compacts the vector graph.** Delete + re-add left the deleted
+  elements in the persisted HNSW graph, growing it by the whole corpus on every
+  forced refresh (20k -> 80k elements for 20k live records over four rounds). A
+  forced refresh now rebuilds the collection from the live records at the end and
+  removes the old segment directory. Non-fatal if it fails.
+
 ### Added
+- **No reads while a refresh rewrites the index.** `serve` answers tool calls with
+  a "retry in 60-120 seconds" error (and still starts, with the index unopened, if
+  launched mid-refresh); one-shot CLI queries exit 75 (`EX_TEMPFAIL`) with the same
+  message. `serve` now reopens the rebuilt index itself after a refresh, so no MCP
+  client restart is needed. Spikes showed opening the index mid-refresh can leave a
+  graph that crashes the next load.
 - **Index write guards.** After a Chroma HNSW `link_lists.bin` ballooned to
   15 TB logical / ~325 GB on disk (upstream chroma#7510) and left a machine
   with 4 GB free: `refresh` now checks free disk (default 5 GB, override

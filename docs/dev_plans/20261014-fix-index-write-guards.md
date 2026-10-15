@@ -18,8 +18,8 @@ established; the open-time check only fires when an index is opened.
 3. `shared/index_lock.py`: exclusive `refresh.lock` for `refresh`; shared `serve.lock` for
    `serve`. Lock files are siblings of the data dir (`.<dirname>.refresh.lock`),
    not inside it, so `--reset-index`'s rmtree can't unlink a held lock. Locking
-   fails open if the filesystem doesn't support flock. A live `serve` only produces a warning: refresh-while-serving is
-   the normal workflow and nothing shows it is the trigger.
+   fails open if the filesystem doesn't support flock. A live `serve` only produces a warning, and itself backs off while the
+   refresh runs (see below).
 4. Cherry-picked the open-time `validate_persisted_hnsw` code and tests from
    `ccb4ca2` (currently only on `feature/chatgpt-local-plugin`).
 
@@ -50,11 +50,15 @@ fill: one native persist can write the whole file before Python regains
 control, so the pre-load walk is the real defence.
 
 ## Not done / open
-- Readers that open the index while a refresh is writing are a probable (not
-  certain) trigger. `serve`/CLI queries only warn today; decide whether they
-  should refuse or retry while `refresh.lock` is held.
-- `--force` never compacts the graph; consider recreating the collection
-  instead of delete + re-upsert so dead elements don't accumulate.
+- Readers during a refresh (decided 2026-10-15): `serve` answers "retry in
+  60-120 seconds", defers opening the index if started mid-refresh, and reopens
+  after (`ReopeningIndexStore` + a 2 s watcher thread); CLI queries exit 75.
+  Smoke-tested end to end (serve started mid-refresh, tool call mid-refresh,
+  recovery after; reopen after a refresh no call overlapped).
+- `--force` (decided 2026-10-15): compaction at the end of a forced refresh
+  (`VectorIndex.compact`, staging collection + swap + orphan segment removal)
+  rather than clearing up front, because the per-repo delete-after-successful-
+  fetch ordering protects records of repos whose fetch fails.
 - Upstream fix for chroma#7510 is in flight (not in 1.5.9, the latest release).
 - Header-version strictness, Windows shared locks, orphan-segment mtime
   handling: not exercised; left as is.
