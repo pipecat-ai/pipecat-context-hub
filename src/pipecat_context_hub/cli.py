@@ -93,23 +93,44 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
     """Open the on-disk index store, or exit with `EXIT_INDEX_UNREADY`.
 
     Shared by both `refresh` call sites (pre-`--reset-index` fail-fast path
-    and the post-delete rebuild) so the `IncompatibleIndexFormatError`
-    handling — including the redacted, front-door-consistent error message —
-    cannot drift between them.
+    and the post-delete rebuild) so the `FatalIndexError` handling —
+    including the redacted, front-door-consistent error message — cannot
+    drift between them.
     """
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.store import IndexStore
 
     try:
         # recover=True: refresh holds the exclusive refresh lock, so it alone
         # may repair an interrupted compaction while opening.
         return IndexStore(config.storage, recover=True, create=True)
-    except IncompatibleIndexFormatError as exc:
-        # A pre-1.0 Chroma dir cannot be opened by 1.x. exc.__str__ embeds
-        # the absolute chroma_path; redact for front-door parity with the
-        # serve / cli_query error sites.
+    except FatalIndexError as exc:
+        # A pre-1.0 Chroma dir or a corrupt graph (IncompatibleIndexFormatError),
+        # or an interrupted compaction the open could not restore
+        # (CompactionSwapError). exc.__str__ embeds the absolute chroma_path;
+        # redact for front-door parity with the serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(EXIT_INDEX_UNREADY) from exc
+
+
+def _refuse_lost_vector_collection(index_store: IndexStore, logger: logging.Logger) -> None:
+    """Exit with `EXIT_INDEX_UNREADY` if the vector half is empty but the keyword half is not.
+
+    `refresh` opens with ``create=True``, so a lost ``latest`` collection comes
+    back empty. A refresh without ``--force`` then skips every unchanged source
+    (its hashes and commit SHAs live in the intact keyword index) and would exit
+    0 with vector search silently empty. Readers give the same remedy.
+    """
+    if index_store.vector_count() == 0 and index_store.get_index_stats().get("total", 0) > 0:
+        index_store.close()
+        logger.error(
+            "The vector index at %s is empty while the keyword index has records (its "
+            "'latest' collection was lost), so a refresh would skip unchanged sources and "
+            "leave vector search empty. Run 'uv run pipecat-context-hub refresh --force' "
+            "to rebuild it. %s",
+            redact_home(index_store.data_dir),
+            bug_report_hint(),
+        )
+        raise SystemExit(EXIT_INDEX_UNREADY)
 
 
 # Free space `refresh` requires on the data-dir volume before it starts. The
@@ -1073,6 +1094,8 @@ def refresh(
     index_store: IndexStore
     if not reset_index:
         index_store = _open_index_store_or_exit(config, logger)
+        if not force:
+            _refuse_lost_vector_collection(index_store, logger)
 
     # ----- 0. Validate an explicit framework pin -----
     # Resolve a concrete pin before any indexing work, so a typo costs one

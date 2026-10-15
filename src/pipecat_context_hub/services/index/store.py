@@ -192,6 +192,10 @@ class IndexStore:
         """Return index statistics (counts by type, total, commit SHAs)."""
         return self._fts.get_index_stats()
 
+    def vector_count(self) -> int:
+        """Records in the vector half (``get_index_stats`` counts the keyword half)."""
+        return self._vector.count()
+
     def close(self) -> None:
         """Close underlying database connections."""
         try:

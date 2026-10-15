@@ -423,7 +423,14 @@ class VectorIndex:
                 if not self._recover:
                     raise InterruptedCompactionError(self._chroma_path)
                 logger.warning("Restoring the vector collection from an interrupted compaction")
-                client.get_collection(COMPACT_BACKUP_NAME).modify(name=COLLECTION_NAME)
+                try:
+                    client.get_collection(COMPACT_BACKUP_NAME).modify(name=COLLECTION_NAME)
+                except (KeyError, ValueError):
+                    raise  # an unreadable config: translated below
+                except Exception as exc:
+                    # The index is still unreadable: fatal, like the failed
+                    # swap that left it so (refresh exits 2, not with a traceback).
+                    raise CompactionSwapError(self._chroma_path) from exc
             elif COLLECTION_NAME not in names and not self._create:
                 raise MissingVectorCollectionError(self._chroma_path, built=True)
             return client.get_or_create_collection(

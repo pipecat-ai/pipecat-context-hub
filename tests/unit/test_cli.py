@@ -5168,6 +5168,91 @@ class TestRefreshIncompatibleIndex:
         assert str(chroma_path) not in caplog.text
         assert str(tmp_path) not in caplog.text
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_failed_compaction_restore_exits_2(self, mock_is_cls, tmp_path, monkeypatch, caplog):
+        """Regression (vector.py:426): a restore the open could not complete
+        is a CompactionSwapError; refresh caught only IncompatibleIndexFormatError
+        there, so it exited 1 with a traceback instead of 2."""
+        from pipecat_context_hub.services.index.errors import CompactionSwapError
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        mock_is_cls.side_effect = CompactionSwapError(tmp_path / ".pipecat-context-hub" / "chroma")
+
+        monkeypatch.chdir(tmp_path)
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 2, result.output
+        assert "failed mid-swap" in caplog.text
+        assert str(tmp_path) not in caplog.text
+
+
+class TestRefreshLostVectorCollection:
+    """Regression (vector.py:427): refresh opens with create=True, so a lost
+    ``latest`` collection came back empty; a refresh without --force then
+    skipped every unchanged source (its hashes live in the intact keyword
+    index) and exited 0 with vector search empty."""
+
+    @staticmethod
+    def _store(tmp_path: Path, *, records: int, lose_vector: bool) -> Any:
+        import asyncio
+
+        from pipecat_context_hub.services.index.store import IndexStore
+        from pipecat_context_hub.services.index.vector import COLLECTION_NAME
+        from pipecat_context_hub.shared.config import StorageConfig
+        from tests.unit.test_index_store import _make_records
+
+        config = StorageConfig(data_dir=tmp_path / "hub")
+        store = IndexStore(config, create=True)
+        if records:
+            asyncio.run(store.upsert(_make_records(records)))
+        if lose_vector:
+            store._vector._client.delete_collection(COLLECTION_NAME)
+        store.close()
+        return IndexStore(config, recover=True, create=True)  # how refresh opens it
+
+    def test_lost_collection_beside_a_populated_keyword_index_is_refused(self, tmp_path, caplog):
+        import logging
+
+        from pipecat_context_hub.cli import _refuse_lost_vector_collection
+
+        store = self._store(tmp_path, records=3, lose_vector=True)
+        with caplog.at_level("ERROR", logger="test"):
+            with pytest.raises(SystemExit) as exc:
+                _refuse_lost_vector_collection(store, logging.getLogger("test"))
+        assert exc.value.code == 2
+        assert "refresh --force" in caplog.text
+
+    @pytest.mark.parametrize(("records", "lose_vector"), [(0, False), (3, False), (0, True)])
+    def test_first_run_and_intact_indexes_proceed(self, tmp_path, records, lose_vector):
+        import logging
+
+        from pipecat_context_hub.cli import _refuse_lost_vector_collection
+
+        store = self._store(tmp_path, records=records, lose_vector=lose_vector)
+        try:
+            _refuse_lost_vector_collection(store, logging.getLogger("test"))
+        finally:
+            store.close()
+
+    @patch(
+        "pipecat_context_hub.services.embedding.EmbeddingService",
+        side_effect=AssertionError("refresh went past the lost-collection check"),
+    )
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_refresh_without_force_exits_2(self, mock_is_cls, _mock_es, tmp_path, monkeypatch):
+        store = MagicMock()
+        store.vector_count.return_value = 0
+        store.get_index_stats.return_value = {"total": 7}
+        mock_is_cls.return_value = store
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 2, result.output
+        store.close.assert_called_once()
+
 
 class TestServeEmptyIndex:
     """Serve must fail fast on empty or unopenable indexes rather than hang.

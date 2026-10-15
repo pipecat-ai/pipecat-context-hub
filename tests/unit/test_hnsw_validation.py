@@ -621,6 +621,35 @@ class TestCompactSwap:
         finally:
             index.close()
 
+    def test_failed_restore_on_open_is_a_compaction_swap_error(self, tmp_path: Path) -> None:
+        """Regression (vector.py:426): when refresh's open could not rename the
+        parked backup back, the raw Chroma/OS error escaped, so refresh exited
+        1 with a traceback instead of 2 (the index is still unreadable)."""
+        from chromadb.api.models.Collection import Collection
+
+        from pipecat_context_hub.services.index.errors import CompactionSwapError
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma, create=True)
+        index.upsert(_make_records(5))
+        index._collection.modify(name=COMPACT_BACKUP_NAME)  # state after the first rename
+        index.close()
+
+        def _fail(self: Any, **kwargs: Any) -> None:
+            raise OSError("disk full")
+
+        with patch.object(Collection, "modify", _fail):
+            with pytest.raises(CompactionSwapError) as error:
+                VectorIndex(chroma, recover=True, create=True)  # how refresh opens it
+        assert isinstance(error.value.__cause__, OSError)
+        # Nothing was lost: a later refresh still restores it.
+        index = VectorIndex(chroma, recover=True, create=True)
+        try:
+            assert index._collection.count() == 5
+        finally:
+            index.close()
+
     def test_reader_open_never_repairs_an_interrupted_compaction(self, tmp_path: Path) -> None:
         """Regression (vector.py:409, vector.py:443): readers hold the refresh
         lock only shared, so their open must not rename collections (two of
