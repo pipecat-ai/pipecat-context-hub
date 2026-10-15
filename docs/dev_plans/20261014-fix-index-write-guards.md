@@ -52,7 +52,9 @@ control, so the pre-load walk is the real defence.
 ## Not done / open
 - Readers during a refresh (decided 2026-10-15): `serve` answers "retry in
   60-120 seconds", defers opening the index if started mid-refresh, and reopens
-  after (`ReopeningIndexStore` + a 2 s watcher thread); CLI queries exit 75.
+  after (`ReopeningIndexStore`; `refresh` touches its lock file on start and `serve`
+  compares that generation on every call, so even a sub-second refresh no call
+  overlapped is noticed); CLI queries exit 75.
   Smoke-tested end to end (serve started mid-refresh, tool call mid-refresh,
   recovery after; reopen after a refresh no call overlapped).
 - `--force` (decided 2026-10-15): compaction at the end of a forced refresh
@@ -60,5 +62,9 @@ control, so the pre-load walk is the real defence.
   rather than clearing up front, because the per-repo delete-after-successful-
   fetch ordering protects records of repos whose fetch fails.
 - Upstream fix for chroma#7510 is in flight (not in 1.5.9, the latest release).
-- Header-version strictness, Windows shared locks, orphan-segment mtime
-  handling: not exercised; left as is.
+- Windows: `msvcrt` has no shared lock mode, so a second `serve` is not
+  advertised to `refresh`; probes retry 3x so two readers don't read each
+  other as a running refresh. A real fix is `LockFileEx` via ctypes, untestable
+  without a Windows host.
+- Header-version strictness, orphan-segment mtime handling: not exercised; left
+  as is.

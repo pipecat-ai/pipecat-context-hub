@@ -15,7 +15,6 @@ import math
 import os
 import shutil
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -34,6 +33,7 @@ from pipecat_context_hub.shared.index_lock import (
     SERVE_LOCK,
     IndexLock,
     IndexLockedError,
+    refresh_generation,
     refresh_in_progress,
     serve_is_running,
 )
@@ -925,29 +925,25 @@ def serve(ctx: click.Context) -> None:
 
         idle_tracker = IdleTracker()
 
+        seen_generation = [refresh_generation(config.storage.data_dir)]
+
         def _refresh_gate() -> str | None:
-            """Answer tool calls with a retry message while a refresh runs."""
+            """Back off while a refresh runs; drop the handle after any refresh.
+
+            A refresh rewrites the files under this long-lived handle, so the
+            next call after one must reopen the index rather than serve the old
+            in-memory graph. The lock file's generation catches even a refresh
+            that started and ended between two calls.
+            """
+            generation = refresh_generation(config.storage.data_dir)
+            if generation != seen_generation[0]:
+                seen_generation[0] = generation
+                index_store.mark_stale()
             if refresh_in_progress(config.storage.data_dir):
                 index_store.mark_stale()
                 return REFRESH_IN_PROGRESS_MESSAGE
             return None
 
-        def _watch_for_refresh() -> None:
-            """Mark the index handle stale whenever a refresh starts.
-
-            A refresh rewrites the files under this long-lived handle, so after
-            it ends the next tool call must reopen the index rather than serve
-            the old in-memory graph — even if no call arrived mid-refresh.
-            """
-            while True:
-                time.sleep(2.0)
-                try:
-                    if refresh_in_progress(config.storage.data_dir):
-                        index_store.mark_stale()
-                except Exception:
-                    logger.debug("refresh watcher check failed", exc_info=True)
-
-        threading.Thread(target=_watch_for_refresh, name="refresh-watch", daemon=True).start()
         server = create_server(
             retriever,
             cast("IndexStore", index_store),

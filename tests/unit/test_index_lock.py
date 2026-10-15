@@ -18,6 +18,7 @@ from pipecat_context_hub.shared.index_lock import (
     IndexLock,
     IndexLockedError,
     lock_path,
+    refresh_generation,
     refresh_in_progress,
     serve_is_running,
 )
@@ -247,3 +248,33 @@ class TestReopeningIndexStore:
         factory = MagicMock()
         ReopeningIndexStore(factory).close()
         factory.assert_not_called()
+
+
+def test_refresh_generation_changes_on_every_refresh_start(tmp_path: Path) -> None:
+    """A refresh that begins and ends between two reader calls must still be noticed."""
+    import os
+
+    data_dir = tmp_path / "hub"
+    assert refresh_generation(data_dir) is None
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        first = refresh_generation(data_dir)
+    assert first is not None
+    path = lock_path(data_dir, REFRESH_LOCK)
+    os.utime(path, ns=(1, 1))  # an old generation, regardless of filesystem timestamp granularity
+    old = refresh_generation(data_dir)
+    assert old != first
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        pass  # not running now, but it ran
+    assert refresh_generation(data_dir) not in (None, old)
+
+
+def test_shared_probe_does_not_bump_the_generation(tmp_path: Path) -> None:
+    import os
+
+    data_dir = tmp_path / "hub"
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        pass
+    os.utime(lock_path(data_dir, REFRESH_LOCK), ns=(1, 1))
+    before = refresh_generation(data_dir)
+    assert refresh_in_progress(data_dir) is False
+    assert refresh_generation(data_dir) == before

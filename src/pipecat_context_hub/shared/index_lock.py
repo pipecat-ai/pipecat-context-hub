@@ -10,6 +10,7 @@ so a crashed run never leaves a stale lock behind.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import os
@@ -107,6 +108,12 @@ class IndexLock:
         for attempt in range(max(attempts, 1)):
             if _try_lock(fd, exclusive=self._exclusive):
                 self._fd = fd
+                if self._exclusive:
+                    # Bump the file's mtime so readers can tell a lock was taken
+                    # (and so a refresh happened) even if they never observed it
+                    # held. See refresh_generation().
+                    with contextlib.suppress(OSError):
+                        os.utime(self._path)
                 return
             if attempt + 1 < attempts:
                 time.sleep(delay)
@@ -157,16 +164,33 @@ REFRESH_IN_PROGRESS_MESSAGE = (
 def refresh_in_progress(data_dir: Path) -> bool:
     """True if a ``refresh`` currently holds its exclusive lock for ``data_dir``.
 
-    Probes with a non-blocking shared lock, so it never waits and never
-    creates the lock file. Readers (``serve``, the one-shot CLI) use it to
-    avoid opening or querying an index that a refresh is rewriting.
+    Probes with a non-blocking shared lock, so it never waits for a refresh and
+    never creates the lock file. Readers (``serve``, the one-shot CLI) use it
+    to avoid opening or querying an index that a refresh is rewriting. Retries
+    briefly: on Windows (no shared lock mode) two concurrent probes can collide
+    and would otherwise report a refresh that is not running.
     """
     if not lock_path(data_dir, REFRESH_LOCK).exists():
         return False
     probe = IndexLock(data_dir, REFRESH_LOCK, exclusive=False)
     try:
-        probe.acquire()
+        probe.acquire(attempts=3, delay=0.02)
     except IndexLockedError:
         return True
     probe.release()
     return False
+
+
+def refresh_generation(data_dir: Path) -> tuple[int, int] | None:
+    """Identity of the most recent refresh start, or None if none ever ran.
+
+    ``refresh`` touches its lock file on acquire, so this changes whenever a
+    refresh has begun since it was last read, even one that started and
+    finished between two reader calls (which ``refresh_in_progress`` cannot
+    see). A reader that holds the index open compares it on each call.
+    """
+    try:
+        st = lock_path(data_dir, REFRESH_LOCK).stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns)
