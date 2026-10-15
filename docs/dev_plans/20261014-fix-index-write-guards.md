@@ -22,7 +22,8 @@ established; the open-time check only fires when an index is opened.
    not inside it, so `--reset-index`'s rmtree can't unlink a held lock. Locking
    fails open if the filesystem doesn't support flock, and (with a warning) if
    the lock file is a symlink (where `O_NOFOLLOW` is missing, i.e. Windows,
-   checked by `lstat` before and after the open), not a single-link regular
+   checked by `lstat` before the open and after it, where the path must also
+   name the file the descriptor opened, by `(st_dev, st_ino)`), not a single-link regular
    file, or another user's: an exclusive acquire writes to it. A live `serve` only
    produces a warning, and itself backs off while the refresh runs (item 5).
 4. Cherry-picked the open-time `validate_persisted_hnsw` code and tests from
@@ -39,21 +40,21 @@ established; the open-time check only fires when an index is opened.
    refusals exit 75 (`exit_codes.EXIT_REFRESH_IN_PROGRESS`, shared with the CLI
    queries). Readers never create the index: `create` defaults to False on
    `IndexStore`, `VectorIndex` and `FTSIndex` (only `refresh` passes True), so
-   a missing index or a lost `latest` collection raises
-   `MissingVectorCollectionError` ("run refresh" / "run refresh --force"), and
-   a missing or uninitialized (no `chunks` table) keyword database
-   `MissingKeywordIndexError`, instead of opening an empty one beside a
-   populated other half. `refresh` itself recreates a lost collection, so
-   without `--force` it exits 2 ("run refresh --force") when the vector half
-   is empty but the keyword half is not, rather than skipping unchanged
-   sources and leaving vector search empty. The dashboard scripts open
-   through `reopening.open_ready_vector_index` (`refresh_excluded` +
-   `VectorIndex(create=False)` + the empty check, sharing
-   `open_ready_index_store`'s error handling), so they get the same
-   exclusion, open-time checks and operator messages, and exit with the
-   `refresh` hint on a missing or empty index rather than creating one.
-   Unlike `open_ready_index_store` (whose callers hold `refresh_excluded`),
-   it takes `refresh_excluded` itself.
+   a never-built index raises `IndexNotBuiltError` ("run refresh"), and a
+   missing or incomplete keyword database `MissingKeywordIndexError` ("run
+   refresh --force"), instead of opening an empty one beside a populated other
+   half. `IndexStore` opens the keyword half first: when it has records, the
+   vector half may be created only with `rebuild=True` (`refresh --force`), and
+   a missing database or `latest` (from `VectorIndex`) or an empty `latest`
+   (from `IndexStore`) raises `MissingVectorCollectionError` ("run refresh
+   --force") before anything is written, for readers and for a plain `refresh`
+   (exit 2) alike, rather than skipping unchanged sources and leaving vector
+   search empty. An open writes only an incomplete keyword schema (`refresh`
+   completes it and rebuilds the FTS table from `chunks`); a reader refuses one.
+   The dashboard scripts open through `reopening.open_index_for_export` (the
+   same `open_ready_index_store`, but taking `refresh_excluded` itself, since
+   its callers hold nothing else), so they get the same exclusion, open-time
+   checks and operator messages.
 6. `serve` reopens the rebuilt index (`ReopeningIndexStore`). `refresh` touches its
    lock file and steps its size (so two starts within one coarse filesystem
    timestamp tick still differ) on start. The generation is the lock file's
@@ -74,7 +75,11 @@ established; the open-time check only fires when an index is opened.
    except an HNSW guard failure (`FatalIndexError`), which stops the refresh like
    anywhere else, and a swap that fails leaving no `latest` collection, whichever
    rename raised (`CompactionSwapError`, a `FatalIndexError`: exit 2, nothing deleted, the next
-   `refresh` restores the backup; a restore that fails is the same error, exit 2). "No `latest`" is decided from the collection
+   `refresh` restores the backup). A restore at that open that fails, judged by
+   the collection listing as in `compact()` so a rename that commits and then
+   raises counts as restored, is `CompactionRestoreError` (also fatal, exit 2,
+   prescribing `refresh --force --reset-index` since rerunning `refresh` retries
+   the same rename). "No `latest`" is decided from the collection
    listing; if even that fails, the original error stays non-fatal and nothing
    is deleted. The swap parks the old collection as `latest_precompact` before
    promoting staging; a crash between the two renames is restored when `refresh`
@@ -120,6 +125,10 @@ control, so the pre-load walk is the real defence.
   get the retry message.
 - Locking fails open when flock is unsupported or the lock file is unwritable
   (decided; 21aad5f, 59690b98).
+- `refresh --force` after a lost vector collection re-ingests only the sources
+  in its configuration; a retained repo absent from it (kept, not pruned) stays
+  keyword-only. Documented in docs/README.md (re-add it for that run, or
+  `--prune`); not fixed here.
 - chromadb format coupling: `hnsw_validation` parses hnswlib's private format.
   It fails closed only on verified chromadb releases (`VERIFIED_CHROMADB_RELEASES`,
   1.5); elsewhere header/structure mismatches warn and skip, and orphan segment

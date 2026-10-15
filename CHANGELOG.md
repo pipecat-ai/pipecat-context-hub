@@ -19,7 +19,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   anything, so the next `refresh` restores the index. The old collection is parked under a backup name until
   the rebuilt one is in place; a swap interrupted by a crash is restored by the
   next `refresh` (readers never write to the index: until then they report it and
-  say to run `refresh`; a restore that itself fails stops that refresh with exit 2), and the staging writes get the same per-batch HNSW guard
+  say to run `refresh`; a restore that itself fails stops that refresh with exit 2
+  and says to rebuild with `refresh --force --reset-index`), and the staging writes get the same per-batch HNSW guard
   as upserts.
 - **`serve` and the one-shot CLI open the index the same way.** Both go through
   one open-and-check, so an empty, unreadable, or incompatible index gets the same
@@ -40,11 +41,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   reopening the index mid-write. The dashboard scripts open the index
   the same way (refresh exclusion plus the open-time checks), and exit with the
   `refresh` hint on a missing or empty index instead of creating one. Readers
-  never create the index (only `refresh` does): a lost vector collection or a
-  missing or uninitialized keyword database is reported ("run `refresh --force`") rather than
-  recreated empty beside the populated other half, and a plain `refresh` that finds the
-  vector collection lost beside a populated keyword database exits 2 with the same advice
-  instead of skipping unchanged sources and leaving vector search empty. The dashboard
+  never create the index (only `refresh` does): a vector collection that is lost (or
+  left empty) beside a populated keyword database, or a missing or incomplete keyword
+  database, is reported ("run `refresh --force`") rather than recreated empty beside the
+  populated other half, and a plain `refresh` that finds the vector collection lost or
+  empty that way exits 2 with the same advice, before writing anything, instead of
+  skipping unchanged sources and leaving vector search empty. Opening an initialized
+  keyword database no longer writes to it; `refresh` completes an incomplete one and
+  rebuilds its full-text table from the stored records. The dashboard
   scripts report any open failure (including an incompatible index) with the
   operator message, not a traceback. The stale handle is closed after its last call before the rebuilt
   index is opened (calls in between are asked to retry in a few seconds):

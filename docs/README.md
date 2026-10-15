@@ -559,11 +559,16 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   dashboard scripts (`just dashboard-build`) open the index the same way, so
   they too refuse to start while a refresh runs, and on a missing or empty
   index they exit with the `refresh` hint instead of creating one. Readers
-  never create the index: if its vector collection or keyword database has gone
-  missing, queries say to run `refresh --force` rather than returning empty
-  results, and a plain `refresh` that finds the vector collection lost beside
-  a populated keyword database exits **2** with the same advice (it would
-  otherwise skip every unchanged source and leave vector search empty). `serve`
+  never create the index: if its vector collection has gone missing or empty
+  beside a populated keyword database, or the keyword database is missing or
+  incomplete, queries say to run `refresh --force` rather than returning empty
+  results, and a plain `refresh` that finds the vector collection lost that way
+  exits **2** with the same advice, having written nothing (it would otherwise
+  skip every unchanged source and leave vector search empty). `refresh --force`
+  re-ingests only the sources in its configuration: a repo indexed earlier but
+  absent from this invocation's config keeps its keyword records but gets no
+  vectors back, so re-add it to the config for that run, or pass `--prune` to
+  drop it. `serve`
   reopens the rebuilt index (with the same readiness checks as at startup) and
   reloads the deprecation map by itself once the refresh ends, so no MCP client
   restart is needed; a call that lands while an earlier call still uses the old
@@ -573,7 +578,8 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   its collection, and one interrupted by a crash is restored by the next
   `refresh` — until then queries say to run it; if the swap fails leaving no
   collection, that `refresh` exits 2 without deleting anything and the next
-  `refresh` restores it). During writes the vector index re-checks the persisted HNSW graph
+  `refresh` restores it; if that restore fails too, it exits 2 and says to
+  rebuild with `refresh --force --reset-index`). During writes the vector index re-checks the persisted HNSW graph
   and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
   header-derived bound — the runaway-file corruption that once took ~325 GB
   of a disk. Recover with `refresh --force --reset-index`.
