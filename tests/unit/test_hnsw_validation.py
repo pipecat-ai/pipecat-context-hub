@@ -12,12 +12,20 @@ from unittest.mock import patch
 import chromadb
 import pytest
 
-from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
+from pipecat_context_hub.services.index import hnsw_validation
+from pipecat_context_hub.services.index.errors import (
+    CorruptHnswGraphError,
+    IncompatibleIndexFormatError,
+)
 from pipecat_context_hub.services.index.hnsw_validation import (
     HnswWriteGuard,
     validate_persisted_hnsw,
 )
-from pipecat_context_hub.services.index.vector import VectorIndex
+from pipecat_context_hub.services.index.vector import (
+    COMPACT_BACKUP_NAME,
+    COMPACT_STAGING_NAME,
+    VectorIndex,
+)
 
 SEGMENT_ID = "6719df4e-c43a-4cd8-b8ce-b9b5c9fb4400"
 # Frozen header bytes and logical link-list size from the actual failed index.
@@ -331,6 +339,171 @@ class TestCompact:
                 with pytest.raises(RuntimeError, match="boom"):
                     index.compact()
             assert index._collection.count() == 50
+            assert [c.name for c in index._client.list_collections()] == ["latest"]
+        finally:
+            index.close()
+
+
+class TestBoundedRead:
+    """The walk never reads more than the bounds it checked (hnsw_validation:100/:135)."""
+
+    def test_absolute_ceiling_applies_whatever_the_header_says(
+        self, persisted_segment, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A damaged header can make its own bound huge; the ceiling still holds."""
+        root, segment = persisted_segment
+        (segment / "link_lists.bin").write_bytes(_links([1, 0, 1, 0]))  # valid, 152 bytes
+        monkeypatch.setattr(hnsw_validation, "MAX_LINK_LISTS_BYTES", 100)
+        with pytest.raises(CorruptHnswGraphError, match="100-byte ceiling"):
+            validate_persisted_hnsw(root, "latest")
+
+    def test_growth_after_the_size_check_is_not_read(
+        self, persisted_segment, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The size is re-checked on the open descriptor before any read, so a
+        file that grew after the stat is rejected by the bound, not read to EOF."""
+        root, segment = persisted_segment
+        links = segment / "link_lists.bin"
+        links.write_bytes(_links([0, 0, 0, 0]) + b"\0" * 5000)  # > 1664-byte header bound
+        real_stat = Path.stat
+
+        def stale_stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+            result = real_stat(path, *args, **kwargs)
+            if path == links:
+                values = list(result)
+                values[6] = 16  # what the first check saw
+                return os.stat_result(values)
+            return result
+
+        monkeypatch.setattr(Path, "stat", stale_stat)
+        with pytest.raises(CorruptHnswGraphError, match="capacity bound"):
+            validate_persisted_hnsw(root, "latest")
+
+
+class TestChromadbVersionGate:
+    """hnswlib's private on-disk format is parsed fail-closed only on verified releases."""
+
+    def test_installed_chromadb_is_a_verified_release(self) -> None:
+        """Fails on a chromadb bump: re-run this file against the new release
+        (the native-graph tests persist a real graph) and extend
+        VERIFIED_CHROMADB_RELEASES."""
+        hnsw_validation.chromadb_format_verified.cache_clear()
+        assert hnsw_validation.chromadb_format_verified()
+
+    def test_native_header_parses_as_the_verified_layout(self, tmp_path: Path) -> None:
+        root = tmp_path / "native"
+        client: Any = chromadb.PersistentClient(path=str(root))
+        collection = client.create_collection(
+            "latest",
+            embedding_function=None,
+            configuration={"hnsw": {"sync_threshold": 100, "batch_size": 100}},
+        )
+        collection.add(
+            ids=[str(i) for i in range(150)],
+            embeddings=[[float(i), 1.0, 2.0] for i in range(150)],
+        )
+        client.close()
+        headers = list(root.glob("*/header.bin"))
+        assert headers
+        for header in headers:
+            fields = struct.unpack("<i6Qii3QdQ", header.read_bytes()[:100])
+            assert fields[0] == 1 and fields[2] >= fields[3] == 150
+            hnsw_validation.check_hnsw_segment_dir(root, header.parent)
+
+    @pytest.mark.parametrize("verified", [True, False])
+    def test_unverified_release_warns_instead_of_failing_closed(
+        self, persisted_segment, monkeypatch: pytest.MonkeyPatch, verified: bool
+    ) -> None:
+        root, segment = persisted_segment
+        monkeypatch.setattr(hnsw_validation, "chromadb_format_verified", lambda: verified)
+        monkeypatch.setattr(hnsw_validation, "_unverified_warned", False)
+        for header, links in [
+            (_header(version=2), _links([0, 0, 0, 0])),  # unknown header layout
+            (_header(), struct.pack("<I", 13) + b"\0" * 12),  # structural mismatch
+        ]:
+            (segment / "header.bin").write_bytes(header)
+            (segment / "link_lists.bin").write_bytes(links)
+            if verified:
+                with pytest.raises(CorruptHnswGraphError):
+                    validate_persisted_hnsw(root, "latest")
+            else:
+                validate_persisted_hnsw(root, "latest")
+
+    def test_unverified_release_still_enforces_the_size_bound(
+        self, persisted_segment, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, segment = persisted_segment
+        monkeypatch.setattr(hnsw_validation, "chromadb_format_verified", lambda: False)
+        with (segment / "link_lists.bin").open("r+b") as f:
+            f.truncate(50_000_000)
+        with pytest.raises(CorruptHnswGraphError, match="capacity bound"):
+            validate_persisted_hnsw(root, "latest")
+
+
+class TestCompactSwap:
+    """compact() must never leave the index without a ``latest`` collection."""
+
+    def test_compaction_runs_the_write_guard_per_batch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression (vector.py:498): staging writes are checked like upserts,
+        and a tripped guard keeps the old collection."""
+        from tests.unit.test_index_store import _make_records
+
+        monkeypatch.setattr("pipecat_context_hub.services.index.vector._CHROMA_BATCH_SIZE", 2)
+        index = VectorIndex(tmp_path / "chroma")
+        try:
+            index.upsert(_make_records(5))
+            with patch.object(
+                HnswWriteGuard,
+                "check",
+                side_effect=CorruptHnswGraphError(tmp_path, reason="corrupt persisted HNSW"),
+            ) as check:
+                with pytest.raises(CorruptHnswGraphError):
+                    index.compact()
+            check.assert_called_once()  # stopped after the first staging batch
+            assert index._collection.count() == 5
+            assert [c.name for c in index._client.list_collections()] == ["latest"]
+        finally:
+            index.close()
+
+    def test_failed_promotion_keeps_the_old_index(self, tmp_path: Path) -> None:
+        """Regression (vector.py:513): if renaming staging into place fails, the
+        old collection is still ``latest`` (it used to be deleted first)."""
+        from tests.unit.test_index_store import _make_records
+
+        index = VectorIndex(tmp_path / "chroma")
+        try:
+            index.upsert(_make_records(30))
+            real_modify = index._collection.__class__.modify
+
+            def modify(self: Any, *args: Any, **kwargs: Any) -> Any:
+                if self.name == COMPACT_STAGING_NAME:
+                    raise RuntimeError("rename failed")
+                return real_modify(self, *args, **kwargs)
+
+            with patch.object(index._collection.__class__, "modify", modify):
+                with pytest.raises(RuntimeError, match="rename failed"):
+                    index.compact()
+            assert index._collection.count() == 30
+            assert [c.name for c in index._client.list_collections()] == ["latest"]
+        finally:
+            index.close()
+
+    def test_crash_between_renames_is_recovered_on_open(self, tmp_path: Path) -> None:
+        """A process killed after parking the old collection must not reopen
+        as an empty ``latest`` while FTS still holds every record."""
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma)
+        index.upsert(_make_records(20))
+        index._collection.modify(name=COMPACT_BACKUP_NAME)  # state after the first rename
+        index.close()
+
+        index = VectorIndex(chroma)
+        try:
+            assert index._collection.count() == 20
             assert [c.name for c in index._client.list_collections()] == ["latest"]
         finally:
             index.close()

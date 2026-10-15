@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pipecat_context_hub.shared.interfaces import FatalIndexError
+
 # Shared operator-facing remediation. Phase 6 of the chromadb 1.x migration
 # asserts this literal command string appears in serve/refresh error output, so
 # keep the exact ``refresh --force --reset-index`` substring intact.
@@ -12,7 +14,7 @@ RESET_INDEX_REMEDIATION = (
 )
 
 
-class IncompatibleIndexFormatError(RuntimeError):
+class IncompatibleIndexFormatError(FatalIndexError):
     """A persisted Chroma directory uses an on-disk format 1.x cannot open.
 
     chromadb 1.x is not backward-compatible with the pre-1.0 (chromadb 0.6-era)
@@ -31,10 +33,9 @@ class IncompatibleIndexFormatError(RuntimeError):
       migration probe can't see this (the ``migrations`` table is still 1.x;
       the damage is in the ``collections`` row), so ``_open_client`` catches
       the parse failure and raises this with a custom ``reason``.
-    * **Oversized persisted HNSW graph** — the read-only pre-open check finds
-      a link-list file larger than its header-derived capacity bound. Chroma
-      1.5.x may otherwise terminate the process with a native SIGSEGV rather
-      than raising a Python exception. This check does not repair the graph.
+    * **Corrupt persisted HNSW graph** — raised as the
+      :class:`CorruptHnswGraphError` subclass, so callers can tell it from an
+      upgrade problem (see that class).
     """
 
     def __init__(
@@ -63,3 +64,13 @@ class IncompatibleIndexFormatError(RuntimeError):
             f"Incompatible ChromaDB index format at {self.chroma_path}: {body}. "
             f"{RESET_INDEX_REMEDIATION}"
         )
+
+
+class CorruptHnswGraphError(IncompatibleIndexFormatError):
+    """A persisted HNSW graph is oversized or structurally damaged.
+
+    Raised by the read-only check in ``hnsw_validation``: before the native
+    client loads the graph (Chroma 1.5.x may otherwise SIGSEGV, or grow
+    ``link_lists.bin`` without bound), and after each write while ``refresh``
+    runs. The check does not repair the graph.
+    """

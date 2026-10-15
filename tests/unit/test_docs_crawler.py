@@ -542,6 +542,21 @@ class TestDocsCrawlerIngest:
             with pytest.raises(IncompatibleIndexFormatError, match="corrupt persisted HNSW"):
                 await crawler.ingest()
 
+    async def test_ingest_propagates_any_fatal_index_error(
+        self,
+        crawler: DocsCrawler,
+        mock_writer: AsyncMock,
+    ):
+        """Ingesters code against the IndexWriter boundary's FatalIndexError,
+        not one backend's concrete error type."""
+        from pipecat_context_hub.shared.interfaces import FatalIndexError
+
+        mock_writer.upsert.side_effect = FatalIndexError("writer says the index is unsafe")
+
+        with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
+            with pytest.raises(FatalIndexError, match="unsafe"):
+                await crawler.ingest()
+
 
 class TestDocsCrawlerProtocol:
     def test_implements_ingester_protocol(self, mock_writer: AsyncMock):

@@ -6,7 +6,8 @@ Concrete implementations are wired together during integration (T8).
 
 from __future__ import annotations
 
-from typing import Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 from pipecat_context_hub.shared.types import (
     ChunkedRecord,
@@ -26,7 +27,6 @@ from pipecat_context_hub.shared.types import (
     SearchExamplesInput,
     SearchExamplesOutput,
 )
-
 
 # ---------------------------------------------------------------------------
 # Index service protocols
@@ -55,6 +55,44 @@ class IndexReader(Protocol):
     async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
         """Return results ranked by FTS5 keyword relevance."""
         ...
+
+
+class ServingIndex(IndexReader, Protocol):
+    """The read surface ``serve`` exposes to tool handlers.
+
+    Satisfied by ``IndexStore`` and by ``serve``'s reopening handle.
+    """
+
+    @property
+    def data_dir(self) -> Path:
+        """Path to the index data directory."""
+        ...
+
+    def get_index_stats(self) -> dict[str, Any]:
+        """Return index statistics (counts by type, total, commit SHAs)."""
+        ...
+
+    def get_all_metadata(self) -> dict[str, str]:
+        """Return all persistent index metadata as a dict."""
+        ...
+
+
+class FatalIndexError(RuntimeError):
+    """The on-disk index is unsafe to keep using (incompatible or corrupt).
+
+    Raised by an ``IndexWriter`` (or on open). Ingesters must re-raise it
+    rather than record it as one more per-source error, so a refresh stops
+    instead of writing every remaining source into a damaged index.
+    """
+
+
+class IndexUnavailableError(RuntimeError):
+    """The index cannot serve this call right now; ``str(exc)`` says why.
+
+    The message is meant for the calling agent (e.g. "retry in 60-120
+    seconds" while a refresh rewrites the index, or how to rebuild an empty
+    or unreadable index).
+    """
 
 
 # ---------------------------------------------------------------------------

@@ -7,13 +7,19 @@ graph validator. It must run before constructing the native client.
 
 from __future__ import annotations
 
+import functools
+import importlib.metadata
+import logging
+import os
 import sqlite3
 import struct
 import time
 from pathlib import Path
 from uuid import UUID
 
-from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
+from pipecat_context_hub.services.index.errors import CorruptHnswGraphError
+
+logger = logging.getLogger(__name__)
 
 # Chroma's persisted HNSW v1 header (64-bit, little-endian), written by
 # chroma-core/hnswlib's hnswalg.h. See upstream corruption report #7510:
@@ -21,6 +27,58 @@ from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatErr
 _HEADER = struct.Struct("<i6Qii3QdQ")
 _SEGMENT_TYPE = "urn:chroma:segment/vector/hnsw-local-persisted"
 _U32 = struct.Struct("<I")
+
+# chromadb (major, minor) releases whose on-disk HNSW layout and ``segments``
+# table this module was verified against (tests/unit/test_hnsw_validation.py
+# persists a real graph with the installed chromadb). pyproject allows any
+# 1.x, so on an unverified release a header or structure mismatch is logged
+# and skipped rather than fail-closing every healthy index; the size bound
+# still applies to a header that parses as version 1.
+VERIFIED_CHROMADB_RELEASES = frozenset({(1, 5)})
+
+# Absolute ceiling on link_lists.bin, independent of the header. A healthy
+# record averages ~10 bytes (45k records -> well under 1 MB), so 256 MiB is
+# tens of millions of records: far beyond this corpus. It bounds the memory and
+# time of the structural walk even when a damaged header yields a huge bound.
+MAX_LINK_LISTS_BYTES = 256 * 1024**2
+
+
+@functools.lru_cache(maxsize=1)
+def chromadb_format_verified() -> bool:
+    """True when the installed chromadb is a release this module was verified on."""
+    try:
+        version = importlib.metadata.version("chromadb")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    parts = version.split(".")
+    try:
+        release = (int(parts[0]), int(parts[1]))
+    except (IndexError, ValueError):
+        return False
+    return release in VERIFIED_CHROMADB_RELEASES
+
+
+_unverified_warned = False
+
+
+def _unverified_problem(reason: str) -> None:
+    """Log (once per process) a check result we cannot trust on this chromadb."""
+    global _unverified_warned
+    if not _unverified_warned:
+        _unverified_warned = True
+        logger.warning(
+            "Skipping the HNSW graph check: chromadb %s is not a release it was "
+            "verified against, and it reported: %s",
+            _installed_chromadb_version(),
+            reason,
+        )
+
+
+def _installed_chromadb_version() -> str:
+    try:
+        return importlib.metadata.version("chromadb")
+    except importlib.metadata.PackageNotFoundError:
+        return "(not installed)"
 
 
 def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
@@ -53,17 +111,17 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
         try:
             segment_name = str(UUID(segment_id))
         except (ValueError, TypeError, AttributeError) as exc:
-            raise IncompatibleIndexFormatError(
+            raise CorruptHnswGraphError(
                 chroma_path, reason="invalid persisted HNSW segment identifier"
             ) from exc
         check_hnsw_segment_dir(chroma_path, chroma_path / segment_name)
 
 
 def check_hnsw_segment_dir(chroma_path: Path, segment_path: Path) -> None:
-    """Reject one persisted HNSW segment whose link-list file is oversized.
+    """Reject one persisted HNSW segment whose link-list file is oversized or damaged.
 
-    Reads only ``header.bin`` and ``link_lists.bin`` metadata. A segment with
-    no link-list file yet (never persisted) passes.
+    Reads ``header.bin`` and at most a bounded prefix of ``link_lists.bin``.
+    A segment with no link-list file yet (never persisted) passes.
     """
     segment_name = segment_path.name
     links_path = segment_path / "link_lists.bin"
@@ -74,13 +132,12 @@ def check_hnsw_segment_dir(chroma_path: Path, segment_path: Path) -> None:
         with header_path.open("rb") as stream:
             header = stream.read(_HEADER.size + 1)
     except OSError as exc:
-        raise IncompatibleIndexFormatError(
+        raise CorruptHnswGraphError(
             chroma_path, reason=f"unreadable persisted HNSW header in segment {segment_name}"
         ) from exc
     if len(header) != _HEADER.size:
-        raise IncompatibleIndexFormatError(
-            chroma_path, reason=f"unreadable persisted HNSW header in segment {segment_name}"
-        )
+        _header_problem(chroma_path, f"unreadable persisted HNSW header in segment {segment_name}")
+        return
     fields = _HEADER.unpack(header)
     version, capacity, count, max_level, max_m = (
         fields[0],
@@ -90,17 +147,29 @@ def check_hnsw_segment_dir(chroma_path: Path, segment_path: Path) -> None:
         fields[9],
     )
     if version != 1 or capacity < count or max_level < -1 or max_m == 0:
-        raise IncompatibleIndexFormatError(
-            chroma_path, reason=f"unsupported persisted HNSW header in segment {segment_name}"
-        )
+        _header_problem(chroma_path, f"unsupported persisted HNSW header in segment {segment_name}")
+        return
     # Each slot stores a uint32 length and at most max_level upper levels,
     # each containing a uint32 neighbor count plus maxM uint32 neighbors.
     # Use capacity (rather than count) and one extra level conservatively,
     # allowing retained storage without accepting the observed runaway file.
     upper_bound = capacity * (4 + (max_m * 4 + 4) * (max(max_level, 0) + 1))
     size = links_path.stat().st_size
+    _check_size(chroma_path, segment_name, size, upper_bound)
+    _walk_link_lists(chroma_path, segment_name, links_path, count, max_level, max_m, upper_bound)
+
+
+def _header_problem(chroma_path: Path, reason: str) -> None:
+    """A header this module cannot read: fatal on a verified chromadb, else warn."""
+    if chromadb_format_verified():
+        raise CorruptHnswGraphError(chroma_path, reason=reason)
+    _unverified_problem(reason)
+
+
+def _check_size(chroma_path: Path, segment_name: str, size: int, upper_bound: int) -> None:
+    """Reject a link-list file above the header bound or the absolute ceiling."""
     if size > upper_bound:
-        raise IncompatibleIndexFormatError(
+        raise CorruptHnswGraphError(
             chroma_path,
             reason=(
                 f"corrupt persisted HNSW segment {segment_name}: link_lists.bin has "
@@ -108,7 +177,14 @@ def check_hnsw_segment_dir(chroma_path: Path, segment_path: Path) -> None:
                 f"of {upper_bound} bytes"
             ),
         )
-    _walk_link_lists(chroma_path, segment_name, links_path, count, max_level, max_m)
+    if size > MAX_LINK_LISTS_BYTES:
+        raise CorruptHnswGraphError(
+            chroma_path,
+            reason=(
+                f"corrupt persisted HNSW segment {segment_name}: link_lists.bin has "
+                f"{size} bytes, exceeding the {MAX_LINK_LISTS_BYTES}-byte ceiling"
+            ),
+        )
 
 
 def _walk_link_lists(
@@ -118,6 +194,7 @@ def _walk_link_lists(
     count: int,
     max_level: int,
     max_m: int,
+    upper_bound: int,
 ) -> None:
     """Structurally validate a within-bound ``link_lists.bin``.
 
@@ -127,28 +204,38 @@ def _walk_link_lists(
     upstream chroma#7510 — unvalidated ``linkListSize`` on load). The file is a
     plain sequence of ``count`` records, each a uint32 byte length (0 = no
     upper levels) followed by that many bytes made of ``max_m*4+4``-byte level
-    blocks (uint32 neighbour count, then neighbour ids). The walk is O(file
-    size), which the bound above already caps.
+    blocks (uint32 neighbour count, then neighbour ids).
+
+    The file is opened once and its size re-checked on that descriptor, then
+    at most that many bytes are read: a file that grows after the check above
+    (the runaway this guards against) can never be read to EOF.
     """
     stride = max_m * 4 + 4
     try:
-        data = links_path.read_bytes()
+        with links_path.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            _check_size(chroma_path, segment_name, size, upper_bound)
+            data = stream.read(size)
     except OSError as exc:
-        raise IncompatibleIndexFormatError(
+        raise CorruptHnswGraphError(
             chroma_path, reason=f"unreadable persisted HNSW link lists in segment {segment_name}"
         ) from exc
     problem = _first_link_list_problem(data, count, max_level, max_m, stride)
-    if problem is not None:
-        raise IncompatibleIndexFormatError(
-            chroma_path,
-            reason=f"corrupt persisted HNSW segment {segment_name}: link_lists.bin {problem}",
-        )
+    if problem is None:
+        return
+    reason = f"corrupt persisted HNSW segment {segment_name}: link_lists.bin {problem}"
+    if not chromadb_format_verified():
+        _unverified_problem(reason)
+        return
+    raise CorruptHnswGraphError(chroma_path, reason=reason)
 
 
 def _first_link_list_problem(
     data: bytes, count: int, max_level: int, max_m: int, stride: int
 ) -> str | None:
     size = len(data)
+    if count * 4 > size:  # every record is at least its 4-byte length
+        return f"is truncated: {size} bytes cannot hold {count} elements"
     pos = 0
     for element in range(count):
         if pos + 4 > size:

@@ -27,6 +27,7 @@ from overrides import override
 from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.hnsw_validation import (
     HnswWriteGuard,
+    chromadb_format_verified,
     validate_persisted_hnsw,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
@@ -34,6 +35,9 @@ from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexRes
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "latest"
+# Collections VectorIndex.compact() writes; see its docstring.
+COMPACT_STAGING_NAME = f"{COLLECTION_NAME}_compact"
+COMPACT_BACKUP_NAME = f"{COLLECTION_NAME}_precompact"
 
 # ChromaDB limits batch operations to ~5,461 embeddings. Use a safe limit.
 _CHROMA_BATCH_SIZE = 5000
@@ -344,6 +348,25 @@ def _record_has_tags(result: IndexResult, tags: list[str]) -> bool:
     return all(t in record_tags for t in tags)
 
 
+def _persisted_collection_names(chroma_path: Path) -> set[str]:
+    """Collection names in chroma.sqlite3, read without the native client.
+
+    Read-only; an absent or unreadable database yields an empty set (the
+    normal open path then proceeds as before).
+    """
+    db_path = chroma_path / "chroma.sqlite3"
+    if not db_path.is_file():
+        return set()
+    try:
+        conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+        try:
+            return {str(row[0]) for row in conn.execute("SELECT name FROM collections")}
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+
+
 class VectorIndex:
     """ChromaDB vector index for embedding similarity search.
 
@@ -369,6 +392,9 @@ class VectorIndex:
         # observed oversized-graph corruption before the native client can
         # initialize successfully and later SIGSEGV on the first search.
         validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME)
+        # A compaction interrupted mid-swap leaves the live graph under the
+        # backup name, and _recover_interrupted_compaction loads it below.
+        validate_persisted_hnsw(self._chroma_path.resolve(), COMPACT_BACKUP_NAME)
         self._chroma_path.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(
             path=str(self._chroma_path),
@@ -380,6 +406,7 @@ class VectorIndex:
             ),
         )
         try:
+            self._recover_interrupted_compaction()
             self._collection = self._client.get_or_create_collection(
                 name=COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
@@ -407,6 +434,18 @@ class VectorIndex:
         self._closed = False
         self._write_guard = HnswWriteGuard(self._chroma_path.resolve())
         logger.info("VectorIndex initialized at %s", self._chroma_path)
+
+    def _recover_interrupted_compaction(self) -> None:
+        """Put ``latest`` back if a compaction died between its two renames.
+
+        Must run before ``get_or_create_collection``, which would otherwise
+        create an empty ``latest`` and strand every record under the backup
+        name (vector search silently empty while FTS still has them).
+        """
+        names = _persisted_collection_names(self._chroma_path)
+        if COLLECTION_NAME not in names and COMPACT_BACKUP_NAME in names:
+            logger.warning("Restoring the vector collection from an interrupted compaction")
+            self._client.get_collection(COMPACT_BACKUP_NAME).modify(name=COLLECTION_NAME)
 
     def _release_client(self) -> None:
         """Release this client's Chroma resources via the public close API.
@@ -475,12 +514,13 @@ class VectorIndex:
         directory of the old one. Returns the number of records carried over;
         the old collection is untouched unless the copy verified.
         """
-        staging_name = f"{COLLECTION_NAME}_compact"
+        staging_name = COMPACT_STAGING_NAME
         with self._op_lock:
             old = self._collection
             total = int(old.count())
-            with contextlib.suppress(Exception):
-                self._client.delete_collection(staging_name)  # leftover from an interrupted run
+            for leftover in (staging_name, COMPACT_BACKUP_NAME):  # from an interrupted run
+                with contextlib.suppress(Exception):
+                    self._client.delete_collection(leftover)
             staging = self._client.create_collection(
                 name=staging_name, metadata={"hnsw:space": "cosine"}
             )
@@ -501,18 +541,39 @@ class VectorIndex:
                         metadatas=page["metadatas"],
                         embeddings=page["embeddings"],
                     )
+                    # Same per-batch runaway check as upsert(): the staging
+                    # graph is written by the same native code.
+                    self._write_guard.check()
                     copied += len(ids)
                 if staging.count() != total:
                     raise RuntimeError(
                         f"compaction copied {staging.count()} of {total} records; keeping old index"
                     )
+                # Swap without ever leaving no ``latest``: park the old
+                # collection under a backup name, promote staging, and only
+                # then drop the backup. A crash between the two renames leaves
+                # the backup, which _open_client renames back.
+                old.modify(name=COMPACT_BACKUP_NAME)
+                try:
+                    staging.modify(name=COLLECTION_NAME)
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        old.modify(name=COLLECTION_NAME)
+                    raise
             except BaseException:
                 with contextlib.suppress(Exception):
                     self._client.delete_collection(staging_name)
+                with contextlib.suppress(Exception):
+                    self._collection = self._client.get_collection(COLLECTION_NAME)
                 raise
-            self._client.delete_collection(COLLECTION_NAME)
-            staging.modify(name=COLLECTION_NAME)
             self._collection = self._client.get_collection(COLLECTION_NAME)
+            try:
+                self._client.delete_collection(COMPACT_BACKUP_NAME)
+            except Exception:
+                logger.warning(
+                    "Could not drop the pre-compaction collection; the next compaction removes it",
+                    exc_info=True,
+                )
             self._write_guard = HnswWriteGuard(self._chroma_path.resolve())
             self._remove_orphan_segment_dirs()
         logger.info("VectorIndex compacted: %d records", total)
@@ -523,8 +584,12 @@ class VectorIndex:
 
         Chroma leaves a dropped collection's segment directory (and its
         bloated graph) on disk. Best effort: skipped unless the segment table
-        was readable and non-empty.
+        was readable and non-empty, and on a chromadb release whose on-disk
+        layout this was not verified against (a changed ``segments`` table
+        could otherwise make live data look orphaned).
         """
+        if not chromadb_format_verified():
+            return
         db_path = self._chroma_path / "chroma.sqlite3"
         try:
             conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
