@@ -793,6 +793,22 @@ class TestIndexStoreReaderCreatesNothing:
             FTSIndex(config.sqlite_path)  # the default is a reader too
         assert not config.sqlite_path.exists()
 
+    def test_reader_open_of_an_uninitialized_keyword_index_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (fts.py:101): a 0-byte ``index.db`` passed the reader's
+        is_file() guard, and the open then set WAL mode and wrote the schema."""
+        from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
+
+        db_path = tmp_path / "index.db"
+        db_path.touch()
+        with pytest.raises(MissingKeywordIndexError):
+            FTSIndex(db_path)
+        assert db_path.stat().st_size == 0
+        assert not db_path.with_name("index.db-wal").exists()
+        FTSIndex(db_path, create=True).close()  # a writer still initializes it
+        FTSIndex(db_path).close()
+
 
 class TestIndexStore:
     @pytest.fixture()

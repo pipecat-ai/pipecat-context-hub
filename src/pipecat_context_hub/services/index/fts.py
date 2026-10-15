@@ -90,8 +90,9 @@ class FTSIndex:
         """Open the keyword index at *sqlite_path*.
 
         *create* lets the open create the database when it is missing; only
-        writers (``refresh``) pass True. A reader open of a missing database
-        raises :class:`MissingKeywordIndexError` and creates nothing.
+        writers (``refresh``) pass True. A reader open of a missing database,
+        or of one never initialized (no ``chunks`` table, e.g. a 0-byte
+        file), raises :class:`MissingKeywordIndexError` and writes nothing.
         """
         self._sqlite_path = sqlite_path
         self._lock = threading.RLock()
@@ -99,6 +100,17 @@ class FTSIndex:
             raise MissingKeywordIndexError(sqlite_path)
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
+        if not create:
+            try:
+                initialized = self._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks'"
+                ).fetchone()
+            except BaseException:
+                self._conn.close()
+                raise
+            if initialized is None:
+                self._conn.close()
+                raise MissingKeywordIndexError(sqlite_path)
         self._closed = False
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA_SQL)
