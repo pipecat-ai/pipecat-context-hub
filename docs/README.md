@@ -535,21 +535,28 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 - **`refresh` refuses to start: low disk, or another `refresh` running** —
   `refresh` first checks free space on the data-dir volume (default 5 GB;
   `PIPECAT_HUB_MIN_FREE_GB=0` disables, other values set the threshold; with
-  `--reset-index` the check runs after the delete has freed the space) and
+  `--reset-index` the check runs after the delete has freed the space.
+  `PIPECAT_HUB_MIN_FREE_GB` is invocation-scoped like `PIPECAT_HUB_PRUNE`: set
+  it in the environment, not `config.toml`, which is why it is not in the
+  Environment Variables table) and
   takes an exclusive `refresh.lock` (a hidden sibling file of the data dir,
   e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
   it), so two refreshes can't interleave writes to the same Chroma HNSW files.
   **While a refresh runs, nothing reads the index:** `serve` answers every tool
   call with an error saying "retry in 60-120 seconds" (a `serve` started
   mid-refresh still connects, with the index unopened), and one-shot CLI
-  queries exit **75** (`EX_TEMPFAIL`) with the same message on stderr. `serve`
-  reopens the rebuilt index by itself once the refresh ends, so no MCP client
+  queries exit **75** (`EX_TEMPFAIL`) with the same message on stderr. Readers
+  open the index under a shared hold on `refresh.lock`, so a refresh waits (up
+  to ~10 s) for an open in progress rather than starting under it. `serve`
+  reopens the rebuilt index (with the same readiness checks as at startup) and
+  reloads the deprecation map by itself once the refresh ends, so no MCP client
   restart is needed. After a `--force` refresh the vector graph is rebuilt from
   the live records (delete + re-add otherwise left dead elements that grew the
-  graph by the whole corpus each time). During writes the vector index re-checks the persisted HNSW graph
+  graph by the whole corpus each time; the swap never leaves the index without
+  its collection, and an interrupted one is restored on the next open). During writes the vector index re-checks the persisted HNSW graph
   and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
-  header-derived bound — the runaway-file corruption that once filled a disk
-  with 350 GB. Recover with `refresh --force --reset-index`.
+  header-derived bound — the runaway-file corruption that once took ~325 GB
+  of a disk. Recover with `refresh --force --reset-index`.
 - **`serve` exits immediately with code 2** — the index is empty or
   unopenable. Run `uvx pipecat-ai-context-hub refresh` (or
   `refresh --force --reset-index` if the error message mentions a failed

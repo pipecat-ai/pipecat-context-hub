@@ -55,16 +55,37 @@ control, so the pre-load walk is the real defence.
   after (`ReopeningIndexStore`; `refresh` touches its lock file on start and `serve`
   compares that generation on every call, so even a sub-second refresh no call
   overlapped is noticed); CLI queries exit 75.
+  Review round 1 (2026-10-15): a probe-then-open left a window for a refresh to
+  start between the two, so every reader open (serve's first open and reopens,
+  CLI queries) now runs under a shared hold on `refresh.lock`
+  (`refresh_excluded`), and `refresh` retries its exclusive lock for ~10 s so a
+  reader's hold is not mistaken for another refresh. The generation is recorded
+  per handle at open time (inside the hold), so an in-flight call never reopens
+  mid-refresh and a refresh right after an open is still noticed. A replaced
+  handle is closed only after its last in-flight call. Reopens run the startup
+  readiness checks and reload the deprecation map. The gate lives on
+  `ReopeningIndexStore` (typed against `shared.interfaces.ServingIndex`).
   Smoke-tested end to end (serve started mid-refresh, tool call mid-refresh,
   recovery after; reopen after a refresh no call overlapped).
 - `--force` (decided 2026-10-15): compaction at the end of a forced refresh
   (`VectorIndex.compact`, staging collection + swap + orphan segment removal)
   rather than clearing up front, because the per-repo delete-after-successful-
-  fetch ordering protects records of repos whose fetch fails.
+  fetch ordering protects records of repos whose fetch fails. The swap parks
+  the old collection as `latest_precompact` before promoting staging, and
+  `VectorIndex` restores it on open if a crash hit between the two renames.
+- chromadb format coupling: `hnsw_validation` parses hnswlib's private format.
+  It fails closed only on verified chromadb releases (`VERIFIED_CHROMADB_RELEASES`,
+  1.5); elsewhere header/structure mismatches warn and skip, and orphan segment
+  removal is skipped. `test_installed_chromadb_is_a_verified_release` fails on a
+  chromadb bump to force re-verification.
+- Chroma's SQLite runs in rollback-journal (`delete`) mode, verified on 1.5.9
+  with a writer open, so the validator's `immutable=1` read can't miss
+  WAL-only segment rows.
 - Upstream fix for chroma#7510 is in flight (not in 1.5.9, the latest release).
 - Windows: `msvcrt` has no shared lock mode, so a second `serve` is not
   advertised to `refresh`; probes retry 3x so two readers don't read each
-  other as a running refresh. A real fix is `LockFileEx` via ctypes, untestable
+  other as a running refresh (a reader holding the lock across an index open
+  widens that window; the other reader then gets the retry message). A real fix is `LockFileEx` via ctypes, untestable
   without a Windows host.
 - Header-version strictness, orphan-segment mtime handling: not exercised; left
   as is.

@@ -12,15 +12,23 @@ This project uses [Semantic Versioning](https://semver.org/).
   elements in the persisted HNSW graph, growing it by the whole corpus on every
   forced refresh (20k -> 80k elements for 20k live records over four rounds). A
   forced refresh now rebuilds the collection from the live records at the end and
-  removes the old segment directory. Non-fatal if it fails.
+  removes the old segment directory. Non-fatal if it fails: the old collection is
+  parked under a backup name until the rebuilt one is in place (an interrupted
+  swap is restored on the next open), and the staging writes get the same
+  per-batch HNSW guard as upserts.
 
 ### Added
 - **No reads while a refresh rewrites the index.** `serve` answers tool calls with
   a "retry in 60-120 seconds" error (and still starts, with the index unopened, if
   launched mid-refresh); one-shot CLI queries exit 75 (`EX_TEMPFAIL`) with the same
-  message. `serve` now reopens the rebuilt index itself after a refresh, so no MCP
-  client restart is needed. Spikes showed opening the index mid-refresh can leave a
-  graph that crashes the next load.
+  message. `serve` now reopens the rebuilt index itself after a refresh (with the
+  startup readiness checks, and reloading the deprecation map), so no MCP client
+  restart is needed. Every reader open holds `refresh.lock` shared, so a refresh
+  can't start mid-open (it retries its lock for ~10 s); a call already running
+  when a refresh starts gets the retry message instead of reopening the index
+  mid-write, and a replaced handle is closed only after its last call. Spikes
+  showed opening the index mid-refresh can leave a graph that crashes the next
+  load.
 - **Index write guards.** After a Chroma HNSW `link_lists.bin` ballooned to
   15 TB logical / ~325 GB on disk (upstream chroma#7510) and left a machine
   with 4 GB free: `refresh` now checks free disk (default 5 GB, override
@@ -33,7 +41,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   with a structural walk of `link_lists.bin`: racing writers leave a graph of
   healthy size that SIGSEGVs or runs away on the next load, and the walk
   rejects it first. Spikes reproduced the corruption with concurrent
-  `refresh`es; see the dev plan.
+  `refresh`es; see the dev plan. The walk reads at most the checked size (and
+  never more than 256 MiB), so a damaged header can't force an unbounded read.
+  hnswlib's on-disk layout is private: on a chromadb release other than the
+  verified 1.5.x, header and structure mismatches are logged and skipped (the
+  size bound still applies) instead of refusing every healthy index. Lock files
+  are opened without following symlinks and ignored if another user owns them.
 
 ## [0.8.1] - 2026-10-02
 

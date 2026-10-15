@@ -54,7 +54,8 @@ uv run pipecat-context-hub get-doc --path /guides/telephony/overview
 ```
 
 Exit codes: 0 success, 1 invalid input, 2 index missing/empty (stderr says to
-run `refresh`), 75 a `refresh` is rewriting the index (retry in 60-120 seconds). A parity test (`tests/unit/test_cli_query.py`) enforces that
+run `refresh`), 75 a `refresh` is rewriting the index (stderr says to retry in
+60-120 seconds). A parity test (`tests/unit/test_cli_query.py`) enforces that
 every MCP tool has a CLI command.
 
 A `justfile` is also available as a task runner:
