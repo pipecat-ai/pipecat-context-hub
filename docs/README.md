@@ -569,11 +569,13 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   results, and a plain `refresh` that finds the vector collection lost that way
   exits **2** with the same advice, without touching it (it would otherwise
   skip every unchanged source and leave vector search empty). A corrupt keyword
-  database also makes `refresh` exit **2**, saying to run
-  `refresh --force --reset-index`. `refresh --force` recreates the lost collection
-  and forgets every source's unchanged-skip marker, so a source whose fetch fails
-  in that run is re-ingested by the next plain `refresh` rather than left
-  keyword-only. It re-ingests only the sources in its configuration: a repo indexed earlier but
+  database (or one whose schema it cannot use) also makes `refresh` exit **2**,
+  saying to run `refresh --force --reset-index`; a locked or busy one does not.
+  `refresh --force` recreates the lost collection, and whenever `refresh` finds
+  the vector collection empty it stops trusting every source's unchanged-skip
+  marker (repos stay known to the cleanup and taint passes), so a source whose
+  fetch fails in that run is re-ingested by the next plain `refresh` rather than
+  left keyword-only. It re-ingests only the sources in its configuration: a repo indexed earlier but
   absent from this invocation's config keeps its keyword records but gets no
   vectors back, so re-add it to the config for that run, or pass `--prune` to
   drop it. `serve`

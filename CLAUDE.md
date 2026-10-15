@@ -60,8 +60,9 @@ uv run pipecat-context-hub get-doc --path /guides/telephony/overview
 Exit codes (`shared/exit_codes.py`): 0 success, 1 invalid input (also
 `refresh`'s low-disk refusal), 2 index missing, empty, unreadable or incompatible
 (stderr says what to run; `refresh` also exits 2 when a fatal index error, such as
-a tripped HNSW write guard or a compaction swap that left no `latest`, stops it; on a
-corrupt keyword database, saying to run `refresh --force --reset-index`; and,
+a tripped HNSW write guard or a compaction swap that left no `latest`, stops it; when
+its open cannot restore an interrupted compaction, or finds the keyword database
+corrupt or with an unusable schema, saying to run `refresh --force --reset-index`; and,
 without `--force`, when the vector collection is missing or empty beside a populated
 keyword index: it leaves the vector half untouched and says to run `refresh --force`),
 75 a `refresh` is rewriting the index (stderr says to retry in 60-120 seconds;

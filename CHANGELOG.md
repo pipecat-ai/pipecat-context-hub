@@ -47,11 +47,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   populated other half, and a plain `refresh` that finds the vector collection lost or
   empty that way exits 2 with the same advice, without touching the vector collection, instead of
   skipping unchanged sources and leaving vector search empty. `refresh --force`
-  recreates it and forgets every source's unchanged-skip marker, so a source whose
+  recreates it, and a `refresh` that finds the vector collection empty stops trusting
+  every source's unchanged-skip marker (without forgetting which repos are indexed, so
+  stale-repo cleanup and tainted-ref purges still find them), so a source whose
   fetch fails in that run is re-ingested by the next plain `refresh`; a repo indexed
   earlier but absent from that run's config keeps its keyword records with no
-  vectors (re-add it for that run, or `--prune` it). A corrupt keyword database
-  makes `refresh` exit 2 with the `--reset-index` remedy, as the readers do.
+  vectors (re-add it for that run, or `--prune` it). A corrupt keyword database, or
+  one with a schema the index cannot use, makes `refresh` exit 2 with the
+  `--reset-index` remedy, as the readers do (a locked or busy one is not reported so).
   Opening an initialized keyword database no longer writes to it; `refresh`
   completes an incomplete one and rebuilds its full-text table from the stored
   records in one transaction, so a failed rebuild is retried by the next `refresh`. The dashboard

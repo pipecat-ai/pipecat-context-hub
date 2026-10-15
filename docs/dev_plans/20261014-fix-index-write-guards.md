@@ -51,15 +51,25 @@ established; the open-time check only fires when an index is opened.
    --force") before the vector half is touched, for readers and for a plain `refresh`
    (exit 2) alike, rather than skipping unchanged sources and leaving vector
    search empty (`rebuild` without `create` is a `ValueError`). When `--force`
-   does recreate it (`IndexStore.vector_lost`), `refresh` drops every source's
-   skip marker (`docs:content_hash`, `repo:*:commit_sha`), so a source whose
-   fetch fails in that run is re-ingested by the next plain refresh instead of
-   staying keyword-only. An open writes only an incomplete keyword schema
+   does recreate it, or the open finds the vector half empty for any reason
+   (`IndexStore.vector_empty`, e.g. created beside a keyword half with no rows
+   but surviving markers), the refresh body (not the open helper, which writes
+   no metadata) calls `_distrust_skip_markers`: it drops `docs:content_hash`
+   and flags every indexed repo `repo:*:cleanup_failed` (which the skip
+   shortcut honours and a successful re-ingest clears) while keeping its
+   `repo:*:commit_sha`, through which the stale-repo cleanup and the
+   tainted-ref purge find repos. So a source whose fetch fails in that run is
+   re-ingested by the next plain refresh instead of staying keyword-only. The
+   marker keys are built and parsed only through `cli.py`'s `_DOCS_HASH_KEY` /
+   `_repo_sha_key` / `_repo_slug_of_sha_key` / `_repo_cleanup_failed_key`. An open writes only an incomplete keyword schema
    (`refresh` completes it and rebuilds the FTS table from `chunks` in one
    transaction, so a failed rebuild is retried next time); a reader refuses one.
-   A corrupt keyword database (`sqlite3.DatabaseError`, not the transient
-   `OperationalError`) makes `refresh` exit 2 with the `--reset-index` remedy,
-   as readers report it. One empty-index refusal (`IndexNotBuiltError`) serves
+   A keyword database `FTSIndex` cannot use (any SQLite result code other than
+   the transient BUSY/LOCKED/IOERR/FULL/CANTOPEN/PERM/READONLY/NOMEM/INTERRUPT/
+   PROTOCOL, e.g. NOTADB, CORRUPT, or SQLITE_ERROR for an unusable schema) raises
+   `CorruptKeywordIndexError` (an `IndexUnavailableError` carrying
+   `RESET_INDEX_REMEDIATION`), so `refresh` exits 2 with the `--reset-index`
+   remedy, as readers report it; a transient error propagates unchanged. One empty-index refusal (`IndexNotBuiltError`) serves
    both a missing index and an open one with 0 records.
    The dashboard scripts open through `reopening.open_index_for_export` (the
    same `open_ready_index_store`, but taking `refresh_excluded` itself, since
@@ -138,7 +148,11 @@ control, so the pre-load walk is the real defence.
   a symlink swapped in during the open is refused only after it, so the open may
   already have created an empty file at the link target, and the
   start-of-refresh `utime` goes by path. Needs symlink privilege and write
-  access to the data dir's parent; writes no content.
+  access to the data dir's parent; writes no content. Accepted residual on every
+  platform: the hub never unlinks or replaces a lock file, so if something
+  outside it deletes or replaces one while it is held, the next process locks a
+  new inode and two holders coexist. An identity check at acquire time cannot
+  catch a removal after it, so none is added on POSIX.
 - `refresh --force` after a lost vector collection re-ingests only the sources
   in its configuration; a retained repo absent from it (kept, not pruned) stays
   keyword-only. Documented in docs/README.md (re-add it for that run, or
