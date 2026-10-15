@@ -105,6 +105,16 @@ class TestToolCommandParity:
         """CLI and serve must report 'index unready' with the same exit code."""
         assert _EXIT_INDEX_UNREADY == _SERVE_EXIT_INDEX_UNREADY
 
+    def test_refresh_in_progress_exit_code_is_shared(self):
+        """Queries mid-refresh and a refresh refused by the lock are the same
+        retry-later condition, so both exit with the shared code (75)."""
+        from pipecat_context_hub import cli as hub_cli
+        from pipecat_context_hub.cli_query import _EXIT_REFRESH_IN_PROGRESS
+        from pipecat_context_hub.shared.index_lock import EXIT_REFRESH_IN_PROGRESS
+
+        assert _EXIT_REFRESH_IN_PROGRESS == EXIT_REFRESH_IN_PROGRESS == 75
+        assert hub_cli._RefreshLockBusy("x").exit_code == EXIT_REFRESH_IN_PROGRESS
+
     def test_semantic_meta_matches_needs_embeddings_call_sites(self):
         """``_SEMANTIC_META`` must enroll exactly the tools invoked
         with ``needs_embeddings=True`` — nothing more, nothing less.

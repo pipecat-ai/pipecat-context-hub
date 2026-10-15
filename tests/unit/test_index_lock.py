@@ -80,7 +80,8 @@ class TestRefreshGuards:
         monkeypatch.setattr(cli, "_REFRESH_LOCK_RETRY_DELAY", 0.01)
         with IndexLock(tmp_path, REFRESH_LOCK, exclusive=True):
             result = CliRunner().invoke(cli.main, ["refresh"])
-        assert result.exit_code != 0
+        # Retry-later, like the query commands (cli.py:168): not 1 (bad input).
+        assert result.exit_code == 75
         assert "already running" in result.output
 
     def test_reader_hold_is_not_a_running_refresh(self, tmp_path: Path) -> None:
@@ -109,6 +110,7 @@ class TestRefreshGuards:
                     cli._acquire_refresh_lock_or_exit(tmp_path, logging.getLogger("test"))
         assert "already running" not in exc_info.value.message
         assert "reading the index" in exc_info.value.message
+        assert exc_info.value.exit_code == 75
 
     def test_low_disk_refuses_before_any_write(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -34,6 +34,10 @@ _CONTENTION = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES})
 REFRESH_LOCK = "refresh.lock"
 SERVE_LOCK = "serve.lock"
 
+# sysexits EX_TEMPFAIL: the refresh lock is busy (a `refresh` is rewriting the
+# index); retry shortly. Shared by `refresh` and the one-shot query commands.
+EXIT_REFRESH_IN_PROGRESS = 75
+
 
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 

@@ -43,7 +43,11 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
-from pipecat_context_hub.shared.index_lock import RefreshInProgressError, refresh_excluded
+from pipecat_context_hub.shared.index_lock import (
+    EXIT_REFRESH_IN_PROGRESS,
+    RefreshInProgressError,
+    refresh_excluded,
+)
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
 from pipecat_context_hub.shared.paths import redact_home_in_text
@@ -77,7 +81,7 @@ def _echo_stderr_warning(text: str) -> None:
 _EXIT_INDEX_UNREADY = 2
 _EXIT_BAD_INPUT = 1
 # sysexits EX_TEMPFAIL: a `refresh` is rewriting the index; retry shortly.
-_EXIT_REFRESH_IN_PROGRESS = 75
+_EXIT_REFRESH_IN_PROGRESS = EXIT_REFRESH_IN_PROGRESS
 
 
 class _SemanticMeta(NamedTuple):

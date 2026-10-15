@@ -27,6 +27,7 @@ from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.index_lock import (
+    EXIT_REFRESH_IN_PROGRESS,
     REFRESH_LOCK,
     SERVE_LOCK,
     IndexLock,
@@ -165,6 +166,12 @@ _REFRESH_LOCK_ATTEMPTS = 200
 _REFRESH_LOCK_RETRY_DELAY = 0.05
 
 
+class _RefreshLockBusy(click.ClickException):
+    """A retry-later refusal: exits 75 (EX_TEMPFAIL) like the query commands."""
+
+    exit_code = EXIT_REFRESH_IN_PROGRESS
+
+
 def _acquire_refresh_lock_or_exit(data_dir: Path, logger: logging.Logger) -> IndexLock:
     """Take the exclusive refresh lock, released when the click command ends.
 
@@ -182,11 +189,11 @@ def _acquire_refresh_lock_or_exit(data_dir: Path, logger: logging.Logger) -> Ind
         # Still busy after the retries: a shared probe tells an exclusive
         # holder (another refresh) from readers that kept it busy.
         if not refresh_in_progress(data_dir):
-            raise click.ClickException(
+            raise _RefreshLockBusy(
                 f"Processes reading the index on {redact_home(data_dir)} (`serve` or CLI "
                 "queries opening it) kept the refresh lock busy. Retry the refresh."
             ) from exc
-        raise click.ClickException(
+        raise _RefreshLockBusy(
             f"Another `refresh` is already running on {redact_home(data_dir)}. "
             "Wait for it to finish; concurrent refreshes can corrupt the vector index."
         ) from exc
