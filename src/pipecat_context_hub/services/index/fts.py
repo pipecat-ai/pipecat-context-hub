@@ -122,15 +122,19 @@ class FTSIndex:
                 raise MissingKeywordIndexError(sqlite_path)
             if missing:
                 self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.executescript(_SCHEMA_SQL)
+                # One transaction: completing the schema and rebuilding the FTS
+                # table commit together, so a failed rebuild leaves the schema
+                # incomplete and the next refresh retries it (rather than
+                # finding every object present and skipping the rebuild).
+                rebuild = ""
                 if "chunks" in present:
                     logger.warning(
                         "Keyword index at %s was incomplete (missing %s); rebuilding its FTS table",
                         sqlite_path,
                         ", ".join(sorted(missing)),
                     )
-                    self._conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
-                self._conn.commit()
+                    rebuild = "INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild');"
+                self._conn.executescript(f"BEGIN;\n{_SCHEMA_SQL}\n{rebuild}\nCOMMIT;")
         except BaseException:
             self._conn.close()
             raise

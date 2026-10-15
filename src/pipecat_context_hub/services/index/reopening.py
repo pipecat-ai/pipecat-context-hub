@@ -57,12 +57,14 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
     bug-report hint.
     """
     from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+    from pipecat_context_hub.services.index.errors import IndexNotBuiltError
     from pipecat_context_hub.services.index.store import IndexStore as _IndexStore
 
     store: IndexStore | None = None
     try:
         store = _IndexStore(storage, create=False)  # a reader never creates the index
-        total = int(store.get_index_stats().get("total", 0))
+        if int(store.get_index_stats().get("total", 0)) == 0:
+            raise IndexNotBuiltError(storage.data_dir)
     except Exception as exc:
         if store is not None:
             with contextlib.suppress(Exception):
@@ -78,10 +80,6 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
                 "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild."
             )
         raise IndexUnavailableError(f"{message} {bug_report_hint()}") from exc
-
-    if total == 0:
-        store.close()
-        raise IndexUnavailableError(f"{_empty_index_message(storage)} {bug_report_hint()}")
     return store
 
 
@@ -94,14 +92,6 @@ def open_index_for_export(storage: StorageConfig) -> IndexStore:
     """
     with refresh_excluded(storage.data_dir):
         return open_ready_index_store(storage)
-
-
-def _empty_index_message(storage: StorageConfig) -> str:
-    return (
-        f"Index at {redact_home(storage.data_dir)} is empty (0 records). Run 'uv run "
-        "pipecat-context-hub refresh' to build it (the first run downloads models and "
-        "indexes sources; allow a few minutes)."
-    )
 
 
 @dataclass

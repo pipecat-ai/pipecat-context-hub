@@ -858,9 +858,18 @@ class TestLostVectorHalf:
         store = IndexStore(config, recover=True, create=True, rebuild=True)
         try:
             assert store.vector_count() == 0
+            assert store.vector_lost
         finally:
             store.close()
         assert _collection_names(config) == ["latest"]
+
+    def test_rebuild_without_create_is_rejected(self, tmp_path: Path) -> None:
+        """Regression (store.py:34): ``rebuild=True`` without ``create`` was a
+        silent no-op (the vector half may only be recreated with *create*)."""
+        data_dir = tmp_path / "hub-data"
+        with pytest.raises(ValueError, match="rebuild=True requires create=True"):
+            IndexStore(StorageConfig(data_dir=data_dir), rebuild=True)
+        assert not data_dir.exists()
 
     def test_first_run_and_healthy_reopen_are_unchanged(self, tmp_path: Path) -> None:
         """I4: an empty data dir and a healthy index open as before."""
@@ -868,12 +877,14 @@ class TestLostVectorHalf:
 
         config = StorageConfig(data_dir=tmp_path / "hub-data")
         store = IndexStore(config, recover=True, create=True)  # first run
+        assert not store.vector_lost
         asyncio.run(store.upsert(_make_records(3)))
         store.close()
         for kwargs in ({}, {"recover": True, "create": True}):
             store = IndexStore(config, **kwargs)
             try:
                 assert store.vector_count() == 3
+                assert not store.vector_lost
             finally:
                 store.close()
 
@@ -888,7 +899,7 @@ class TestIndexStoreReaderCreatesNothing:
         from pipecat_context_hub.services.index.errors import IndexNotBuiltError
 
         data_dir = tmp_path / "hub-data"
-        with pytest.raises(IndexNotBuiltError, match="has not been built"):
+        with pytest.raises(IndexNotBuiltError, match=r"is empty \(0 records\)"):
             IndexStore(StorageConfig(data_dir=data_dir))
         assert not data_dir.exists()
 
@@ -964,6 +975,27 @@ class TestIndexStoreReaderCreatesNothing:
             assert len(fts.search(IndexQuery(query_text="pipecat", limit=10))) == 3
         finally:
             fts.close()
+
+    def test_failed_fts_rebuild_leaves_the_schema_incomplete(self, tmp_path: Path) -> None:
+        """Regression (fts.py:123): completing the schema committed before the
+        FTS rebuild ran, so a rebuild that failed left every schema object in
+        place; the next open skipped the rebuild and readers accepted a
+        ``chunks`` table whose FTS index was empty. Both now commit together.
+        The rebuild is made to fail by a ``chunks`` table without ``content``."""
+        import sqlite3
+
+        db_path = tmp_path / "index.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, body TEXT)")
+            conn.execute("INSERT INTO chunks VALUES ('a', 'pipecat')")
+        conn.close()
+
+        with pytest.raises(sqlite3.OperationalError, match="content"):
+            FTSIndex(db_path, create=True)
+        with sqlite3.connect(db_path) as conn:
+            names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        conn.close()
+        assert names == {"chunks", "sqlite_autoindex_chunks_1"}  # nothing half-committed
 
 
 class TestIndexStore:

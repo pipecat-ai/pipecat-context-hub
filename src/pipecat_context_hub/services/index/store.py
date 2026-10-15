@@ -31,6 +31,10 @@ class IndexStore:
     Reads are dispatched to the appropriate backend based on the search type.
     """
 
+    #: Set by the open: the keyword half has records but the vector half has
+    #: none (it was lost; only a *rebuild* open gets past that, recreating it).
+    vector_lost: bool
+
     def __init__(
         self,
         config: StorageConfig,
@@ -44,12 +48,16 @@ class IndexStore:
         *create* (``refresh`` only) lets the open create what is missing;
         without it nothing is created. Either way, a vector half that is
         missing or empty while the keyword half has records raises
-        :class:`MissingVectorCollectionError` before anything is written,
-        unless *rebuild* (``refresh --force``: every source is re-ingested,
-        refilling it) lets *create* recreate it. Readers (and a refresh
-        without ``--force``) therefore never run on an index whose vector
-        search would silently come back empty.
+        :class:`MissingVectorCollectionError` before the vector half is
+        touched (the keyword half's only possible earlier write is completing
+        an incomplete schema, see :class:`FTSIndex`), unless *rebuild* (the
+        caller re-ingests every source, refilling it) lets *create* recreate
+        it; :attr:`vector_lost` then reports that it did. Readers (and a
+        refresh without ``--force``) therefore never run on an index whose
+        vector search would silently come back empty.
         """
+        if rebuild and not create:
+            raise ValueError("rebuild=True requires create=True")
         if create:
             config.data_dir.mkdir(parents=True, exist_ok=True)
         elif (
@@ -69,7 +77,9 @@ class IndexStore:
                 recover=recover,
                 create=create and (rebuild or not indexed),
             )
-            if indexed and not rebuild and vector.count() == 0:
+            # Keyword records with no vectors: only *rebuild* may proceed.
+            self.vector_lost = indexed and vector.count() == 0
+            if self.vector_lost and not rebuild:
                 raise MissingVectorCollectionError(config.chroma_path)
         except BaseException:
             # Close what came up so callers don't inherit a leaked Chroma

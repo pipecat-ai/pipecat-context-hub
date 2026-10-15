@@ -130,14 +130,14 @@ class InterruptedCompactionError(IndexUnavailableError):
 
 
 class IndexNotBuiltError(IndexUnavailableError):
-    """A reader found neither half of the index: nothing has been indexed yet."""
+    """A reader found nothing indexed: neither half exists, or it has 0 records."""
 
     def __init__(self, data_dir: Path | str) -> None:
         self.data_dir = Path(data_dir)
         super().__init__(
-            f"Index at {self.data_dir} is empty (0 records): it has not been built. "
-            "Run 'uv run pipecat-context-hub refresh' to build it (the first run "
-            "downloads models and indexes sources; allow a few minutes)."
+            f"Index at {self.data_dir} is empty (0 records). Run 'uv run "
+            "pipecat-context-hub refresh' to build it (the first run downloads models "
+            "and indexes sources; allow a few minutes)."
         )
 
 

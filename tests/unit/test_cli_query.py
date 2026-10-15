@@ -279,6 +279,7 @@ class TestIndexUnready:
         """Regression (cli.py:116): the one-shot CLI and `serve` (first open
         and every reopen) go through the same open-and-check, so their
         messages cannot drift, and the empty-index text names no front door."""
+        from pipecat_context_hub.services.index.errors import IndexNotBuiltError
         from pipecat_context_hub.services.index.reopening import open_ready_index_store
         from pipecat_context_hub.shared.config import HubConfig
         from pipecat_context_hub.shared.interfaces import IndexUnavailableError
@@ -299,6 +300,8 @@ class TestIndexUnready:
                 open_ready_index_store(HubConfig().storage)
         message = str(exc_info.value)
         assert "is empty (0 records)" in message
+        # One refusal for both empty halves (store.py and this open).
+        assert isinstance(exc_info.value.__cause__, IndexNotBuiltError)
         assert "'serve'" not in message and "hang" not in message
 
 
