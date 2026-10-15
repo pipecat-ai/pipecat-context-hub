@@ -76,6 +76,24 @@ class CorruptHnswGraphError(IncompatibleIndexFormatError):
     """
 
 
+class CompactionSwapError(FatalIndexError):
+    """``compact()`` could neither promote the compacted copy nor restore the old one.
+
+    The index is left as an interrupted compaction would leave it (no
+    ``latest``; the live records under the backup name), so readers get
+    :class:`InterruptedCompactionError` until ``refresh`` restores it. Fatal so
+    that ``refresh`` exits non-zero instead of reporting a valid index.
+    """
+
+    def __init__(self, chroma_path: Path | str) -> None:
+        self.chroma_path = Path(chroma_path)
+        super().__init__(
+            f"Vector index compaction at {self.chroma_path} failed mid-swap and could not "
+            "restore the original collection; the index is unreadable until it is restored. "
+            "Run 'uv run pipecat-context-hub refresh' to restore it (no rebuild needed)."
+        )
+
+
 class InterruptedCompactionError(IndexUnavailableError):
     """A ``refresh --force`` compaction died between its two renames.
 

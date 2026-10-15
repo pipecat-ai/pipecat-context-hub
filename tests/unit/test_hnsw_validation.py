@@ -22,6 +22,7 @@ from pipecat_context_hub.services.index.hnsw_validation import (
     validate_persisted_hnsw,
 )
 from pipecat_context_hub.services.index.vector import (
+    COLLECTION_NAME,
     COMPACT_BACKUP_NAME,
     COMPACT_STAGING_NAME,
     VectorIndex,
@@ -487,6 +488,50 @@ class TestCompactSwap:
                     index.compact()
             assert index._collection.count() == 30
             assert [c.name for c in index._client.list_collections()] == ["latest"]
+        finally:
+            index.close()
+
+    def test_failed_promotion_and_rollback_is_fatal_and_recoverable(self, tmp_path: Path) -> None:
+        """Regression (vector.py:549): when both the promotion and the rollback
+        rename fail, compact() used to swallow the rollback failure, delete the
+        staging copy and re-raise a plain error that refresh logs as "index
+        valid" (exit 0). It must raise a FatalIndexError, destroy nothing, and
+        leave a state readers reject and refresh's open restores."""
+        from pipecat_context_hub.services.index.errors import (
+            CompactionSwapError,
+            InterruptedCompactionError,
+        )
+        from pipecat_context_hub.shared.interfaces import FatalIndexError
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma)
+        try:
+            index.upsert(_make_records(30))
+            real_modify = index._collection.__class__.modify
+
+            def modify(self: Any, *args: Any, **kwargs: Any) -> Any:
+                if kwargs.get("name") == COLLECTION_NAME:  # promotion and rollback
+                    raise RuntimeError("disk full")
+                return real_modify(self, *args, **kwargs)
+
+            with patch.object(index._collection.__class__, "modify", modify):
+                with pytest.raises(CompactionSwapError) as excinfo:
+                    index.compact()
+            assert isinstance(excinfo.value, FatalIndexError)
+            assert sorted(c.name for c in index._client.list_collections()) == [
+                COMPACT_STAGING_NAME,
+                COMPACT_BACKUP_NAME,
+            ], "the verified staging copy was destroyed mid-swap"
+        finally:
+            index.close()
+
+        with pytest.raises(InterruptedCompactionError):
+            VectorIndex(chroma)  # a reader
+        index = VectorIndex(chroma, recover=True)  # how refresh opens it
+        try:
+            assert index._collection.count() == 30
+            assert index._collection.name == COLLECTION_NAME
         finally:
             index.close()
 

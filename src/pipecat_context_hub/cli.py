@@ -1778,7 +1778,8 @@ def refresh(
             # corpus per forced refresh). Rebuild it from the live records.
             # Non-fatal: the index is fully usable without it. Except a
             # FatalIndexError (the HNSW guard tripped on a graph written this
-            # run): that stops the refresh like any other guard failure.
+            # run, or the swap failed and could not be rolled back, leaving no
+            # readable collection): that stops the refresh, exit 2.
             try:
                 kept = index_store.compact_vector()
                 logger.info("Compacted vector index after forced refresh (%d records)", kept)
@@ -1939,11 +1940,12 @@ def refresh(
             unpruned_repo_count=unpruned_repo_count,
         )
     except FatalIndexError as exc:
-        # Only the post-write HNSW guard raises this mid-run, during ingest or
-        # compaction (the open-time checks fire in
-        # `_open_index_store_or_exit`). The ingesters re-raise it
-        # so a corrupt index stops the refresh instead of being recorded as one
-        # more per-source error while the remaining sources keep writing into it.
+        # Only the post-write HNSW guard (during ingest or compaction) and a
+        # compaction swap that could not be rolled back raise this mid-run
+        # (the open-time checks fire in `_open_index_store_or_exit`). The
+        # ingesters re-raise it so a corrupt index stops the refresh instead of
+        # being recorded as one more per-source error while the remaining
+        # sources keep writing into it.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     finally:

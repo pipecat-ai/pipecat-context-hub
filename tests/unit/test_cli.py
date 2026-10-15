@@ -317,7 +317,7 @@ class TestRefreshCommand:
         # With --force, repos should be re-ingested despite matching SHA
         assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
 
-    @pytest.mark.parametrize("fatal", [False, True])
+    @pytest.mark.parametrize("fatal", [None, "corrupt", "swap"])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
     @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
@@ -340,8 +340,13 @@ class TestRefreshCommand:
     ):
         """Regression (cli.py:1822): compaction is best effort, but an HNSW guard
         failure during it means a runaway/corrupt graph, which stops the refresh
-        (exit 2, no completion metadata) as it does everywhere else."""
-        from pipecat_context_hub.services.index.errors import CorruptHnswGraphError
+        (exit 2, no completion metadata) as it does everywhere else. So does a
+        swap whose rollback also failed (vector.py:549): no readable collection
+        is left, so refresh must not report success."""
+        from pipecat_context_hub.services.index.errors import (
+            CompactionSwapError,
+            CorruptHnswGraphError,
+        )
 
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
         mock_is_cls.return_value = mock_store
@@ -349,11 +354,11 @@ class TestRefreshCommand:
         mock_gh_cls.return_value = mock_github
         mock_si_cls.return_value = mock_source
         mock_ref_tainted.return_value = False
-        mock_store.compact_vector.side_effect = (
-            CorruptHnswGraphError(tmp_path, reason="corrupt persisted HNSW")
-            if fatal
-            else RuntimeError("compaction hiccup")
-        )
+        mock_store.compact_vector.side_effect = {
+            None: RuntimeError("compaction hiccup"),
+            "corrupt": CorruptHnswGraphError(tmp_path, reason="corrupt persisted HNSW"),
+            "swap": CompactionSwapError(tmp_path),
+        }[fatal]
 
         monkeypatch.chdir(tmp_path)
         result = CliRunner().invoke(main, ["refresh", "--force"])
