@@ -49,7 +49,8 @@ This project uses [Semantic Versioning](https://semver.org/).
 - **Index write guards.** After a Chroma HNSW `link_lists.bin` ballooned to
   15 TB logical / ~325 GB on disk (upstream chroma#7510) and left a machine
   with 4 GB free: `refresh` now checks free disk (default 5 GB, override
-  `PIPECAT_HUB_MIN_FREE_GB`) before touching the index, takes an exclusive
+  `PIPECAT_HUB_MIN_FREE_GB`) before touching the index (with `--reset-index`,
+  after deleting it, since the delete frees the space), takes an exclusive
   `refresh.lock` so two refreshes can't run on one data dir, and warns when a
   `serve` (shared `serve.lock`) has the index open. Vector upserts re-run the
   bounded HNSW size check after every write batch and abort on a runaway file
