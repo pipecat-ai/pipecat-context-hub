@@ -23,14 +23,16 @@ from chromadb.config import Settings as ChromaSettings
 from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryEvent
 from overrides import override
 
+from pipecat_context_hub.services.index.chroma_schema import (
+    chromadb_format_verified,
+    query_chroma_sqlite,
+)
 from pipecat_context_hub.services.index.errors import (
     IncompatibleIndexFormatError,
     InterruptedCompactionError,
 )
 from pipecat_context_hub.services.index.hnsw_validation import (
     HnswWriteGuard,
-    chromadb_format_verified,
-    query_chroma_sqlite,
     validate_persisted_hnsw,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult

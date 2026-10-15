@@ -7,17 +7,18 @@ graph validator. It must run before constructing the native client.
 
 from __future__ import annotations
 
-import functools
-import importlib.metadata
 import logging
 import os
-import sqlite3
 import struct
 import time
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
+from pipecat_context_hub.services.index.chroma_schema import (
+    chromadb_format_verified,
+    installed_chromadb_version,
+    query_chroma_sqlite,
+)
 from pipecat_context_hub.services.index.errors import CorruptHnswGraphError
 
 logger = logging.getLogger(__name__)
@@ -29,34 +30,11 @@ _HEADER = struct.Struct("<i6Qii3QdQ")
 _SEGMENT_TYPE = "urn:chroma:segment/vector/hnsw-local-persisted"
 _U32 = struct.Struct("<I")
 
-# chromadb (major, minor) releases whose on-disk HNSW layout and ``segments``
-# table this module was verified against (tests/unit/test_hnsw_validation.py
-# persists a real graph with the installed chromadb). pyproject allows any
-# 1.x, so on an unverified release a header or structure mismatch is logged
-# and skipped rather than fail-closing every healthy index; the size bound
-# still applies to a header that parses as version 1.
-VERIFIED_CHROMADB_RELEASES = frozenset({(1, 5)})
-
 # Absolute ceiling on link_lists.bin, independent of the header. A healthy
 # record averages ~10 bytes (45k records -> well under 1 MB), so 256 MiB is
 # tens of millions of records: far beyond this corpus. It bounds the memory and
 # time of the structural walk even when a damaged header yields a huge bound.
 MAX_LINK_LISTS_BYTES = 256 * 1024**2
-
-
-@functools.lru_cache(maxsize=1)
-def chromadb_format_verified() -> bool:
-    """True when the installed chromadb is a release this module was verified on."""
-    try:
-        version = importlib.metadata.version("chromadb")
-    except importlib.metadata.PackageNotFoundError:
-        return False
-    parts = version.split(".")
-    try:
-        release = (int(parts[0]), int(parts[1]))
-    except (IndexError, ValueError):
-        return False
-    return release in VERIFIED_CHROMADB_RELEASES
 
 
 _unverified_warned = False
@@ -70,46 +48,9 @@ def _unverified_problem(reason: str) -> None:
         logger.warning(
             "Skipping the HNSW graph check: chromadb %s is not a release it was "
             "verified against, and it reported: %s",
-            _installed_chromadb_version(),
+            installed_chromadb_version(),
             reason,
         )
-
-
-def _installed_chromadb_version() -> str:
-    try:
-        return importlib.metadata.version("chromadb")
-    except importlib.metadata.PackageNotFoundError:
-        return "(not installed)"
-
-
-def query_chroma_sqlite(
-    chroma_path: Path, sql: str, params: tuple[object, ...] = (), *, immutable: bool
-) -> list[tuple[Any, ...]] | None:
-    """Rows from Chroma's private ``chroma.sqlite3``; None if absent or unreadable.
-
-    The one place that reads Chroma's schema behind its back. Always
-    read-only, and never creates the database. ``immutable=True`` also skips
-    SQLite's locking and journal handling, so it creates no -wal/-shm files
-    (legacy 0.6 directories included): for probes that run before a Chroma
-    client opens, when no writer can be running (readers open under
-    ``refresh_excluded``; ``refresh``, the only writer, holds the lock
-    exclusively). ``immutable=False`` takes SQLite's shared lock for a
-    consistent snapshot: required before deleting anything based on it.
-    """
-    db_path = chroma_path / "chroma.sqlite3"
-    if not db_path.is_file():
-        return None
-    mode = "?mode=ro&immutable=1" if immutable else "?mode=ro"
-    try:
-        conn = sqlite3.connect(db_path.absolute().as_uri() + mode, uri=True)
-    except sqlite3.Error:
-        return None
-    try:
-        return conn.execute(sql, params).fetchall()
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
 
 
 def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:

@@ -12,7 +12,7 @@ from unittest.mock import patch
 import chromadb
 import pytest
 
-from pipecat_context_hub.services.index import hnsw_validation
+from pipecat_context_hub.services.index import chroma_schema, hnsw_validation
 from pipecat_context_hub.services.index.errors import (
     CorruptHnswGraphError,
     IncompatibleIndexFormatError,
@@ -387,8 +387,8 @@ class TestChromadbVersionGate:
         """Fails on a chromadb bump: re-run this file against the new release
         (the native-graph tests persist a real graph) and extend
         VERIFIED_CHROMADB_RELEASES."""
-        hnsw_validation.chromadb_format_verified.cache_clear()
-        assert hnsw_validation.chromadb_format_verified()
+        chroma_schema.chromadb_format_verified.cache_clear()
+        assert chroma_schema.chromadb_format_verified()
 
     def test_native_header_parses_as_the_verified_layout(self, tmp_path: Path) -> None:
         root = tmp_path / "native"
@@ -538,15 +538,13 @@ _MASTER = "SELECT name FROM sqlite_master"
 
 
 class TestQueryChromaSqlite:
-    """The single reader of Chroma's private sqlite schema (vector.py:356)."""
+    """The single reader of Chroma's private sqlite schema (chroma_schema.py)."""
 
     def test_missing_or_non_sqlite_db_reads_as_none(self, tmp_path: Path) -> None:
-        assert hnsw_validation.query_chroma_sqlite(tmp_path, _MASTER, immutable=True) is None
+        assert chroma_schema.query_chroma_sqlite(tmp_path, _MASTER, immutable=True) is None
         (tmp_path / "chroma.sqlite3").write_bytes(b"not a database")
         for immutable in (True, False):
-            assert (
-                hnsw_validation.query_chroma_sqlite(tmp_path, _MASTER, immutable=immutable) is None
-            )
+            assert chroma_schema.query_chroma_sqlite(tmp_path, _MASTER, immutable=immutable) is None
 
     def test_relative_chroma_path_is_readable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -558,7 +556,7 @@ class TestQueryChromaSqlite:
             conn.execute("INSERT INTO segments VALUES ('x')")
         conn.close()
         monkeypatch.chdir(tmp_path.parent)
-        rows = hnsw_validation.query_chroma_sqlite(
+        rows = chroma_schema.query_chroma_sqlite(
             Path(tmp_path.name), "SELECT id FROM segments", immutable=False
         )
         assert rows == [("x",)]
