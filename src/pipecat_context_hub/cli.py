@@ -103,7 +103,7 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
     try:
         # recover=True: refresh holds the exclusive refresh lock, so it alone
         # may repair an interrupted compaction while opening.
-        return IndexStore(config.storage, recover=True)
+        return IndexStore(config.storage, recover=True, create=True)
     except IncompatibleIndexFormatError as exc:
         # A pre-1.0 Chroma dir cannot be opened by 1.x. exc.__str__ embeds
         # the absolute chroma_path; redact for front-door parity with the

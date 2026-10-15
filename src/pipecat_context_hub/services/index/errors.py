@@ -134,3 +134,18 @@ class MissingVectorCollectionError(IndexUnavailableError):
                 "downloads models and indexes sources; allow a few minutes)."
             )
         super().__init__(message)
+
+
+class MissingKeywordIndexError(IndexUnavailableError):
+    """A reader found no keyword (SQLite FTS) database to open.
+
+    Readers never create one: an empty keyword index beside a populated
+    vector index would make keyword search silently return nothing.
+    """
+
+    def __init__(self, sqlite_path: Path | str) -> None:
+        self.sqlite_path = Path(sqlite_path)
+        super().__init__(
+            f"The keyword index at {self.sqlite_path} is missing. Run 'uv run "
+            "pipecat-context-hub refresh --force' to rebuild it."
+        )

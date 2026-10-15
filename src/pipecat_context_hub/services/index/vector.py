@@ -350,7 +350,7 @@ class VectorIndex:
     so indexes survive process restarts.
     """
 
-    def __init__(self, chroma_path: Path, *, recover: bool = False, create: bool = True) -> None:
+    def __init__(self, chroma_path: Path, *, recover: bool = False, create: bool = False) -> None:
         """Open the index at *chroma_path*.
 
         *recover*, which only ``refresh`` sets (it holds the exclusive refresh
@@ -359,9 +359,10 @@ class VectorIndex:
         raises :class:`InterruptedCompactionError` instead.
 
         *create* lets the open create the index (directory, database and an
-        empty ``latest`` collection) when it is missing. Readers pass False:
-        they never write to the index, and a missing collection raises
-        :class:`MissingVectorCollectionError` instead of opening empty.
+        empty ``latest`` collection) when it is missing. Only writers
+        (``refresh``) pass True: readers never write to the index, and for
+        them a missing collection raises :class:`MissingVectorCollectionError`
+        instead of opening empty.
         """
         self._chroma_path = chroma_path
         self._recover = recover

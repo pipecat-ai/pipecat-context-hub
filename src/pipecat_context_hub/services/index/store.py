@@ -28,15 +28,18 @@ class IndexStore:
     """
 
     def __init__(
-        self, config: StorageConfig, *, recover: bool = False, create: bool = True
+        self, config: StorageConfig, *, recover: bool = False, create: bool = False
     ) -> None:
-        """Open both backends. *recover*, *create*: see :class:`VectorIndex`."""
+        """Open both backends. *recover*, *create*: see :class:`VectorIndex`.
+
+        *create* applies to both: without it neither backend creates a file.
+        """
         if create:
             config.data_dir.mkdir(parents=True, exist_ok=True)
         self._data_dir = config.data_dir
         self._vector = VectorIndex(config.chroma_path, recover=recover, create=create)
         try:
-            self._fts = FTSIndex(config.sqlite_path)
+            self._fts = FTSIndex(config.sqlite_path, create=create)
         except Exception:
             # Roll back the already-opened vector backend so callers don't
             # inherit a leaked Chroma handle/lock on a half-constructed store.

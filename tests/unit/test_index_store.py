@@ -75,7 +75,7 @@ def _make_records(
 class TestVectorIndex:
     @pytest.fixture()
     def vector_index(self, tmp_path: Path) -> Generator[VectorIndex, None, None]:
-        index = VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma", create=True)
         yield index
         index.close()
 
@@ -89,7 +89,7 @@ class TestVectorIndex:
             "pipecat_context_hub.services.index.vector.chromadb.PersistentClient",
             return_value=mock_client,
         ) as persistent_client:
-            index = VectorIndex(tmp_path / "chroma")
+            index = VectorIndex(tmp_path / "chroma", create=True)
             index.close()
 
         settings = persistent_client.call_args.kwargs["settings"]
@@ -345,12 +345,12 @@ class TestVectorIndex:
     def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new VectorIndex on the same path."""
         chroma_path = tmp_path / "chroma"
-        idx1 = VectorIndex(chroma_path)
+        idx1 = VectorIndex(chroma_path, create=True)
         records = _make_records(2)
         idx1.upsert(records)
 
         # Create a new index pointing at the same directory
-        idx2 = VectorIndex(chroma_path)
+        idx2 = VectorIndex(chroma_path, create=True)
         query = IndexQuery(
             query_text="test",
             query_embedding=records[0].embedding,
@@ -370,14 +370,14 @@ class TestVectorIndex:
         (risk #11) — re-opening a populated index must keep every record.
         """
         chroma_path = tmp_path / "chroma"
-        idx1 = VectorIndex(chroma_path)
+        idx1 = VectorIndex(chroma_path, create=True)
         records = _make_records(3)
         known_id = records[0].chunk_id
         idx1.upsert(records)
         idx1.close()
 
         # Re-open: _open_client calls get_or_create_collection with cosine.
-        idx2 = VectorIndex(chroma_path)
+        idx2 = VectorIndex(chroma_path, create=True)
         query = IndexQuery(query_text="test", query_embedding=records[0].embedding, limit=10)
         results = idx2.search(query)
         assert len(results) == 3, "get_or_create dropped rows on reopen"
@@ -402,7 +402,7 @@ class TestVectorIndexBatchStress:
 
     @pytest.fixture()
     def vector_index(self, tmp_path: Path) -> Generator[VectorIndex, None, None]:
-        index = VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma", create=True)
         yield index
         index.close()
 
@@ -495,7 +495,7 @@ class TestVectorIndexBatchStress:
 class TestFTSIndex:
     @pytest.fixture()
     def fts_index(self, tmp_path: Path) -> Generator[FTSIndex, None, None]:
-        index = FTSIndex(tmp_path / "metadata.db")
+        index = FTSIndex(tmp_path / "metadata.db", create=True)
         yield index
         index.close()
 
@@ -705,11 +705,11 @@ class TestFTSIndex:
     def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new FTSIndex on the same path."""
         db_path = tmp_path / "metadata.db"
-        idx1 = FTSIndex(db_path)
+        idx1 = FTSIndex(db_path, create=True)
         idx1.upsert([_make_record(content="pipecat persists")])
         idx1.close()
 
-        idx2 = FTSIndex(db_path)
+        idx2 = FTSIndex(db_path, create=True)
         query = IndexQuery(query_text="pipecat", limit=10)
         results = idx2.search(query)
         assert len(results) == 1
@@ -762,15 +762,43 @@ class TestIndexStoreInitRollback:
         )
 
         with pytest.raises(RuntimeError, match="sqlite boom"):
-            IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
+            IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"), create=True)
         fake_vector.close.assert_called_once()
+
+
+class TestIndexStoreReaderCreatesNothing:
+    """Regression (store.py:38, vector.py:353): ``create=False`` reached only
+    the vector half, so a reader open still created ``index.db`` and its
+    schema; and ``create`` defaulted to True, so a reader that forgot to opt
+    out (scripts/smoke_check_framework_version.py) created the whole index."""
+
+    def test_default_open_of_a_missing_index_creates_nothing(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        data_dir = tmp_path / "hub-data"
+        with pytest.raises(MissingVectorCollectionError):
+            IndexStore(StorageConfig(data_dir=data_dir))
+        assert not data_dir.exists()
+
+    def test_reader_open_without_a_keyword_index_does_not_create_one(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        IndexStore(config, create=True).close()
+        config.sqlite_path.unlink()
+        with pytest.raises(MissingKeywordIndexError, match="refresh --force"):
+            IndexStore(config, create=False)
+        assert not config.sqlite_path.exists()
+        with pytest.raises(MissingKeywordIndexError):
+            FTSIndex(config.sqlite_path)  # the default is a reader too
+        assert not config.sqlite_path.exists()
 
 
 class TestIndexStore:
     @pytest.fixture()
     def store(self, tmp_path: Path) -> Generator[IndexStore, None, None]:
         config = StorageConfig(data_dir=tmp_path / "hub-data")
-        store = IndexStore(config)
+        store = IndexStore(config, create=True)
         yield store
         store.close()
 
@@ -1019,12 +1047,12 @@ class TestIndexStore:
     async def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new IndexStore on the same path."""
         config = StorageConfig(data_dir=tmp_path / "persist-data")
-        store1 = IndexStore(config)
+        store1 = IndexStore(config, create=True)
         records = _make_records(2)
         await store1.upsert(records)
         store1.close()
 
-        store2 = IndexStore(config)
+        store2 = IndexStore(config, create=True)
         vq = IndexQuery(
             query_text="test",
             query_embedding=records[0].embedding,
@@ -1108,7 +1136,7 @@ class TestFTSCallGraphFilters:
 
     def test_yields_filter_matches(self, tmp_path: Path):
         """FTS search with yields filter returns matching records."""
-        fts = FTSIndex(tmp_path / "fts.db")
+        fts = FTSIndex(tmp_path / "fts.db", create=True)
         rec_with = _make_record(
             chunk_id="m1",
             content="run_tts method yields audio frames",
@@ -1130,7 +1158,7 @@ class TestFTSCallGraphFilters:
 
     def test_calls_filter_matches(self, tmp_path: Path):
         """FTS search with calls filter returns matching records."""
-        fts = FTSIndex(tmp_path / "fts.db")
+        fts = FTSIndex(tmp_path / "fts.db", create=True)
         rec_with = _make_record(
             chunk_id="m1",
             content="process_frame calls push_frame to forward data",
@@ -1153,7 +1181,7 @@ class TestFTSCallGraphFilters:
 
     def test_yields_filter_no_partial_match(self, tmp_path: Path):
         """Yields filter does not match partial substrings."""
-        fts = FTSIndex(tmp_path / "fts.db")
+        fts = FTSIndex(tmp_path / "fts.db", create=True)
         rec = _make_record(
             chunk_id="m1",
             content="yields TTSAudioRawFrame from method body",
@@ -1172,7 +1200,7 @@ class TestVectorCallGraphFilters:
 
     def test_yields_post_filter(self, tmp_path: Path):
         """Vector search with yields filter returns only matching records."""
-        vi = VectorIndex(tmp_path / "chroma")
+        vi = VectorIndex(tmp_path / "chroma", create=True)
         embedding = _random_embedding(42)
         rec_with = _make_record(
             chunk_id="v1",
@@ -1203,7 +1231,7 @@ class TestVectorCallGraphFilters:
 
     def test_calls_post_filter(self, tmp_path: Path):
         """Vector search with calls filter returns only matching records."""
-        vi = VectorIndex(tmp_path / "chroma")
+        vi = VectorIndex(tmp_path / "chroma", create=True)
         embedding = _random_embedding(44)
         rec_with = _make_record(
             chunk_id="v1",

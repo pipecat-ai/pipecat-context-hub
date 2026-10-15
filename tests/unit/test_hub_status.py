@@ -32,7 +32,7 @@ NOW = datetime(2026, 2, 26, tzinfo=UTC)
 def fts_index(tmp_path):
     """Create an FTSIndex with a temporary database."""
     db_path = tmp_path / "metadata.db"
-    index = FTSIndex(db_path)
+    index = FTSIndex(db_path, create=True)
     yield index
     index.close()
 
@@ -83,11 +83,11 @@ class TestFTSMetadata:
 
     def test_metadata_persists_across_reopens(self, tmp_path):
         db_path = tmp_path / "metadata.db"
-        index1 = FTSIndex(db_path)
+        index1 = FTSIndex(db_path, create=True)
         index1.set_metadata("persist_key", "persist_value")
         index1.close()
 
-        index2 = FTSIndex(db_path)
+        index2 = FTSIndex(db_path, create=True)
         assert index2.get_metadata("persist_key") == "persist_value"
         index2.close()
 

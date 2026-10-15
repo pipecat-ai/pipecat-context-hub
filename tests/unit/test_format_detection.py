@@ -104,7 +104,7 @@ class TestDetectIncompatibleFormat:
         # End-to-end: VectorIndex construction runs the probe before PersistentClient.
         _write_chroma_db(tmp_path / "chroma", sysdb_version=9)
         with pytest.raises(IncompatibleIndexFormatError):
-            VectorIndex(tmp_path / "chroma")
+            VectorIndex(tmp_path / "chroma", create=True)
 
 
 class _ConfigRaisingClient:
@@ -153,7 +153,7 @@ class TestPoisonedCollectionConfig:
         # attribute so the open returns a client whose collection load fails.
         monkeypatch.setattr("chromadb.PersistentClient", lambda **kwargs: _ConfigRaisingClient(exc))
         with pytest.raises(IncompatibleIndexFormatError) as exc_info:
-            VectorIndex(tmp_path / "chroma")
+            VectorIndex(tmp_path / "chroma", create=True)
         msg = str(exc_info.value)
         assert "refresh --force --reset-index" in msg
         assert RESET_INDEX_REMEDIATION in msg
@@ -167,7 +167,7 @@ class TestPoisonedCollectionConfig:
         # The translation must only fire on a genuine config-parse failure — a
         # fresh/empty directory creates its collection without parsing one, so a
         # real VectorIndex over an empty dir must open cleanly.
-        vi = VectorIndex(tmp_path / "chroma")  # no raise
+        vi = VectorIndex(tmp_path / "chroma", create=True)  # no raise
         try:
             assert vi._collection.count() == 0
         finally:

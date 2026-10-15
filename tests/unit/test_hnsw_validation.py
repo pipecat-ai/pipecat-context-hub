@@ -101,7 +101,7 @@ def test_field_corruption_rejected_before_native_open(
     before = {p.name: p.read_bytes() for p in root.rglob("*") if p.is_file()}
     with patch("pipecat_context_hub.services.index.vector.chromadb.PersistentClient") as native:
         with pytest.raises(IncompatibleIndexFormatError, match="corrupt persisted HNSW") as error:
-            VectorIndex(root)
+            VectorIndex(root, create=True)
         native.assert_not_called()
     assert str(FIELD_LINK_SIZE) in str(error.value)
     assert "289406976" in str(error.value)  # capacity-based conservative bound
@@ -130,7 +130,7 @@ def test_unreadable_header_refuses_native_open(
     (segment / "header.bin").write_bytes(header)
     with patch("pipecat_context_hub.services.index.vector.chromadb.PersistentClient") as native:
         with pytest.raises(IncompatibleIndexFormatError, match="persisted HNSW header"):
-            VectorIndex(root)
+            VectorIndex(root, create=True)
         native.assert_not_called()
 
 
@@ -154,7 +154,7 @@ def test_healthy_native_graph_reopens_and_queries(tmp_path: Path) -> None:
     )
     client.close()
     assert list(root.glob("*/header.bin")), "must exercise an actually persisted HNSW graph"
-    index = VectorIndex(root)
+    index = VectorIndex(root, create=True)
     try:
         assert index._collection.count() == 110
         assert index._collection.query(query_embeddings=[[0.0, 1.0, 2.0]], n_results=1)["ids"] == [
@@ -201,7 +201,7 @@ def test_vector_upsert_runs_write_guard(tmp_path: Path) -> None:
     """A guard failure must surface from VectorIndex.upsert, not be swallowed."""
     from tests.unit.test_index_store import _make_record
 
-    index = VectorIndex(tmp_path / "chroma")
+    index = VectorIndex(tmp_path / "chroma", create=True)
     try:
         with patch.object(
             HnswWriteGuard,
@@ -222,7 +222,7 @@ def test_vector_upsert_checks_guard_after_every_batch(
     from tests.unit.test_index_store import _make_records
 
     monkeypatch.setattr("pipecat_context_hub.services.index.vector._CHROMA_BATCH_SIZE", 2)
-    index = VectorIndex(tmp_path / "chroma")
+    index = VectorIndex(tmp_path / "chroma", create=True)
     try:
         with patch.object(HnswWriteGuard, "check") as check:
             index.upsert(_make_records(5))
@@ -307,18 +307,18 @@ class TestCompact:
         from tests.unit.test_index_store import _make_records
 
         chroma = tmp_path / "chroma"
-        index = VectorIndex(chroma)
+        index = VectorIndex(chroma, create=True)
         records = _make_records(1200)
         index.upsert(records)
         for _ in range(3):  # what --force does: delete everything, add it back
             index.delete_by_content_type("doc")
             index.upsert(records)
         index.close()
-        index = VectorIndex(chroma)
+        index = VectorIndex(chroma, create=True)
         index.compact()
         index.close()
 
-        index = VectorIndex(chroma)
+        index = VectorIndex(chroma, create=True)
         try:
             assert index._collection.count() == 1200
             got = index._collection.get(ids=["chunk-7"], include=["documents", "embeddings"])
@@ -334,7 +334,7 @@ class TestCompact:
     def test_failed_copy_keeps_the_old_index(self, tmp_path: Path) -> None:
         from tests.unit.test_index_store import _make_records
 
-        index = VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma", create=True)
         try:
             index.upsert(_make_records(50))
             with patch.object(index._collection.__class__, "get", side_effect=RuntimeError("boom")):
@@ -453,7 +453,7 @@ class TestCompactSwap:
         from tests.unit.test_index_store import _make_records
 
         monkeypatch.setattr("pipecat_context_hub.services.index.vector._CHROMA_BATCH_SIZE", 2)
-        index = VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma", create=True)
         try:
             index.upsert(_make_records(5))
             with patch.object(
@@ -474,7 +474,7 @@ class TestCompactSwap:
         old collection is still ``latest`` (it used to be deleted first)."""
         from tests.unit.test_index_store import _make_records
 
-        index = VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma", create=True)
         try:
             index.upsert(_make_records(30))
             real_modify = index._collection.__class__.modify
@@ -544,7 +544,7 @@ class TestCompactSwap:
         from tests.unit.test_index_store import _make_records
 
         chroma = tmp_path / "chroma"
-        index = VectorIndex(chroma)
+        index = VectorIndex(chroma, create=True)
         try:
             index.upsert(_make_records(30))
             real_modify = index._collection.__class__.modify
@@ -567,7 +567,7 @@ class TestCompactSwap:
 
         with pytest.raises(InterruptedCompactionError):
             VectorIndex(chroma)  # a reader
-        index = VectorIndex(chroma, recover=True)  # how refresh opens it
+        index = VectorIndex(chroma, recover=True, create=True)  # how refresh opens it
         try:
             assert index._collection.count() == 30
             assert index._collection.name == COLLECTION_NAME
@@ -582,7 +582,7 @@ class TestCompactSwap:
         from pipecat_context_hub.services.index.errors import CompactionSwapError
         from tests.unit.test_index_store import _make_records
 
-        index = VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma", create=True)
         try:
             index.upsert(_make_records(30))
             real_modify = index._collection.__class__.modify
@@ -609,12 +609,12 @@ class TestCompactSwap:
         from tests.unit.test_index_store import _make_records
 
         chroma = tmp_path / "chroma"
-        index = VectorIndex(chroma)
+        index = VectorIndex(chroma, create=True)
         index.upsert(_make_records(20))
         index._collection.modify(name=COMPACT_BACKUP_NAME)  # state after the first rename
         index.close()
 
-        index = VectorIndex(chroma, recover=True)  # how refresh opens it
+        index = VectorIndex(chroma, recover=True, create=True)  # how refresh opens it
         try:
             assert index._collection.count() == 20
             assert [c.name for c in index._client.list_collections()] == ["latest"]
@@ -632,7 +632,7 @@ class TestCompactSwap:
         from tests.unit.test_index_store import _make_records
 
         chroma = tmp_path / "chroma"
-        index = VectorIndex(chroma)
+        index = VectorIndex(chroma, create=True)
         index.upsert(_make_records(20))
         index._collection.modify(name=COMPACT_BACKUP_NAME)  # state after the first rename
         index.close()
@@ -664,7 +664,7 @@ class TestReaderNeverCreates:
         from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
 
         chroma = tmp_path / "chroma"
-        VectorIndex(chroma).close()  # built ...
+        VectorIndex(chroma, create=True).close()  # built ...
         client: Any = chromadb.PersistentClient(path=str(chroma))
         try:
             client.delete_collection(COLLECTION_NAME)  # ... then lost
@@ -678,7 +678,7 @@ class TestReaderNeverCreates:
             assert client.list_collections() == []
         finally:
             client.close()
-        VectorIndex(chroma).close()  # writers (refresh) still create it
+        VectorIndex(chroma, create=True).close()  # writers (refresh) still create it
 
 
 _MASTER = "SELECT name FROM sqlite_master"

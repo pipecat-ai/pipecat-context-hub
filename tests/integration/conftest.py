@@ -35,7 +35,7 @@ def tmp_storage_config(tmp_path: Path):
 @pytest.fixture()
 def index_store(tmp_storage_config: StorageConfig):
     """Per-test IndexStore backed by tmp dir."""
-    store = IndexStore(tmp_storage_config)
+    store = IndexStore(tmp_storage_config, create=True)
     yield store
     store.close()
 

@@ -48,7 +48,7 @@ def seeded_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     home = tmp_path_factory.mktemp("serve_lifetime_home")
     data_dir = home / ".pipecat-context-hub"
     storage = StorageConfig(data_dir=data_dir)
-    store = IndexStore(storage)
+    store = IndexStore(storage, create=True)
     try:
         writer = EmbeddingIndexWriter(store, EmbeddingService(EmbeddingConfig()))
         record = ChunkedRecord(

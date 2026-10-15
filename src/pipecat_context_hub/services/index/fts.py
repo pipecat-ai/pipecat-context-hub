@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
@@ -85,9 +86,17 @@ class FTSIndex:
     filtering. Data persists in a SQLite database file on disk.
     """
 
-    def __init__(self, sqlite_path: Path) -> None:
+    def __init__(self, sqlite_path: Path, *, create: bool = False) -> None:
+        """Open the keyword index at *sqlite_path*.
+
+        *create* lets the open create the database when it is missing; only
+        writers (``refresh``) pass True. A reader open of a missing database
+        raises :class:`MissingKeywordIndexError` and creates nothing.
+        """
         self._sqlite_path = sqlite_path
         self._lock = threading.RLock()
+        if not create and not sqlite_path.is_file():
+            raise MissingKeywordIndexError(sqlite_path)
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
         self._closed = False

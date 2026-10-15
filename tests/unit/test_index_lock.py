@@ -382,7 +382,7 @@ class TestReopeningIndexStore:
 
         data_dir = tmp_path / "hub"
         storage = StorageConfig(data_dir=data_dir)
-        seed = IndexStore(storage)
+        seed = IndexStore(storage, create=True)
         asyncio.run(seed.upsert([_make_record("old", embedding=[1.0, 0.0])]))
         seed.close()
 
@@ -397,7 +397,7 @@ class TestReopeningIndexStore:
             from pathlib import Path
             from pipecat_context_hub.services.index.vector import VectorIndex
             from tests.unit.test_index_store import _make_record
-            index = VectorIndex(Path({str(storage.chroma_path)!r}))
+            index = VectorIndex(Path({str(storage.chroma_path)!r}), create=True)
             index.upsert([_make_record("new", embedding=[0.0, 1.0])])
             index.close()
             """

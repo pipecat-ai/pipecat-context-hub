@@ -979,7 +979,7 @@ class TestGitHubRepoIngester:
         )
 
         config = self._make_config(tmp_path)
-        store = IndexStore(config.storage)
+        store = IndexStore(config.storage, create=True)
         monkeypatch.setattr(
             store._fts,
             "upsert",
