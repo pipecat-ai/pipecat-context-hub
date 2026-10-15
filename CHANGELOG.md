@@ -54,7 +54,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   earlier but absent from that run's config keeps its keyword records with no
   vectors (re-add it for that run, or `--prune` it). A corrupt keyword database, or
   one with a schema the index cannot use, makes `refresh` exit 2 with the
-  `--reset-index` remedy, as the readers do (a locked or busy one is not reported so).
+  `--reset-index` remedy, as the readers do (a locked, busy or unreadable-by-permissions
+  one is not: readers report it with a retry hint).
   Opening an initialized keyword database no longer writes to it; `refresh`
   completes an incomplete one and rebuilds its full-text table from the stored
   records in one transaction, so a failed rebuild is retried by the next `refresh`. The dashboard
@@ -84,7 +85,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   are ignored (with a warning, proceeding unlocked) if they are a symlink, another
   user owns them, or they are not a regular file with a single link; they are
   opened without following symlinks (on Windows, which lacks `O_NOFOLLOW`, a
-  symlink is refused before and after the open).
+  symlink is refused before and after the open). `refresh --reset-index` now exits 1
+  instead of rebuilding when the index files survive the delete (on Windows, a running
+  `serve` holds them open: stop it, then retry).
 - **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
   unsafe to keep using; the incompatible-format and corrupt-HNSW errors subclass
   it. Ingesters re-raise it rather than recording one more per-source error, so a

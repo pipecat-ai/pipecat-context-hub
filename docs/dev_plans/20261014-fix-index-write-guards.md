@@ -55,13 +55,14 @@ established; the open-time check only fires when an index is opened.
    (`IndexStore.vector_empty`, e.g. created beside a keyword half with no rows
    but surviving markers), the refresh body (not the open helper, which writes
    no metadata) calls `_distrust_skip_markers`: it drops `docs:content_hash`
-   and flags every indexed repo `repo:*:cleanup_failed` (which the skip
-   shortcut honours and a successful re-ingest clears) while keeping its
+   and flags every indexed repo `repo:*:vector_empty` (which the skip
+   shortcut honours, like `repo:*:cleanup_failed`, and a successful re-ingest
+   or the repo's cleanup clears along with it) while keeping its
    `repo:*:commit_sha`, through which the stale-repo cleanup and the
    tainted-ref purge find repos. So a source whose fetch fails in that run is
    re-ingested by the next plain refresh instead of staying keyword-only. The
    marker keys are built and parsed only through `cli.py`'s `_DOCS_HASH_KEY` /
-   `_repo_sha_key` / `_repo_slug_of_sha_key` / `_repo_cleanup_failed_key`. An open writes only an incomplete keyword schema
+   `_repo_sha_key` / `_repo_slug_of_sha_key` / `_repo_reingest_flag_keys`. An open writes only an incomplete keyword schema
    (`refresh` completes it and rebuilds the FTS table from `chunks` in one
    transaction, so a failed rebuild is retried next time); a reader refuses one.
    A keyword database `FTSIndex` cannot use (any SQLite result code other than
@@ -69,7 +70,9 @@ established; the open-time check only fires when an index is opened.
    PROTOCOL, e.g. NOTADB, CORRUPT, or SQLITE_ERROR for an unusable schema) raises
    `CorruptKeywordIndexError` (an `IndexUnavailableError` carrying
    `RESET_INDEX_REMEDIATION`), so `refresh` exits 2 with the `--reset-index`
-   remedy, as readers report it; a transient error propagates unchanged. One empty-index refusal (`IndexNotBuiltError`) serves
+   remedy, as readers report it; a transient error propagates unchanged (a
+   reader reports it with a retry hint, never the reset remedy, which it keeps
+   only for unclassified failures). One empty-index refusal (`IndexNotBuiltError`) serves
    both a missing index and an open one with 0 records.
    The dashboard scripts open through `reopening.open_index_for_export` (the
    same `open_ready_index_store`, but taking `refresh_excluded` itself, since
@@ -153,6 +156,13 @@ control, so the pre-load walk is the real defence.
   outside it deletes or replaces one while it is held, the next process locks a
   new inode and two holders coexist. An identity check at acquire time cannot
   catch a removal after it, so none is added on POSIX.
+- `refresh --reset-index` refuses (exit 1) to rebuild when the keyword database
+  or Chroma directory survived the delete (Windows refuses to delete files a
+  running `serve` holds open); it does not stop `serve` itself.
+- The keyword schema check is by object name only (as `CREATE ... IF NOT
+  EXISTS` is): a hand-edited database reusing the names with other shapes opens
+  and fails at query time. The hub writes the schema in one transaction, so
+  only out-of-band tampering produces that; not validated further.
 - `refresh --force` after a lost vector collection re-ingests only the sources
   in its configuration; a retained repo absent from it (kept, not pruned) stays
   keyword-only. Documented in docs/README.md (re-add it for that run, or

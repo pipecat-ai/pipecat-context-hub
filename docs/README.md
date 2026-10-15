@@ -552,6 +552,11 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   after the open, which can already have created an empty file at its target
   (and the start-of-refresh timestamp bump goes by path); doing that needs
   symlink privilege and write access to the data dir's parent, and is accepted.
+  The hub never deletes or replaces a lock file; if something outside it does
+  while the lock is held, the next process locks the new file and two refreshes
+  can overlap (accepted on every platform). `--reset-index` exits **1** without
+  rebuilding when the index files survive its delete (on Windows, a running
+  `serve` holds them open: stop it, then retry).
   **While a refresh runs, nothing reads the index:** `serve` answers every tool
   call with an error saying "retry in 60-120 seconds" (a `serve` started
   mid-refresh still connects, with the index unopened), and one-shot CLI
