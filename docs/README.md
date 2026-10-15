@@ -536,7 +536,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   `refresh` first checks free space on the data-dir volume (default 5 GB;
   `PIPECAT_HUB_MIN_FREE_GB=0` disables, other values set the threshold; with
   `--reset-index` the check runs after the delete has freed the space) and
-  takes an exclusive `refresh.lock` in the data dir, so two refreshes can't
+  takes an exclusive `refresh.lock` (a hidden sibling file of the data dir,
+  e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
+  it), so two refreshes can't
   interleave writes to the same Chroma HNSW files. A running `serve` is only
   warned about (restart your MCP client afterwards to reload the rebuilt
   index). During writes the vector index re-checks the persisted HNSW graph

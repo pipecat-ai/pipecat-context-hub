@@ -17,6 +17,7 @@ from pipecat_context_hub.shared.index_lock import (
     SERVE_LOCK,
     IndexLock,
     IndexLockedError,
+    lock_path,
     serve_is_running,
 )
 
@@ -48,7 +49,7 @@ def test_shared_locks_coexist_but_block_exclusive(tmp_path: Path) -> None:
 
 def test_serve_is_running_reflects_shared_lock(tmp_path: Path) -> None:
     assert serve_is_running(tmp_path) is False  # no lock file yet; creates nothing
-    assert not (tmp_path / SERVE_LOCK).exists()
+    assert not lock_path(tmp_path, SERVE_LOCK).exists()
     serve = IndexLock(tmp_path, SERVE_LOCK, exclusive=False)
     serve.acquire()
     assert serve_is_running(tmp_path) is True
@@ -151,3 +152,40 @@ def test_unsupported_locking_fails_open(tmp_path: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(fcntl, "flock", boom)
     IndexLock(tmp_path, REFRESH_LOCK, exclusive=True).acquire()
+
+
+def test_lock_survives_deleting_the_data_dir(tmp_path: Path) -> None:
+    """`--reset-index` rmtree's the data dir; the lock must not live inside it."""
+    import shutil
+
+    data_dir = tmp_path / "hub"
+    data_dir.mkdir()
+    held = IndexLock(data_dir, REFRESH_LOCK, exclusive=True)
+    held.acquire()
+    shutil.rmtree(data_dir)
+    data_dir.mkdir()
+    with pytest.raises(IndexLockedError):
+        IndexLock(data_dir, REFRESH_LOCK, exclusive=True).acquire()
+    held.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_every_spelling_of_a_data_dir_shares_one_lock(tmp_path: Path) -> None:
+    real = tmp_path / "hub"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    assert lock_path(real, REFRESH_LOCK) == lock_path(alias, REFRESH_LOCK)
+    with IndexLock(real, REFRESH_LOCK, exclusive=True):
+        with pytest.raises(IndexLockedError):
+            IndexLock(alias, REFRESH_LOCK, exclusive=True).acquire()
+
+
+def test_unwritable_lock_location_fails_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def deny(*_a: object, **_k: object) -> int:
+        raise PermissionError(errno.EACCES, "denied")
+
+    monkeypatch.setattr("os.open", deny)
+    IndexLock(tmp_path / "hub", REFRESH_LOCK, exclusive=True).acquire()

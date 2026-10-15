@@ -15,9 +15,10 @@ established; the open-time check only fires when an index is opened.
    created; `VectorIndex.upsert` calls it after each write. Old orphan
    segments are ignored so they can't block a rebuild.
 2. Disk preflight: `refresh` refuses below 5 GB free (`PIPECAT_HUB_MIN_FREE_GB`).
-3. `shared/index_lock.py`: exclusive `refresh.lock` for `refresh` (re-taken
-   after `--reset-index`, which deletes the data dir); shared `serve.lock` for
-   `serve`. A live `serve` only produces a warning: refresh-while-serving is
+3. `shared/index_lock.py`: exclusive `refresh.lock` for `refresh`; shared `serve.lock` for
+   `serve`. Lock files are siblings of the data dir (`.<dirname>.refresh.lock`),
+   not inside it, so `--reset-index`'s rmtree can't unlink a held lock. Locking
+   fails open if the filesystem doesn't support flock. A live `serve` only produces a warning: refresh-while-serving is
    the normal workflow and nothing shows it is the trigger.
 4. Cherry-picked the open-time `validate_persisted_hnsw` code and tests from
    `ccb4ca2` (currently only on `feature/chatgpt-local-plugin`).

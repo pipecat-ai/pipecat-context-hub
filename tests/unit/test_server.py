@@ -739,6 +739,8 @@ class TestServerInstructions:
             guided_remediation = "pipecat-context-hub refresh --force --reset-index"
 
         monkeypatch.chdir(tmp_path)
+        # serve takes a lock beside the data dir: keep it out of the real home.
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(tmp_path / "hub"))
         with (
             patch("pipecat_context_hub.services.index.store.IndexStore", index_store),
             caplog.at_level("ERROR", logger="pipecat_context_hub.cli"),

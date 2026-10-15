@@ -154,9 +154,7 @@ def _require_free_disk(data_dir: Path, *, min_free: int | None = None) -> None:
         )
 
 
-def _acquire_refresh_lock_or_exit(
-    data_dir: Path, logger: logging.Logger, *, warn_if_serving: bool = True
-) -> IndexLock:
+def _acquire_refresh_lock_or_exit(data_dir: Path, logger: logging.Logger) -> IndexLock:
     """Take the exclusive refresh lock, released when the click command ends.
 
     Two refreshes on one data dir interleave writes to the same Chroma HNSW
@@ -172,7 +170,7 @@ def _acquire_refresh_lock_or_exit(
             "Wait for it to finish; concurrent refreshes can corrupt the vector index."
         ) from exc
     click.get_current_context().call_on_close(lock.release)
-    if warn_if_serving and serve_is_running(data_dir):
+    if serve_is_running(data_dir):
         logger.warning(
             "A `serve` process has this index open. Refresh will proceed, but restart "
             "the MCP server afterwards so it reloads the rebuilt index."
@@ -1048,7 +1046,7 @@ def refresh(
     # frees: its check runs after the delete, below.
     if not reset_index:
         _require_free_disk(config.storage.data_dir)
-    refresh_lock = _acquire_refresh_lock_or_exit(config.storage.data_dir, logger)
+    _acquire_refresh_lock_or_exit(config.storage.data_dir, logger)
 
     # Fail fast on an incompatible on-disk index before spending a network
     # round-trip on the framework-pin pre-flight below. Skipped when
@@ -1111,12 +1109,6 @@ def refresh(
     if reset_index:
         logger.warning("Deleting local index storage before refresh")
         _delete_local_index_storage(config.storage.data_dir)
-        # The delete unlinked refresh.lock; a later refresh would lock a new
-        # inode and not exclude this one. Re-take the lock on the new file.
-        refresh_lock.release()
-        refresh_lock = _acquire_refresh_lock_or_exit(
-            config.storage.data_dir, logger, warn_if_serving=False
-        )
         _require_free_disk(config.storage.data_dir)
         force = True
         # Storage was just deleted, so this always opens a fresh index — the

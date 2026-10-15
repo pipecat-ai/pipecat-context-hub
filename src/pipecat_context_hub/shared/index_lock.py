@@ -60,15 +60,33 @@ def _fail_open(exc: OSError) -> bool:
     return True
 
 
+def lock_path(data_dir: Path, name: str) -> Path:
+    """Where the named lock for ``data_dir`` lives.
+
+    A *sibling* of the data dir (``.<dirname>.<name>``), not a file inside it:
+    ``refresh --reset-index`` rmtree's the data dir, which would unlink an
+    in-tree lock out from under a running refresh/serve and let the next
+    process lock a fresh inode. Resolved first so every spelling of the same
+    directory (symlink, ``~``, relative) shares one lock.
+    """
+    try:
+        resolved = data_dir.expanduser().resolve()
+    except (OSError, RuntimeError):
+        resolved = data_dir.expanduser().absolute()
+    if resolved.parent == resolved:  # filesystem root: nowhere to put a sibling
+        return resolved / name
+    return resolved.parent / f".{resolved.name.lstrip('.')}.{name}"
+
+
 class IndexLock:
-    """Non-blocking advisory lock on ``<data_dir>/<name>``.
+    """Non-blocking advisory lock beside the data dir (see :func:`lock_path`).
 
     ``exclusive=True`` fails if anyone holds the lock in any mode.
     ``exclusive=False`` (shared) fails only if an exclusive holder exists.
     """
 
     def __init__(self, data_dir: Path, name: str, *, exclusive: bool) -> None:
-        self._path = data_dir / name
+        self._path = lock_path(data_dir, name)
         self._exclusive = exclusive
         self._fd: int | None = None
 
@@ -78,8 +96,14 @@ class IndexLock:
         Retries let a starting ``serve`` ride out the instant a ``refresh``
         probe (``serve_is_running``) holds the lock exclusively.
         """
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:  # unwritable parent: locking is best-effort
+            logger.debug(
+                "Cannot create lock file %s (%s); continuing without a lock", self._path, exc
+            )
+            return
         for attempt in range(max(attempts, 1)):
             if _try_lock(fd, exclusive=self._exclusive):
                 self._fd = fd
@@ -108,12 +132,12 @@ class IndexLock:
 
 
 def serve_is_running(data_dir: Path) -> bool:
-    """True if some process holds the shared ``serve.lock`` on ``data_dir``.
+    """True if some process holds the shared ``serve.lock`` for ``data_dir``.
 
     Probes by attempting an exclusive lock and releasing it immediately; never
     blocks and never creates the data dir.
     """
-    if not (data_dir / SERVE_LOCK).exists():
+    if not lock_path(data_dir, SERVE_LOCK).exists():
         return False
     probe = IndexLock(data_dir, SERVE_LOCK, exclusive=True)
     try:
