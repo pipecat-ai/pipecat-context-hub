@@ -185,6 +185,7 @@ def create_server(
     index_store: IndexStore | None = None,
     reranker_status_provider: Callable[[], RerankerStatus] | None = None,
     idle_tracker: IdleTracker | None = None,
+    unavailable_reason: Callable[[], str | None] | None = None,
 ) -> Server:
     """Create and configure the MCP server with all tool handlers.
 
@@ -195,6 +196,11 @@ def create_server(
     current reranker state. Evaluated on every ``get_hub_status`` call so
     post-startup availability changes (e.g. first-query load failures)
     are reflected. When omitted, reranking is reported as disabled.
+
+    *unavailable_reason* is a zero-arg callable evaluated before every tool
+    call. When it returns a message (e.g. an index rebuild is in progress),
+    the call is answered with that message as a tool error instead of touching
+    the index, so the calling agent can retry later.
     """
     tool_registry = tuple(iter_tool_definitions(include_hub_status=index_store is not None))
 
@@ -242,6 +248,14 @@ def create_server(
         try:
             name = params.name
             args = params.arguments or {}
+
+            if unavailable_reason is not None:
+                unavailable = unavailable_reason()
+                if unavailable:
+                    return types.CallToolResult(
+                        content=[types.TextContent(type="text", text=unavailable)],
+                        is_error=True,
+                    )
 
             # get_hub_status has a different dispatch signature (needs index_store)
             if name == "get_hub_status" and index_store is not None:

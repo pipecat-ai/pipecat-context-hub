@@ -286,6 +286,30 @@ class TestToolDispatch:
             name for name, _, _ in (*_BASE_TOOLS, _HUB_STATUS_TOOL)
         }
 
+    async def test_unavailable_reason_answers_without_touching_the_index(self, mock_retriever):
+        server = create_server(mock_retriever, unavailable_reason=lambda: "retry in 60-120 seconds")
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        result = await entry.handler(
+            cast(Any, None),
+            types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
+        )
+        assert isinstance(result, types.CallToolResult)
+        assert result.is_error is True
+        assert cast(types.TextContent, result.content[0]).text == "retry in 60-120 seconds"
+        mock_retriever.search_docs.assert_not_called()
+
+    async def test_unavailable_reason_none_dispatches_normally(self, mock_retriever):
+        server = create_server(mock_retriever, unavailable_reason=lambda: None)
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        mock_retriever.search_docs.side_effect = RuntimeError("reached the handler")
+        with pytest.raises(RuntimeError, match="reached the handler"):
+            await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
+            )
+
     async def test_unknown_tool_preserves_application_error(self, mock_retriever):
         server = create_server(mock_retriever)
         entry = server.get_request_handler("tools/call")

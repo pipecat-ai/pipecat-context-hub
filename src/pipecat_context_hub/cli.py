@@ -7,6 +7,7 @@ subcommands registered from :mod:`pipecat_context_hub.cli_query`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -14,11 +15,12 @@ import math
 import os
 import shutil
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 
@@ -28,9 +30,11 @@ from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.index_lock import (
     REFRESH_LOCK,
+    REFRESH_IN_PROGRESS_MESSAGE,
     SERVE_LOCK,
     IndexLock,
     IndexLockedError,
+    refresh_in_progress,
     serve_is_running,
 )
 from pipecat_context_hub.shared.paths import (
@@ -110,6 +114,56 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
 
 
+def _open_index_for_serve(
+    index_store: Any, config: HubConfig, logger: logging.Logger
+) -> dict[str, Any]:
+    """Open the index behind `serve`'s store proxy and return its stats.
+
+    Exits with `_EXIT_INDEX_UNREADY` (after closing whatever came up) when the
+    index is incompatible, unreadable, or empty, with the same operator
+    guidance the one-shot CLI gives.
+    """
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+
+    try:
+        stats: dict[str, Any] = index_store.get_index_stats()
+    except IncompatibleIndexFormatError as exc:
+        # Specific, non-mutating signal: the on-disk Chroma format predates 1.x,
+        # or the persisted HNSW graph is corrupt. The probe ran before
+        # PersistentClient, so nothing was written.
+        with contextlib.suppress(Exception):
+            index_store.close()
+        # exc.__str__ embeds the absolute chroma_path; redact for front-door
+        # parity with the cli_query one-shot error sites.
+        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+    except Exception as exc:
+        # IndexStore.__init__ opens two backends (Chroma + SQLite) without
+        # rolling back on partial failure; close() whatever did come up.
+        with contextlib.suppress(Exception):
+            index_store.close()
+        logger.error(
+            "Failed to open index at %s: %s. "
+            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild. %s",
+            _redact_home(config.storage.data_dir),
+            redact_home_in_text(str(exc)),
+            bug_report_hint(),
+        )
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+
+    if stats.get("total", 0) == 0:
+        logger.error(
+            "Index at %s is empty (0 records). "
+            "MCP clients would hang waiting for results. "
+            "Run 'uv run pipecat-context-hub refresh' before 'serve'. %s",
+            _redact_home(config.storage.data_dir),
+            bug_report_hint(),
+        )
+        index_store.close()
+        raise SystemExit(_EXIT_INDEX_UNREADY)
+    return stats
+
+
 # Free space `refresh` requires on the data-dir volume before it starts. The
 # index plus repo clones are ~2 GB; a runaway HNSW file once consumed 350 GB
 # and left the machine with 4 GB free, so refuse early with room to spare.
@@ -172,8 +226,9 @@ def _acquire_refresh_lock_or_exit(data_dir: Path, logger: logging.Logger) -> Ind
     click.get_current_context().call_on_close(lock.release)
     if serve_is_running(data_dir):
         logger.warning(
-            "A `serve` process has this index open. Refresh will proceed, but restart "
-            "the MCP server afterwards so it reloads the rebuilt index."
+            "A `serve` process has this index open. Refresh will proceed; the server "
+            "answers tool calls with a retry-in-60-120-seconds message meanwhile and "
+            "reopens the rebuilt index afterwards."
         )
     return lock
 
@@ -719,8 +774,6 @@ def serve(ctx: click.Context) -> None:
     from pipecat_context_hub.server.main import create_server
     from pipecat_context_hub.server.transport import serve_stdio
     from pipecat_context_hub.services.embedding import EmbeddingService
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
-    from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
     from pipecat_context_hub.shared.tracking import IdleTracker
@@ -750,49 +803,23 @@ def serve(ctx: click.Context) -> None:
     except (IndexLockedError, OSError):
         logger.debug("Could not take the serve lock; refresh won't see this server", exc_info=True)
 
-    index_store: IndexStore | None = None
-    try:
-        index_store = IndexStore(config.storage)
-        stats = index_store.get_index_stats()
-    except IncompatibleIndexFormatError as exc:
-        # Specific, non-mutating signal: the on-disk Chroma format predates 1.x.
-        # The probe ran before PersistentClient, so nothing was written.
-        if index_store is not None:
-            try:
-                index_store.close()
-            except Exception:
-                logger.exception("Failed to close partially-opened index store")
-        # exc.__str__ embeds the absolute chroma_path; redact it for front-door
-        # parity with the cli_query one-shot error sites.
-        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
-    except Exception as exc:
-        # IndexStore.__init__ opens two backends (Chroma + SQLite) without
-        # rolling back on partial failure; close() whatever did come up.
-        if index_store is not None:
-            try:
-                index_store.close()
-            except Exception:
-                logger.exception("Failed to close partially-opened index store")
-        logger.error(
-            "Failed to open index at %s: %s. "
-            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild. %s",
-            _redact_home(config.storage.data_dir),
-            redact_home_in_text(str(exc)),
-            bug_report_hint(),
-        )
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+    from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
+    from pipecat_context_hub.services.index.store import IndexStore as _IndexStore
 
-    if stats.get("total", 0) == 0:
-        logger.error(
-            "Index at %s is empty (0 records). "
-            "MCP clients would hang waiting for results. "
-            "Run 'uv run pipecat-context-hub refresh' before 'serve'. %s",
-            _redact_home(config.storage.data_dir),
-            bug_report_hint(),
+    # A running refresh is rewriting the index files; opening them now is unsafe
+    # (a likely trigger for the graph corruption in chroma#7510). Start anyway,
+    # with the index unopened, so the MCP client connects and its tool calls get
+    # a "retry in 60-120 seconds" answer instead of a dead server.
+    deferred_open = refresh_in_progress(config.storage.data_dir)
+    if deferred_open:
+        logger.warning(
+            "A `refresh` is running; deferring index open until it finishes. "
+            "Tool calls will ask the client to retry in 60-120 seconds."
         )
-        index_store.close()
-        raise SystemExit(_EXIT_INDEX_UNREADY)
+    index_store = ReopeningIndexStore(lambda: _IndexStore(config.storage))
+    stats: dict[str, Any] = {}
+    if not deferred_open:
+        stats = _open_index_for_serve(index_store, config, logger)
 
     # Startup banner: one line so operators can confirm version, data dir,
     # and content-type shape from an MCP JSONL trace. Helps diagnose
@@ -813,7 +840,7 @@ def serve(ctx: click.Context) -> None:
         _SERVER_VERSION,
         _redact_home(config.storage.data_dir),
         stats.get("total", 0),
-        counts_repr or "(empty)",
+        counts_repr or ("(deferred: refresh running)" if deferred_open else "(empty)"),
     )
 
     # From here on, any failure must close the index_store — otherwise a
@@ -897,11 +924,36 @@ def serve(ctx: click.Context) -> None:
             )
 
         idle_tracker = IdleTracker()
+
+        def _refresh_gate() -> str | None:
+            """Answer tool calls with a retry message while a refresh runs."""
+            if refresh_in_progress(config.storage.data_dir):
+                index_store.mark_stale()
+                return REFRESH_IN_PROGRESS_MESSAGE
+            return None
+
+        def _watch_for_refresh() -> None:
+            """Mark the index handle stale whenever a refresh starts.
+
+            A refresh rewrites the files under this long-lived handle, so after
+            it ends the next tool call must reopen the index rather than serve
+            the old in-memory graph — even if no call arrived mid-refresh.
+            """
+            while True:
+                time.sleep(2.0)
+                try:
+                    if refresh_in_progress(config.storage.data_dir):
+                        index_store.mark_stale()
+                except Exception:
+                    logger.debug("refresh watcher check failed", exc_info=True)
+
+        threading.Thread(target=_watch_for_refresh, name="refresh-watch", daemon=True).start()
         server = create_server(
             retriever,
-            index_store,
+            cast("IndexStore", index_store),
             reranker_status_provider=_reranker_status,
             idle_tracker=idle_tracker,
+            unavailable_reason=_refresh_gate,
         )
 
         def _close_index_store_on_watchdog_shutdown() -> None:
@@ -1758,6 +1810,20 @@ def refresh(
 
     try:
         asyncio.run(_run_refresh())
+
+        if force and not reset_index:
+            # `--force` deletes then re-adds every record, which leaves the
+            # deleted ones in the persisted HNSW graph (it grew by the whole
+            # corpus per forced refresh). Rebuild it from the live records.
+            # Non-fatal: the index is fully usable without it.
+            try:
+                kept = index_store.compact_vector()
+                logger.info("Compacted vector index after forced refresh (%d records)", kept)
+            except Exception:
+                logger.warning(
+                    "Vector index compaction failed; the index is valid but larger than needed",
+                    exc_info=True,
+                )
 
         duration = round(time.monotonic() - start, 1)
         logger.info(

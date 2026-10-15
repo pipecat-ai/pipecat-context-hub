@@ -1178,3 +1178,18 @@ class TestBadInput:
         assert result.exit_code == 1
         assert "doc_id or path" in result.stderr
         assert result.stdout == ""
+
+
+def test_query_exits_75_while_a_refresh_is_running(tmp_path: Path) -> None:
+    """One-shot queries must not open the index mid-refresh; stderr says to retry."""
+    from pipecat_context_hub.shared.index_lock import REFRESH_LOCK, IndexLock
+
+    with (
+        patch("pipecat_context_hub.services.index.store.IndexStore") as store_cls,
+        patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path / "hub")}),
+        IndexLock(tmp_path / "hub", REFRESH_LOCK, exclusive=True),
+    ):
+        result = CliRunner().invoke(main, ["check-deprecation", "PipelineTask"])
+    assert result.exit_code == 75
+    assert "Retry in 60-120 seconds" in result.output
+    store_cls.assert_not_called()

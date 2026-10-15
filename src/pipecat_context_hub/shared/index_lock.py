@@ -146,3 +146,27 @@ def serve_is_running(data_dir: Path) -> bool:
         return True
     probe.release()
     return False
+
+
+REFRESH_IN_PROGRESS_MESSAGE = (
+    "The Pipecat context index is being rebuilt by a running `refresh`, and reading it "
+    "mid-rebuild is unsafe. Retry in 60-120 seconds."
+)
+
+
+def refresh_in_progress(data_dir: Path) -> bool:
+    """True if a ``refresh`` currently holds its exclusive lock for ``data_dir``.
+
+    Probes with a non-blocking shared lock, so it never waits and never
+    creates the lock file. Readers (``serve``, the one-shot CLI) use it to
+    avoid opening or querying an index that a refresh is rewriting.
+    """
+    if not lock_path(data_dir, REFRESH_LOCK).exists():
+        return False
+    probe = IndexLock(data_dir, REFRESH_LOCK, exclusive=False)
+    try:
+        probe.acquire()
+    except IndexLockedError:
+        return True
+    probe.release()
+    return False

@@ -15,7 +15,8 @@ Design notes:
   payload an MCP client receives — so callers can pipe it to a parser. Logs
   and error messages go to stderr. Exit codes: 0 on success, 1 on invalid
   input, ``_EXIT_INDEX_UNREADY`` (2) when the local index is missing, empty,
-  or unreadable.
+  or unreadable, and ``_EXIT_REFRESH_IN_PROGRESS`` (75) when a ``refresh`` is
+  rewriting the index (stderr says to retry in 60-120 seconds).
 - Quiet by default: query commands downgrade logging to WARNING (explicit
   ``--log-level`` wins) and silence third-party model-loading chatter, since
   the captured stderr of a one-shot command lands in an agent's context.
@@ -42,6 +43,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
+from pipecat_context_hub.shared.index_lock import REFRESH_IN_PROGRESS_MESSAGE, refresh_in_progress
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
 from pipecat_context_hub.shared.paths import redact_home_in_text
 from pipecat_context_hub.shared.reranker import runtime_reranker_reason
@@ -73,6 +75,8 @@ def _echo_stderr_warning(text: str) -> None:
 # ``cli._EXIT_INDEX_UNREADY`` (enforced by tests/unit/test_cli_query.py).
 _EXIT_INDEX_UNREADY = 2
 _EXIT_BAD_INPUT = 1
+# sysexits EX_TEMPFAIL: a `refresh` is rewriting the index; retry shortly.
+_EXIT_REFRESH_IN_PROGRESS = 75
 
 
 class _SemanticMeta(NamedTuple):
@@ -327,6 +331,10 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     # IndexStore.__init__ opens two backends (Chroma + SQLite) and does not roll
     # back if a *post-construction* call (get_index_stats) then raises, so close
     # whatever came up before exiting — mirrors the guarded close `serve` does.
+    if refresh_in_progress(config.storage.data_dir):
+        _echo_stderr_warning(f"Error: {REFRESH_IN_PROGRESS_MESSAGE}")
+        raise SystemExit(_EXIT_REFRESH_IN_PROGRESS)
+
     index_store: IndexStore | None = None
     try:
         index_store = IndexStore(config.storage)

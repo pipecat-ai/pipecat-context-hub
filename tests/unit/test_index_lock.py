@@ -18,6 +18,7 @@ from pipecat_context_hub.shared.index_lock import (
     IndexLock,
     IndexLockedError,
     lock_path,
+    refresh_in_progress,
     serve_is_running,
 )
 
@@ -189,3 +190,60 @@ def test_unwritable_lock_location_fails_open(
 
     monkeypatch.setattr("os.open", deny)
     IndexLock(tmp_path / "hub", REFRESH_LOCK, exclusive=True).acquire()
+
+
+def test_refresh_in_progress_reflects_the_refresh_lock(tmp_path: Path) -> None:
+    data_dir = tmp_path / "hub"
+    assert refresh_in_progress(data_dir) is False
+    assert not lock_path(data_dir, REFRESH_LOCK).exists()  # probing creates nothing
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        assert refresh_in_progress(data_dir) is True
+    assert refresh_in_progress(data_dir) is False
+
+
+def test_a_running_serve_is_not_a_running_refresh(tmp_path: Path) -> None:
+    data_dir = tmp_path / "hub"
+    serve = IndexLock(data_dir, SERVE_LOCK, exclusive=False)
+    serve.acquire()
+    assert refresh_in_progress(data_dir) is False
+    serve.release()
+
+
+class TestReopeningIndexStore:
+    def test_opens_lazily_and_delegates(self) -> None:
+        from unittest.mock import MagicMock
+
+        from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
+
+        real = MagicMock()
+        real.get_metadata.return_value = "v"
+        factory = MagicMock(return_value=real)
+        store = ReopeningIndexStore(factory)
+        factory.assert_not_called()
+        assert store.get_metadata("k") == "v"
+        factory.assert_called_once()
+
+    def test_mark_stale_closes_and_reopens_on_next_use(self) -> None:
+        from unittest.mock import MagicMock
+
+        from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
+
+        first, second = MagicMock(), MagicMock()
+        factory = MagicMock(side_effect=[second])
+        store = ReopeningIndexStore(factory, initial=first)
+        store.mark_stale()
+        first.close.assert_not_called()  # marking never touches the live handle
+        store.get_index_stats()
+        first.close.assert_called_once()
+        second.get_index_stats.assert_called_once()
+        store.get_index_stats()
+        factory.assert_called_once()  # reopened exactly once
+
+    def test_close_does_not_open_the_index(self) -> None:
+        from unittest.mock import MagicMock
+
+        from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
+
+        factory = MagicMock()
+        ReopeningIndexStore(factory).close()
+        factory.assert_not_called()
