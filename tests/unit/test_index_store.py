@@ -858,7 +858,7 @@ class TestLostVectorHalf:
         store = IndexStore(config, recover=True, create=True, rebuild=True)
         try:
             assert store.vector_count() == 0
-            assert store.vector_lost
+            assert store.vector_empty
         finally:
             store.close()
         assert _collection_names(config) == ["latest"]
@@ -877,7 +877,6 @@ class TestLostVectorHalf:
 
         config = StorageConfig(data_dir=tmp_path / "hub-data")
         store = IndexStore(config, recover=True, create=True)  # first run
-        assert not store.vector_lost
         assert store.vector_empty  # created empty: no skip marker may vouch for it
         asyncio.run(store.upsert(_make_records(3)))
         store.close()
@@ -885,7 +884,6 @@ class TestLostVectorHalf:
             store = IndexStore(config, **kwargs)
             try:
                 assert store.vector_count() == 3
-                assert not store.vector_lost
                 assert not store.vector_empty
             finally:
                 store.close()

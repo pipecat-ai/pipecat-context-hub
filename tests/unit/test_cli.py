@@ -357,8 +357,7 @@ class TestRefreshCommand:
         import hashlib
 
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
-        mock_store.vector_lost = False  # no keyword records: nothing "lost"
-        mock_store.vector_empty = True  # ... but the vector half opened empty
+        mock_store.vector_empty = True  # no keyword records, but the vector half opened empty
         mock_store.get_counts_by_repo = MagicMock(return_value={})
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -404,7 +403,6 @@ class TestRefreshCommand:
         purge). Repo markers now survive; a source this run fails to fetch is
         still re-ingested next run (docs hash dropped, repo flagged)."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
-        mock_store.vector_lost = True
         mock_store.vector_empty = True
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -5394,7 +5392,7 @@ class TestRefreshLostVectorCollection:
 
         store = _open_index_store_or_exit(HubConfig(), logging.getLogger("test"), rebuild=True)
         try:
-            assert store.vector_lost and store.vector_empty
+            assert store.vector_empty
             assert store.get_all_metadata() == written
         finally:
             store.close()

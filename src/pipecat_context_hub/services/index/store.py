@@ -31,9 +31,6 @@ class IndexStore:
     Reads are dispatched to the appropriate backend based on the search type.
     """
 
-    #: Set by the open: the keyword half has records but the vector half has
-    #: none (it was lost; only a *rebuild* open gets past that, recreating it).
-    vector_lost: bool
     #: Set by the open: the vector half held no records (new, recreated, or
     #: emptied), so no skip marker in the keyword half vouches for vectors.
     vector_empty: bool
@@ -55,7 +52,7 @@ class IndexStore:
         touched (the keyword half's only possible earlier write is completing
         an incomplete schema, see :class:`FTSIndex`), unless *rebuild* (the
         caller re-ingests every source, refilling it) lets *create* recreate
-        it; :attr:`vector_lost` then reports that it did. Readers (and a
+        it; :attr:`vector_empty` then reports it. Readers (and a
         refresh without ``--force``) therefore never run on an index whose
         vector search would silently come back empty.
         """
@@ -82,8 +79,7 @@ class IndexStore:
             )
             # Keyword records with no vectors: only *rebuild* may proceed.
             self.vector_empty = vector.count() == 0
-            self.vector_lost = indexed and self.vector_empty
-            if self.vector_lost and not rebuild:
+            if indexed and self.vector_empty and not rebuild:
                 raise MissingVectorCollectionError(config.chroma_path)
         except BaseException:
             # Close what came up so callers don't inherit a leaked Chroma
