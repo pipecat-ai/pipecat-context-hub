@@ -532,6 +532,16 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   Variables table above. Tainted repos
   (`PIPECAT_HUB_TAINTED_REPOS`) are unaffected — they are always cleaned up,
   with or without `--prune`.
+- **`refresh` refuses to start: low disk, or another `refresh` running** —
+  `refresh` first checks free space on the data-dir volume (default 5 GB;
+  `PIPECAT_HUB_MIN_FREE_GB=0` disables, other values set the threshold) and
+  takes an exclusive `refresh.lock` in the data dir, so two refreshes can't
+  interleave writes to the same Chroma HNSW files. A running `serve` is only
+  warned about (restart your MCP client afterwards to reload the rebuilt
+  index). During writes the vector index re-checks the persisted HNSW graph
+  and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
+  header-derived bound — the runaway-file corruption that once filled a disk
+  with 350 GB. Recover with `refresh --force --reset-index`.
 - **`serve` exits immediately with code 2** — the index is empty or
   unopenable. Run `uvx pipecat-ai-context-hub refresh` (or
   `refresh --force --reset-index` if the error message mentions a failed

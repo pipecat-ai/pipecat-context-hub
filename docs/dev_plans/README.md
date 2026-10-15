@@ -7,6 +7,7 @@
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-10-14 | fix | Index write guards: post-write HNSW size check, refresh disk preflight, refresh/serve locks (runaway 325 GB `link_lists.bin`) | Complete | Claude | `fix/index-write-guards` | `20261014-fix-index-write-guards.md` |
 | 2026-10-02 | chore | Security update: PyJWT 2.15.0; integrates PR #137 (PR #136) | Complete (v0.8.1; PR #136) | Dependabot / vr000m | `dependabot/uv/pyjwt-2.15.0` | _(no plan file)_ |
 | 2026-10-02 | chore | Security updates: urllib3 2.8.0 and OAuthLib 4.0.0 (PR #137) | Complete (v0.8.1; PR #137; integrated via #136) | Dependabot / vr000m | `dependabot/uv/urllib3-2.8.0` | _(no plan file)_ |
 | 2026-09-09 | chore | Migrate `mcp` Python SDK 1.x → 2.x (lowlevel `Server` API rewrite; issue #127) | Complete (v0.8.0; PR #132) | Claude | `chore/mcp-sdk-2x-migration` | `20260909-chore-mcp-sdk-2x-migration.md` |
