@@ -40,6 +40,10 @@ records left in place, with a warning naming the repo and record count. Pass
 readable from `config.toml`), to actually delete that data. Tainted repos
 (`PIPECAT_HUB_TAINTED_REPOS`) are always cleaned up regardless of `--prune`.
 
+`refresh` refuses to start with under 5 GB free on the data-dir volume;
+`PIPECAT_HUB_MIN_FREE_GB` (invocation-scoped like `PIPECAT_HUB_PRUNE`) changes
+the threshold, `0` disables it.
+
 Every MCP tool is also a **one-shot CLI subcommand** (same handlers, JSON on
 stdout, logs on stderr — see `cli_query.py`):
 
@@ -53,9 +57,10 @@ uv run pipecat-context-hub search-docs "TTS + STT"
 uv run pipecat-context-hub get-doc --path /guides/telephony/overview
 ```
 
-Exit codes: 0 success, 1 invalid input, 2 index missing/empty (stderr says to
-run `refresh`), 75 a `refresh` is rewriting the index (stderr says to retry in
-60-120 seconds). A parity test (`tests/unit/test_cli_query.py`) enforces that
+Exit codes: 0 success, 1 invalid input, 2 index missing, empty, unreadable or
+incompatible (stderr says what to run), 75 a `refresh` is rewriting the index
+(stderr says to retry in 60-120 seconds; `refresh` itself also exits 75 when the
+refresh lock is busy). A parity test (`tests/unit/test_cli_query.py`) enforces that
 every MCP tool has a CLI command.
 
 A `justfile` is also available as a task runner:
@@ -148,7 +153,7 @@ src/pipecat_context_hub/
 │   ├── embedding.py          # EmbeddingService
 │   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
 │   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS tree-sitter, taxonomy, version extraction, deprecation map
-│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, reopening (open_ready_index_store: the one reader open for serve + CLI; ReopeningIndexStore: serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard; query_chroma_sqlite, the one raw read of Chroma's schema), errors (FatalIndexError subclasses; InterruptedCompactionError)
+│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, reopening (open_ready_index_store: the one reader open for serve + CLI; ReopeningIndexStore: serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard), chroma_schema (query_chroma_sqlite, the one raw read of Chroma's schema; chromadb_format_verified), errors (FatalIndexError subclasses incl. CompactionSwapError; InterruptedCompactionError)
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/
     ├── main.py               # MCP server setup (_SERVER_VERSION here)

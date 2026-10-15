@@ -534,7 +534,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   with or without `--prune`.
 - **`refresh` refuses to start: low disk, or another `refresh` running** —
   `refresh` first checks free space on the data-dir volume (default 5 GB;
-  `PIPECAT_HUB_MIN_FREE_GB=0` disables, other values set the threshold; with
+  `PIPECAT_HUB_MIN_FREE_GB=0` disables, other non-negative numbers set the
+  threshold in GB, and an unparsable, negative, or non-finite value silently
+  falls back to the 5 GB default; with
   `--reset-index` the check runs after the delete has freed the space.
   `PIPECAT_HUB_MIN_FREE_GB` is invocation-scoped like `PIPECAT_HUB_PRUNE`: set
   it in the environment, not `config.toml`, which is why it is not in the
@@ -548,7 +550,10 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   queries exit **75** (`EX_TEMPFAIL`) with the same message on stderr. Readers
   open the index under a shared hold on `refresh.lock`, so a refresh waits (up
   to ~10 s) for an open in progress rather than starting under it (if readers
-  still hold it, `refresh` says so: just retry it). `serve`
+  still hold it, `refresh` says so: just retry it). A `refresh` refused by the
+  lock (another refresh, or readers outlasting the wait) also exits **75**. The
+  dashboard scripts (`just dashboard-build`) open the index the same way, so
+  they too refuse to start while a refresh runs. `serve`
   reopens the rebuilt index (with the same readiness checks as at startup) and
   reloads the deprecation map by itself once the refresh ends, so no MCP client
   restart is needed; a call that lands while an earlier call still uses the old
@@ -556,7 +561,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   the live records (delete + re-add otherwise left dead elements that grew the
   graph by the whole corpus each time; the swap never leaves the index without
   its collection, and one interrupted by a crash is restored by the next
-  `refresh` — until then queries say to run it). During writes the vector index re-checks the persisted HNSW graph
+  `refresh` — until then queries say to run it; if the swap fails and cannot be
+  rolled back, that `refresh` exits 2 without deleting anything and the next
+  `refresh` restores it). During writes the vector index re-checks the persisted HNSW graph
   and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
   header-derived bound — the runaway-file corruption that once took ~325 GB
   of a disk. Recover with `refresh --force --reset-index`.

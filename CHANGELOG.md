@@ -12,9 +12,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   elements in the persisted HNSW graph, growing it by the whole corpus on every
   forced refresh (20k -> 80k elements for 20k live records over four rounds). A
   forced refresh now rebuilds the collection from the live records at the end and
-  removes the old segment directory. Non-fatal if it fails, except when the HNSW
-  guard trips on a graph written during the refresh, which stops it (exit 2) like
-  any other guard failure. The old collection is parked under a backup name until
+  removes the old segment directory (on the verified chromadb 1.5.x only; on other
+  releases it is left on disk). Non-fatal if it fails, except when the HNSW guard
+  trips on a graph written during the refresh, or the swap fails and cannot be
+  rolled back: either stops the refresh (exit 2), the latter without deleting
+  anything, so the next `refresh` restores the index. The old collection is parked under a backup name until
   the rebuilt one is in place; a swap interrupted by a crash is restored by the
   next `refresh` (readers never write to the index: until then they report it and
   say to run `refresh`), and the staging writes get the same per-batch HNSW guard
@@ -31,9 +33,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   startup readiness checks, and reloading the deprecation map), so no MCP client
   restart is needed. Every reader open holds `refresh.lock` shared, so a refresh
   can't start mid-open (it retries its lock for ~10 s, and if readers still hold
-  it says so rather than reporting another refresh); a call already running when
-  a refresh starts gets the retry message instead of reopening the index
-  mid-write. The stale handle is closed after its last call before the rebuilt
+  it says so rather than reporting another refresh); a refresh refused by the
+  lock exits 75 like the queries. An index read already in progress when a
+  refresh starts finishes on the handle it has; any read that starts after it
+  (including a running call's next one) gets the retry message instead of
+  reopening the index mid-write. The dashboard scripts open the index
+  the same way (refresh exclusion plus the open-time checks). The stale handle is closed after its last call before the rebuilt
   index is opened (calls in between are asked to retry in a few seconds):
   chromadb shares one native System per path, so a client opened beside the
   stale one served the stale graph. Spikes showed opening the index mid-refresh

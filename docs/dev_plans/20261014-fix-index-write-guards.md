@@ -14,7 +14,8 @@ established; the open-time check only fires when an index is opened.
    header-derived size check on segment dirs written since the guard was
    created; `VectorIndex.upsert` calls it after each write. Old orphan
    segments are ignored so they can't block a rebuild.
-2. Disk preflight: `refresh` refuses below 5 GB free (`PIPECAT_HUB_MIN_FREE_GB`).
+2. Disk preflight: `refresh` refuses below 5 GB free (`PIPECAT_HUB_MIN_FREE_GB`;
+   `0` disables; an invalid, negative or non-finite value falls back to 5 GB).
 3. `shared/index_lock.py`: exclusive `refresh.lock` for `refresh`; shared `serve.lock` for
    `serve`. Lock files are siblings of the data dir (`.<dirname>.refresh.lock`),
    not inside it, so `--reset-index`'s rmtree can't unlink a held lock. Locking
@@ -30,7 +31,10 @@ established; the open-time check only fires when an index is opened.
    60-120 seconds" while a refresh runs and starts with the index unopened if
    launched mid-refresh; CLI queries exit 75. `refresh` retries its exclusive lock
    for ~10 s so an open in progress isn't mistaken for another refresh, and if
-   readers still hold it after that, says so instead of "already running".
+   readers still hold it after that, says so instead of "already running". Both
+   refusals exit 75 (`index_lock.EXIT_REFRESH_IN_PROGRESS`, shared with the CLI
+   queries). The dashboard scripts open through `refresh_excluded` + `VectorIndex`
+   too, so they get the same exclusion and open-time checks.
 6. `serve` reopens the rebuilt index (`ReopeningIndexStore`). `refresh` touches its
    lock file on start; the handle records that generation at open and compares it
    on every call, so even a sub-second refresh no call overlapped is noticed.
@@ -41,11 +45,14 @@ established; the open-time check only fires when an index is opened.
    the stale graph. Reopens run the startup readiness checks and reload the
    deprecation map.
 7. `--force` compaction (decided 2026-10-15): `VectorIndex.compact` at the end of
-   a forced refresh (staging collection + swap + orphan segment removal) rather
+   a forced refresh (staging collection + swap + orphan segment removal, the
+   last only when `chroma_schema.chromadb_format_verified()`, i.e. 1.5.x) rather
    than clearing up front, because the per-repo delete-after-successful-fetch
    ordering protects records of repos whose fetch fails. Non-fatal on failure,
    except an HNSW guard failure (`FatalIndexError`), which stops the refresh like
-   anywhere else. The swap parks the old collection as `latest_precompact` before
+   anywhere else, and a swap that fails and whose rollback also fails
+   (`CompactionSwapError`, a `FatalIndexError`: exit 2, nothing deleted, the next
+   `refresh` restores the backup). The swap parks the old collection as `latest_precompact` before
    promoting staging; a crash between the two renames is restored when `refresh`
    next opens the index (`IndexStore(..., recover=True)`, under its exclusive
    lock). Readers never repair it: they get `InterruptedCompactionError` ("run
@@ -82,17 +89,18 @@ fill: one native persist can write the whole file before Python regains
 control, so the pre-load walk is the real defence.
 
 ## Not done / open
-- Calls already running when a refresh starts keep reading through the handle
-  they hold (the shared `refresh.lock` hold covers the open, not the read).
-  Decided: `serve` must not block a refresh for the duration of reads; such calls
-  may still get the retry message from their next index access.
+- An index read already in progress when a refresh starts finishes on the
+  handle it holds (the shared `refresh.lock` hold covers the open, not the read).
+  Decided: `serve` must not block a refresh for the duration of reads. Reads that
+  start after the refresh begins, including a running call's next index access,
+  get the retry message.
 - Locking fails open when flock is unsupported or the lock file is unwritable
   (decided; 21aad5f, 59690b98).
 - chromadb format coupling: `hnsw_validation` parses hnswlib's private format.
   It fails closed only on verified chromadb releases (`VERIFIED_CHROMADB_RELEASES`,
   1.5); elsewhere header/structure mismatches warn and skip, and orphan segment
   removal is skipped. Every raw read of Chroma's sqlite schema goes through
-  `hnsw_validation.query_chroma_sqlite` (immutable for pre-open probes, a locked
+  `chroma_schema.query_chroma_sqlite` (immutable for pre-open probes, a locked
   snapshot before orphan removal); collection names come from the client API.
   `test_installed_chromadb_is_a_verified_release` fails on a chromadb bump to
   force re-verification.
