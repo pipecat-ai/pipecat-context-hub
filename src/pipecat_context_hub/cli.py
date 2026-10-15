@@ -89,48 +89,32 @@ def _framework_pin_not_found(fw_version: str, exc: TagNotFoundError) -> click.Cl
 _module_logger = logging.getLogger(__name__)
 
 
-def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> IndexStore:
+def _open_index_store_or_exit(
+    config: HubConfig, logger: logging.Logger, *, rebuild: bool
+) -> IndexStore:
     """Open the on-disk index store, or exit with `EXIT_INDEX_UNREADY`.
 
     Shared by both `refresh` call sites (pre-`--reset-index` fail-fast path
-    and the post-delete rebuild) so the `FatalIndexError` handling —
-    including the redacted, front-door-consistent error message — cannot
-    drift between them.
+    and the post-delete rebuild) so the error handling — including the
+    redacted, front-door-consistent error message — cannot drift between them.
+    *rebuild* is ``--force``: only then may a lost vector collection beside a
+    populated keyword index be recreated (see :class:`IndexStore`).
     """
     from pipecat_context_hub.services.index.store import IndexStore
 
     try:
         # recover=True: refresh holds the exclusive refresh lock, so it alone
         # may repair an interrupted compaction while opening.
-        return IndexStore(config.storage, recover=True, create=True)
-    except FatalIndexError as exc:
+        return IndexStore(config.storage, recover=True, create=True, rebuild=rebuild)
+    except (FatalIndexError, IndexUnavailableError) as exc:
         # A pre-1.0 Chroma dir or a corrupt graph (IncompatibleIndexFormatError),
-        # or an interrupted compaction the open could not restore
-        # (CompactionSwapError). exc.__str__ embeds the absolute chroma_path;
-        # redact for front-door parity with the serve / cli_query error sites.
+        # an interrupted compaction the open could not restore
+        # (CompactionRestoreError), or, without --force, a lost vector
+        # collection (MissingVectorCollectionError, raised before anything is
+        # written). exc.__str__ embeds the absolute path; redact for
+        # front-door parity with the serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(EXIT_INDEX_UNREADY) from exc
-
-
-def _refuse_lost_vector_collection(index_store: IndexStore, logger: logging.Logger) -> None:
-    """Exit with `EXIT_INDEX_UNREADY` if the vector half is empty but the keyword half is not.
-
-    `refresh` opens with ``create=True``, so a lost ``latest`` collection comes
-    back empty. A refresh without ``--force`` then skips every unchanged source
-    (its hashes and commit SHAs live in the intact keyword index) and would exit
-    0 with vector search silently empty. Readers give the same remedy.
-    """
-    if index_store.vector_count() == 0 and index_store.get_index_stats().get("total", 0) > 0:
-        index_store.close()
-        logger.error(
-            "The vector index at %s is empty while the keyword index has records (its "
-            "'latest' collection was lost), so a refresh would skip unchanged sources and "
-            "leave vector search empty. Run 'uv run pipecat-context-hub refresh --force' "
-            "to rebuild it. %s",
-            redact_home(index_store.data_dir),
-            bug_report_hint(),
-        )
-        raise SystemExit(EXIT_INDEX_UNREADY)
 
 
 # Free space `refresh` requires on the data-dir volume before it starts. The
@@ -1093,9 +1077,7 @@ def refresh(
     # index (deliberate — see the pre-flight's own comment above).
     index_store: IndexStore
     if not reset_index:
-        index_store = _open_index_store_or_exit(config, logger)
-        if not force:
-            _refuse_lost_vector_collection(index_store, logger)
+        index_store = _open_index_store_or_exit(config, logger, rebuild=force)
 
     # ----- 0. Validate an explicit framework pin -----
     # Resolve a concrete pin before any indexing work, so a typo costs one
@@ -1153,7 +1135,7 @@ def refresh(
         # Storage was just deleted, so this always opens a fresh index — the
         # IncompatibleIndexFormatError this guards against can't fire here,
         # but the same helper is reused for one open call site either way.
-        index_store = _open_index_store_or_exit(config, logger)
+        index_store = _open_index_store_or_exit(config, logger, rebuild=True)
 
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)

@@ -12,6 +12,10 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from pipecat_context_hub.services.index.errors import (
+    IndexNotBuiltError,
+    MissingVectorCollectionError,
+)
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.services.index.vector import VectorIndex
 from pipecat_context_hub.shared.config import StorageConfig
@@ -28,26 +32,57 @@ class IndexStore:
     """
 
     def __init__(
-        self, config: StorageConfig, *, recover: bool = False, create: bool = False
+        self,
+        config: StorageConfig,
+        *,
+        recover: bool = False,
+        create: bool = False,
+        rebuild: bool = False,
     ) -> None:
-        """Open both backends. *recover*, *create*: see :class:`VectorIndex`.
+        """Open both backends. *recover*: see :class:`VectorIndex`.
 
-        *create* applies to both: without it neither backend creates a file.
+        *create* (``refresh`` only) lets the open create what is missing;
+        without it nothing is created. Either way, a vector half that is
+        missing or empty while the keyword half has records raises
+        :class:`MissingVectorCollectionError` before anything is written,
+        unless *rebuild* (``refresh --force``: every source is re-ingested,
+        refilling it) lets *create* recreate it. Readers (and a refresh
+        without ``--force``) therefore never run on an index whose vector
+        search would silently come back empty.
         """
         if create:
             config.data_dir.mkdir(parents=True, exist_ok=True)
+        elif (
+            not config.sqlite_path.is_file()
+            and not (config.chroma_path / "chroma.sqlite3").is_file()
+        ):
+            raise IndexNotBuiltError(config.data_dir)
         self._data_dir = config.data_dir
-        self._vector = VectorIndex(config.chroma_path, recover=recover, create=create)
+        # The keyword half first: whether it holds records decides whether the
+        # vector half may be created.
+        self._fts = FTSIndex(config.sqlite_path, create=create)
+        vector: VectorIndex | None = None
         try:
-            self._fts = FTSIndex(config.sqlite_path, create=create)
-        except Exception:
-            # Roll back the already-opened vector backend so callers don't
-            # inherit a leaked Chroma handle/lock on a half-constructed store.
-            try:
-                self._vector.close()
-            except Exception:
-                logger.exception("Vector backend close failed during rollback")
+            indexed = self._fts.has_records()
+            vector = VectorIndex(
+                config.chroma_path,
+                recover=recover,
+                create=create and (rebuild or not indexed),
+            )
+            if indexed and not rebuild and vector.count() == 0:
+                raise MissingVectorCollectionError(config.chroma_path)
+        except BaseException:
+            # Close what came up so callers don't inherit a leaked Chroma
+            # handle (or SQLite connection) on a half-constructed store.
+            for backend in (vector, self._fts):
+                if backend is None:
+                    continue
+                try:
+                    backend.close()
+                except Exception:
+                    logger.exception("Index backend close failed during rollback")
             raise
+        self._vector = vector
         logger.info("IndexStore initialized with data_dir=%s", config.data_dir)
 
     @property
@@ -195,6 +230,10 @@ class IndexStore:
     def vector_count(self) -> int:
         """Records in the vector half (``get_index_stats`` counts the keyword half)."""
         return self._vector.count()
+
+    def get_vector_page(self, *, offset: int, limit: int, include: list[Any]) -> dict[str, Any]:
+        """Raw vector records for export tools: see :meth:`VectorIndex.get_page`."""
+        return self._vector.get_page(offset=offset, limit=limit, include=include)
 
     def close(self) -> None:
         """Close underlying database connections."""

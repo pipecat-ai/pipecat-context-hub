@@ -203,13 +203,15 @@ def test_vector_upsert_runs_write_guard(tmp_path: Path) -> None:
 
     index = VectorIndex(tmp_path / "chroma", create=True)
     try:
-        with patch.object(
-            HnswWriteGuard,
-            "check",
-            side_effect=IncompatibleIndexFormatError(tmp_path, reason="corrupt persisted HNSW"),
-        ) as check:
-            with pytest.raises(IncompatibleIndexFormatError, match="corrupt persisted HNSW"):
-                index.upsert([_make_record()])
+        with (
+            patch.object(
+                HnswWriteGuard,
+                "check",
+                side_effect=IncompatibleIndexFormatError(tmp_path, reason="corrupt persisted HNSW"),
+            ) as check,
+            pytest.raises(IncompatibleIndexFormatError, match="corrupt persisted HNSW"),
+        ):
+            index.upsert([_make_record()])
         check.assert_called_once()
     finally:
         index.close()
@@ -228,13 +230,15 @@ def test_vector_upsert_checks_guard_after_every_batch(
             index.upsert(_make_records(5))
         assert check.call_count == 3  # ceil(5 / 2) batches
 
-        with patch.object(
-            HnswWriteGuard,
-            "check",
-            side_effect=IncompatibleIndexFormatError(tmp_path, reason="corrupt persisted HNSW"),
-        ) as failing:
-            with pytest.raises(IncompatibleIndexFormatError):
-                index.upsert(_make_records(10)[5:])  # 5 new ids, batches of 2
+        with (
+            patch.object(
+                HnswWriteGuard,
+                "check",
+                side_effect=IncompatibleIndexFormatError(tmp_path, reason="corrupt persisted HNSW"),
+            ) as failing,
+            pytest.raises(IncompatibleIndexFormatError),
+        ):
+            index.upsert(_make_records(10)[5:])  # 5 new ids, batches of 2
         assert failing.call_count == 1
         assert index._collection.count() == 5 + 2  # aborted after the first new batch
     finally:
@@ -456,13 +460,15 @@ class TestCompactSwap:
         index = VectorIndex(tmp_path / "chroma", create=True)
         try:
             index.upsert(_make_records(5))
-            with patch.object(
-                HnswWriteGuard,
-                "check",
-                side_effect=CorruptHnswGraphError(tmp_path, reason="corrupt persisted HNSW"),
-            ) as check:
-                with pytest.raises(CorruptHnswGraphError):
-                    index.compact()
+            with (
+                patch.object(
+                    HnswWriteGuard,
+                    "check",
+                    side_effect=CorruptHnswGraphError(tmp_path, reason="corrupt persisted HNSW"),
+                ) as check,
+                pytest.raises(CorruptHnswGraphError),
+            ):
+                index.compact()
             check.assert_called_once()  # stopped after the first staging batch
             assert index._collection.count() == 5
             assert [c.name for c in index._client.list_collections()] == ["latest"]
@@ -621,13 +627,19 @@ class TestCompactSwap:
         finally:
             index.close()
 
-    def test_failed_restore_on_open_is_a_compaction_swap_error(self, tmp_path: Path) -> None:
-        """Regression (vector.py:426): when refresh's open could not rename the
-        parked backup back, the raw Chroma/OS error escaped, so refresh exited
-        1 with a traceback instead of 2 (the index is still unreadable)."""
+    def test_failed_restore_on_open_is_a_compaction_restore_error(self, tmp_path: Path) -> None:
+        """Regression (vector.py:426, vector.py:433): when refresh's open could
+        not rename the parked backup back, the raw Chroma/OS error escaped
+        (exit 1, traceback); then it reused CompactionSwapError, whose message
+        blamed compact() and prescribed the plain ``refresh`` that had just
+        failed. It is its own fatal error, prescribing a rebuild."""
         from chromadb.api.models.Collection import Collection
 
-        from pipecat_context_hub.services.index.errors import CompactionSwapError
+        from pipecat_context_hub.services.index.errors import (
+            CompactionRestoreError,
+            CompactionSwapError,
+        )
+        from pipecat_context_hub.shared.interfaces import FatalIndexError
         from tests.unit.test_index_store import _make_records
 
         chroma = tmp_path / "chroma"
@@ -640,13 +652,43 @@ class TestCompactSwap:
             raise OSError("disk full")
 
         with patch.object(Collection, "modify", _fail):
-            with pytest.raises(CompactionSwapError) as error:
+            with pytest.raises(CompactionRestoreError, match="--reset-index") as error:
                 VectorIndex(chroma, recover=True, create=True)  # how refresh opens it
+        assert isinstance(error.value, FatalIndexError)
+        assert not isinstance(error.value, CompactionSwapError)
         assert isinstance(error.value.__cause__, OSError)
         # Nothing was lost: a later refresh still restores it.
         index = VectorIndex(chroma, recover=True, create=True)
         try:
             assert index._collection.count() == 5
+        finally:
+            index.close()
+
+    def test_restore_that_commits_then_raises_is_a_success(self, tmp_path: Path) -> None:
+        """Regression (vector.py:430): a restore rename that committed and then
+        raised was reported as a fatal unreadable index. Like compact(), the
+        open decides by the collections left behind."""
+        from chromadb.api.models.Collection import Collection
+
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma, create=True)
+        index.upsert(_make_records(5))
+        index._collection.modify(name=COMPACT_BACKUP_NAME)  # state after the first rename
+        index.close()
+
+        real_modify = Collection.modify
+
+        def _commit_then_fail(self: Any, **kwargs: Any) -> None:
+            real_modify(self, **kwargs)
+            raise OSError("raised after the rename committed")
+
+        with patch.object(Collection, "modify", _commit_then_fail):
+            index = VectorIndex(chroma, recover=True, create=True)
+        try:
+            assert index._collection.count() == 5
+            assert [c.name for c in index._client.list_collections()] == ["latest"]
         finally:
             index.close()
 
@@ -685,7 +727,7 @@ class TestReaderNeverCreates:
         from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
 
         chroma = tmp_path / "chroma"
-        with pytest.raises(MissingVectorCollectionError, match="refresh"):
+        with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
             VectorIndex(chroma, create=False)
         assert not chroma.exists()
 

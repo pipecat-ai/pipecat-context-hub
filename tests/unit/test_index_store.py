@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from unittest.mock import Mock, patch
@@ -13,7 +13,7 @@ import pytest
 
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.services.index.store import IndexStore
-from pipecat_context_hub.services.index.vector import VectorIndex, _CHROMA_BATCH_SIZE
+from pipecat_context_hub.services.index.vector import _CHROMA_BATCH_SIZE, VectorIndex
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
@@ -45,7 +45,7 @@ def _make_record(
         source_url=source_url,
         repo=repo,
         path=path,
-        indexed_at=datetime.now(tz=timezone.utc),
+        indexed_at=datetime.now(tz=UTC),
         embedding=embedding,
         metadata=metadata or {},
     )
@@ -748,22 +748,134 @@ class TestFTSIndex:
 
 
 class TestIndexStoreInitRollback:
-    """If FTS construction fails after Vector opens, the Vector handle must
-    be closed before the exception propagates."""
+    """If Vector construction fails after FTS opens, the FTS handle must be
+    closed before the exception propagates."""
 
-    def test_fts_failure_closes_vector(self, tmp_path: Path, monkeypatch):
+    def test_vector_failure_closes_fts(self, tmp_path: Path, monkeypatch):
         from unittest.mock import MagicMock
+
         from pipecat_context_hub.services.index import store as store_mod
 
-        fake_vector = MagicMock()
-        monkeypatch.setattr(store_mod, "VectorIndex", MagicMock(return_value=fake_vector))
+        fake_fts = MagicMock()
+        fake_fts.has_records.return_value = False
+        monkeypatch.setattr(store_mod, "FTSIndex", MagicMock(return_value=fake_fts))
         monkeypatch.setattr(
-            store_mod, "FTSIndex", MagicMock(side_effect=RuntimeError("sqlite boom"))
+            store_mod, "VectorIndex", MagicMock(side_effect=RuntimeError("chroma boom"))
         )
 
-        with pytest.raises(RuntimeError, match="sqlite boom"):
+        with pytest.raises(RuntimeError, match="chroma boom"):
             IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"), create=True)
-        fake_vector.close.assert_called_once()
+        fake_fts.close.assert_called_once()
+
+
+def _lose_vector_half(config: StorageConfig, *, records: int = 3, empty_latest: bool) -> None:
+    """Build an index with *records*, then lose its ``latest`` collection.
+
+    *empty_latest* leaves an empty ``latest`` in its place (what a refresh
+    that recreated it before refusing, or ``get_or_create``, used to leave).
+    """
+    import asyncio
+
+    from pipecat_context_hub.services.index.vector import COLLECTION_NAME
+
+    store = IndexStore(config, create=True)
+    asyncio.run(store.upsert(_make_records(records)))
+    store._vector._client.delete_collection(COLLECTION_NAME)
+    if empty_latest:
+        store._vector._client.create_collection(COLLECTION_NAME)
+    store.close()
+
+
+def _collection_names(config: StorageConfig) -> list[str]:
+    from pipecat_context_hub.services.index.chroma_schema import query_chroma_sqlite
+
+    rows = query_chroma_sqlite(
+        config.chroma_path, "SELECT name FROM collections ORDER BY name", immutable=True
+    )
+    return [row[0] for row in rows or ()]
+
+
+class TestLostVectorHalf:
+    """Regression (cli.py:105/115/123, errors.py:131): refresh opened with
+    create=True, so a lost ``latest`` was recreated empty *before* the CLI
+    compared counts and refused; after that refusal readers (which only
+    counted the keyword half) served with vector search silently empty. The
+    store now refuses a missing or empty vector half beside a populated
+    keyword half, for readers and for a refresh without ``rebuild``, before
+    anything is written."""
+
+    def test_refused_refresh_open_writes_nothing(self, tmp_path: Path) -> None:
+        """I1: no empty ``latest``, no schema change."""
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        _lose_vector_half(config, empty_latest=False)
+        before = _collection_names(config)
+
+        with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+            IndexStore(config, recover=True, create=True)  # refresh without --force
+        assert _collection_names(config) == before
+        assert "latest" not in before
+
+    @pytest.mark.parametrize("empty_latest", [False, True])
+    def test_reader_refuses_a_lost_vector_half(self, tmp_path: Path, empty_latest: bool) -> None:
+        """I2: however the state arose, including a pre-existing empty ``latest``."""
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        _lose_vector_half(config, empty_latest=empty_latest)
+
+        with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+            IndexStore(config)
+        with pytest.raises(IndexUnavailableError, match="refresh --force"):
+            open_ready_index_store(config)
+
+    def test_reader_with_a_missing_vector_database_says_force(self, tmp_path: Path) -> None:
+        """I5: with keyword records, plain ``refresh`` is refused, so a missing
+        chroma.sqlite3 must not prescribe it."""
+        import shutil
+
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        _lose_vector_half(config, empty_latest=False)
+        shutil.rmtree(config.chroma_path)
+
+        with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+            IndexStore(config)
+        with pytest.raises(MissingVectorCollectionError):
+            IndexStore(config, recover=True, create=True)
+        assert not config.chroma_path.exists()
+
+    @pytest.mark.parametrize("empty_latest", [False, True])
+    def test_rebuild_recreates_it(self, tmp_path: Path, empty_latest: bool) -> None:
+        """I4: ``refresh --force`` still opens (and refills) it."""
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        _lose_vector_half(config, empty_latest=empty_latest)
+
+        store = IndexStore(config, recover=True, create=True, rebuild=True)
+        try:
+            assert store.vector_count() == 0
+        finally:
+            store.close()
+        assert _collection_names(config) == ["latest"]
+
+    def test_first_run_and_healthy_reopen_are_unchanged(self, tmp_path: Path) -> None:
+        """I4: an empty data dir and a healthy index open as before."""
+        import asyncio
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        store = IndexStore(config, recover=True, create=True)  # first run
+        asyncio.run(store.upsert(_make_records(3)))
+        store.close()
+        for kwargs in ({}, {"recover": True, "create": True}):
+            store = IndexStore(config, **kwargs)
+            try:
+                assert store.vector_count() == 3
+            finally:
+                store.close()
 
 
 class TestIndexStoreReaderCreatesNothing:
@@ -773,10 +885,10 @@ class TestIndexStoreReaderCreatesNothing:
     out (scripts/smoke_check_framework_version.py) created the whole index."""
 
     def test_default_open_of_a_missing_index_creates_nothing(self, tmp_path: Path) -> None:
-        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+        from pipecat_context_hub.services.index.errors import IndexNotBuiltError
 
         data_dir = tmp_path / "hub-data"
-        with pytest.raises(MissingVectorCollectionError):
+        with pytest.raises(IndexNotBuiltError, match="has not been built"):
             IndexStore(StorageConfig(data_dir=data_dir))
         assert not data_dir.exists()
 
@@ -808,6 +920,50 @@ class TestIndexStoreReaderCreatesNothing:
         assert not db_path.with_name("index.db-wal").exists()
         FTSIndex(db_path, create=True).close()  # a writer still initializes it
         FTSIndex(db_path).close()
+
+    def test_reader_open_of_an_initialized_keyword_index_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (fts.py:115): ``create`` gated only existence, so every
+        reader open still ran the WAL pragma, the schema DDL and a commit."""
+        import sqlite3
+
+        db_path = tmp_path / "index.db"
+        FTSIndex(db_path, create=True).close()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("PRAGMA journal_mode=DELETE")
+        conn.close()
+
+        FTSIndex(db_path).close()
+        with sqlite3.connect(db_path) as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        conn.close()
+
+    def test_partially_initialized_keyword_index(self, tmp_path: Path) -> None:
+        """Regression (fts.py:103): a database with ``chunks`` rows but no FTS
+        table passed the reader's check, and the open then created an empty
+        FTS table, so keyword search silently found nothing. A reader now
+        refuses it; refresh completes the schema and rebuilds the FTS table."""
+        import sqlite3
+
+        from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
+
+        db_path = tmp_path / "index.db"
+        fts = FTSIndex(db_path, create=True)
+        records = _make_records(3)
+        fts.upsert(records)
+        fts.close()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP TABLE chunks_fts")
+        conn.close()
+
+        with pytest.raises(MissingKeywordIndexError):
+            FTSIndex(db_path)
+        fts = FTSIndex(db_path, create=True)
+        try:
+            assert len(fts.search(IndexQuery(query_text="pipecat", limit=10))) == 3
+        finally:
+            fts.close()
 
 
 class TestIndexStore:

@@ -7,7 +7,7 @@ from collections import Counter
 from statistics import mean
 
 
-from pipecat_context_hub.services.index.reopening import open_ready_vector_index
+from pipecat_context_hub.services.index.reopening import open_index_for_export
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.env_loading import load_env_layers
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
@@ -36,10 +36,10 @@ def main() -> None:
     # The shared reader open: refresh exclusion, the open-time checks, never
     # creating a missing index, and refusing an empty one.
     try:
-        index = open_ready_vector_index(storage)
+        index = open_index_for_export(storage)
     except IndexUnavailableError as exc:
         sys.exit(f"Error: {exc}")
-    total = index.count()
+    total = index.vector_count()
     print(f"Collection has {total:,} records")
 
     # Fetch all metadata + documents in batches
@@ -49,7 +49,9 @@ def main() -> None:
 
     for offset in range(0, total, batch_size):
         print(f"  Fetching {offset}–{min(offset + batch_size, total)}...")
-        result = index.get_page(offset=offset, limit=batch_size, include=["metadatas", "documents"])
+        result = index.get_vector_page(
+            offset=offset, limit=batch_size, include=["metadatas", "documents"]
+        )
         all_meta.extend(result["metadatas"])
         all_docs.extend(result["documents"])
 

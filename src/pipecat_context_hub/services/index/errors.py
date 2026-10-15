@@ -94,6 +94,24 @@ class CompactionSwapError(FatalIndexError):
         )
 
 
+class CompactionRestoreError(FatalIndexError):
+    """``refresh`` found an interrupted compaction and could not restore it.
+
+    Raised by the open (``VectorIndex(..., recover=True)``), not by
+    ``compact()``: the restore rename failed and ``latest`` is still missing.
+    Running ``refresh`` again would retry the same rename, so the remedy is a
+    rebuild.
+    """
+
+    def __init__(self, chroma_path: Path | str) -> None:
+        self.chroma_path = Path(chroma_path)
+        super().__init__(
+            f"The vector index at {self.chroma_path} was left mid-swap by an interrupted "
+            "`refresh --force`, and restoring its collection failed. "
+            f"{RESET_INDEX_REMEDIATION}"
+        )
+
+
 class InterruptedCompactionError(IndexUnavailableError):
     """A ``refresh --force`` compaction died between its two renames.
 
@@ -111,33 +129,40 @@ class InterruptedCompactionError(IndexUnavailableError):
         )
 
 
-class MissingVectorCollectionError(IndexUnavailableError):
-    """A reader found no vector collection to open.
+class IndexNotBuiltError(IndexUnavailableError):
+    """A reader found neither half of the index: nothing has been indexed yet."""
 
-    Readers never create one (only ``refresh`` and other writers do): an empty
-    ``latest`` created beside a populated keyword index would make vector
-    search silently return nothing.
+    def __init__(self, data_dir: Path | str) -> None:
+        self.data_dir = Path(data_dir)
+        super().__init__(
+            f"Index at {self.data_dir} is empty (0 records): it has not been built. "
+            "Run 'uv run pipecat-context-hub refresh' to build it (the first run "
+            "downloads models and indexes sources; allow a few minutes)."
+        )
+
+
+class MissingVectorCollectionError(IndexUnavailableError):
+    """The vector half is missing or empty but must not be (re)created here.
+
+    Raised by ``VectorIndex`` when its database or ``latest`` collection is
+    missing and the open may not create one, and by ``IndexStore`` when
+    ``latest`` is empty while the keyword half has records. ``refresh``
+    without ``--force`` gets it too (exit 2): it would skip every unchanged
+    source (their hashes live in the keyword index) and leave vector search
+    silently empty. Nothing is created before it is raised.
     """
 
-    def __init__(self, chroma_path: Path | str, *, built: bool) -> None:
+    def __init__(self, chroma_path: Path | str) -> None:
         self.chroma_path = Path(chroma_path)
-        if built:
-            message = (
-                f"The vector index at {self.chroma_path} has no 'latest' collection, so "
-                "vector search would come back empty. Run 'uv run pipecat-context-hub "
-                "refresh --force' to rebuild it."
-            )
-        else:
-            message = (
-                f"Index at {self.chroma_path} is empty (0 records): it has not been built. "
-                "Run 'uv run pipecat-context-hub refresh' to build it (the first run "
-                "downloads models and indexes sources; allow a few minutes)."
-            )
-        super().__init__(message)
+        super().__init__(
+            f"The vector index at {self.chroma_path} is missing or empty (its 'latest' "
+            "collection was lost), so vector search would come back empty. Run 'uv run "
+            "pipecat-context-hub refresh --force' to rebuild it."
+        )
 
 
 class MissingKeywordIndexError(IndexUnavailableError):
-    """A reader found no keyword (SQLite FTS) database to open.
+    """A reader found no initialized keyword (SQLite FTS) database to open.
 
     Readers never create one: an empty keyword index beside a populated
     vector index would make keyword search silently return nothing.
@@ -146,6 +171,6 @@ class MissingKeywordIndexError(IndexUnavailableError):
     def __init__(self, sqlite_path: Path | str) -> None:
         self.sqlite_path = Path(sqlite_path)
         super().__init__(
-            f"The keyword index at {self.sqlite_path} is missing. Run 'uv run "
+            f"The keyword index at {self.sqlite_path} is missing or incomplete. Run 'uv run "
             "pipecat-context-hub refresh --force' to rebuild it."
         )

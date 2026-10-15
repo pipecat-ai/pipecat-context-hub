@@ -642,15 +642,15 @@ def test_dashboard_scripts_open_through_the_reader_path(
 ) -> None:
     """Regression (reopening.py:47): the dashboard scripts opened Chroma with a
     bare PersistentClient, skipping refresh exclusion and the open-time checks.
-    They must refuse while a refresh holds the lock, and open via VectorIndex
-    (through the shared reopening.open_ready_vector_index)."""
+    They must refuse while a refresh holds the lock, and open via IndexStore
+    (through the shared reopening.open_index_for_export)."""
     from tests.unit.test_config import _REPO_ROOT, _import_script
 
     module = _import_script(_REPO_ROOT / "dashboard" / "scripts" / f"{script}.py", script)
     data_dir = tmp_path / "hub"
     monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
     opened = MagicMock(side_effect=RuntimeError("opened"))
-    monkeypatch.setattr("pipecat_context_hub.services.index.vector.VectorIndex", opened)
+    monkeypatch.setattr("pipecat_context_hub.services.index.store.IndexStore", opened)
 
     with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
         with pytest.raises(SystemExit, match="Retry in 60-120 seconds"):
@@ -667,12 +667,13 @@ def test_dashboard_scripts_open_through_the_reader_path(
 def test_dashboard_scripts_report_an_incompatible_index_without_a_traceback(
     script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression (reopening.py:96): open_ready_vector_index let
+    """Regression (reopening.py:96): the dashboard reader open let
     IncompatibleIndexFormatError (a FatalIndexError, not IndexUnavailableError)
     escape, so the dashboard scripts crashed with a traceback instead of
     printing the reset remediation that serve and the CLI give."""
     import sqlite3
 
+    from pipecat_context_hub.services.index.fts import FTSIndex
     from pipecat_context_hub.shared.config import StorageConfig
     from tests.unit.test_config import _REPO_ROOT, _import_script
 
@@ -685,6 +686,7 @@ def test_dashboard_scripts_report_an_incompatible_index_without_a_traceback(
         conn.execute("CREATE TABLE migrations (dir TEXT, version INTEGER)")
         conn.execute("INSERT INTO migrations VALUES ('sysdb', 1)")
     conn.close()
+    FTSIndex(StorageConfig(data_dir=data_dir).sqlite_path, create=True).close()
 
     with pytest.raises(SystemExit, match="--reset-index"):
         module.main()
@@ -709,9 +711,29 @@ def test_dashboard_scripts_refuse_a_missing_index_without_creating_one(
     assert not data_dir.exists()
 
     # A built but empty index gets the same message as serve and the CLI.
-    from pipecat_context_hub.services.index.vector import VectorIndex
+    from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.shared.config import StorageConfig
 
-    VectorIndex(StorageConfig(data_dir=data_dir).chroma_path, create=True).close()
+    IndexStore(StorageConfig(data_dir=data_dir), create=True).close()
     with pytest.raises(SystemExit, match=r"is empty \(0 records\)\. Run 'uv run"):
+        module.main()
+
+
+@pytest.mark.parametrize("script", ["extract_dashboard", "extract_embeddings"])
+def test_dashboard_scripts_refuse_a_lost_vector_half(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (cli.py:123): an empty ``latest`` beside a populated keyword
+    index (what a refused refresh used to leave) was opened as a valid, empty
+    index. Every reader, the dashboard included, must give the --force remedy."""
+    from pipecat_context_hub.shared.config import StorageConfig
+    from tests.unit.test_config import _REPO_ROOT, _import_script
+    from tests.unit.test_index_store import _lose_vector_half
+
+    module = _import_script(_REPO_ROOT / "dashboard" / "scripts" / f"{script}.py", script)
+    data_dir = tmp_path / "hub"
+    monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+    _lose_vector_half(StorageConfig(data_dir=data_dir), empty_latest=True)
+
+    with pytest.raises(SystemExit, match="refresh --force"):
         module.main()

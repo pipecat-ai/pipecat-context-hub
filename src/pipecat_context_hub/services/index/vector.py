@@ -28,6 +28,7 @@ from pipecat_context_hub.services.index.chroma_schema import (
     query_chroma_sqlite,
 )
 from pipecat_context_hub.services.index.errors import (
+    CompactionRestoreError,
     CompactionSwapError,
     IncompatibleIndexFormatError,
     InterruptedCompactionError,
@@ -76,6 +77,11 @@ def _detect_incompatible_format(chroma_path: Path) -> None:
     max_version = row[0] if row else None
     if max_version is not None and max_version < _MIN_SUPPORTED_SYSDB_MIGRATION:
         raise IncompatibleIndexFormatError(chroma_path, detected_sysdb_migration=max_version)
+
+
+def _collection_names(client: Any) -> set[Any]:
+    """Names of the client's collections (1.x returns objects, older names)."""
+    return {getattr(c, "name", c) for c in client.list_collections()}
 
 
 class NoOpProductTelemetryClient(ProductTelemetryClient):
@@ -359,10 +365,11 @@ class VectorIndex:
         raises :class:`InterruptedCompactionError` instead.
 
         *create* lets the open create the index (directory, database and an
-        empty ``latest`` collection) when it is missing. Only writers
-        (``refresh``) pass True: readers never write to the index, and for
-        them a missing collection raises :class:`MissingVectorCollectionError`
-        instead of opening empty.
+        empty ``latest`` collection) when it is missing. Only ``refresh``
+        passes True, and only when nothing is indexed or it rebuilds every
+        source (``IndexStore`` decides). Otherwise a missing database or
+        collection raises :class:`MissingVectorCollectionError` before
+        anything is created.
         """
         self._chroma_path = chroma_path
         self._recover = recover
@@ -376,8 +383,8 @@ class VectorIndex:
     def _open_client(self) -> None:
         """Open the persistent Chroma client and the ``latest`` collection."""
         if not self._create and not (self._chroma_path / "chroma.sqlite3").is_file():
-            # Never built: raise before anything below creates files.
-            raise MissingVectorCollectionError(self._chroma_path, built=False)
+            # Raise before anything below creates files.
+            raise MissingVectorCollectionError(self._chroma_path)
         # Probe for a pre-1.0 on-disk format BEFORE constructing the client,
         # which would otherwise crash opaquely or rewrite 0.6 state.
         _detect_incompatible_format(self._chroma_path)
@@ -414,7 +421,7 @@ class VectorIndex:
     def _open_collection(self, client: Any) -> Any:
         """Return the ``latest`` collection, first undoing an interrupted compaction."""
         try:
-            names = {getattr(c, "name", c) for c in client.list_collections()}
+            names = _collection_names(client)
             if COLLECTION_NAME not in names and COMPACT_BACKUP_NAME in names:
                 # compact() died between its two renames. get_or_create below
                 # would create an empty ``latest`` and strand every record
@@ -428,11 +435,18 @@ class VectorIndex:
                 except (KeyError, ValueError):
                     raise  # an unreadable config: translated below
                 except Exception as exc:
-                    # The index is still unreadable: fatal, like the failed
-                    # swap that left it so (refresh exits 2, not with a traceback).
-                    raise CompactionSwapError(self._chroma_path) from exc
+                    # Decide by the state left behind, as compact() does: a
+                    # rename can commit and still raise.
+                    try:
+                        restored = COLLECTION_NAME in _collection_names(client)
+                    except Exception:
+                        restored = False
+                    if not restored:
+                        # Still unreadable: fatal (refresh exits 2, not a traceback).
+                        raise CompactionRestoreError(self._chroma_path) from exc
+                    logger.warning("The restore rename raised after committing", exc_info=True)
             elif COLLECTION_NAME not in names and not self._create:
-                raise MissingVectorCollectionError(self._chroma_path, built=True)
+                raise MissingVectorCollectionError(self._chroma_path)
             return client.get_or_create_collection(
                 name=COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
@@ -593,7 +607,7 @@ class VectorIndex:
                 # rename can commit and still raise.
                 names: set[Any] | None
                 try:
-                    names = {getattr(c, "name", c) for c in self._client.list_collections()}
+                    names = _collection_names(self._client)
                 except Exception:
                     # Can't tell (e.g. a transient "database is locked"): not
                     # proof the index is lost, so don't report it as such, and

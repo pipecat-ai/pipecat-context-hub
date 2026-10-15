@@ -140,6 +140,13 @@ def test_corrupt_graph_fails_before_initialize_or_search(
         struct.pack("<i6Qii3QdQ", 1, 0, 8, 4, 152, 144, 132, 2, 0, 16, 32, 16, 0.36, 100)
     )
     (segment / "link_lists.bin").write_bytes(b"\0" * 2000)
+    # A built index: the keyword half (opened first) is intact and populated.
+    from pipecat_context_hub.services.index.fts import FTSIndex
+    from tests.unit.test_index_store import _make_records
+
+    fts = FTSIndex(home / ".pipecat-context-hub" / "metadata.db", create=True)
+    fts.upsert(_make_records(1))
+    fts.close()
     before = {p.relative_to(chroma): p.read_bytes() for p in chroma.rglob("*") if p.is_file()}
     result = subprocess.run(
         ["uv", "run", "pipecat-context-hub", *command],

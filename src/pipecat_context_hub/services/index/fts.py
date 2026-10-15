@@ -78,6 +78,12 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
 END;
 """
 
+# Every table and trigger _SCHEMA_SQL creates: an open that finds all of them
+# has an initialized database and writes nothing.
+_SCHEMA_OBJECTS = frozenset(
+    {"chunks", "chunks_fts", "index_metadata", "chunks_ai", "chunks_ad", "chunks_au"}
+)
+
 
 class FTSIndex:
     """SQLite FTS5 keyword index for full-text search.
@@ -89,10 +95,14 @@ class FTSIndex:
     def __init__(self, sqlite_path: Path, *, create: bool = False) -> None:
         """Open the keyword index at *sqlite_path*.
 
-        *create* lets the open create the database when it is missing; only
-        writers (``refresh``) pass True. A reader open of a missing database,
-        or of one never initialized (no ``chunks`` table, e.g. a 0-byte
-        file), raises :class:`MissingKeywordIndexError` and writes nothing.
+        Only an incomplete schema is written to, so opening an initialized
+        database never writes. A reader (*create* False) never writes: a
+        missing database, or one whose schema is incomplete (e.g. a 0-byte
+        file), raises :class:`MissingKeywordIndexError`. With *create*
+        (``refresh`` only) a missing database is created, and an incomplete
+        one is completed and its FTS table rebuilt from ``chunks``, so rows
+        written without the sync triggers are searchable rather than
+        silently missing.
         """
         self._sqlite_path = sqlite_path
         self._lock = threading.RLock()
@@ -100,22 +110,37 @@ class FTSIndex:
             raise MissingKeywordIndexError(sqlite_path)
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
-        if not create:
-            try:
-                initialized = self._conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks'"
-                ).fetchone()
-            except BaseException:
-                self._conn.close()
-                raise
-            if initialized is None:
-                self._conn.close()
+        try:
+            present = {
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')"
+                )
+            }
+            missing = _SCHEMA_OBJECTS - present
+            if missing and not create:
                 raise MissingKeywordIndexError(sqlite_path)
+            if missing:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.executescript(_SCHEMA_SQL)
+                if "chunks" in present:
+                    logger.warning(
+                        "Keyword index at %s was incomplete (missing %s); rebuilding its FTS table",
+                        sqlite_path,
+                        ", ".join(sorted(missing)),
+                    )
+                    self._conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+                self._conn.commit()
+        except BaseException:
+            self._conn.close()
+            raise
         self._closed = False
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_SCHEMA_SQL)
-        self._conn.commit()
         logger.info("FTSIndex initialized at %s", sqlite_path)
+
+    def has_records(self) -> bool:
+        """Whether any record is indexed."""
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() is not None
 
     def close(self) -> None:
         """Close the database connection."""
