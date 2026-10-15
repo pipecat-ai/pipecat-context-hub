@@ -93,7 +93,7 @@ class _Handle:
     store: IndexStore
     # refresh_generation() when this store was opened; any later refresh
     # start changes it.
-    generation: tuple[int, int] | None
+    generation: tuple[int, int, int] | None
     users: int = 0
     retired: bool = False
     closed: bool = False

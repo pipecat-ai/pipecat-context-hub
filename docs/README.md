@@ -541,8 +541,8 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   `PIPECAT_HUB_MIN_FREE_GB` is invocation-scoped like `PIPECAT_HUB_PRUNE`: set
   it in the environment, not `config.toml`, which is why it is not in the
   Environment Variables table) and
-  takes an exclusive `refresh.lock` (a hidden sibling file of the data dir,
-  e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
+  takes an exclusive `refresh.lock` (a sibling file of the data dir,
+  `<dirname>.refresh.lock`, e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
   it), so two refreshes can't interleave writes to the same Chroma HNSW files.
   **While a refresh runs, nothing reads the index:** `serve` answers every tool
   call with an error saying "retry in 60-120 seconds" (a `serve` started

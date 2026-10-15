@@ -41,6 +41,10 @@ EXIT_REFRESH_IN_PROGRESS = 75
 
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
+# The refresh lock file's size steps through 1.._GENERATION_CYCLE, one step per
+# exclusive acquire (see refresh_generation()); bounded so it never grows.
+_GENERATION_CYCLE = 4096
+
 
 class IndexLockedError(RuntimeError):
     """The data dir is locked by another process in an incompatible mode."""
@@ -88,11 +92,13 @@ def _fail_open(exc: OSError) -> bool:
 def lock_path(data_dir: Path, name: str) -> Path:
     """Where the named lock for ``data_dir`` lives.
 
-    A *sibling* of the data dir (``.<dirname>.<name>``), not a file inside it:
-    ``refresh --reset-index`` rmtree's the data dir, which would unlink an
-    in-tree lock out from under a running refresh/serve and let the next
-    process lock a fresh inode. Resolved first so every spelling of the same
-    directory (symlink, ``~``, relative) shares one lock.
+    A *sibling* of the data dir (``<dirname>.<name>``, hidden when the data
+    dir is), not a file inside it: ``refresh --reset-index`` rmtree's the data
+    dir, which would unlink an in-tree lock out from under a running
+    refresh/serve and let the next process lock a fresh inode. Resolved first
+    so every spelling of the same directory (symlink, ``~``, relative) shares
+    one lock, and named from the full dirname so distinct sibling dirs
+    (``x`` and ``.x``) never share one.
     """
     try:
         resolved = data_dir.expanduser().resolve()
@@ -100,7 +106,7 @@ def lock_path(data_dir: Path, name: str) -> Path:
         resolved = data_dir.expanduser().absolute()
     if resolved.parent == resolved:  # filesystem root: nowhere to put a sibling
         return resolved / name
-    return resolved.parent / f".{resolved.name.lstrip('.')}.{name}"
+    return resolved.parent / f"{resolved.name}.{name}"
 
 
 class IndexLock:
@@ -141,9 +147,14 @@ class IndexLock:
             if _try_lock(fd, exclusive=self._exclusive):
                 self._fd = fd
                 if self._exclusive:
-                    # Bump the file's mtime so readers can tell a lock was taken
-                    # (and so a refresh happened) even if they never observed it
-                    # held. See refresh_generation().
+                    # Mark the file so readers can tell a lock was taken (and so
+                    # a refresh happened) even if they never observed it held.
+                    # See refresh_generation(). The mtime alone can repeat on a
+                    # coarse-timestamp filesystem (1-2 s on HFS+, FAT, some
+                    # network mounts), so also step the size, which every
+                    # exclusive acquire changes.
+                    with contextlib.suppress(OSError):
+                        os.ftruncate(fd, os.fstat(fd).st_size % _GENERATION_CYCLE + 1)
                     with contextlib.suppress(OSError, NotImplementedError):
                         os.utime(fd if os.utime in os.supports_fd else self._path)
                 return
@@ -250,16 +261,17 @@ def refresh_in_progress(data_dir: Path) -> bool:
     return False
 
 
-def refresh_generation(data_dir: Path) -> tuple[int, int] | None:
+def refresh_generation(data_dir: Path) -> tuple[int, int, int] | None:
     """Identity of the most recent refresh start, or None if none ever ran.
 
-    ``refresh`` touches its lock file on acquire, so this changes whenever a
-    refresh has begun since it was last read, even one that started and
-    finished between two reader calls (which ``refresh_in_progress`` cannot
-    see). A reader that holds the index open compares it on each call.
+    ``refresh`` touches its lock file and steps its size on acquire, so this
+    changes whenever a refresh has begun since it was last read, even one that
+    started and finished between two reader calls (which
+    ``refresh_in_progress`` cannot see) or within one filesystem timestamp
+    tick. A reader that holds the index open compares it on each call.
     """
     try:
         st = lock_path(data_dir, REFRESH_LOCK).stat()
     except OSError:
         return None
-    return (st.st_ino, st.st_mtime_ns)
+    return (st.st_ino, st.st_mtime_ns, st.st_size)

@@ -17,7 +17,8 @@ established; the open-time check only fires when an index is opened.
 2. Disk preflight: `refresh` refuses below 5 GB free (`PIPECAT_HUB_MIN_FREE_GB`;
    `0` disables; an invalid, negative or non-finite value falls back to 5 GB).
 3. `shared/index_lock.py`: exclusive `refresh.lock` for `refresh`; shared `serve.lock` for
-   `serve`. Lock files are siblings of the data dir (`.<dirname>.refresh.lock`),
+   `serve`. Lock files are siblings of the data dir (`<dirname>.refresh.lock`, named from
+   the full dirname so `x` and `.x` never share one),
    not inside it, so `--reset-index`'s rmtree can't unlink a held lock. Locking
    fails open if the filesystem doesn't support flock. A live `serve` only
    produces a warning, and itself backs off while the refresh runs (item 5).

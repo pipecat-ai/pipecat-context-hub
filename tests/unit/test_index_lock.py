@@ -459,6 +459,34 @@ def test_refresh_generation_changes_on_every_refresh_start(tmp_path: Path) -> No
     assert refresh_generation(data_dir) not in (None, old)
 
 
+def test_refresh_generation_changes_within_one_timestamp_tick(tmp_path: Path) -> None:
+    """Regression (index_lock.py:148): the generation was (inode, mtime), so two
+    refresh starts inside one coarse filesystem timestamp tick (1-2 s on
+    HFS+/FAT/network mounts) read as the same generation and serve kept its
+    stale handle. Simulate the coarse tick by pinning the mtime."""
+    import os
+
+    data_dir = tmp_path / "hub"
+    path = lock_path(data_dir, REFRESH_LOCK)
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        pass
+    os.utime(path, ns=(1, 1))
+    before = refresh_generation(data_dir)
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        pass
+    os.utime(path, ns=(1, 1))  # the same tick as before
+    assert refresh_generation(data_dir) != before
+
+
+def test_hidden_and_plain_sibling_dirs_get_distinct_locks(tmp_path: Path) -> None:
+    """Regression (index_lock.py:103): the dirname's leading dots were
+    stripped, so ``x`` and ``.x`` shared one lock (and one generation)."""
+    assert lock_path(tmp_path / "x", REFRESH_LOCK) != lock_path(tmp_path / ".x", REFRESH_LOCK)
+    assert lock_path(tmp_path / ".pipecat-context-hub", REFRESH_LOCK) == (
+        tmp_path / ".pipecat-context-hub.refresh.lock"
+    )  # the default data dir's lock name is unchanged
+
+
 def test_shared_probe_does_not_bump_the_generation(tmp_path: Path) -> None:
     import os
 
