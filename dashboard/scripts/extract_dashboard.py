@@ -5,10 +5,11 @@ import os
 from collections import Counter
 from statistics import mean
 
-import chromadb
 
+from pipecat_context_hub.services.index.vector import VectorIndex
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.env_loading import load_env_layers
+from pipecat_context_hub.shared.index_lock import refresh_excluded
 
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), "..", "public")
 OUTPUT = os.path.join(PUBLIC_DIR, "dashboard_data.json")
@@ -29,10 +30,13 @@ def _bootstrap() -> StorageConfig:
 def main() -> None:
     # Route through StorageConfig so PIPECAT_HUB_DATA_DIR is honoured (keeps the
     # dashboard pipeline consistent with refresh/serve and isolated test runs).
-    chroma_path = _bootstrap().chroma_path
+    storage = _bootstrap()
     print("Connecting to ChromaDB...")
-    client = chromadb.PersistentClient(path=str(chroma_path))
-    col = client.get_collection("latest")
+    # The shared reader open (format, HNSW-graph and interrupted-compaction
+    # checks), taken while no `refresh` can be rewriting the index.
+    with refresh_excluded(storage.data_dir):
+        index = VectorIndex(storage.chroma_path)
+    col = index._collection
     total = col.count()
     print(f"Collection has {total:,} records")
 

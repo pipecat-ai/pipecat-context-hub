@@ -509,3 +509,29 @@ def test_lock_file_owned_by_another_user_is_not_used(
     lock = IndexLock(tmp_path / "hub", REFRESH_LOCK, exclusive=True)
     lock.acquire()
     assert lock._fd is None
+
+
+@pytest.mark.parametrize("script", ["extract_dashboard", "extract_embeddings"])
+def test_dashboard_scripts_open_through_the_reader_path(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (reopening.py:47): the dashboard scripts opened Chroma with a
+    bare PersistentClient, skipping refresh exclusion and the open-time checks.
+    They must refuse while a refresh holds the lock, and open via VectorIndex."""
+    from pipecat_context_hub.shared.index_lock import RefreshInProgressError
+    from tests.unit.test_config import _REPO_ROOT, _import_script
+
+    module = _import_script(_REPO_ROOT / "dashboard" / "scripts" / f"{script}.py", script)
+    data_dir = tmp_path / "hub"
+    monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+    opened = MagicMock(side_effect=RuntimeError("opened"))
+    monkeypatch.setattr(module, "VectorIndex", opened)
+
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        with pytest.raises(RefreshInProgressError):
+            module.main()
+    opened.assert_not_called()
+
+    with pytest.raises(RuntimeError, match="opened"):
+        module.main()
+    opened.assert_called_once()
