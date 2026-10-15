@@ -513,9 +513,13 @@ def test_refresh_excluded_blocks_a_refresh_and_refuses_during_one(tmp_path: Path
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_lock_file_symlink_is_not_followed(tmp_path: Path) -> None:
+def test_lock_file_symlink_is_not_followed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Regression (index_lock.py:102): a lock name planted as a symlink in a
-    shared parent must not redirect the open or the mtime bump."""
+    shared parent must not redirect the open or the mtime bump. Regression
+    (docs/README.md): with O_NOFOLLOW the refusal was logged only at DEBUG,
+    so the documented "continuing without a lock" warning never appeared."""
     import os
 
     victim = tmp_path / "victim.txt"
@@ -524,8 +528,10 @@ def test_lock_file_symlink_is_not_followed(tmp_path: Path) -> None:
     data_dir = tmp_path / "hub"
     lock_path(data_dir, REFRESH_LOCK).symlink_to(victim)
     lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=True)
-    lock.acquire()  # best-effort: proceeds without a lock
+    with caplog.at_level(logging.WARNING, logger="pipecat_context_hub.shared.index_lock"):
+        lock.acquire()  # best-effort: proceeds without a lock
     lock.release()
+    assert "continuing without a lock" in caplog.text
     assert victim.stat().st_mtime_ns == 1
     assert victim.read_text() == "keep"
 

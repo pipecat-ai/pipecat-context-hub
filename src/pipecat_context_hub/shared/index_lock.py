@@ -151,10 +151,14 @@ class IndexLock:
         """
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            # O_NOFOLLOW: the lock lives beside the data dir, possibly in a
-            # shared directory, so a planted symlink must not redirect it.
-            # Without it (Windows) the open follows links: refuse one first.
-            if not _O_NOFOLLOW and self._path.is_symlink():
+            # The lock lives beside the data dir, possibly in a shared
+            # directory, so a planted symlink must not redirect it: refuse one
+            # (with a warning), and where O_NOFOLLOW exists also refuse one
+            # swapped in after this check. Without it (Windows) the open
+            # follows links; the post-open identity check below catches that
+            # (after the open may have created an empty file at a dangling
+            # target: an accepted residual, see the dev plan).
+            if self._path.is_symlink():
                 logger.warning(
                     "Lock file %s is a symbolic link; continuing without a lock", self._path
                 )
