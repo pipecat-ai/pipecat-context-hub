@@ -18,6 +18,8 @@ offline fixture-tree layout invariants — see `tests/smoke/README.md`).
 from __future__ import annotations
 
 import json
+import sqlite3
+import struct
 import subprocess
 from pathlib import Path
 
@@ -113,3 +115,45 @@ def test_cli_empty_index_delivers_bug_report_hint_on_stderr(tmp_path: Path) -> N
     assert result.stdout == ""
     assert BUG_REPORT_ISSUE_URL in result.stderr
     assert "refresh" in result.stderr
+
+
+@pytest.mark.parametrize("command", [["status"], ["search-docs", "TTS + STT"], ["serve"]])
+def test_corrupt_graph_fails_before_initialize_or_search(
+    tmp_path: Path, command: list[str]
+) -> None:
+    """Freeze the failing query and check both front doors without native loading."""
+    home = tmp_path / "corrupt_home"
+    chroma = home / ".pipecat-context-hub" / "chroma"
+    segment_id = "6719df4e-c43a-4cd8-b8ce-b9b5c9fb4400"
+    segment = chroma / segment_id
+    segment.mkdir(parents=True)
+    with sqlite3.connect(chroma / "chroma.sqlite3") as conn:
+        conn.execute("CREATE TABLE collections (id TEXT, name TEXT)")
+        conn.execute("INSERT INTO collections VALUES ('collection', 'latest')")
+        conn.execute("CREATE TABLE segments (id TEXT, type TEXT, collection TEXT)")
+        conn.execute(
+            "INSERT INTO segments VALUES (?, ?, 'collection')",
+            (segment_id, "urn:chroma:segment/vector/hnsw-local-persisted"),
+        )
+    conn.close()
+    (segment / "header.bin").write_bytes(
+        struct.pack("<i6Qii3QdQ", 1, 0, 8, 4, 152, 144, 132, 2, 0, 16, 32, 16, 0.36, 100)
+    )
+    (segment / "link_lists.bin").write_bytes(b"\0" * 2000)
+    before = {p.relative_to(chroma): p.read_bytes() for p in chroma.rglob("*") if p.is_file()}
+    result = subprocess.run(
+        ["uv", "run", "pipecat-context-hub", *command],
+        input=_initialize_payload() if command == ["serve"] else b"",
+        capture_output=True,
+        env=_env_with_home(home),
+        timeout=30,
+    )
+    assert result.returncode == 2
+    assert result.stdout == b""
+    stderr = result.stderr.decode()
+    assert "corrupt persisted HNSW" in stderr
+    assert "refresh --force --reset-index" in stderr
+    assert BUG_REPORT_ISSUE_URL in stderr
+    assert {
+        p.relative_to(chroma): p.read_bytes() for p in chroma.rglob("*") if p.is_file()
+    } == before
