@@ -20,7 +20,9 @@ established; the open-time check only fires when an index is opened.
    `serve`. Lock files are siblings of the data dir (`<dirname>.refresh.lock`, named from
    the full dirname so `x` and `.x` never share one),
    not inside it, so `--reset-index`'s rmtree can't unlink a held lock. Locking
-   fails open if the filesystem doesn't support flock. A live `serve` only
+   fails open if the filesystem doesn't support flock, and (with a warning) if
+   the lock file is a symlink, not a single-link regular file, or another
+   user's: an exclusive acquire writes to it. A live `serve` only
    produces a warning, and itself backs off while the refresh runs (item 5).
 4. Cherry-picked the open-time `validate_persisted_hnsw` code and tests from
    `ccb4ca2` (currently only on `feature/chatgpt-local-plugin`), extended with a
@@ -33,17 +35,22 @@ established; the open-time check only fires when an index is opened.
    launched mid-refresh; CLI queries exit 75. `refresh` retries its exclusive lock
    for ~10 s so an open in progress isn't mistaken for another refresh, and if
    readers still hold it after that, says so instead of "already running". Both
-   refusals exit 75 (`index_lock.EXIT_REFRESH_IN_PROGRESS`, shared with the CLI
-   queries). Readers never create the index: they open with `create=False`, so
+   refusals exit 75 (`exit_codes.EXIT_REFRESH_IN_PROGRESS`, shared with the CLI
+   queries). Readers never create the index: `create` defaults to False on
+   `IndexStore`, `VectorIndex` and `FTSIndex` (only `refresh` passes True), so
    a missing index or a lost `latest` collection raises
-   `MissingVectorCollectionError` ("run refresh" / "run refresh --force")
-   instead of opening an empty collection beside a populated FTS index. The
-   dashboard scripts open through `refresh_excluded` + `VectorIndex(create=False)`
-   too, so they get the same exclusion and open-time checks, and exit with the
-   `refresh` hint on a missing or empty index rather than creating one.
+   `MissingVectorCollectionError` ("run refresh" / "run refresh --force"), and
+   a missing keyword database `MissingKeywordIndexError`, instead of opening
+   an empty one beside a populated other half. The dashboard scripts open
+   through `reopening.open_ready_vector_index` (`refresh_excluded` +
+   `VectorIndex(create=False)` + the empty check), so they get the same
+   exclusion and open-time checks, and exit with the `refresh` hint on a
+   missing or empty index rather than creating one.
 6. `serve` reopens the rebuilt index (`ReopeningIndexStore`). `refresh` touches its
    lock file and steps its size (so two starts within one coarse filesystem
-   timestamp tick still differ) on start; the handle records that generation at open and compares it
+   timestamp tick still differ) on start. The generation is the lock file's
+   `(st_ino, st_mtime_ns, st_size)` (`index_lock.refresh_generation`), so a
+   recreated lock file also counts; the handle records it at open and compares it
    on every call, so even a sub-second refresh no call overlapped is noticed.
    There is only ever one open store: a stale one is closed once its last
    in-flight call ends, and only then is the next opened (calls meanwhile get a
@@ -59,7 +66,9 @@ established; the open-time check only fires when an index is opened.
    except an HNSW guard failure (`FatalIndexError`), which stops the refresh like
    anywhere else, and a swap that fails leaving no `latest` collection, whichever
    rename raised (`CompactionSwapError`, a `FatalIndexError`: exit 2, nothing deleted, the next
-   `refresh` restores the backup). The swap parks the old collection as `latest_precompact` before
+   `refresh` restores the backup). "No `latest`" is decided from the collection
+   listing; if even that fails, the original error stays non-fatal and nothing
+   is deleted. The swap parks the old collection as `latest_precompact` before
    promoting staging; a crash between the two renames is restored when `refresh`
    next opens the index (`IndexStore(..., recover=True)`, under its exclusive
    lock). Readers never repair it: they get `InterruptedCompactionError` ("run

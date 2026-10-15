@@ -40,8 +40,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   reopening the index mid-write. The dashboard scripts open the index
   the same way (refresh exclusion plus the open-time checks), and exit with the
   `refresh` hint on a missing or empty index instead of creating one. Readers
-  never create the index: a lost vector collection is reported ("run `refresh
-  --force`") rather than reopened empty beside a full keyword index. The stale handle is closed after its last call before the rebuilt
+  never create the index (only `refresh` does): a lost vector collection or a
+  missing keyword database is reported ("run `refresh --force`") rather than
+  recreated empty beside the populated other half. The stale handle is closed after its last call before the rebuilt
   index is opened (calls in between are asked to retry in a few seconds):
   chromadb shares one native System per path, so a client opened beside the
   stale one served the stale graph. Spikes showed opening the index mid-refresh
@@ -54,9 +55,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   `refresh.lock` so two refreshes can't run on one data dir, and warns when a
   `serve` (shared `serve.lock`) has the index open. Vector upserts re-run the
   bounded HNSW size check after every write batch and abort on a runaway file
-  instead of growing until the disk is full. Includes the open-time
-  oversized-graph check (also on `feature/chatgpt-local-plugin`), now extended
-  with a structural walk of `link_lists.bin`: racing writers leave a graph of
+  instead of growing until the disk is full. Includes an open-time
+  oversized-graph check, extended with a structural walk of `link_lists.bin`: racing writers leave a graph of
   healthy size that SIGSEGVs or runs away on the next load, and the walk
   rejects it first. Spikes reproduced the corruption with concurrent
   `refresh`es; see the dev plan. The walk reads at most the checked size (and
@@ -72,6 +72,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   guard failure stops `refresh` (exit 2) instead of letting the remaining sources
   keep writing into a damaged index. An `IndexWriter` signals that state by
   raising it.
+
+### Fixed
+- **Open-time index checks read what Chroma will open.** A writer killed
+  mid-transaction leaves a hot rollback journal beside `chroma.sqlite3`; the
+  format and HNSW checks read the database ignoring it, so they could validate
+  segments Chroma's own open then rolls back. With a journal present they now
+  open the database read-write (never creating it) so SQLite rolls it back first.
 
 ## [0.8.1] - 2026-10-02
 
