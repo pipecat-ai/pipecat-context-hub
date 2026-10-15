@@ -105,7 +105,7 @@ def _open_index_store_or_exit(
     try:
         # recover=True: refresh holds the exclusive refresh lock, so it alone
         # may repair an interrupted compaction while opening.
-        store = IndexStore(config.storage, recover=True, create=True, rebuild=rebuild)
+        return IndexStore(config.storage, recover=True, create=True, rebuild=rebuild)
     except (FatalIndexError, IndexUnavailableError) as exc:
         # A pre-1.0 Chroma dir or a corrupt graph (IncompatibleIndexFormatError),
         # an interrupted compaction the open could not restore
@@ -116,17 +116,49 @@ def _open_index_store_or_exit(
         # front-door parity with the serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(EXIT_INDEX_UNREADY) from exc
-    if store.vector_lost:
-        # --force recreated a lost vector collection empty. The keyword half's
-        # per-source skip markers describe records that no longer have vectors:
-        # drop them, so a source this run fails to fetch is re-ingested by the
-        # next plain refresh instead of skipped as unchanged (keyword-only).
-        for key in store.get_all_metadata():
-            if key == "docs:content_hash" or (
-                key.startswith("repo:") and key.endswith(":commit_sha")
-            ):
-                store.delete_metadata(key)
-    return store
+
+
+# Per-source skip markers: `refresh` skips a source whose marker matches what
+# it fetched. Built and parsed only through these, so the skip shortcut, the
+# stale-repo cleanup and `_distrust_skip_markers` agree on their shape.
+_DOCS_HASH_KEY = "docs:content_hash"
+
+
+def _repo_sha_key(slug: str) -> str:
+    return f"repo:{slug}:commit_sha"
+
+
+def _repo_slug_of_sha_key(key: str) -> str | None:
+    """The repo a :func:`_repo_sha_key` key names, or None for any other key."""
+    if key.startswith("repo:") and key.endswith(":commit_sha"):
+        return key[len("repo:") : -len(":commit_sha")]
+    return None
+
+
+def _repo_cleanup_failed_key(slug: str) -> str:
+    return f"repo:{slug}:cleanup_failed"
+
+
+def _distrust_skip_markers(index_store: IndexStore) -> None:
+    """Stop every skip marker from vouching for records the vector half lacks.
+
+    Called when the vector half opened empty (lost and recreated by
+    ``--force``, or created beside a keyword half that kept its markers). The
+    docs hash is dropped. Each repo keeps its commit marker (the stale-repo
+    cleanup and the tainted-ref purge find repos through it) and is flagged
+    ``cleanup_failed`` instead, which the skip shortcut already honours and a
+    successful re-ingest clears. So a source this run cannot fetch is still
+    re-ingested by the next plain refresh.
+    """
+    metadata = index_store.get_all_metadata()
+    flags = {
+        _repo_cleanup_failed_key(slug): "1"
+        for slug in map(_repo_slug_of_sha_key, metadata)
+        if slug is not None
+    }
+    drop = [_DOCS_HASH_KEY] if _DOCS_HASH_KEY in metadata else []
+    if flags or drop:
+        index_store.set_metadata_batch(flags, delete_keys=drop)
 
 
 # Free space `refresh` requires on the data-dir volume before it starts. The
@@ -497,7 +529,7 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
         # Cleared once the repo is fully re-ingested (see the refresh loop's
         # success path).
         try:
-            index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
+            index_store.set_metadata(_repo_cleanup_failed_key(slug), "1")
         except Exception:
             _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
@@ -517,7 +549,7 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             slug,
         )
         try:
-            index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
+            index_store.set_metadata(_repo_cleanup_failed_key(slug), "1")
         except Exception:
             _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
@@ -1149,6 +1181,9 @@ def refresh(
         # but the same helper is reused for one open call site either way.
         index_store = _open_index_store_or_exit(config, logger, rebuild=True)
 
+    if index_store.vector_empty:
+        _distrust_skip_markers(index_store)
+
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
 
@@ -1273,7 +1308,7 @@ def refresh(
 
         if raw_text is not None:
             content_hash = hashlib.sha256(raw_text.encode()).hexdigest()
-            stored_hash = index_store.get_metadata("docs:content_hash")
+            stored_hash = index_store.get_metadata(_DOCS_HASH_KEY)
             if not force and stored_hash == content_hash:
                 logger.info("Docs unchanged (hash=%s…), skipping", content_hash[:8])
                 source_status[docs_key] = {
@@ -1309,7 +1344,7 @@ def refresh(
                     # the failure in `all_errors`, then fall through to the
                     # same "error" status as the primary failure.
                     try:
-                        index_store.delete_metadata("docs:content_hash")
+                        index_store.delete_metadata(_DOCS_HASH_KEY)
                     except Exception as meta_exc:
                         meta_msg = f"Failed to clear stale docs:content_hash stamp: {meta_exc}"
                         all_errors.append(meta_msg)
@@ -1330,7 +1365,7 @@ def refresh(
                         len(docs_result.errors),
                     )
                     if not docs_result.errors:
-                        index_store.set_metadata("docs:content_hash", content_hash)
+                        index_store.set_metadata(_DOCS_HASH_KEY, content_hash)
                     source_status[docs_key] = {
                         "status": "error" if docs_result.errors else "updated",
                         "sha": _MISSING_SENTINEL,
@@ -1351,8 +1386,8 @@ def refresh(
         tainted_repos = set(config.sources.tainted_repos)
         all_meta = index_store.get_all_metadata()
         for meta_key in all_meta:
-            if meta_key.startswith("repo:") and meta_key.endswith(":commit_sha"):
-                slug = meta_key[len("repo:") : -len(":commit_sha")]
+            slug = _repo_slug_of_sha_key(meta_key)
+            if slug is not None:
                 if slug not in configured:
                     if slug in tainted_repos:
                         # Explicit exclusion — always cleaned up, regardless
@@ -1412,7 +1447,7 @@ def refresh(
 
         framework_slug = _FRAMEWORK_REPO
         for repo_slug in config.sources.effective_repos:
-            stored_sha_key = f"repo:{repo_slug}:commit_sha"
+            stored_sha_key = _repo_sha_key(repo_slug)
             # Pin the framework repo to the resolved tag. `head` asks for the
             # default branch, which `clone_or_fetch` expresses as no tag at all.
             repo_tag = fw_version if repo_slug == framework_slug and not fw_at_head else None
@@ -1513,13 +1548,14 @@ def refresh(
             # the SHA is unchanged *and* records for it actually exist.
             indexed_records = pre_counts.get(repo_slug, 0)
             # A prior cleanup failure for this repo (`_delete_repo_index_data`
-            # raising) leaves stale FTS rows behind even though the vector
-            # store may already be empty for it — `indexed_records` alone
+            # raising), or a vector half that opened empty
+            # (`_distrust_skip_markers`), leaves FTS rows behind even though
+            # the vector store may be empty for it — `indexed_records` alone
             # can't tell those apart from a healthy repo. Don't take the
             # unchanged-skip shortcut while that flag is set; force a
             # re-ingest instead, which clears it on success below.
             cleanup_failed = (
-                index_store.get_metadata(f"repo:{repo_slug}:cleanup_failed") is not None
+                index_store.get_metadata(_repo_cleanup_failed_key(repo_slug)) is not None
             )
             if (
                 not force
@@ -1556,7 +1592,8 @@ def refresh(
                 elif not force and stored_sha == commit_sha and cleanup_failed:
                     logger.warning(
                         "Repo %s SHA unchanged (sha=%s…) but a prior cleanup "
-                        "failed — re-ingesting to reconcile the index",
+                        "failed or the vector index was rebuilt — re-ingesting "
+                        "to reconcile the index",
                         repo_slug,
                         commit_sha[:8],
                     )
@@ -1595,7 +1632,7 @@ def refresh(
                 # repo's stored commit_sha on any failure path (forcing a
                 # retry next non-force refresh) independent of this marker.
                 try:
-                    index_store.set_metadata(f"repo:{repo_slug}:cleanup_failed", "1")
+                    index_store.set_metadata(_repo_cleanup_failed_key(repo_slug), "1")
                 except Exception:
                     logger.exception(
                         "Also failed to record cleanup_failed marker for %s", repo_slug
@@ -1688,7 +1725,7 @@ def refresh(
                 # for it is now moot: the index is coherent again, so the
                 # unchanged-skip shortcut can trust `indexed_records` for it
                 # on future runs.
-                index_store.delete_metadata(f"repo:{repo_slug}:cleanup_failed")
+                index_store.delete_metadata(_repo_cleanup_failed_key(repo_slug))
 
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",
@@ -1735,9 +1772,9 @@ def refresh(
             if repo_slug in frozen_sha_repos:
                 continue
             if repo_slug not in changed_repos or repo_slug in ingested_repos:
-                index_store.set_metadata(f"repo:{repo_slug}:commit_sha", sha)
+                index_store.set_metadata(_repo_sha_key(repo_slug), sha)
             else:
-                index_store.delete_metadata(f"repo:{repo_slug}:commit_sha")
+                index_store.delete_metadata(_repo_sha_key(repo_slug))
 
         # ----- 3. Deprecation map -----
         # Built solely from pipecat's machine-readable registry

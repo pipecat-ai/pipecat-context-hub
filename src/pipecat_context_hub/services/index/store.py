@@ -34,6 +34,9 @@ class IndexStore:
     #: Set by the open: the keyword half has records but the vector half has
     #: none (it was lost; only a *rebuild* open gets past that, recreating it).
     vector_lost: bool
+    #: Set by the open: the vector half held no records (new, recreated, or
+    #: emptied), so no skip marker in the keyword half vouches for vectors.
+    vector_empty: bool
 
     def __init__(
         self,
@@ -78,7 +81,8 @@ class IndexStore:
                 create=create and (rebuild or not indexed),
             )
             # Keyword records with no vectors: only *rebuild* may proceed.
-            self.vector_lost = indexed and vector.count() == 0
+            self.vector_empty = vector.count() == 0
+            self.vector_lost = indexed and self.vector_empty
             if self.vector_lost and not rebuild:
                 raise MissingVectorCollectionError(config.chroma_path)
         except BaseException:

@@ -221,7 +221,7 @@ class TestRefreshCommand:
     def _make_mocks(self):
         """Create shared mock objects for refresh tests."""
         mock_index_store = MagicMock()
-        mock_index_store.vector_lost = False  # a healthy index, not a lost vector half
+        mock_index_store.vector_empty = False  # a healthy index, not an empty vector half
         mock_index_store.get_metadata = MagicMock(return_value=None)
         mock_index_store.set_metadata = MagicMock()
         mock_index_store.delete_metadata = MagicMock()
@@ -317,6 +317,128 @@ class TestRefreshCommand:
         mock_crawler.ingest.assert_called_once()
         # With --force, repos should be re-ingested despite matching SHA
         assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
+
+    def _live_metadata(self, mock_store, meta: dict[str, str]) -> None:
+        """Back the mock store's metadata calls with the mutable *meta* dict."""
+
+        def batch(pairs: dict[str, str], *, delete_keys: Any = ()) -> None:
+            meta.update(pairs)
+            for key in delete_keys:
+                meta.pop(key, None)
+
+        mock_store.get_metadata = MagicMock(side_effect=meta.get)
+        mock_store.get_all_metadata = MagicMock(side_effect=lambda: dict(meta))
+        mock_store.set_metadata = MagicMock(side_effect=meta.__setitem__)
+        mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
+        mock_store.set_metadata_batch = MagicMock(side_effect=batch)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_vector_half_created_beside_skip_markers_reingests_them(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (store.py:81): with no keyword records the open created
+        the vector half without reporting a loss, so a plain refresh skipped
+        docs on a surviving ``docs:content_hash`` and left them unindexed."""
+        import hashlib
+
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_store.vector_lost = False  # no keyword records: nothing "lost"
+        mock_store.vector_empty = True  # ... but the vector half opened empty
+        mock_store.get_counts_by_repo = MagicMock(return_value={})
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        content = "# Page\nSource: https://example.com\nContent here"
+        meta = {
+            "docs:content_hash": hashlib.sha256(content.encode()).hexdigest(),
+            **_sha_metadata("abc123"),
+        }
+        self._live_metadata(mock_store, meta)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_crawler.ingest.assert_called_once()  # not skipped as unchanged
+        assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_lost_vector_rebuild_keeps_repo_markers_and_retries_failed_sources(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (cli.py:133): after a lost-vector rebuild every
+        ``repo:*:commit_sha`` key was deleted, so an unconfigured repo was
+        orphaned from the stale-repo cleanup (and a tainted one from its
+        purge). Repo markers now survive; a source this run fails to fetch is
+        still re-ingested next run (docs hash dropped, repo flagged)."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_store.vector_lost = True
+        mock_store.vector_empty = True
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_crawler.fetch_llms_txt = AsyncMock(side_effect=RuntimeError("docs offline"))
+        failing = _DEFAULT_REPOS[-1]
+
+        def clone(slug: str, *_args: Any, **_kwargs: Any) -> CloneResult:
+            if slug == failing:
+                raise RuntimeError("network down")
+            return CloneResult(Path("/tmp/repo"), "abc123", None)
+
+        mock_github.clone_or_fetch = MagicMock(side_effect=clone)
+        meta = {
+            "docs:content_hash": "old",
+            "repo:gone/repo:commit_sha": "old",
+            **_sha_metadata("abc123"),
+        }
+        self._live_metadata(mock_store, meta)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force", "--prune"])
+
+        assert result.exit_code == 0, result.output
+        # The unconfigured repo was still found, so --prune removed it.
+        mock_store.delete_by_repo.assert_any_await("gone/repo")
+        # Failed this run: next plain refresh must not skip them.
+        assert "docs:content_hash" not in meta
+        assert meta[f"repo:{failing}:commit_sha"] == "abc123"
+        assert meta[f"repo:{failing}:cleanup_failed"] == "1"
+        # Re-ingested this run: flag cleared again.
+        assert f"repo:{_DEFAULT_REPOS[0]}:cleanup_failed" not in meta
 
     @pytest.mark.parametrize("fatal", [None, "corrupt", "swap"])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
@@ -5252,11 +5374,10 @@ class TestRefreshLostVectorCollection:
         store.close()
         assert _collection_names(storage) == ["latest"]
 
-    def test_force_open_drops_source_skip_markers(self, tmp_path, monkeypatch):
-        """Regression (cli.py:1265): --force recreated the lost vector half but
-        kept the keyword half's skip markers, so a source whose fetch failed in
-        that run kept its hash/SHA and every later plain refresh skipped it as
-        unchanged, leaving it keyword-only. The markers are dropped instead."""
+    def test_force_open_writes_no_metadata(self, tmp_path, monkeypatch):
+        """Regression (cli.py:133): the open helper itself deleted every skip
+        marker after a lost-vector rebuild. It now only opens; it reports the
+        empty vector half and refresh decides (``_distrust_skip_markers``)."""
         import logging
 
         from pipecat_context_hub.cli import _open_index_store_or_exit
@@ -5265,20 +5386,45 @@ class TestRefreshLostVectorCollection:
 
         storage = self._env(tmp_path, monkeypatch)
         _lose_vector_half(storage, empty_latest=False)
-        markers = {"docs:content_hash": "abc", "repo:o/r:commit_sha": "deadbeef"}
-        kept = {"framework_version": "latest", "repo:o/r:cleanup_failed": "1"}
+        written = {"docs:content_hash": "abc", "repo:o/r:commit_sha": "deadbeef"}
         store = IndexStore(storage, create=True, rebuild=True)  # write the metadata
-        for key, value in {**markers, **kept}.items():
+        for key, value in written.items():
             store.set_metadata(key, value)
         store.close()
 
         store = _open_index_store_or_exit(HubConfig(), logging.getLogger("test"), rebuild=True)
         try:
-            metadata = store.get_all_metadata()
+            assert store.vector_lost and store.vector_empty
+            assert store.get_all_metadata() == written
         finally:
             store.close()
-        assert not set(markers) & set(metadata)
-        assert {k: metadata.get(k) for k in kept} == kept
+
+    def test_distrust_skip_markers_flags_repos_and_drops_docs_hash(self, tmp_path):
+        """M2/M3: commit markers (how cleanup and the tainted purge find repos)
+        are kept for every repo, configured or not; each is flagged instead."""
+        from pipecat_context_hub.cli import _distrust_skip_markers
+        from pipecat_context_hub.services.index.store import IndexStore
+        from pipecat_context_hub.shared.config import StorageConfig
+
+        store = IndexStore(StorageConfig(data_dir=tmp_path / "hub"), create=True)
+        try:
+            before = {
+                "docs:content_hash": "abc",
+                "repo:o/r:commit_sha": "deadbeef",
+                "repo:gone/x:commit_sha": "cafe",
+                "framework_version": "latest",
+            }
+            for key, value in before.items():
+                store.set_metadata(key, value)
+            _distrust_skip_markers(store)
+            after = store.get_all_metadata()
+        finally:
+            store.close()
+        assert after == {
+            **{k: v for k, v in before.items() if k != "docs:content_hash"},
+            "repo:o/r:cleanup_failed": "1",
+            "repo:gone/x:cleanup_failed": "1",
+        }
 
     def test_unusable_keyword_schema_exits_2(self, tmp_path, monkeypatch, caplog):
         """Regression (cli.py:121): SQLite reports a schema the index cannot
