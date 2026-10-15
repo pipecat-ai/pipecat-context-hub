@@ -561,8 +561,8 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   the live records (delete + re-add otherwise left dead elements that grew the
   graph by the whole corpus each time; the swap never leaves the index without
   its collection, and one interrupted by a crash is restored by the next
-  `refresh` — until then queries say to run it; if the swap fails and cannot be
-  rolled back, that `refresh` exits 2 without deleting anything and the next
+  `refresh` — until then queries say to run it; if the swap fails leaving no
+  collection, that `refresh` exits 2 without deleting anything and the next
   `refresh` restores it). During writes the vector index re-checks the persisted HNSW graph
   and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
   header-derived bound — the runaway-file corruption that once took ~325 GB

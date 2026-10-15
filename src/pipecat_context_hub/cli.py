@@ -1785,8 +1785,7 @@ def refresh(
             # corpus per forced refresh). Rebuild it from the live records.
             # Non-fatal: the index is fully usable without it. Except a
             # FatalIndexError (the HNSW guard tripped on a graph written this
-            # run, or the swap failed and could not be rolled back, leaving no
-            # readable collection): that stops the refresh, exit 2.
+            # run, or the swap failed leaving no ``latest`` collection): that stops the refresh, exit 2.
             try:
                 kept = index_store.compact_vector()
                 logger.info("Compacted vector index after forced refresh (%d records)", kept)

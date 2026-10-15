@@ -504,9 +504,10 @@ class VectorIndex:
         data for the next load to get wrong. This copies the live records into
         a staging collection, swaps it in, and removes the orphaned segment
         directory of the old one. Returns the number of records carried over;
-        the old collection is untouched unless the copy verified. If the swap
-        fails and cannot be rolled back, raises :class:`CompactionSwapError`
-        (fatal) and deletes nothing; refresh's next open restores the backup.
+        the old collection is untouched unless the copy verified. If it fails
+        and leaves no ``latest`` (whichever step raised), raises
+        :class:`CompactionSwapError` (fatal) and deletes nothing; refresh's
+        next open restores the backup.
         """
         staging_name = COMPACT_STAGING_NAME
         with self._op_lock:
@@ -518,7 +519,6 @@ class VectorIndex:
             staging = self._client.create_collection(
                 name=staging_name, metadata={"hnsw:space": "cosine"}
             )
-            mid_swap = False
             try:
                 copied = 0
                 while copied < total:
@@ -552,21 +552,21 @@ class VectorIndex:
                 try:
                     staging.modify(name=COLLECTION_NAME)
                 except BaseException:
-                    try:
-                        old.modify(name=COLLECTION_NAME)
-                    except Exception as rollback_exc:
-                        # No ``latest`` now: readers fail until refresh
-                        # restores the backup, so this must not pass for the
-                        # non-fatal "index valid but larger" outcome.
-                        mid_swap = True
-                        raise CompactionSwapError(self._chroma_path) from rollback_exc
-                    raise
-            except BaseException:
-                if not mid_swap:  # mid-swap, destroy nothing: leave it for refresh
                     with contextlib.suppress(Exception):
-                        self._client.delete_collection(staging_name)
-                with contextlib.suppress(Exception):
+                        old.modify(name=COLLECTION_NAME)
+                    raise
+            except BaseException as exc:
+                # Decide by the state left behind, not by which step raised: a
+                # rename can commit and still raise.
+                try:
                     self._collection = self._client.get_collection(COLLECTION_NAME)
+                except Exception:
+                    # No ``latest``: readers fail until refresh restores the
+                    # backup, so this must not pass for the non-fatal "index
+                    # valid but larger" outcome. Destroy nothing.
+                    raise CompactionSwapError(self._chroma_path) from exc
+                with contextlib.suppress(Exception):
+                    self._client.delete_collection(staging_name)
                 raise
             self._collection = self._client.get_collection(COLLECTION_NAME)
             try:

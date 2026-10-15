@@ -77,7 +77,7 @@ class CorruptHnswGraphError(IncompatibleIndexFormatError):
 
 
 class CompactionSwapError(FatalIndexError):
-    """``compact()`` could neither promote the compacted copy nor restore the old one.
+    """``compact()`` failed mid-swap and left no ``latest`` collection.
 
     The index is left as an interrupted compaction would leave it (no
     ``latest``; the live records under the backup name), so readers get

@@ -50,8 +50,8 @@ established; the open-time check only fires when an index is opened.
    than clearing up front, because the per-repo delete-after-successful-fetch
    ordering protects records of repos whose fetch fails. Non-fatal on failure,
    except an HNSW guard failure (`FatalIndexError`), which stops the refresh like
-   anywhere else, and a swap that fails and whose rollback also fails
-   (`CompactionSwapError`, a `FatalIndexError`: exit 2, nothing deleted, the next
+   anywhere else, and a swap that fails leaving no `latest` collection, whichever
+   rename raised (`CompactionSwapError`, a `FatalIndexError`: exit 2, nothing deleted, the next
    `refresh` restores the backup). The swap parks the old collection as `latest_precompact` before
    promoting staging; a crash between the two renames is restored when `refresh`
    next opens the index (`IndexStore(..., recover=True)`, under its exclusive

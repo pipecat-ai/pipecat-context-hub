@@ -14,8 +14,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   forced refresh now rebuilds the collection from the live records at the end and
   removes the old segment directory (on the verified chromadb 1.5.x only; on other
   releases it is left on disk). Non-fatal if it fails, except when the HNSW guard
-  trips on a graph written during the refresh, or the swap fails and cannot be
-  rolled back: either stops the refresh (exit 2), the latter without deleting
+  trips on a graph written during the refresh, or the swap fails leaving no
+  `latest` collection: either stops the refresh (exit 2), the latter without deleting
   anything, so the next `refresh` restores the index. The old collection is parked under a backup name until
   the rebuilt one is in place; a swap interrupted by a crash is restored by the
   next `refresh` (readers never write to the index: until then they report it and

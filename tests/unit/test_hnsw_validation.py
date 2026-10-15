@@ -535,6 +535,35 @@ class TestCompactSwap:
         finally:
             index.close()
 
+    def test_parking_rename_that_commits_then_raises_is_fatal(self, tmp_path: Path) -> None:
+        """Regression (vector.py:551): the fatal decision used to depend on which
+        rename raised. If parking the old collection commits and then raises,
+        compact() deleted the staging copy and re-raised a plain error that
+        refresh reports as "index valid but larger" (exit 0) with no ``latest``."""
+        from pipecat_context_hub.services.index.errors import CompactionSwapError
+        from tests.unit.test_index_store import _make_records
+
+        index = VectorIndex(tmp_path / "chroma")
+        try:
+            index.upsert(_make_records(30))
+            real_modify = index._collection.__class__.modify
+
+            def modify(self: Any, *args: Any, **kwargs: Any) -> Any:
+                result = real_modify(self, *args, **kwargs)
+                if kwargs.get("name") == COMPACT_BACKUP_NAME:
+                    raise RuntimeError("raised after commit")
+                return result
+
+            with patch.object(index._collection.__class__, "modify", modify):
+                with pytest.raises(CompactionSwapError):
+                    index.compact()
+            assert sorted(c.name for c in index._client.list_collections()) == [
+                COMPACT_STAGING_NAME,
+                COMPACT_BACKUP_NAME,
+            ], "the verified staging copy was destroyed mid-swap"
+        finally:
+            index.close()
+
     def test_crash_between_renames_is_recovered_on_open(self, tmp_path: Path) -> None:
         """A process killed after parking the old collection must not reopen
         as an empty ``latest`` while FTS still holds every record."""
