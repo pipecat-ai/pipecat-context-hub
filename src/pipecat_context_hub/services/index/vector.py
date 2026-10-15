@@ -7,6 +7,7 @@ single namespace for v0.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import shutil
@@ -16,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
@@ -460,6 +462,87 @@ class VectorIndex:
                 metadata={"hnsw:space": "cosine"},
             )
             logger.info("VectorIndex cleared")
+
+    def compact(self) -> int:
+        """Rebuild the collection so its HNSW graph holds only live records.
+
+        ``delete`` + re-``add`` of the same ids (what ``refresh --force`` does)
+        leaves the deleted elements in the persisted graph, so it grows by the
+        full corpus on every forced refresh (20k -> 80k elements for 20k live
+        records over four rounds, 2026-10-15 spike). A bigger graph is more
+        data for the next load to get wrong. This copies the live records into
+        a staging collection, swaps it in, and removes the orphaned segment
+        directory of the old one. Returns the number of records carried over;
+        the old collection is untouched unless the copy verified.
+        """
+        staging_name = f"{COLLECTION_NAME}_compact"
+        with self._op_lock:
+            old = self._collection
+            total = int(old.count())
+            with contextlib.suppress(Exception):
+                self._client.delete_collection(staging_name)  # leftover from an interrupted run
+            staging = self._client.create_collection(
+                name=staging_name, metadata={"hnsw:space": "cosine"}
+            )
+            try:
+                copied = 0
+                while copied < total:
+                    page = old.get(
+                        limit=_CHROMA_BATCH_SIZE,
+                        offset=copied,
+                        include=["documents", "metadatas", "embeddings"],
+                    )
+                    ids = page["ids"]
+                    if not ids:
+                        break
+                    staging.add(
+                        ids=ids,
+                        documents=page["documents"],
+                        metadatas=page["metadatas"],
+                        embeddings=page["embeddings"],
+                    )
+                    copied += len(ids)
+                if staging.count() != total:
+                    raise RuntimeError(
+                        f"compaction copied {staging.count()} of {total} records; keeping old index"
+                    )
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    self._client.delete_collection(staging_name)
+                raise
+            self._client.delete_collection(COLLECTION_NAME)
+            staging.modify(name=COLLECTION_NAME)
+            self._collection = self._client.get_collection(COLLECTION_NAME)
+            self._write_guard = HnswWriteGuard(self._chroma_path.resolve())
+            self._remove_orphan_segment_dirs()
+        logger.info("VectorIndex compacted: %d records", total)
+        return total
+
+    def _remove_orphan_segment_dirs(self) -> None:
+        """Delete UUID segment dirs no longer referenced by chroma.sqlite3.
+
+        Chroma leaves a dropped collection's segment directory (and its
+        bloated graph) on disk. Best effort: skipped unless the segment table
+        was readable and non-empty.
+        """
+        db_path = self._chroma_path / "chroma.sqlite3"
+        try:
+            conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+            try:
+                referenced = {str(row[0]) for row in conn.execute("SELECT id FROM segments")}
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return
+        if not referenced:
+            return
+        for entry in self._chroma_path.iterdir():
+            try:
+                UUID(entry.name)
+            except ValueError:
+                continue
+            if entry.is_dir() and entry.name not in referenced:
+                shutil.rmtree(entry, ignore_errors=True)
 
     def upsert(self, records: list[ChunkedRecord]) -> int:
         """Upsert records into ChromaDB. Returns count of records written."""

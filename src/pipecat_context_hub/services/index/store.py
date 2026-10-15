@@ -54,6 +54,10 @@ class IndexStore:
         self._fts.clear()
         logger.info("IndexStore cleared")
 
+    def compact_vector(self) -> int:
+        """Rebuild the vector graph without dead elements. Returns records kept."""
+        return self._vector.compact()
+
     def reset(self) -> None:
         """Delete all persisted search data and cached metadata."""
         vector_error: Exception | None = None

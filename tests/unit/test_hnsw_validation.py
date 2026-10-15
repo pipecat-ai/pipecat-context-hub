@@ -283,3 +283,54 @@ class TestStructuralWalk:
         (segment / "link_lists.bin").write_bytes(struct.pack("<I", 13) + b"\0" * 12)
         with pytest.raises(IncompatibleIndexFormatError, match="not a multiple"):
             guard.check()
+
+
+class TestCompact:
+    """`refresh --force` delete + re-add bloats the graph; compact() rebuilds it."""
+
+    @staticmethod
+    def _graph_count(chroma: Path) -> int:
+        seg = next(d for d in chroma.iterdir() if d.is_dir() and (d / "header.bin").exists())
+        return int(struct.unpack("<i6Qii3QdQ", (seg / "header.bin").read_bytes()[:100])[3])
+
+    def test_compact_removes_dead_elements_and_keeps_records(self, tmp_path: Path) -> None:
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma)
+        records = _make_records(1200)
+        index.upsert(records)
+        for _ in range(3):  # what --force does: delete everything, add it back
+            index.delete_by_content_type("doc")
+            index.upsert(records)
+        index.close()
+        index = VectorIndex(chroma)
+        index.compact()
+        index.close()
+
+        index = VectorIndex(chroma)
+        try:
+            assert index._collection.count() == 1200
+            got = index._collection.get(ids=["chunk-7"], include=["documents", "embeddings"])
+            assert got["documents"][0] == records[7].content
+            assert list(got["embeddings"][0]) == pytest.approx(records[7].embedding, abs=1e-5)
+        finally:
+            index.close()
+        assert self._graph_count(chroma) == 1200
+        validate_persisted_hnsw(chroma.resolve(), "latest")
+        segments = [d for d in chroma.iterdir() if d.is_dir()]
+        assert len(segments) == 1, "orphaned segment dir of the old collection was not removed"
+
+    def test_failed_copy_keeps_the_old_index(self, tmp_path: Path) -> None:
+        from tests.unit.test_index_store import _make_records
+
+        index = VectorIndex(tmp_path / "chroma")
+        try:
+            index.upsert(_make_records(50))
+            with patch.object(index._collection.__class__, "get", side_effect=RuntimeError("boom")):
+                with pytest.raises(RuntimeError, match="boom"):
+                    index.compact()
+            assert index._collection.count() == 50
+            assert [c.name for c in index._client.list_collections()] == ["latest"]
+        finally:
+            index.close()

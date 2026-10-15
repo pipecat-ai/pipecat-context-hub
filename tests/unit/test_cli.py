@@ -309,6 +309,8 @@ class TestRefreshCommand:
         result = runner.invoke(main, ["refresh", "--force"])
 
         assert result.exit_code == 0
+        # Forced refresh deletes + re-adds everything: the graph is compacted after.
+        mock_store.compact_vector.assert_called_once()
         # With --force, docs should be re-ingested despite matching hash
         mock_crawler.ingest.assert_called_once()
         # With --force, repos should be re-ingested despite matching SHA
