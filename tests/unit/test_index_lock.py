@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import logging
+import sys
 from pathlib import Path
 
 import click
@@ -32,6 +34,7 @@ def test_lock_is_reusable_after_release(tmp_path: Path) -> None:
         pass
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="msvcrt has no shared lock mode")
 def test_shared_locks_coexist_but_block_exclusive(tmp_path: Path) -> None:
     a = IndexLock(tmp_path, SERVE_LOCK, exclusive=False)
     b = IndexLock(tmp_path, SERVE_LOCK, exclusive=False)
@@ -83,6 +86,22 @@ class TestRefreshGuards:
         assert "GB free" in result.output
         assert not data_dir.exists()
 
+    def test_reset_index_is_not_refused_for_low_disk_before_the_delete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--reset-index` is the recovery for a disk-filling index: the delete
+        must run before the free-space check, which then sees the freed space."""
+        data_dir = tmp_path / "hub"
+        data_dir.mkdir()
+        stale = data_dir / "stale.bin"
+        stale.write_bytes(b"x")
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.setenv("PIPECAT_HUB_MIN_FREE_GB", str(10**9))  # never satisfiable
+        result = CliRunner().invoke(cli.main, ["refresh", "--reset-index"])
+        assert result.exit_code != 0
+        assert "GB free" in result.output  # still checked, but after the delete
+        assert not stale.exists()
+
     def test_lock_released_when_command_ends(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -113,6 +132,22 @@ class TestMinFreeBytes:
     def test_invalid_falls_back_to_default(self, raw: str) -> None:
         assert cli._min_free_bytes({"PIPECAT_HUB_MIN_FREE_GB": raw}) == 5 * 1024**3
 
+    def test_overflowing_value_falls_back_to_default(self) -> None:
+        # Finite as a float, but `gb * 1024**3` overflows to inf.
+        assert cli._min_free_bytes({"PIPECAT_HUB_MIN_FREE_GB": "1e300"}) == 5 * 1024**3
+
     def test_zero_disables(self, tmp_path: Path) -> None:
         assert cli._min_free_bytes({"PIPECAT_HUB_MIN_FREE_GB": "0"}) == 0
         cli._require_free_disk(tmp_path, min_free=0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="patches fcntl.flock")
+def test_unsupported_locking_fails_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ENOLCK / EOPNOTSUPP (some NFS/SMB mounts) must not read as 'locked'."""
+    import fcntl
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(fcntl, "flock", boom)
+    IndexLock(tmp_path, REFRESH_LOCK, exclusive=True).acquire()

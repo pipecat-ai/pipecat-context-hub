@@ -10,9 +10,19 @@ so a crashed run never leaves a stale lock behind.
 
 from __future__ import annotations
 
+import errno
+import logging
 import os
+import time
 from pathlib import Path
 from types import TracebackType
+
+logger = logging.getLogger(__name__)
+
+# errno values that mean "someone else holds the lock". Anything else (ENOLCK,
+# EOPNOTSUPP on NFS/SMB, EBADF...) means locking itself is unavailable, and a
+# best-effort guard must fail open rather than refuse to run.
+_CONTENTION = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES})
 
 REFRESH_LOCK = "refresh.lock"
 SERVE_LOCK = "serve.lock"
@@ -32,13 +42,21 @@ def _try_lock(fd: int, *, exclusive: bool) -> bool:
         try:
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
-        except OSError:
-            return False
+        except OSError as exc:
+            return _fail_open(exc)
         return True
     try:
         fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as exc:
+        return _fail_open(exc)
+    return True
+
+
+def _fail_open(exc: OSError) -> bool:
+    """False for genuine contention; True (lock unavailable, proceed) otherwise."""
+    if exc.errno in _CONTENTION or exc.errno == getattr(errno, "EDEADLK", None):
         return False
+    logger.debug("File locking unavailable (%s); continuing without a lock", exc)
     return True
 
 
@@ -54,15 +72,22 @@ class IndexLock:
         self._exclusive = exclusive
         self._fd: int | None = None
 
-    def acquire(self) -> None:
+    def acquire(self, *, attempts: int = 1, delay: float = 0.05) -> None:
+        """Take the lock, retrying briefly on contention.
+
+        Retries let a starting ``serve`` ride out the instant a ``refresh``
+        probe (``serve_is_running``) holds the lock exclusively.
+        """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
-        if not _try_lock(fd, exclusive=self._exclusive):
-            os.close(fd)
-            raise IndexLockedError(
-                f"index data directory is locked by another process: {self._path}"
-            )
-        self._fd = fd
+        for attempt in range(max(attempts, 1)):
+            if _try_lock(fd, exclusive=self._exclusive):
+                self._fd = fd
+                return
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+        os.close(fd)
+        raise IndexLockedError(f"index data directory is locked by another process: {self._path}")
 
     def release(self) -> None:
         if self._fd is not None:
