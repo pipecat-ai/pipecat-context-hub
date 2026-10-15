@@ -547,13 +547,16 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   mid-refresh still connects, with the index unopened), and one-shot CLI
   queries exit **75** (`EX_TEMPFAIL`) with the same message on stderr. Readers
   open the index under a shared hold on `refresh.lock`, so a refresh waits (up
-  to ~10 s) for an open in progress rather than starting under it. `serve`
+  to ~10 s) for an open in progress rather than starting under it (if readers
+  still hold it, `refresh` says so: just retry it). `serve`
   reopens the rebuilt index (with the same readiness checks as at startup) and
   reloads the deprecation map by itself once the refresh ends, so no MCP client
-  restart is needed. After a `--force` refresh the vector graph is rebuilt from
+  restart is needed; a call that lands while an earlier call still uses the old
+  index is asked to retry in a few seconds. After a `--force` refresh the vector graph is rebuilt from
   the live records (delete + re-add otherwise left dead elements that grew the
   graph by the whole corpus each time; the swap never leaves the index without
-  its collection, and an interrupted one is restored on the next open). During writes the vector index re-checks the persisted HNSW graph
+  its collection, and one interrupted by a crash is restored by the next
+  `refresh` — until then queries say to run it). During writes the vector index re-checks the persisted HNSW graph
   and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
   header-derived bound — the runaway-file corruption that once took ~325 GB
   of a disk. Recover with `refresh --force --reset-index`.

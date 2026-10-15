@@ -134,7 +134,7 @@ src/pipecat_context_hub/
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
 │   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence
-│   ├── interfaces.py         # IndexWriter/Reader, Retriever, Ingester
+│   ├── interfaces.py         # IndexWriter/Reader, ServingIndex, Retriever, Ingester; FatalIndexError (ingesters re-raise: stops refresh), IndexUnavailableError (message for the caller)
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision
 │   ├── model_loading.py      # quiet_model_loading — offline-first HF env defaults (serve + CLI)
@@ -148,7 +148,7 @@ src/pipecat_context_hub/
 │   ├── embedding.py          # EmbeddingService
 │   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
 │   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS tree-sitter, taxonomy, version extraction, deprecation map
-│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, ReopeningIndexStore (serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard)
+│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, reopening (open_ready_index_store: the one reader open for serve + CLI; ReopeningIndexStore: serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard; query_chroma_sqlite, the one raw read of Chroma's schema), errors (FatalIndexError subclasses; InterruptedCompactionError)
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/
     ├── main.py               # MCP server setup (_SERVER_VERSION here)

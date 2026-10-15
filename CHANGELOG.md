@@ -12,10 +12,16 @@ This project uses [Semantic Versioning](https://semver.org/).
   elements in the persisted HNSW graph, growing it by the whole corpus on every
   forced refresh (20k -> 80k elements for 20k live records over four rounds). A
   forced refresh now rebuilds the collection from the live records at the end and
-  removes the old segment directory. Non-fatal if it fails: the old collection is
-  parked under a backup name until the rebuilt one is in place (an interrupted
-  swap is restored on the next open), and the staging writes get the same
-  per-batch HNSW guard as upserts.
+  removes the old segment directory. Non-fatal if it fails, except when the HNSW
+  guard trips on a graph written during the refresh, which stops it (exit 2) like
+  any other guard failure. The old collection is parked under a backup name until
+  the rebuilt one is in place; a swap interrupted by a crash is restored by the
+  next `refresh` (readers never write to the index: until then they report it and
+  say to run `refresh`), and the staging writes get the same per-batch HNSW guard
+  as upserts.
+- **`serve` and the one-shot CLI open the index the same way.** Both go through
+  one open-and-check, so an empty, unreadable, or incompatible index gets the same
+  message from either (the empty-index text no longer mentions `serve`).
 
 ### Added
 - **No reads while a refresh rewrites the index.** `serve` answers tool calls with
@@ -24,11 +30,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   message. `serve` now reopens the rebuilt index itself after a refresh (with the
   startup readiness checks, and reloading the deprecation map), so no MCP client
   restart is needed. Every reader open holds `refresh.lock` shared, so a refresh
-  can't start mid-open (it retries its lock for ~10 s); a call already running
-  when a refresh starts gets the retry message instead of reopening the index
-  mid-write, and a replaced handle is closed only after its last call. Spikes
-  showed opening the index mid-refresh can leave a graph that crashes the next
-  load.
+  can't start mid-open (it retries its lock for ~10 s, and if readers still hold
+  it says so rather than reporting another refresh); a call already running when
+  a refresh starts gets the retry message instead of reopening the index
+  mid-write. The stale handle is closed after its last call before the rebuilt
+  index is opened (calls in between are asked to retry in a few seconds):
+  chromadb shares one native System per path, so a client opened beside the
+  stale one served the stale graph. Spikes showed opening the index mid-refresh
+  can leave a graph that crashes the next load.
 - **Index write guards.** After a Chroma HNSW `link_lists.bin` ballooned to
   15 TB logical / ~325 GB on disk (upstream chroma#7510) and left a machine
   with 4 GB free: `refresh` now checks free disk (default 5 GB, override
@@ -47,6 +56,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   verified 1.5.x, header and structure mismatches are logged and skipped (the
   size bound still applies) instead of refusing every healthy index. Lock files
   are opened without following symlinks and ignored if another user owns them.
+- **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
+  unsafe to keep using; the incompatible-format and corrupt-HNSW errors subclass
+  it. Ingesters re-raise it rather than recording one more per-source error, so a
+  guard failure stops `refresh` (exit 2) instead of letting the remaining sources
+  keep writing into a damaged index. An `IndexWriter` signals that state by
+  raising it.
 
 ## [0.8.1] - 2026-10-02
 
