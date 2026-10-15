@@ -38,7 +38,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   refresh starts finishes on the handle it has; any read that starts after it
   (including a running call's next one) gets the retry message instead of
   reopening the index mid-write. The dashboard scripts open the index
-  the same way (refresh exclusion plus the open-time checks). The stale handle is closed after its last call before the rebuilt
+  the same way (refresh exclusion plus the open-time checks), and exit with the
+  `refresh` hint on a missing or empty index instead of creating one. Readers
+  never create the index: a lost vector collection is reported ("run `refresh
+  --force`") rather than reopened empty beside a full keyword index. The stale handle is closed after its last call before the rebuilt
   index is opened (calls in between are asked to retry in a few seconds):
   chromadb shares one native System per path, so a client opened beside the
   stale one served the stale graph. Spikes showed opening the index mid-refresh

@@ -608,6 +608,40 @@ class TestCompactSwap:
             client.close()
 
 
+class TestReaderNeverCreates:
+    """Regression (vector.py:417): a reader open used get_or_create, so a lost
+    ``latest`` came back as an empty collection beside a populated FTS index
+    (vector search silently empty) and a missing index was created."""
+
+    def test_reader_on_a_missing_index_creates_nothing(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        chroma = tmp_path / "chroma"
+        with pytest.raises(MissingVectorCollectionError, match="refresh"):
+            VectorIndex(chroma, create=False)
+        assert not chroma.exists()
+
+    def test_reader_on_a_lost_collection_reports_it(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        chroma = tmp_path / "chroma"
+        VectorIndex(chroma).close()  # built ...
+        client: Any = chromadb.PersistentClient(path=str(chroma))
+        try:
+            client.delete_collection(COLLECTION_NAME)  # ... then lost
+        finally:
+            client.close()
+
+        with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+            VectorIndex(chroma, create=False)
+        client = chromadb.PersistentClient(path=str(chroma))
+        try:
+            assert client.list_collections() == []
+        finally:
+            client.close()
+        VectorIndex(chroma).close()  # writers (refresh) still create it
+
+
 _MASTER = "SELECT name FROM sqlite_master"
 
 

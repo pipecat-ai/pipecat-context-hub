@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from collections import Counter
 from statistics import mean
 
@@ -10,6 +11,7 @@ from pipecat_context_hub.services.index.vector import VectorIndex
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.env_loading import load_env_layers
 from pipecat_context_hub.shared.index_lock import refresh_excluded
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 
 PUBLIC_DIR = os.path.join(os.path.dirname(__file__), "..", "public")
 OUTPUT = os.path.join(PUBLIC_DIR, "dashboard_data.json")
@@ -32,12 +34,17 @@ def main() -> None:
     # dashboard pipeline consistent with refresh/serve and isolated test runs).
     storage = _bootstrap()
     print("Connecting to ChromaDB...")
-    # The shared reader open (format, HNSW-graph and interrupted-compaction
-    # checks), taken while no `refresh` can be rewriting the index.
-    with refresh_excluded(storage.data_dir):
-        index = VectorIndex(storage.chroma_path)
-    col = index._collection
-    total = col.count()
+    # The reader open (format, HNSW-graph and interrupted-compaction checks;
+    # never creates a missing index), taken while no `refresh` can be
+    # rewriting the index.
+    try:
+        with refresh_excluded(storage.data_dir):
+            index = VectorIndex(storage.chroma_path, create=False)
+    except IndexUnavailableError as exc:
+        sys.exit(f"Error: {exc}")
+    total = index.count()
+    if total == 0:
+        sys.exit("Error: the index is empty (0 records). Run 'uv run pipecat-context-hub refresh'.")
     print(f"Collection has {total:,} records")
 
     # Fetch all metadata + documents in batches
@@ -47,11 +54,7 @@ def main() -> None:
 
     for offset in range(0, total, batch_size):
         print(f"  Fetching {offset}–{min(offset + batch_size, total)}...")
-        result = col.get(
-            limit=batch_size,
-            offset=offset,
-            include=["metadatas", "documents"],
-        )
+        result = index.get_page(offset=offset, limit=batch_size, include=["metadatas", "documents"])
         all_meta.extend(result["metadatas"])
         all_docs.extend(result["documents"])
 

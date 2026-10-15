@@ -520,7 +520,6 @@ def test_dashboard_scripts_open_through_the_reader_path(
     """Regression (reopening.py:47): the dashboard scripts opened Chroma with a
     bare PersistentClient, skipping refresh exclusion and the open-time checks.
     They must refuse while a refresh holds the lock, and open via VectorIndex."""
-    from pipecat_context_hub.shared.index_lock import RefreshInProgressError
     from tests.unit.test_config import _REPO_ROOT, _import_script
 
     module = _import_script(_REPO_ROOT / "dashboard" / "scripts" / f"{script}.py", script)
@@ -530,10 +529,29 @@ def test_dashboard_scripts_open_through_the_reader_path(
     monkeypatch.setattr(module, "VectorIndex", opened)
 
     with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
-        with pytest.raises(RefreshInProgressError):
+        with pytest.raises(SystemExit, match="Retry in 60-120 seconds"):
             module.main()
     opened.assert_not_called()
 
     with pytest.raises(RuntimeError, match="opened"):
         module.main()
     opened.assert_called_once()
+
+
+@pytest.mark.parametrize("script", ["extract_dashboard", "extract_embeddings"])
+def test_dashboard_scripts_refuse_a_missing_index_without_creating_one(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (extract_embeddings.py:37): on a missing index the dashboard
+    scripts created chroma.sqlite3 and an empty collection, then carried on
+    with 0 records (UMAP crashed on the empty array). They must exit with the
+    `refresh` hint and create nothing under the data dir."""
+    from tests.unit.test_config import _REPO_ROOT, _import_script
+
+    module = _import_script(_REPO_ROOT / "dashboard" / "scripts" / f"{script}.py", script)
+    data_dir = tmp_path / "hub"
+    monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+
+    with pytest.raises(SystemExit, match="refresh"):
+        module.main()
+    assert not data_dir.exists()

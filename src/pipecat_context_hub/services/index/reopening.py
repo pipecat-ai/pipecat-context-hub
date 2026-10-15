@@ -50,7 +50,7 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
     The one reader open path: ``serve``'s first open and every reopen, and
     each one-shot CLI query. The caller holds :func:`refresh_excluded`.
     Raises ``IndexUnavailableError`` (after closing whatever came up) when the
-    index is incompatible, unreadable, mid-compaction, or empty; its message is
+    index is missing, incompatible, unreadable, mid-compaction, or empty; its message is
     the home-redacted operator guidance, ending with the bug-report hint.
     """
     from pipecat_context_hub.services.index import IncompatibleIndexFormatError
@@ -59,7 +59,7 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
     data_dir = redact_home(storage.data_dir)
     index_store: IndexStore | None = None
     try:
-        index_store = _IndexStore(storage)
+        index_store = _IndexStore(storage, create=False)  # a reader never creates the index
         stats = index_store.get_index_stats()
     except Exception as exc:
         # IndexStore.__init__ opens two backends (Chroma + SQLite) without

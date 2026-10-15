@@ -33,10 +33,16 @@ established; the open-time check only fires when an index is opened.
    for ~10 s so an open in progress isn't mistaken for another refresh, and if
    readers still hold it after that, says so instead of "already running". Both
    refusals exit 75 (`index_lock.EXIT_REFRESH_IN_PROGRESS`, shared with the CLI
-   queries). The dashboard scripts open through `refresh_excluded` + `VectorIndex`
-   too, so they get the same exclusion and open-time checks.
+   queries). Readers never create the index: they open with `create=False`, so
+   a missing index or a lost `latest` collection raises
+   `MissingVectorCollectionError` ("run refresh" / "run refresh --force")
+   instead of opening an empty collection beside a populated FTS index. The
+   dashboard scripts open through `refresh_excluded` + `VectorIndex(create=False)`
+   too, so they get the same exclusion and open-time checks, and exit with the
+   `refresh` hint on a missing or empty index rather than creating one.
 6. `serve` reopens the rebuilt index (`ReopeningIndexStore`). `refresh` touches its
-   lock file on start; the handle records that generation at open and compares it
+   lock file and steps its size (so two starts within one coarse filesystem
+   timestamp tick still differ) on start; the handle records that generation at open and compares it
    on every call, so even a sub-second refresh no call overlapped is noticed.
    There is only ever one open store: a stale one is closed once its last
    in-flight call ends, and only then is the next opened (calls meanwhile get a

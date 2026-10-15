@@ -109,3 +109,28 @@ class InterruptedCompactionError(IndexUnavailableError):
             "`refresh --force`. Run 'uv run pipecat-context-hub refresh' to restore it "
             "(no rebuild needed)."
         )
+
+
+class MissingVectorCollectionError(IndexUnavailableError):
+    """A reader found no vector collection to open.
+
+    Readers never create one (only ``refresh`` and other writers do): an empty
+    ``latest`` created beside a populated keyword index would make vector
+    search silently return nothing.
+    """
+
+    def __init__(self, chroma_path: Path | str, *, built: bool) -> None:
+        self.chroma_path = Path(chroma_path)
+        if built:
+            message = (
+                f"The vector index at {self.chroma_path} has no 'latest' collection, so "
+                "vector search would come back empty. Run 'uv run pipecat-context-hub "
+                "refresh --force' to rebuild it."
+            )
+        else:
+            message = (
+                f"Index at {self.chroma_path} is empty (0 records): it has not been built. "
+                "Run 'uv run pipecat-context-hub refresh' to build it (the first run "
+                "downloads models and indexes sources; allow a few minutes)."
+            )
+        super().__init__(message)

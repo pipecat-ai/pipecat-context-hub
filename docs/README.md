@@ -553,7 +553,10 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   still hold it, `refresh` says so: just retry it). A `refresh` refused by the
   lock (another refresh, or readers outlasting the wait) also exits **75**. The
   dashboard scripts (`just dashboard-build`) open the index the same way, so
-  they too refuse to start while a refresh runs. `serve`
+  they too refuse to start while a refresh runs, and on a missing or empty
+  index they exit with the `refresh` hint instead of creating one. Readers
+  never create the index: if its vector collection has gone missing, queries
+  say to run `refresh --force` rather than returning empty vector results. `serve`
   reopens the rebuilt index (with the same readiness checks as at startup) and
   reloads the deprecation map by itself once the refresh ends, so no MCP client
   restart is needed; a call that lands while an earlier call still uses the old

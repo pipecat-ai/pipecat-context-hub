@@ -31,6 +31,7 @@ from pipecat_context_hub.services.index.errors import (
     CompactionSwapError,
     IncompatibleIndexFormatError,
     InterruptedCompactionError,
+    MissingVectorCollectionError,
 )
 from pipecat_context_hub.services.index.hnsw_validation import (
     HnswWriteGuard,
@@ -349,17 +350,22 @@ class VectorIndex:
     so indexes survive process restarts.
     """
 
-    def __init__(self, chroma_path: Path, *, recover: bool = False) -> None:
+    def __init__(self, chroma_path: Path, *, recover: bool = False, create: bool = True) -> None:
         """Open the index at *chroma_path*.
 
-        Opening never writes to the index unless *recover* is set, which only
-        ``refresh`` does (it holds the exclusive refresh lock): it lets this
-        open restore a compaction interrupted between its two renames.
-        Readers hold that lock only shared, so for them the same state raises
-        :class:`InterruptedCompactionError` instead.
+        *recover*, which only ``refresh`` sets (it holds the exclusive refresh
+        lock), lets this open restore a compaction interrupted between its two
+        renames. Readers hold that lock only shared, so for them the same state
+        raises :class:`InterruptedCompactionError` instead.
+
+        *create* lets the open create the index (directory, database and an
+        empty ``latest`` collection) when it is missing. Readers pass False:
+        they never write to the index, and a missing collection raises
+        :class:`MissingVectorCollectionError` instead of opening empty.
         """
         self._chroma_path = chroma_path
         self._recover = recover
+        self._create = create
         self._client: Any = None
         self._collection: Any = None
         self._closed = True
@@ -368,6 +374,9 @@ class VectorIndex:
 
     def _open_client(self) -> None:
         """Open the persistent Chroma client and the ``latest`` collection."""
+        if not self._create and not (self._chroma_path / "chroma.sqlite3").is_file():
+            # Never built: raise before anything below creates files.
+            raise MissingVectorCollectionError(self._chroma_path, built=False)
         # Probe for a pre-1.0 on-disk format BEFORE constructing the client,
         # which would otherwise crash opaquely or rewrite 0.6 state.
         _detect_incompatible_format(self._chroma_path)
@@ -414,6 +423,8 @@ class VectorIndex:
                     raise InterruptedCompactionError(self._chroma_path)
                 logger.warning("Restoring the vector collection from an interrupted compaction")
                 client.get_collection(COMPACT_BACKUP_NAME).modify(name=COLLECTION_NAME)
+            elif COLLECTION_NAME not in names and not self._create:
+                raise MissingVectorCollectionError(self._chroma_path, built=True)
             return client.get_or_create_collection(
                 name=COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
@@ -464,6 +475,19 @@ class VectorIndex:
         self._collection = None
         self._client = None
         self._closed = True
+
+    def count(self) -> int:
+        """Number of records in the collection."""
+        with self._op_lock:
+            return int(self._collection.count())
+
+    def get_page(self, *, offset: int, limit: int, include: list[Any]) -> dict[str, Any]:
+        """Raw records ``offset`` to ``offset + limit`` (ids plus *include* fields).
+
+        For export tools (the dashboard scripts) that walk the whole collection.
+        """
+        with self._op_lock:
+            return dict(self._collection.get(limit=limit, offset=offset, include=include))
 
     def close(self) -> None:
         """Release this client's Chroma resources."""
