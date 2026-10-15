@@ -22,8 +22,7 @@ from pipecat_context_hub.server.dispatch import (
     get_tool_handler,
     iter_tool_definitions,
 )
-from pipecat_context_hub.services.index.store import IndexStore
-from pipecat_context_hub.shared.interfaces import Retriever
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError, Retriever, ServingIndex
 from pipecat_context_hub.shared.staleness import annotate_response
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
@@ -182,7 +181,7 @@ _assert_no_unsubstituted_placeholder(_SERVER_INSTRUCTIONS)
 
 def create_server(
     retriever: Retriever,
-    index_store: IndexStore | None = None,
+    index_store: ServingIndex | None = None,
     reranker_status_provider: Callable[[], RerankerStatus] | None = None,
     idle_tracker: IdleTracker | None = None,
     unavailable_reason: Callable[[], str | None] | None = None,
@@ -283,7 +282,9 @@ def create_server(
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=_annotate(result_json))]
             )
-        except ValidationError as exc:
+        except (ValidationError, IndexUnavailableError) as exc:
+            # IndexUnavailableError: the index became unusable mid-call (e.g. a
+            # refresh started); its message tells the agent what to do.
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=str(exc))],
                 is_error=True,

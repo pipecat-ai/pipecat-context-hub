@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
-from pipecat_context_hub.shared.index_lock import REFRESH_IN_PROGRESS_MESSAGE, refresh_in_progress
+from pipecat_context_hub.shared.index_lock import RefreshInProgressError, refresh_excluded
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
 from pipecat_context_hub.shared.paths import redact_home_in_text
 from pipecat_context_hub.shared.reranker import runtime_reranker_reason
@@ -331,14 +331,16 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     # IndexStore.__init__ opens two backends (Chroma + SQLite) and does not roll
     # back if a *post-construction* call (get_index_stats) then raises, so close
     # whatever came up before exiting — mirrors the guarded close `serve` does.
-    if refresh_in_progress(config.storage.data_dir):
-        _echo_stderr_warning(f"Error: {REFRESH_IN_PROGRESS_MESSAGE}")
-        raise SystemExit(_EXIT_REFRESH_IN_PROGRESS)
-
     index_store: IndexStore | None = None
     try:
-        index_store = IndexStore(config.storage)
-        stats = index_store.get_index_stats()
+        # Open under a shared hold on the refresh lock, so a refresh can't be
+        # rewriting the index while it is opened (nor start mid-open).
+        with refresh_excluded(config.storage.data_dir):
+            index_store = IndexStore(config.storage)
+            stats = index_store.get_index_stats()
+    except RefreshInProgressError as exc:
+        _echo_stderr_warning(f"Error: {exc}")
+        raise SystemExit(_EXIT_REFRESH_IN_PROGRESS) from exc
     except IncompatibleIndexFormatError as exc:
         if index_store is not None:
             with contextlib.suppress(Exception):

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
@@ -5224,6 +5225,108 @@ class TestServeEmptyIndex:
 
         assert result.exit_code != 0
         mock_store.close.assert_called_once()
+
+
+class TestServeRefreshGate:
+    """`serve`'s index handle across a refresh (its gate is the reopening handle)."""
+
+    @staticmethod
+    def _ready_store() -> MagicMock:
+        store = MagicMock()
+        store.get_index_stats = MagicMock(
+            return_value={"counts_by_type": {"doc": 1}, "total": 1, "commit_shas": []}
+        )
+        return store
+
+    @contextlib.contextmanager
+    def _run_serve(
+        self, tmp_path: Path, monkeypatch, stores: list[MagicMock]
+    ) -> Iterator[tuple[Path, dict[str, Any]]]:
+        data_dir = tmp_path / "hub"
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.chdir(tmp_path)
+        captured: dict[str, Any] = {}
+
+        def _fake_create_server(*args, **kwargs):
+            captured["args"], captured["kwargs"] = args, kwargs
+            return MagicMock()
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch("pipecat_context_hub.services.index.store.IndexStore", side_effect=stores)
+            )
+            stack.enter_context(patch("pipecat_context_hub.services.embedding.EmbeddingService"))
+            stack.enter_context(
+                patch("pipecat_context_hub.server.transport.serve_stdio", return_value=None)
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.server.main.create_server",
+                    side_effect=_fake_create_server,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.shared.reranker.probe_reranker",
+                    return_value=("m", None, "config_disabled"),
+                )
+            )
+            result = CliRunner().invoke(main, ["serve"])
+            assert result.exit_code == 0, result.output
+            # The gate keeps working after serve returns, with the patches live.
+            yield data_dir, captured
+
+    @staticmethod
+    def _simulate_refresh(data_dir: Path) -> None:
+        import os
+
+        from pipecat_context_hub.shared.index_lock import REFRESH_LOCK, IndexLock, lock_path
+
+        os.utime(lock_path(data_dir, REFRESH_LOCK), ns=(1, 1))
+        with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+            pass
+
+    def test_reopen_after_a_refresh_reloads_the_deprecation_map(self, tmp_path, monkeypatch):
+        """Regression (cli.py:920): serve used to keep the startup deprecation
+        map after reopening a refreshed index, so check_deprecation paired a
+        rebuilt index with an old map until restart."""
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        map_path = tmp_path / "hub" / "deprecation_map.json"
+        DeprecationMap(pipecat_commit_sha="old").save(map_path)
+        stores = [self._ready_store(), self._ready_store()]
+        with self._run_serve(tmp_path, monkeypatch, stores) as (data_dir, captured):
+            retriever = captured["args"][0]
+            assert retriever.deprecation_map.pipecat_commit_sha == "old"
+            DeprecationMap(pipecat_commit_sha="new").save(map_path)
+            self._simulate_refresh(data_dir)
+            assert captured["kwargs"]["unavailable_reason"]() is None
+            assert retriever.deprecation_map.pipecat_commit_sha == "new"
+
+    def test_reopened_empty_index_answers_with_the_unready_message(self, tmp_path, monkeypatch):
+        """Regression (reopening.py:46): a reopen runs the startup readiness
+        checks, so an index a failed refresh left empty gets the documented
+        message instead of empty results."""
+        empty = MagicMock()
+        empty.get_index_stats = MagicMock(
+            return_value={"counts_by_type": {}, "total": 0, "commit_shas": []}
+        )
+        with self._run_serve(tmp_path, monkeypatch, [self._ready_store(), empty]) as (
+            data_dir,
+            captured,
+        ):
+            self._simulate_refresh(data_dir)
+            message = captured["kwargs"]["unavailable_reason"]()
+            assert message is not None and "is empty (0 records)" in message
+            empty.close.assert_called_once()
+
+    def test_create_server_gets_a_typed_handle(self, tmp_path, monkeypatch):
+        from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
+
+        with self._run_serve(tmp_path, monkeypatch, [self._ready_store()]) as (_, captured):
+            handle = captured["args"][1]
+            assert isinstance(handle, ReopeningIndexStore)
+            assert captured["kwargs"]["unavailable_reason"] == handle.unavailable_reason
 
 
 class TestServeRerankerTelemetry:

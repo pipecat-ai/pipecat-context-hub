@@ -4,8 +4,11 @@ Chroma's local HNSW persistence is single-writer. Two ``refresh`` runs on one
 data dir can interleave writes to the same segment files, so ``refresh`` takes
 an exclusive ``refresh.lock`` for its whole run. ``serve`` holds a shared
 ``serve.lock`` for its lifetime so a concurrent ``refresh`` can warn that a
-live server has the index open (it is not refused: servers stay up for days). Locks are OS-level (released when the process dies, even on SIGKILL),
-so a crashed run never leaves a stale lock behind.
+live server has the index open (it is not refused: servers stay up for days).
+Readers hold ``refresh.lock`` shared while they open the index
+(:func:`refresh_excluded`), so an open never overlaps a refresh. Locks are
+OS-level (released when the process dies, even on SIGKILL), so a crashed run
+never leaves a stale lock behind.
 """
 
 from __future__ import annotations
@@ -15,8 +18,11 @@ import errno
 import logging
 import os
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from types import TracebackType
+
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +35,22 @@ REFRESH_LOCK = "refresh.lock"
 SERVE_LOCK = "serve.lock"
 
 
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
 class IndexLockedError(RuntimeError):
     """The data dir is locked by another process in an incompatible mode."""
+
+
+def _owned_by_us(fd: int) -> bool:
+    """False if the lock file was pre-created by another user (POSIX only)."""
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return True
+    try:
+        return bool(os.fstat(fd).st_uid == getuid())
+    except OSError:
+        return True
 
 
 def _try_lock(fd: int, *, exclusive: bool) -> bool:
@@ -99,10 +119,18 @@ class IndexLock:
         """
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
-        except OSError as exc:  # unwritable parent: locking is best-effort
+            # O_NOFOLLOW: the lock lives beside the data dir, possibly in a
+            # shared directory, so a planted symlink must not redirect it.
+            fd = os.open(self._path, os.O_RDWR | os.O_CREAT | _O_NOFOLLOW, 0o600)
+        except OSError as exc:  # unwritable parent / symlink: locking is best-effort
             logger.debug(
                 "Cannot create lock file %s (%s); continuing without a lock", self._path, exc
+            )
+            return
+        if not _owned_by_us(fd):
+            os.close(fd)
+            logger.warning(
+                "Lock file %s belongs to another user; continuing without a lock", self._path
             )
             return
         for attempt in range(max(attempts, 1)):
@@ -112,8 +140,8 @@ class IndexLock:
                     # Bump the file's mtime so readers can tell a lock was taken
                     # (and so a refresh happened) even if they never observed it
                     # held. See refresh_generation().
-                    with contextlib.suppress(OSError):
-                        os.utime(self._path)
+                    with contextlib.suppress(OSError, NotImplementedError):
+                        os.utime(fd if os.utime in os.supports_fd else self._path)
                 return
             if attempt + 1 < attempts:
                 time.sleep(delay)
@@ -161,6 +189,43 @@ REFRESH_IN_PROGRESS_MESSAGE = (
 )
 
 
+class RefreshInProgressError(IndexUnavailableError):
+    """A ``refresh`` is rewriting the index; the caller should retry later."""
+
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message or REFRESH_IN_PROGRESS_MESSAGE)
+
+
+# Reader probes retry briefly: on Windows (no shared lock mode) two concurrent
+# readers can collide and would otherwise report a refresh that is not running.
+_READER_ATTEMPTS = 3
+_READER_DELAY = 0.02
+
+
+@contextlib.contextmanager
+def refresh_excluded(data_dir: Path) -> Iterator[None]:
+    """Hold off any ``refresh`` while the body opens the index.
+
+    Takes a shared lock on ``refresh.lock`` for the duration of the block, so
+    a refresh can neither be running when the body starts nor start while it
+    runs (``refresh`` retries its exclusive lock for a while to ride this out).
+    A probe-then-open would leave a window in which a refresh starts between
+    the probe and the open; opening mid-write is the corruption trigger
+    (2026-10-15 spikes). Raises :class:`RefreshInProgressError` if a refresh
+    holds the lock. Unlike :func:`refresh_in_progress` this creates the lock
+    file if needed: a lock nobody can hold excludes nothing.
+    """
+    lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=False)
+    try:
+        lock.acquire(attempts=_READER_ATTEMPTS, delay=_READER_DELAY)
+    except IndexLockedError as exc:
+        raise RefreshInProgressError() from exc
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def refresh_in_progress(data_dir: Path) -> bool:
     """True if a ``refresh`` currently holds its exclusive lock for ``data_dir``.
 
@@ -174,7 +239,7 @@ def refresh_in_progress(data_dir: Path) -> bool:
         return False
     probe = IndexLock(data_dir, REFRESH_LOCK, exclusive=False)
     try:
-        probe.acquire(attempts=3, delay=0.02)
+        probe.acquire(attempts=_READER_ATTEMPTS, delay=_READER_DELAY)
     except IndexLockedError:
         return True
     probe.release()

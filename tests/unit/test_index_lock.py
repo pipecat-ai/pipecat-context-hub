@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import errno
 import logging
+import os
 import sys
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import click
 import pytest
@@ -13,6 +16,7 @@ from click.testing import CliRunner
 
 from pipecat_context_hub import cli
 from pipecat_context_hub.shared.index_lock import (
+    REFRESH_IN_PROGRESS_MESSAGE,
     REFRESH_LOCK,
     SERVE_LOCK,
     IndexLock,
@@ -73,10 +77,24 @@ class TestRefreshGuards:
     ) -> None:
         monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("PIPECAT_HUB_MIN_FREE_GB", "0")
+        monkeypatch.setattr(cli, "_REFRESH_LOCK_ATTEMPTS", 2)
+        monkeypatch.setattr(cli, "_REFRESH_LOCK_RETRY_DELAY", 0.01)
         with IndexLock(tmp_path, REFRESH_LOCK, exclusive=True):
             result = CliRunner().invoke(cli.main, ["refresh"])
         assert result.exit_code != 0
         assert "already running" in result.output
+
+    def test_reader_hold_is_not_a_running_refresh(self, tmp_path: Path) -> None:
+        """Regression (index_lock.py:175): readers hold refresh.lock shared for
+        an instant (probe) or an index open; a refresh starting then must wait
+        it out, not report "already running"."""
+        import threading
+
+        reader = IndexLock(tmp_path, REFRESH_LOCK, exclusive=False)
+        reader.acquire()
+        threading.Timer(0.2, reader.release).start()
+        with click.Context(click.Command("x")):
+            cli._acquire_refresh_lock_or_exit(tmp_path, logging.getLogger("test")).release()
 
     def test_low_disk_refuses_before_any_write(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -210,44 +228,145 @@ def test_a_running_serve_is_not_a_running_refresh(tmp_path: Path) -> None:
     serve.release()
 
 
+def _simulate_refresh(data_dir: Path) -> None:
+    """A refresh that started and finished (bumps the lock-file generation)."""
+    import os
+
+    path = lock_path(data_dir, REFRESH_LOCK)
+    if path.exists():
+        os.utime(path, ns=(1, 1))  # an old generation, whatever the mtime granularity
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        pass
+
+
 class TestReopeningIndexStore:
-    def test_opens_lazily_and_delegates(self) -> None:
-        from unittest.mock import MagicMock
-
+    @staticmethod
+    def _store(data_dir: Path, opener: Any) -> Any:
         from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
 
+        return ReopeningIndexStore(data_dir, opener)
+
+    def test_opens_lazily_and_delegates(self, tmp_path: Path) -> None:
         real = MagicMock()
-        real.get_metadata.return_value = "v"
-        factory = MagicMock(return_value=real)
-        store = ReopeningIndexStore(factory)
-        factory.assert_not_called()
-        assert store.get_metadata("k") == "v"
-        factory.assert_called_once()
+        real.get_all_metadata.return_value = {"k": "v"}
+        opener = MagicMock(return_value=real)
+        store = self._store(tmp_path / "hub", opener)
+        assert store.data_dir == tmp_path / "hub"  # never opens the index
+        opener.assert_not_called()
+        assert store.get_all_metadata() == {"k": "v"}
+        opener.assert_called_once()
 
-    def test_mark_stale_closes_and_reopens_on_next_use(self) -> None:
-        from unittest.mock import MagicMock
-
-        from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
-
+    def test_reopens_after_a_refresh_no_call_overlapped(self, tmp_path: Path) -> None:
+        """Regression (cli.py:928): the generation is the one current *at open*,
+        so a refresh that starts right after the open, with no tool call during
+        it, still makes the next call reopen."""
+        data_dir = tmp_path / "hub"
         first, second = MagicMock(), MagicMock()
-        factory = MagicMock(side_effect=[second])
-        store = ReopeningIndexStore(factory, initial=first)
-        store.mark_stale()
-        first.close.assert_not_called()  # marking never touches the live handle
-        store.get_index_stats()
+        opener = MagicMock(side_effect=[first, second])
+        store = self._store(data_dir, opener)
+        store.open_now()
+        _simulate_refresh(data_dir)
+        assert store.unavailable_reason() is None
         first.close.assert_called_once()
-        second.get_index_stats.assert_called_once()
+        assert opener.call_count == 2
         store.get_index_stats()
-        factory.assert_called_once()  # reopened exactly once
+        second.get_index_stats.assert_called_once()
+        assert opener.call_count == 2  # reopened exactly once
 
-    def test_close_does_not_open_the_index(self) -> None:
-        from unittest.mock import MagicMock
+    def test_never_opens_while_a_refresh_runs(self, tmp_path: Path) -> None:
+        """Regression (cli.py:938): a call already past the gate when a refresh
+        starts must not reopen the index mid-write, and the refresh must still
+        be noticed afterwards."""
+        from pipecat_context_hub.shared.index_lock import RefreshInProgressError
 
-        from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
+        data_dir = tmp_path / "hub"
+        first, second = MagicMock(), MagicMock()
+        opener = MagicMock(side_effect=[first, second])
+        store = self._store(data_dir, opener)
+        store.open_now()
+        with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+            assert store.unavailable_reason() == REFRESH_IN_PROGRESS_MESSAGE
+            with pytest.raises(RefreshInProgressError):
+                store.get_all_metadata()  # the in-flight call
+            assert opener.call_count == 1
+        assert store.unavailable_reason() is None
+        assert opener.call_count == 2
+        first.close.assert_called_once()
 
-        factory = MagicMock()
-        ReopeningIndexStore(factory).close()
-        factory.assert_not_called()
+    def test_open_holds_off_a_refresh(self, tmp_path: Path) -> None:
+        """Regression (index_lock.py:180): the open itself runs under the
+        refresh lock, so a refresh cannot start between probe and open."""
+        data_dir = tmp_path / "hub"
+        seen: list[bool] = []
+
+        def opener() -> MagicMock:
+            try:
+                IndexLock(data_dir, REFRESH_LOCK, exclusive=True).acquire()
+            except IndexLockedError:
+                seen.append(True)
+            else:
+                seen.append(False)
+            return MagicMock()
+
+        self._store(data_dir, opener).open_now()
+        assert seen == [True]
+
+    def test_replaced_store_is_not_closed_under_a_running_call(self, tmp_path: Path) -> None:
+        """Regression (reopening.py:42): a store replaced after a refresh is
+        closed only once the call still using it has finished."""
+        import asyncio
+
+        data_dir = tmp_path / "hub"
+        first, second = MagicMock(), MagicMock()
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def slow_search(_query: object) -> list[object]:
+            started.set()
+            await finish.wait()
+            first.close.assert_not_called()
+            return []
+
+        first.vector_search = slow_search
+        store = self._store(data_dir, MagicMock(side_effect=[first, second]))
+
+        async def scenario() -> None:
+            call = asyncio.create_task(store.vector_search(MagicMock()))
+            await started.wait()
+            _simulate_refresh(data_dir)
+            assert store.unavailable_reason() is None  # reopens: second is current
+            first.close.assert_not_called()
+            finish.set()
+            await call
+            first.close.assert_called_once()
+
+        asyncio.run(scenario())
+
+    def test_reopen_failure_is_the_tool_answer(self, tmp_path: Path) -> None:
+        """Regression (reopening.py:46): a reopen goes through the same
+        readiness checks, and its failure becomes the gate's message."""
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        data_dir = tmp_path / "hub"
+        opener = MagicMock(side_effect=[MagicMock(), IndexUnavailableError("index is empty")])
+        store = self._store(data_dir, opener)
+        store.open_now()
+        _simulate_refresh(data_dir)
+        assert store.unavailable_reason() == "index is empty"
+
+    def test_open_listeners_run_on_every_reopen(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "hub"
+        store = self._store(data_dir, MagicMock(side_effect=[MagicMock(), MagicMock()]))
+        store.open_now()
+        listener = MagicMock()
+        store.add_open_listener(listener)
+        _simulate_refresh(data_dir)
+        store.open_now()
+        listener.assert_called_once()
+
+    def test_close_does_not_open_the_index(self, tmp_path: Path) -> None:
+        opener = MagicMock()
+        self._store(tmp_path, opener).close()
+        opener.assert_not_called()
 
 
 def test_refresh_generation_changes_on_every_refresh_start(tmp_path: Path) -> None:
@@ -278,3 +397,45 @@ def test_shared_probe_does_not_bump_the_generation(tmp_path: Path) -> None:
     before = refresh_generation(data_dir)
     assert refresh_in_progress(data_dir) is False
     assert refresh_generation(data_dir) == before
+
+
+def test_refresh_excluded_blocks_a_refresh_and_refuses_during_one(tmp_path: Path) -> None:
+    from pipecat_context_hub.shared.index_lock import RefreshInProgressError, refresh_excluded
+
+    data_dir = tmp_path / "hub"
+    with refresh_excluded(data_dir):  # creates the lock file so it can be held
+        with pytest.raises(IndexLockedError):
+            IndexLock(data_dir, REFRESH_LOCK, exclusive=True).acquire()
+    with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+        with pytest.raises(RefreshInProgressError, match="Retry in 60-120 seconds"):
+            with refresh_excluded(data_dir):
+                pass
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_lock_file_symlink_is_not_followed(tmp_path: Path) -> None:
+    """Regression (index_lock.py:102): a lock name planted as a symlink in a
+    shared parent must not redirect the open or the mtime bump."""
+    import os
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    os.utime(victim, ns=(1, 1))
+    data_dir = tmp_path / "hub"
+    lock_path(data_dir, REFRESH_LOCK).symlink_to(victim)
+    lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=True)
+    lock.acquire()  # best-effort: proceeds without a lock
+    lock.release()
+    assert victim.stat().st_mtime_ns == 1
+    assert victim.read_text() == "keep"
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX only")
+def test_lock_file_owned_by_another_user_is_not_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_uid = os.getuid()
+    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+    lock = IndexLock(tmp_path / "hub", REFRESH_LOCK, exclusive=True)
+    lock.acquire()
+    assert lock._fd is None
