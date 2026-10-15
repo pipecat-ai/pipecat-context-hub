@@ -45,10 +45,16 @@ This project uses [Semantic Versioning](https://semver.org/).
   left empty) beside a populated keyword database, or a missing or incomplete keyword
   database, is reported ("run `refresh --force`") rather than recreated empty beside the
   populated other half, and a plain `refresh` that finds the vector collection lost or
-  empty that way exits 2 with the same advice, before writing anything, instead of
-  skipping unchanged sources and leaving vector search empty. Opening an initialized
-  keyword database no longer writes to it; `refresh` completes an incomplete one and
-  rebuilds its full-text table from the stored records. The dashboard
+  empty that way exits 2 with the same advice, without touching the vector collection, instead of
+  skipping unchanged sources and leaving vector search empty. `refresh --force`
+  recreates it and forgets every source's unchanged-skip marker, so a source whose
+  fetch fails in that run is re-ingested by the next plain `refresh`; a repo indexed
+  earlier but absent from that run's config keeps its keyword records with no
+  vectors (re-add it for that run, or `--prune` it). A corrupt keyword database
+  makes `refresh` exit 2 with the `--reset-index` remedy, as the readers do.
+  Opening an initialized keyword database no longer writes to it; `refresh`
+  completes an incomplete one and rebuilds its full-text table from the stored
+  records in one transaction, so a failed rebuild is retried by the next `refresh`. The dashboard
   scripts report any open failure (including an incompatible index) with the
   operator message, not a traceback. The stale handle is closed after its last call before the rebuilt
   index is opened (calls in between are asked to retry in a few seconds):
@@ -72,10 +78,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   hnswlib's on-disk layout is private: on a chromadb release other than the
   verified 1.5.x, header and structure mismatches are logged and skipped (the
   size bound still applies) instead of refusing every healthy index. Lock files
-  are opened without following symlinks (on Windows, which lacks `O_NOFOLLOW`, a
-  symlinked lock file is refused before and after the open) and ignored (with a
-  warning, proceeding unlocked) if another user owns them or they are not a regular
-  file with a single link.
+  are ignored (with a warning, proceeding unlocked) if they are a symlink, another
+  user owns them, or they are not a regular file with a single link; they are
+  opened without following symlinks (on Windows, which lacks `O_NOFOLLOW`, a
+  symlink is refused before and after the open).
 - **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
   unsafe to keep using; the incompatible-format and corrupt-HNSW errors subclass
   it. Ingesters re-raise it rather than recording one more per-source error, so a

@@ -21,10 +21,11 @@ established; the open-time check only fires when an index is opened.
    the full dirname so `x` and `.x` never share one),
    not inside it, so `--reset-index`'s rmtree can't unlink a held lock. Locking
    fails open if the filesystem doesn't support flock, and (with a warning) if
-   the lock file is a symlink (where `O_NOFOLLOW` is missing, i.e. Windows,
-   checked by `lstat` before the open and after it, where the path must also
-   name the file the descriptor opened, by `(st_dev, st_ino)`), not a single-link regular
-   file, or another user's: an exclusive acquire writes to it. A live `serve` only
+   the lock file is a symlink (checked by `lstat` before the open on every
+   platform; where `O_NOFOLLOW` is missing, i.e. Windows, also after it, where
+   the path must also name the file the descriptor opened, by `(st_dev, st_ino)`),
+   not a single-link regular file, or another user's: an exclusive acquire
+   writes to it. A live `serve` only
    produces a warning, and itself backs off while the refresh runs (item 5).
 4. Cherry-picked the open-time `validate_persisted_hnsw` code and tests from
    `ccb4ca2` (currently only on `feature/chatgpt-local-plugin`), extended with a
@@ -47,10 +48,19 @@ established; the open-time check only fires when an index is opened.
    vector half may be created only with `rebuild=True` (`refresh --force`), and
    a missing database or `latest` (from `VectorIndex`) or an empty `latest`
    (from `IndexStore`) raises `MissingVectorCollectionError` ("run refresh
-   --force") before anything is written, for readers and for a plain `refresh`
+   --force") before the vector half is touched, for readers and for a plain `refresh`
    (exit 2) alike, rather than skipping unchanged sources and leaving vector
-   search empty. An open writes only an incomplete keyword schema (`refresh`
-   completes it and rebuilds the FTS table from `chunks`); a reader refuses one.
+   search empty (`rebuild` without `create` is a `ValueError`). When `--force`
+   does recreate it (`IndexStore.vector_lost`), `refresh` drops every source's
+   skip marker (`docs:content_hash`, `repo:*:commit_sha`), so a source whose
+   fetch fails in that run is re-ingested by the next plain refresh instead of
+   staying keyword-only. An open writes only an incomplete keyword schema
+   (`refresh` completes it and rebuilds the FTS table from `chunks` in one
+   transaction, so a failed rebuild is retried next time); a reader refuses one.
+   A corrupt keyword database (`sqlite3.DatabaseError`, not the transient
+   `OperationalError`) makes `refresh` exit 2 with the `--reset-index` remedy,
+   as readers report it. One empty-index refusal (`IndexNotBuiltError`) serves
+   both a missing index and an open one with 0 records.
    The dashboard scripts open through `reopening.open_index_for_export` (the
    same `open_ready_index_store`, but taking `refresh_excluded` itself, since
    its callers hold nothing else), so they get the same exclusion, open-time
@@ -124,7 +134,11 @@ control, so the pre-load walk is the real defence.
   start after the refresh begins, including a running call's next index access,
   get the retry message.
 - Locking fails open when flock is unsupported or the lock file is unwritable
-  (decided; 21aad5f, 59690b98).
+  (decided; 21aad5f, 59690b98). Accepted residual on Windows (no `O_NOFOLLOW`):
+  a symlink swapped in during the open is refused only after it, so the open may
+  already have created an empty file at the link target, and the
+  start-of-refresh `utime` goes by path. Needs symlink privilege and write
+  access to the data dir's parent; writes no content.
 - `refresh --force` after a lost vector collection re-ingests only the sources
   in its configuration; a retained repo absent from it (kept, not pruned) stays
   keyword-only. Documented in docs/README.md (re-add it for that run, or

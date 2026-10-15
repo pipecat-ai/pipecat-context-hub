@@ -540,14 +540,18 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   `--reset-index` the check runs after the delete has freed the space.
   `PIPECAT_HUB_MIN_FREE_GB` is invocation-scoped like `PIPECAT_HUB_PRUNE`: set
   it in the environment, not `config.toml`, which is why it is not in the
-  Environment Variables table) and
+  Environment Variables table; below it, `refresh` exits **1**) and
   takes an exclusive `refresh.lock` (a sibling file of the data dir,
   `<dirname>.refresh.lock`, e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
   it), so two refreshes can't interleave writes to the same Chroma HNSW files.
   Locking is best-effort: if the lock file is a symlink, not a regular file,
   has other hard links, or belongs to another user, it is not used and the
   command logs `Lock file … continuing without a lock` and proceeds unlocked
-  (as it does where file locking is unsupported).
+  (as it does where file locking is unsupported). On Windows, which can't open
+  without following symlinks, a link swapped in during the open is refused only
+  after the open, which can already have created an empty file at its target
+  (and the start-of-refresh timestamp bump goes by path); doing that needs
+  symlink privilege and write access to the data dir's parent, and is accepted.
   **While a refresh runs, nothing reads the index:** `serve` answers every tool
   call with an error saying "retry in 60-120 seconds" (a `serve` started
   mid-refresh still connects, with the index unopened), and one-shot CLI
@@ -563,9 +567,13 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   beside a populated keyword database, or the keyword database is missing or
   incomplete, queries say to run `refresh --force` rather than returning empty
   results, and a plain `refresh` that finds the vector collection lost that way
-  exits **2** with the same advice, having written nothing (it would otherwise
-  skip every unchanged source and leave vector search empty). `refresh --force`
-  re-ingests only the sources in its configuration: a repo indexed earlier but
+  exits **2** with the same advice, without touching it (it would otherwise
+  skip every unchanged source and leave vector search empty). A corrupt keyword
+  database also makes `refresh` exit **2**, saying to run
+  `refresh --force --reset-index`. `refresh --force` recreates the lost collection
+  and forgets every source's unchanged-skip marker, so a source whose fetch fails
+  in that run is re-ingested by the next plain `refresh` rather than left
+  keyword-only. It re-ingests only the sources in its configuration: a repo indexed earlier but
   absent from this invocation's config keeps its keyword records but gets no
   vectors back, so re-add it to the config for that run, or pass `--prune` to
   drop it. `serve`
