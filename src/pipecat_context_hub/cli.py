@@ -139,6 +139,16 @@ def _repo_cleanup_failed_key(slug: str) -> str:
     return f"repo:{slug}:cleanup_failed"
 
 
+def _repo_vector_empty_key(slug: str) -> str:
+    return f"repo:{slug}:vector_empty"
+
+
+def _repo_reingest_flag_keys(slug: str) -> tuple[str, str]:
+    """Flags that each block ``slug``'s unchanged-skip shortcut until a
+    successful re-ingest (or the repo's removal) clears them all."""
+    return _repo_cleanup_failed_key(slug), _repo_vector_empty_key(slug)
+
+
 def _distrust_skip_markers(index_store: IndexStore) -> None:
     """Stop every skip marker from vouching for records the vector half lacks.
 
@@ -146,13 +156,13 @@ def _distrust_skip_markers(index_store: IndexStore) -> None:
     ``--force``, or created beside a keyword half that kept its markers). The
     docs hash is dropped. Each repo keeps its commit marker (the stale-repo
     cleanup and the tainted-ref purge find repos through it) and is flagged
-    ``cleanup_failed`` instead, which the skip shortcut already honours and a
-    successful re-ingest clears. So a source this run cannot fetch is still
-    re-ingested by the next plain refresh.
+    ``vector_empty`` instead, which the skip shortcut honours and a successful
+    re-ingest (or the repo's cleanup) clears. So a source this run cannot
+    fetch is still re-ingested by the next plain refresh.
     """
     metadata = index_store.get_all_metadata()
     flags = {
-        _repo_cleanup_failed_key(slug): "1"
+        _repo_vector_empty_key(slug): "1"
         for slug in map(_repo_slug_of_sha_key, metadata)
         if slug is not None
     }
@@ -535,10 +545,13 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
         return False
     try:
         # No framework records left for the pin or provenance to describe.
+        # The re-ingest flags too: with the commit marker gone, cleanup never
+        # finds this repo again to clear them.
+        repo_keys = [meta_key, *_repo_reingest_flag_keys(slug)]
         delete_keys = (
-            [*_FRAMEWORK_PROVENANCE_METADATA_KEYS, meta_key]
+            [*_FRAMEWORK_PROVENANCE_METADATA_KEYS, *repo_keys]
             if slug == _FRAMEWORK_REPO
-            else [meta_key]
+            else repo_keys
         )
         index_store.set_metadata_batch({}, delete_keys=delete_keys)
     except Exception:
@@ -1552,17 +1565,19 @@ def refresh(
             # (`_distrust_skip_markers`), leaves FTS rows behind even though
             # the vector store may be empty for it — `indexed_records` alone
             # can't tell those apart from a healthy repo. Don't take the
-            # unchanged-skip shortcut while that flag is set; force a
-            # re-ingest instead, which clears it on success below.
+            # unchanged-skip shortcut while either flag is set; force a
+            # re-ingest instead, which clears both on success below.
             cleanup_failed = (
                 index_store.get_metadata(_repo_cleanup_failed_key(repo_slug)) is not None
             )
+            vector_empty = index_store.get_metadata(_repo_vector_empty_key(repo_slug)) is not None
             if (
                 not force
                 and stored_sha == commit_sha
                 and indexed_records > 0
                 and repo_slug not in github.recovered_repos
                 and not cleanup_failed
+                and not vector_empty
             ):
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
@@ -1592,8 +1607,14 @@ def refresh(
                 elif not force and stored_sha == commit_sha and cleanup_failed:
                     logger.warning(
                         "Repo %s SHA unchanged (sha=%s…) but a prior cleanup "
-                        "failed or the vector index was rebuilt — re-ingesting "
-                        "to reconcile the index",
+                        "failed — re-ingesting to reconcile the index",
+                        repo_slug,
+                        commit_sha[:8],
+                    )
+                elif not force and stored_sha == commit_sha and vector_empty:
+                    logger.warning(
+                        "Repo %s SHA unchanged (sha=%s…) but the vector index "
+                        "opened empty since it was indexed — re-ingesting",
                         repo_slug,
                         commit_sha[:8],
                     )
@@ -1725,7 +1746,8 @@ def refresh(
                 # for it is now moot: the index is coherent again, so the
                 # unchanged-skip shortcut can trust `indexed_records` for it
                 # on future runs.
-                index_store.delete_metadata(_repo_cleanup_failed_key(repo_slug))
+                for key in _repo_reingest_flag_keys(repo_slug):
+                    index_store.delete_metadata(key)
 
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",

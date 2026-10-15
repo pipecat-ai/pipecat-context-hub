@@ -434,9 +434,11 @@ class TestRefreshCommand:
         # Failed this run: next plain refresh must not skip them.
         assert "docs:content_hash" not in meta
         assert meta[f"repo:{failing}:commit_sha"] == "abc123"
-        assert meta[f"repo:{failing}:cleanup_failed"] == "1"
-        # Re-ingested this run: flag cleared again.
-        assert f"repo:{_DEFAULT_REPOS[0]}:cleanup_failed" not in meta
+        assert meta[f"repo:{failing}:vector_empty"] == "1"
+        assert f"repo:{failing}:cleanup_failed" not in meta  # no cleanup failed
+        # Re-ingested this run: flag cleared again; pruned repo leaves none.
+        assert f"repo:{_DEFAULT_REPOS[0]}:vector_empty" not in meta
+        assert not [k for k in meta if k.startswith("repo:gone/repo:")]
 
     @pytest.mark.parametrize("fatal", [None, "corrupt", "swap"])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
@@ -1208,6 +1210,7 @@ class TestRefreshCommand:
         set_calls = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
         assert set_calls.get("repo:pipecat-ai/pipecat:cleanup_failed") == "1"
 
+    @pytest.mark.parametrize("flag", ["cleanup_failed", "vector_empty"])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
     @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
@@ -1224,6 +1227,7 @@ class TestRefreshCommand:
         mock_eiw_cls,
         mock_es_cls,
         mock_is_cls,
+        flag,
         tmp_path,
         monkeypatch,
     ):
@@ -1251,7 +1255,7 @@ class TestRefreshCommand:
         meta = {
             "docs:content_hash": content_hash,
             **_sha_metadata("abc123"),
-            f"repo:{target_repo}:cleanup_failed": "1",
+            f"repo:{target_repo}:{flag}": "1",
         }
         mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
 
@@ -1276,7 +1280,7 @@ class TestRefreshCommand:
 
         # A clean re-ingest (no errors) must clear the flag.
         deleted_keys = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
-        assert f"repo:{target_repo}:cleanup_failed" in deleted_keys
+        assert f"repo:{target_repo}:{flag}" in deleted_keys
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -5420,8 +5424,8 @@ class TestRefreshLostVectorCollection:
             store.close()
         assert after == {
             **{k: v for k, v in before.items() if k != "docs:content_hash"},
-            "repo:o/r:cleanup_failed": "1",
-            "repo:gone/x:cleanup_failed": "1",
+            "repo:o/r:vector_empty": "1",
+            "repo:gone/x:vector_empty": "1",
         }
 
     def test_unusable_keyword_schema_exits_2(self, tmp_path, monkeypatch, caplog):
@@ -6527,7 +6531,27 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
             "indexed_framework_commits_ahead",
             "deprecation_map_commit_sha",
             f"repo:{_FRAMEWORK_REPO}:commit_sha",
+            f"repo:{_FRAMEWORK_REPO}:cleanup_failed",
+            f"repo:{_FRAMEWORK_REPO}:vector_empty",
         }
+
+    async def test_successful_cleanup_clears_reingest_flags(self, tmp_path):
+        """Regression (cli.py:538): a successful cleanup deleted only the
+        commit marker, orphaning the repo's re-ingest flags for good (cleanup
+        finds repos only through their commit marker)."""
+        from pipecat_context_hub.cli import _delete_repo_index_data
+        from pipecat_context_hub.services.index.store import IndexStore
+        from pipecat_context_hub.shared.config import StorageConfig
+
+        store = IndexStore(StorageConfig(data_dir=tmp_path / "hub"), create=True)
+        try:
+            for key in ("commit_sha", "cleanup_failed", "vector_empty"):
+                store.set_metadata(f"repo:o/r:{key}", "1")
+            store.set_metadata("repo:keep/me:vector_empty", "1")
+            assert await _delete_repo_index_data(store, "o/r", "repo:o/r:commit_sha")
+            assert store.get_all_metadata() == {"repo:keep/me:vector_empty": "1"}
+        finally:
+            store.close()
 
 
 class TestDeleteRepoIndexDataDeleteByRepoGuard:
