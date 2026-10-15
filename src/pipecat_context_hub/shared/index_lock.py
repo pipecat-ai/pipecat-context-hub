@@ -54,17 +54,24 @@ def _unusable_lock_file(fd: int, path: Path) -> str | None:
     our own regular file with no other name: a planted hard link to a file we
     own would pass the owner check and get truncated. Ownership is POSIX only.
     Without ``O_NOFOLLOW`` (Windows) the open may have followed a symlink
-    planted after :meth:`IndexLock.acquire` checked, so *path* is re-checked.
+    planted after :meth:`IndexLock.acquire` checked, so *path* must now be a
+    non-link naming the very file *fd* opened: a path check alone would miss a
+    link swapped in for the open and back out before the check.
     """
-    if not _O_NOFOLLOW:
-        try:
-            if stat.S_ISLNK(os.lstat(path).st_mode):
-                return "is a symbolic link"
-        except OSError:
-            return "could not be checked"
     try:
         st = os.fstat(fd)
     except OSError:
+        st = None
+    if not _O_NOFOLLOW:
+        try:
+            lst = os.lstat(path)
+        except OSError:
+            return "could not be checked"
+        if stat.S_ISLNK(lst.st_mode):
+            return "is a symbolic link"
+        if st is None or (lst.st_dev, lst.st_ino) != (st.st_dev, st.st_ino):
+            return "changed while it was being opened"
+    if st is None:
         return None
     if not stat.S_ISREG(st.st_mode):
         return "is not a regular file"

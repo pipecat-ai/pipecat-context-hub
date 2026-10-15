@@ -578,6 +578,35 @@ def test_lock_file_symlink_planted_after_the_check_is_refused(
     assert victim.read_text() == "keep"
 
 
+def test_lock_file_swapped_back_after_the_open_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (index_lock.py:59, index_lock.py:161): without O_NOFOLLOW the
+    post-open check only lstat'ed the path, so a link swapped in for the open
+    and swapped back to a regular file before the check passed it, and the
+    exclusive acquire then truncated the file the open followed. The path must
+    name the very file the descriptor opened."""
+    from pipecat_context_hub.shared import index_lock
+
+    monkeypatch.setattr(index_lock, "_O_NOFOLLOW", 0)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    data_dir = tmp_path / "hub"
+    path = lock_path(data_dir, REFRESH_LOCK)
+    path.write_text("")  # what the path names when it is checked
+    real_open = os.open
+
+    def _open_followed(target: Any, flags: int, mode: int = 0o777) -> int:
+        # The open followed a link that has since been swapped back.
+        return real_open(victim if Path(target) == path else target, flags, mode)
+
+    monkeypatch.setattr(os, "open", _open_followed)
+    lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=True)
+    lock.acquire()
+    assert lock._fd is None
+    assert victim.read_text() == "keep"
+
+
 @pytest.mark.parametrize("exclusive", [True, False])
 def test_lock_file_hard_link_is_not_written(tmp_path: Path, exclusive: bool) -> None:
     """Regression (index_lock.py:137): a lock name planted as a hard link to a
