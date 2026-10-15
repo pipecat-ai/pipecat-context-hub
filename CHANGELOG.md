@@ -16,8 +16,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   `serve` (shared `serve.lock`) has the index open. Vector upserts re-run the
   bounded HNSW size check after every write batch and abort on a runaway file
   instead of growing until the disk is full. Includes the open-time
-  oversized-graph check (also on `feature/chatgpt-local-plugin`). The root
-  cause of the corruption is not established; these bound the damage.
+  oversized-graph check (also on `feature/chatgpt-local-plugin`), now extended
+  with a structural walk of `link_lists.bin`: racing writers leave a graph of
+  healthy size that SIGSEGVs or runs away on the next load, and the walk
+  rejects it first. Spikes reproduced the corruption with concurrent
+  `refresh`es; see the dev plan.
 
 ## [0.8.1] - 2026-10-02
 

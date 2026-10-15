@@ -23,7 +23,38 @@ established; the open-time check only fires when an index is opened.
 4. Cherry-picked the open-time `validate_persisted_hnsw` code and tests from
    `ccb4ca2` (currently only on `feature/chatgpt-local-plugin`).
 
+## Spike findings (2026-10-15, throwaway dirs, 1 GiB per-process file cap)
+Scripts were scratch-only; method and results are recorded here.
+
+| Scenario | Result |
+|---|---|
+| Sequential refreshes, repeated `--force` churn (delete + re-upsert x4) | Healthy. Graph element count grows ~20k per forced refresh (dead elements are never compacted): 20k -> 80k with 20k live. Explains the 112k-vs-45k graph seen on 2026-10-13; not itself the runaway. |
+| Lone writer SIGKILLed mid-refresh, resumed 2x | Healthy. |
+| 2-3 racing writers (same ids, or disjoint ids), then one ordinary refresh | **Reproduced the runaway** (`link_lists.bin` hit the 1 GiB cap) or a SIGSEGV (-11, the 2026-10-04 symptom) on the *next* load. Probabilistic: ~4 of 5 runs. |
+| Reader opened mid-refresh, then SIGKILLed | Runaway on the next refresh in 1 of 2 runs. |
+| Reader opened mid-refresh, clean close | One SIGSEGV on the next refresh in ~4 runs. |
+| `serve` already open before the refresh, clean close; or `serve` opened after the refresh | Healthy. |
+| Open-time validator run 7,141 times against a live writer | 0 false positives (the concurrent-read worry did not reproduce). |
+
+Key point: after the damaging event the persisted graph has the **healthy size
+and header** (so the size bound passes) and the runaway only appears on the
+next load + persist. A structural walk of `link_lists.bin` (length-prefixed
+records of `maxM*4+4`-byte level blocks) flags it beforehand. The walk is now
+part of `check_hnsw_segment_dir` (open-time and post-write). It ran in 6 ms on
+the real 45k-record index with no false positive. Consistent with upstream
+chroma#7510: unvalidated `linkListSize` on load.
+
+Implications: the `refresh.lock` is justified (concurrent writers are the one
+reliably reproduced trigger). The post-write size check alone cannot stop a
+fill: one native persist can write the whole file before Python regains
+control, so the pre-load walk is the real defence.
+
 ## Not done / open
-- Root cause. Candidates (unverified): interrupted refresh, concurrent
-  refresh/serve, `--force` upsert churn. Needs a size-watching repro.
-- Check whether chromadb > 1.5.9 fixes it.
+- Readers that open the index while a refresh is writing are a probable (not
+  certain) trigger. `serve`/CLI queries only warn today; decide whether they
+  should refuse or retry while `refresh.lock` is held.
+- `--force` never compacts the graph; consider recreating the collection
+  instead of delete + re-upsert so dead elements don't accumulate.
+- Upstream fix for chroma#7510 is in flight (not in 1.5.9, the latest release).
+- Header-version strictness, Windows shared locks, orphan-segment mtime
+  handling: not exercised; left as is.
