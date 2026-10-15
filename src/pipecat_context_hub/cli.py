@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -25,6 +26,13 @@ from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.index_lock import (
+    REFRESH_LOCK,
+    SERVE_LOCK,
+    IndexLock,
+    IndexLockedError,
+    serve_is_running,
+)
 from pipecat_context_hub.shared.paths import (
     is_reparse_link,
     redact_home,
@@ -100,6 +108,73 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
         # serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+
+
+# Free space `refresh` requires on the data-dir volume before it starts. The
+# index plus repo clones are ~2 GB; a runaway HNSW file once consumed 350 GB
+# and left the machine with 4 GB free, so refuse early with room to spare.
+_MIN_FREE_GB_DEFAULT = 5.0
+_MIN_FREE_GB_ENV = "PIPECAT_HUB_MIN_FREE_GB"
+
+
+def _min_free_bytes(env: dict[str, str] | None = None) -> int:
+    """Required free bytes for `refresh`; ``PIPECAT_HUB_MIN_FREE_GB=0`` disables."""
+    raw = (os.environ if env is None else env).get(_MIN_FREE_GB_ENV)
+    if raw is None or not raw.strip():
+        return int(_MIN_FREE_GB_DEFAULT * 1024**3)
+    try:
+        gb = float(raw)
+    except ValueError:
+        return int(_MIN_FREE_GB_DEFAULT * 1024**3)
+    if not math.isfinite(gb) or gb < 0:
+        return int(_MIN_FREE_GB_DEFAULT * 1024**3)
+    return int(gb * 1024**3)
+
+
+def _require_free_disk(data_dir: Path, *, min_free: int | None = None) -> None:
+    """Abort `refresh` before it writes anything if the volume is nearly full."""
+    required = _min_free_bytes() if min_free is None else min_free
+    if required <= 0:
+        return
+    probe = data_dir.expanduser()
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        return  # can't tell; never block a refresh on a failed probe
+    if free < required:
+        raise click.ClickException(
+            f"Refusing to refresh: only {free / 1024**3:.1f} GB free on the volume holding "
+            f"{redact_home(data_dir)} (need {required / 1024**3:.1f} GB). Free up space, or set "
+            f"{_MIN_FREE_GB_ENV}=0 to skip this check."
+        )
+
+
+def _acquire_refresh_lock_or_exit(
+    data_dir: Path, logger: logging.Logger, *, warn_if_serving: bool = True
+) -> IndexLock:
+    """Take the exclusive refresh lock, released when the click command ends.
+
+    Two refreshes on one data dir interleave writes to the same Chroma HNSW
+    files. A live `serve` is only warned about, never refused: it is a
+    long-running reader and refresh-while-serving is the normal workflow.
+    """
+    lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=True)
+    try:
+        lock.acquire()
+    except IndexLockedError as exc:
+        raise click.ClickException(
+            f"Another `refresh` is already running on {redact_home(data_dir)}. "
+            "Wait for it to finish; concurrent refreshes can corrupt the vector index."
+        ) from exc
+    click.get_current_context().call_on_close(lock.release)
+    if warn_if_serving and serve_is_running(data_dir):
+        logger.warning(
+            "A `serve` process has this index open. Refresh will proceed, but restart "
+            "the MCP server afterwards so it reloads the rebuilt index."
+        )
+    return lock
 
 
 # Values of PIPECAT_HUB_WARMUP that disable pre-warm. Anything else
@@ -665,6 +740,15 @@ def serve(ctx: click.Context) -> None:
         config, _original_ppid, logger
     )
 
+    # Advertise this server so a concurrent `refresh` can warn about it.
+    # Best-effort: a lock failure must never stop the server from starting.
+    try:
+        serve_lock = IndexLock(config.storage.data_dir, SERVE_LOCK, exclusive=False)
+        serve_lock.acquire()
+        ctx.call_on_close(serve_lock.release)
+    except (IndexLockedError, OSError):
+        logger.debug("Could not take the serve lock; refresh won't see this server", exc_info=True)
+
     index_store: IndexStore | None = None
     try:
         index_store = IndexStore(config.storage)
@@ -955,6 +1039,9 @@ def refresh(
     )
     start = time.monotonic()
 
+    _require_free_disk(config.storage.data_dir)
+    refresh_lock = _acquire_refresh_lock_or_exit(config.storage.data_dir, logger)
+
     # Fail fast on an incompatible on-disk index before spending a network
     # round-trip on the framework-pin pre-flight below. Skipped when
     # --reset-index will delete storage anyway — that branch opens the index
@@ -1016,6 +1103,12 @@ def refresh(
     if reset_index:
         logger.warning("Deleting local index storage before refresh")
         _delete_local_index_storage(config.storage.data_dir)
+        # The delete unlinked refresh.lock; a later refresh would lock a new
+        # inode and not exclude this one. Re-take the lock on the new file.
+        refresh_lock.release()
+        refresh_lock = _acquire_refresh_lock_or_exit(
+            config.storage.data_dir, logger, warn_if_serving=False
+        )
         force = True
         # Storage was just deleted, so this always opens a fresh index — the
         # IncompatibleIndexFormatError this guards against can't fire here,
