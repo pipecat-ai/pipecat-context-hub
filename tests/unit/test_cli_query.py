@@ -270,6 +270,32 @@ class TestIndexUnready:
         assert str(chroma_path) not in result.stderr
         assert str(tmp_path) not in result.stderr
 
+    def test_cli_and_serve_share_one_reader_open(self):
+        """Regression (cli.py:116): the one-shot CLI and `serve` (first open
+        and every reopen) go through the same open-and-check, so their
+        messages cannot drift, and the empty-index text names no front door."""
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.config import HubConfig
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        with patch(
+            "pipecat_context_hub.services.index.reopening.open_ready_index_store",
+            side_effect=IndexUnavailableError("shared-open-message"),
+        ):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert "Error: shared-open-message" in result.stderr
+
+        with patch(
+            "pipecat_context_hub.services.index.store.IndexStore",
+            return_value=_index_store_mock(total=0),
+        ):
+            with pytest.raises(IndexUnavailableError) as exc_info:
+                open_ready_index_store(HubConfig().storage)
+        message = str(exc_info.value)
+        assert "is empty (0 records)" in message
+        assert "'serve'" not in message and "hang" not in message
+
 
 class TestDispatch:
     """Happy paths: stdout carries exactly the tool handler's JSON."""

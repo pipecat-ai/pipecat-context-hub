@@ -12,6 +12,7 @@ and (c) never open while a refresh runs: every open happens under
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from collections.abc import Callable, Iterator
@@ -27,12 +28,64 @@ from pipecat_context_hub.shared.index_lock import (
     refresh_in_progress,
 )
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+from pipecat_context_hub.shared.support_links import bug_report_hint
 from pipecat_context_hub.shared.types import IndexQuery, IndexResult
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.shared.config import StorageConfig
 
 logger = logging.getLogger(__name__)
+
+REOPEN_PENDING_MESSAGE = (
+    "The Pipecat context index was just rebuilt by a `refresh`, and the server is "
+    "switching to it once a call still using the old one finishes. Retry in a few seconds."
+)
+
+
+def open_ready_index_store(storage: StorageConfig) -> IndexStore:
+    """Open the index for reading and check it can answer queries.
+
+    The one reader open path: ``serve``'s first open and every reopen, and
+    each one-shot CLI query. The caller holds :func:`refresh_excluded`.
+    Raises ``IndexUnavailableError`` (after closing whatever came up) when the
+    index is incompatible, unreadable, mid-compaction, or empty; its message is
+    the home-redacted operator guidance, ending with the bug-report hint.
+    """
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
+    from pipecat_context_hub.services.index.store import IndexStore as _IndexStore
+
+    data_dir = redact_home(storage.data_dir)
+    index_store: IndexStore | None = None
+    try:
+        index_store = _IndexStore(storage)
+        stats = index_store.get_index_stats()
+    except Exception as exc:
+        # IndexStore.__init__ opens two backends (Chroma + SQLite) without
+        # rolling back on partial failure; close() whatever did come up.
+        if index_store is not None:
+            with contextlib.suppress(Exception):
+                index_store.close()
+        if isinstance(exc, (IncompatibleIndexFormatError, IndexUnavailableError)):
+            # Typed errors carry their own remediation (an incompatible or
+            # corrupt graph: reset; an interrupted compaction: refresh).
+            message = redact_home_in_text(str(exc))
+        else:
+            message = (
+                f"Failed to open index at {data_dir}: {redact_home_in_text(str(exc))}. "
+                "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild."
+            )
+        raise IndexUnavailableError(f"{message} {bug_report_hint()}") from exc
+
+    if stats.get("total", 0) == 0:
+        index_store.close()
+        raise IndexUnavailableError(
+            f"Index at {data_dir} is empty (0 records). Run 'uv run pipecat-context-hub "
+            "refresh' to build it (the first run downloads models and indexes sources; "
+            f"allow a few minutes). {bug_report_hint()}"
+        )
+    return index_store
 
 
 @dataclass
@@ -53,8 +106,12 @@ class ReopeningIndexStore:
     with the message for the caller; it runs for the initial open and every
     reopen, so a reopened index gets the same readiness checks as startup.
 
-    Each read checks the store out for the duration of the call. A store
-    replaced after a refresh is closed only once no call is still using it.
+    Each read checks the store out for the duration of the call. There is only
+    ever one store: one made stale by a refresh is closed once no call is still
+    using it, and only then is the next one opened (until then calls get
+    ``REOPEN_PENDING_MESSAGE``). Opening it earlier would not help: Chroma
+    hands every client on a path the same native System, so the new client
+    would serve the stale graph.
     """
 
     def __init__(self, data_dir: Path, opener: Callable[[], IndexStore]) -> None:
@@ -128,7 +185,7 @@ class ReopeningIndexStore:
         """Close the current store now (shutdown), even if a call is using it."""
         with self._lock:
             handle, self._handle = self._handle, None
-            if handle is not None:
+            if handle is not None and not handle.closed:
                 handle.retired = True
                 handle.closed = True
                 handle.store.close()
@@ -146,9 +203,20 @@ class ReopeningIndexStore:
     def _acquire(self) -> _Handle:
         with self._lock:
             handle = self._handle
-            if handle is not None and refresh_generation(self._data_dir) != handle.generation:
-                self._retire(handle)
-                handle = None
+            if (
+                handle is not None
+                and not handle.retired
+                and refresh_generation(self._data_dir) != handle.generation
+            ):
+                handle.retired = True
+            if handle is not None and handle.retired:
+                if handle.users:
+                    # Chroma shares one native System per path among all open
+                    # clients, so a client opened now would reuse the stale
+                    # graph this handle loaded. Reopen only once it is closed.
+                    raise IndexUnavailableError(REOPEN_PENDING_MESSAGE)
+                self._close_quietly(handle)
+                self._handle = handle = None
             if handle is None:
                 handle = self._open()
                 self._handle = handle
@@ -160,12 +228,8 @@ class ReopeningIndexStore:
             handle.users -= 1
             if handle.retired and handle.users == 0:
                 self._close_quietly(handle)
-
-    def _retire(self, handle: _Handle) -> None:
-        self._handle = None
-        handle.retired = True
-        if handle.users == 0:
-            self._close_quietly(handle)
+                if self._handle is handle:
+                    self._handle = None
 
     def _open(self) -> _Handle:
         # The hold keeps a refresh from starting until the open (and the

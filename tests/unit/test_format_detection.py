@@ -123,10 +123,13 @@ class _ConfigRaisingClient:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
+    def list_collections(self) -> list[object]:
+        return []
+
     def get_or_create_collection(self, *args: object, **kwargs: object) -> object:
         raise self._exc
 
-    def close(self) -> None:  # pragma: no cover - cleanup only
+    def close(self) -> None:
         pass
 
 

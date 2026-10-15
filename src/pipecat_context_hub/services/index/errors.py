@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pipecat_context_hub.shared.interfaces import FatalIndexError
+from pipecat_context_hub.shared.interfaces import FatalIndexError, IndexUnavailableError
 
 # Shared operator-facing remediation. Phase 6 of the chromadb 1.x migration
 # asserts this literal command string appears in serve/refresh error output, so
@@ -74,3 +74,20 @@ class CorruptHnswGraphError(IncompatibleIndexFormatError):
     ``link_lists.bin`` without bound), and after each write while ``refresh``
     runs. The check does not repair the graph.
     """
+
+
+class InterruptedCompactionError(IndexUnavailableError):
+    """A ``refresh --force`` compaction died between its two renames.
+
+    The live records sit under the backup collection name. Only ``refresh``
+    (which holds the exclusive refresh lock) restores them; a reader that
+    finds this state gets this error instead of writing to the index.
+    """
+
+    def __init__(self, chroma_path: Path | str) -> None:
+        self.chroma_path = Path(chroma_path)
+        super().__init__(
+            f"The vector index at {self.chroma_path} was left mid-swap by an interrupted "
+            "`refresh --force`. Run 'uv run pipecat-context-hub refresh' to restore it "
+            "(no rebuild needed)."
+        )

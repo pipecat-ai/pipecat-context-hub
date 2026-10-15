@@ -27,10 +27,11 @@ class IndexStore:
     Reads are dispatched to the appropriate backend based on the search type.
     """
 
-    def __init__(self, config: StorageConfig) -> None:
+    def __init__(self, config: StorageConfig, *, recover: bool = False) -> None:
+        """Open both backends. *recover*: see :class:`VectorIndex` (``refresh`` only)."""
         config.data_dir.mkdir(parents=True, exist_ok=True)
         self._data_dir = config.data_dir
-        self._vector = VectorIndex(config.chroma_path)
+        self._vector = VectorIndex(config.chroma_path, recover=recover)
         try:
             self._fts = FTSIndex(config.sqlite_path)
         except Exception:

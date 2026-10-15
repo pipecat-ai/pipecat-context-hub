@@ -15,6 +15,7 @@ import sqlite3
 import struct
 import time
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from pipecat_context_hub.services.index.errors import CorruptHnswGraphError
@@ -81,6 +82,36 @@ def _installed_chromadb_version() -> str:
         return "(not installed)"
 
 
+def query_chroma_sqlite(
+    chroma_path: Path, sql: str, params: tuple[object, ...] = (), *, immutable: bool
+) -> list[tuple[Any, ...]] | None:
+    """Rows from Chroma's private ``chroma.sqlite3``; None if absent or unreadable.
+
+    The one place that reads Chroma's schema behind its back. Always
+    read-only, and never creates the database. ``immutable=True`` also skips
+    SQLite's locking and journal handling, so it creates no -wal/-shm files
+    (legacy 0.6 directories included): for probes that run before a Chroma
+    client opens, when no writer can be running (readers open under
+    ``refresh_excluded``; ``refresh``, the only writer, holds the lock
+    exclusively). ``immutable=False`` takes SQLite's shared lock for a
+    consistent snapshot: required before deleting anything based on it.
+    """
+    db_path = chroma_path / "chroma.sqlite3"
+    if not db_path.is_file():
+        return None
+    mode = "?mode=ro&immutable=1" if immutable else "?mode=ro"
+    try:
+        conn = sqlite3.connect(db_path.absolute().as_uri() + mode, uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
     """Check active collection segments without opening Chroma or unpickling.
 
@@ -89,22 +120,15 @@ def validate_persisted_hnsw(chroma_path: Path, collection_name: str) -> None:
     persisted graph yet. Unrecognized SQLite schemas are left to Chroma's
     existing format checks.
     """
-    db_path = chroma_path / "chroma.sqlite3"
-    if not db_path.is_file():
+    segments = query_chroma_sqlite(
+        chroma_path,
+        "SELECT s.id FROM segments s JOIN collections c ON s.collection=c.id "
+        "WHERE s.type=? AND c.name=?",
+        (_SEGMENT_TYPE, collection_name),
+        immutable=True,
+    )
+    if segments is None:
         return
-    conn: sqlite3.Connection | None = None
-    try:
-        conn = sqlite3.connect(db_path.as_uri() + "?mode=ro&immutable=1", uri=True)
-        segments = conn.execute(
-            "SELECT s.id FROM segments s JOIN collections c ON s.collection=c.id "
-            "WHERE s.type=? AND c.name=?",
-            (_SEGMENT_TYPE, collection_name),
-        ).fetchall()
-    except sqlite3.Error:
-        return
-    finally:
-        if conn is not None:
-            conn.close()
 
     for (segment_id,) in segments:
         # Persisted metadata must never turn this probe into a path traversal.

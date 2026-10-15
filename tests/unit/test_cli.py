@@ -317,6 +317,55 @@ class TestRefreshCommand:
         # With --force, repos should be re-ingested despite matching SHA
         assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
 
+    @pytest.mark.parametrize("fatal", [False, True])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_compaction_failure_is_fatal_only_for_a_corrupt_graph(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        fatal,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (cli.py:1822): compaction is best effort, but an HNSW guard
+        failure during it means a runaway/corrupt graph, which stops the refresh
+        (exit 2, no completion metadata) as it does everywhere else."""
+        from pipecat_context_hub.services.index.errors import CorruptHnswGraphError
+
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_store.compact_vector.side_effect = (
+            CorruptHnswGraphError(tmp_path, reason="corrupt persisted HNSW")
+            if fatal
+            else RuntimeError("compaction hiccup")
+        )
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        if fatal:
+            assert result.exit_code == 2
+            mock_store.set_metadata_batch.assert_not_called()
+        else:
+            assert result.exit_code == 0
+            mock_store.set_metadata_batch.assert_called_once()
+        mock_store.close.assert_called()
+
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
     @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")

@@ -501,9 +501,64 @@ class TestCompactSwap:
         index._collection.modify(name=COMPACT_BACKUP_NAME)  # state after the first rename
         index.close()
 
-        index = VectorIndex(chroma)
+        index = VectorIndex(chroma, recover=True)  # how refresh opens it
         try:
             assert index._collection.count() == 20
             assert [c.name for c in index._client.list_collections()] == ["latest"]
         finally:
             index.close()
+
+    def test_reader_open_never_repairs_an_interrupted_compaction(self, tmp_path: Path) -> None:
+        """Regression (vector.py:409, vector.py:443): readers hold the refresh
+        lock only shared, so their open must not rename collections (two of
+        them raced the rename). They get a typed "run refresh" error, the index
+        is left as it was, and the half-opened client is released."""
+        from chromadb.api.shared_system_client import SharedSystemClient
+
+        from pipecat_context_hub.services.index.errors import InterruptedCompactionError
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma)
+        index.upsert(_make_records(20))
+        index._collection.modify(name=COMPACT_BACKUP_NAME)  # state after the first rename
+        index.close()
+
+        with pytest.raises(InterruptedCompactionError, match="refresh"):
+            VectorIndex(chroma)
+        assert str(chroma) not in SharedSystemClient._identifier_to_refcount  # no leak
+        client: Any = chromadb.PersistentClient(path=str(chroma))
+        try:
+            assert [c.name for c in client.list_collections()] == [COMPACT_BACKUP_NAME]
+        finally:
+            client.close()
+
+
+_MASTER = "SELECT name FROM sqlite_master"
+
+
+class TestQueryChromaSqlite:
+    """The single reader of Chroma's private sqlite schema (vector.py:356)."""
+
+    def test_missing_or_non_sqlite_db_reads_as_none(self, tmp_path: Path) -> None:
+        assert hnsw_validation.query_chroma_sqlite(tmp_path, _MASTER, immutable=True) is None
+        (tmp_path / "chroma.sqlite3").write_bytes(b"not a database")
+        for immutable in (True, False):
+            assert (
+                hnsw_validation.query_chroma_sqlite(tmp_path, _MASTER, immutable=immutable) is None
+            )
+
+    def test_relative_chroma_path_is_readable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``Path.as_uri()`` rejects relative paths; orphan-segment cleanup used
+        to raise ValueError for a relative chroma path."""
+        with sqlite3.connect(tmp_path / "chroma.sqlite3") as conn:
+            conn.execute("CREATE TABLE segments (id TEXT)")
+            conn.execute("INSERT INTO segments VALUES ('x')")
+        conn.close()
+        monkeypatch.chdir(tmp_path.parent)
+        rows = hnsw_validation.query_chroma_sqlite(
+            Path(tmp_path.name), "SELECT id FROM segments", immutable=False
+        )
+        assert rows == [("x",)]

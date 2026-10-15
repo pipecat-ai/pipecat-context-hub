@@ -11,7 +11,6 @@ import contextlib
 import json
 import logging
 import shutil
-import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -24,10 +23,14 @@ from chromadb.config import Settings as ChromaSettings
 from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryEvent
 from overrides import override
 
-from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
+from pipecat_context_hub.services.index.errors import (
+    IncompatibleIndexFormatError,
+    InterruptedCompactionError,
+)
 from pipecat_context_hub.services.index.hnsw_validation import (
     HnswWriteGuard,
     chromadb_format_verified,
+    query_chroma_sqlite,
     validate_persisted_hnsw,
 )
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
@@ -60,25 +63,12 @@ def _detect_incompatible_format(chroma_path: Path) -> None:
     no ``chroma.sqlite3``, the file is not a readable SQLite database, or it has
     no recognizable ``migrations`` table.
     """
-    db_path = chroma_path / "chroma.sqlite3"
-    if not db_path.exists():
-        return
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
-    except sqlite3.Error:
-        return
-    try:
-        has_migrations = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='migrations'"
-        ).fetchone()
-        if has_migrations is None:
-            return
-        row = conn.execute("SELECT MAX(version) FROM migrations WHERE dir='sysdb'").fetchone()
-    except sqlite3.Error:
-        return
-    finally:
-        conn.close()
-
+    # No migrations table (not a Chroma db) or unreadable: rows is None or
+    # [(None,)], and chromadb surfaces its own error.
+    rows = query_chroma_sqlite(
+        chroma_path, "SELECT MAX(version) FROM migrations WHERE dir='sysdb'", immutable=True
+    )
+    row = rows[0] if rows else None
     max_version = row[0] if row else None
     if max_version is not None and max_version < _MIN_SUPPORTED_SYSDB_MIGRATION:
         raise IncompatibleIndexFormatError(chroma_path, detected_sysdb_migration=max_version)
@@ -348,25 +338,6 @@ def _record_has_tags(result: IndexResult, tags: list[str]) -> bool:
     return all(t in record_tags for t in tags)
 
 
-def _persisted_collection_names(chroma_path: Path) -> set[str]:
-    """Collection names in chroma.sqlite3, read without the native client.
-
-    Read-only; an absent or unreadable database yields an empty set (the
-    normal open path then proceeds as before).
-    """
-    db_path = chroma_path / "chroma.sqlite3"
-    if not db_path.is_file():
-        return set()
-    try:
-        conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
-        try:
-            return {str(row[0]) for row in conn.execute("SELECT name FROM collections")}
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return set()
-
-
 class VectorIndex:
     """ChromaDB vector index for embedding similarity search.
 
@@ -375,8 +346,17 @@ class VectorIndex:
     so indexes survive process restarts.
     """
 
-    def __init__(self, chroma_path: Path) -> None:
+    def __init__(self, chroma_path: Path, *, recover: bool = False) -> None:
+        """Open the index at *chroma_path*.
+
+        Opening never writes to the index unless *recover* is set, which only
+        ``refresh`` does (it holds the exclusive refresh lock): it lets this
+        open restore a compaction interrupted between its two renames.
+        Readers hold that lock only shared, so for them the same state raises
+        :class:`InterruptedCompactionError` instead.
+        """
         self._chroma_path = chroma_path
+        self._recover = recover
         self._client: Any = None
         self._collection: Any = None
         self._closed = True
@@ -393,10 +373,10 @@ class VectorIndex:
         # initialize successfully and later SIGSEGV on the first search.
         validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME)
         # A compaction interrupted mid-swap leaves the live graph under the
-        # backup name, and _recover_interrupted_compaction loads it below.
+        # backup name, and _open_collection may load it.
         validate_persisted_hnsw(self._chroma_path.resolve(), COMPACT_BACKUP_NAME)
         self._chroma_path.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(
+        client: Any = chromadb.PersistentClient(
             path=str(self._chroma_path),
             settings=ChromaSettings(
                 anonymized_telemetry=False,
@@ -406,8 +386,32 @@ class VectorIndex:
             ),
         )
         try:
-            self._recover_interrupted_compaction()
-            self._collection = self._client.get_or_create_collection(
+            self._collection = self._open_collection(client)
+        except BaseException:
+            # Release the client's reference to Chroma's per-path System:
+            # a leaked one would be reused (stale) by every later open.
+            with contextlib.suppress(Exception):
+                client.close()
+            raise
+        self._client = client
+        self._closed = False
+        self._write_guard = HnswWriteGuard(self._chroma_path.resolve())
+        logger.info("VectorIndex initialized at %s", self._chroma_path)
+
+    def _open_collection(self, client: Any) -> Any:
+        """Return the ``latest`` collection, first undoing an interrupted compaction."""
+        try:
+            names = {getattr(c, "name", c) for c in client.list_collections()}
+            if COLLECTION_NAME not in names and COMPACT_BACKUP_NAME in names:
+                # compact() died between its two renames. get_or_create below
+                # would create an empty ``latest`` and strand every record
+                # under the backup name (vector search silently empty while
+                # FTS still has them).
+                if not self._recover:
+                    raise InterruptedCompactionError(self._chroma_path)
+                logger.warning("Restoring the vector collection from an interrupted compaction")
+                client.get_collection(COMPACT_BACKUP_NAME).modify(name=COLLECTION_NAME)
+            return client.get_or_create_collection(
                 name=COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
             )
@@ -431,21 +435,6 @@ class VectorIndex:
                     "process writes to a 1.x index directory"
                 ),
             ) from exc
-        self._closed = False
-        self._write_guard = HnswWriteGuard(self._chroma_path.resolve())
-        logger.info("VectorIndex initialized at %s", self._chroma_path)
-
-    def _recover_interrupted_compaction(self) -> None:
-        """Put ``latest`` back if a compaction died between its two renames.
-
-        Must run before ``get_or_create_collection``, which would otherwise
-        create an empty ``latest`` and strand every record under the backup
-        name (vector search silently empty while FTS still has them).
-        """
-        names = _persisted_collection_names(self._chroma_path)
-        if COLLECTION_NAME not in names and COMPACT_BACKUP_NAME in names:
-            logger.warning("Restoring the vector collection from an interrupted compaction")
-            self._client.get_collection(COMPACT_BACKUP_NAME).modify(name=COLLECTION_NAME)
 
     def _release_client(self) -> None:
         """Release this client's Chroma resources via the public close API.
@@ -590,15 +579,8 @@ class VectorIndex:
         """
         if not chromadb_format_verified():
             return
-        db_path = self._chroma_path / "chroma.sqlite3"
-        try:
-            conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
-            try:
-                referenced = {str(row[0]) for row in conn.execute("SELECT id FROM segments")}
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            return
+        rows = query_chroma_sqlite(self._chroma_path, "SELECT id FROM segments", immutable=False)
+        referenced = {str(row[0]) for row in rows or ()}
         if not referenced:
             return
         for entry in self._chroma_path.iterdir():

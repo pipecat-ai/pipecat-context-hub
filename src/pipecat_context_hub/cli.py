@@ -7,7 +7,6 @@ subcommands registered from :mod:`pipecat_context_hub.cli_query`.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import json
 import logging
@@ -33,6 +32,7 @@ from pipecat_context_hub.shared.index_lock import (
     IndexLock,
     IndexLockedError,
     RefreshInProgressError,
+    refresh_in_progress,
     serve_is_running,
 )
 from pipecat_context_hub.shared.interfaces import FatalIndexError, IndexUnavailableError
@@ -104,64 +104,15 @@ def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> Inde
     from pipecat_context_hub.services.index.store import IndexStore
 
     try:
-        return IndexStore(config.storage)
+        # recover=True: refresh holds the exclusive refresh lock, so it alone
+        # may repair an interrupted compaction while opening.
+        return IndexStore(config.storage, recover=True)
     except IncompatibleIndexFormatError as exc:
         # A pre-1.0 Chroma dir cannot be opened by 1.x. exc.__str__ embeds
         # the absolute chroma_path; redact for front-door parity with the
         # serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(_EXIT_INDEX_UNREADY) from exc
-
-
-def _open_ready_index_store(config: HubConfig) -> IndexStore:
-    """Open the index for `serve` and check it can answer queries.
-
-    Used for `serve`'s first open and for every reopen after a refresh, so a
-    reopened index gets the same checks. Raises ``IndexUnavailableError``
-    (after closing whatever came up) when the index is incompatible,
-    unreadable, or empty, carrying the same operator guidance the one-shot CLI
-    gives: `serve` logs it and exits at startup, or answers a tool call with
-    it later.
-    """
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
-    from pipecat_context_hub.services.index.store import IndexStore as _IndexStore
-
-    index_store: IndexStore | None = None
-    try:
-        index_store = _IndexStore(config.storage)
-        stats: dict[str, Any] = index_store.get_index_stats()
-    except IncompatibleIndexFormatError as exc:
-        # Specific, non-mutating signal: the on-disk Chroma format predates 1.x,
-        # or the persisted HNSW graph is corrupt. The probe ran before
-        # PersistentClient, so nothing was written.
-        if index_store is not None:
-            with contextlib.suppress(Exception):
-                index_store.close()
-        # exc.__str__ embeds the absolute chroma_path; redact for front-door
-        # parity with the cli_query one-shot error sites.
-        raise IndexUnavailableError(f"{redact_home_in_text(str(exc))} {bug_report_hint()}") from exc
-    except Exception as exc:
-        # IndexStore.__init__ opens two backends (Chroma + SQLite) without
-        # rolling back on partial failure; close() whatever did come up.
-        if index_store is not None:
-            with contextlib.suppress(Exception):
-                index_store.close()
-        raise IndexUnavailableError(
-            f"Failed to open index at {_redact_home(config.storage.data_dir)}: "
-            f"{redact_home_in_text(str(exc))}. "
-            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild. "
-            f"{bug_report_hint()}"
-        ) from exc
-
-    if stats.get("total", 0) == 0:
-        index_store.close()
-        raise IndexUnavailableError(
-            f"Index at {_redact_home(config.storage.data_dir)} is empty (0 records). "
-            "MCP clients would hang waiting for results. "
-            "Run 'uv run pipecat-context-hub refresh' before 'serve'. "
-            f"{bug_report_hint()}"
-        )
-    return index_store
 
 
 # Free space `refresh` requires on the data-dir volume before it starts. The
@@ -228,6 +179,13 @@ def _acquire_refresh_lock_or_exit(data_dir: Path, logger: logging.Logger) -> Ind
         # refresh: retry for a while before calling it one.
         lock.acquire(attempts=_REFRESH_LOCK_ATTEMPTS, delay=_REFRESH_LOCK_RETRY_DELAY)
     except IndexLockedError as exc:
+        # Still busy after the retries: a shared probe tells an exclusive
+        # holder (another refresh) from readers that kept it busy.
+        if not refresh_in_progress(data_dir):
+            raise click.ClickException(
+                f"Processes reading the index on {redact_home(data_dir)} (`serve` or CLI "
+                "queries opening it) kept the refresh lock busy. Retry the refresh."
+            ) from exc
         raise click.ClickException(
             f"Another `refresh` is already running on {redact_home(data_dir)}. "
             "Wait for it to finish; concurrent refreshes can corrupt the vector index."
@@ -812,7 +770,10 @@ def serve(ctx: click.Context) -> None:
     except (IndexLockedError, OSError):
         logger.debug("Could not take the serve lock; refresh won't see this server", exc_info=True)
 
-    from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
+    from pipecat_context_hub.services.index.reopening import (
+        ReopeningIndexStore,
+        open_ready_index_store,
+    )
 
     # Every open, this one included, runs under a shared hold on the refresh
     # lock: a running refresh is rewriting the index files and opening them
@@ -821,7 +782,7 @@ def serve(ctx: click.Context) -> None:
     # the MCP client connects and its tool calls get a "retry in 60-120
     # seconds" answer instead of a dead server.
     index_store = ReopeningIndexStore(
-        config.storage.data_dir, lambda: _open_ready_index_store(config)
+        config.storage.data_dir, lambda: open_ready_index_store(config.storage)
     )
     stats: dict[str, Any] = {}
     deferred_open = False
@@ -1815,10 +1776,14 @@ def refresh(
             # `--force` deletes then re-adds every record, which leaves the
             # deleted ones in the persisted HNSW graph (it grew by the whole
             # corpus per forced refresh). Rebuild it from the live records.
-            # Non-fatal: the index is fully usable without it.
+            # Non-fatal: the index is fully usable without it. Except a
+            # FatalIndexError (the HNSW guard tripped on a graph written this
+            # run): that stops the refresh like any other guard failure.
             try:
                 kept = index_store.compact_vector()
                 logger.info("Compacted vector index after forced refresh (%d records)", kept)
+            except FatalIndexError:
+                raise
             except Exception:
                 logger.warning(
                     "Vector index compaction failed; the index is valid but larger than needed",
@@ -1974,8 +1939,9 @@ def refresh(
             unpruned_repo_count=unpruned_repo_count,
         )
     except FatalIndexError as exc:
-        # Only the post-write HNSW guard raises this mid-run (the open-time
-        # checks fire in `_open_index_store_or_exit`). The ingesters re-raise it
+        # Only the post-write HNSW guard raises this mid-run, during ingest or
+        # compaction (the open-time checks fire in
+        # `_open_index_store_or_exit`). The ingesters re-raise it
         # so a corrupt index stops the refresh instead of being recorded as one
         # more per-source error while the remaining sources keep writing into it.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())

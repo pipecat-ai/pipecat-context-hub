@@ -29,9 +29,8 @@ from pipecat_context_hub.shared.index_lock import (
 
 
 def test_exclusive_blocks_exclusive(tmp_path: Path) -> None:
-    with IndexLock(tmp_path, REFRESH_LOCK, exclusive=True):
-        with pytest.raises(IndexLockedError):
-            IndexLock(tmp_path, REFRESH_LOCK, exclusive=True).acquire()
+    with IndexLock(tmp_path, REFRESH_LOCK, exclusive=True), pytest.raises(IndexLockedError):
+        IndexLock(tmp_path, REFRESH_LOCK, exclusive=True).acquire()
 
 
 def test_lock_is_reusable_after_release(tmp_path: Path) -> None:
@@ -95,6 +94,21 @@ class TestRefreshGuards:
         threading.Timer(0.2, reader.release).start()
         with click.Context(click.Command("x")):
             cli._acquire_refresh_lock_or_exit(tmp_path, logging.getLogger("test")).release()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="msvcrt has no shared lock mode")
+    def test_readers_outlasting_the_wait_are_not_reported_as_a_refresh(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Regression (cli.py:213): if readers' shared holds outlast the retry
+        budget, the error must not claim another refresh is running."""
+        monkeypatch.setattr(cli, "_REFRESH_LOCK_ATTEMPTS", 2)
+        monkeypatch.setattr(cli, "_REFRESH_LOCK_RETRY_DELAY", 0.01)
+        with IndexLock(tmp_path, REFRESH_LOCK, exclusive=False):
+            with click.Context(click.Command("x")):
+                with pytest.raises(click.ClickException) as exc_info:
+                    cli._acquire_refresh_lock_or_exit(tmp_path, logging.getLogger("test"))
+        assert "already running" not in exc_info.value.message
+        assert "reading the index" in exc_info.value.message
 
     def test_low_disk_refuses_before_any_write(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -196,9 +210,8 @@ def test_every_spelling_of_a_data_dir_shares_one_lock(tmp_path: Path) -> None:
     alias = tmp_path / "alias"
     alias.symlink_to(real)
     assert lock_path(real, REFRESH_LOCK) == lock_path(alias, REFRESH_LOCK)
-    with IndexLock(real, REFRESH_LOCK, exclusive=True):
-        with pytest.raises(IndexLockedError):
-            IndexLock(alias, REFRESH_LOCK, exclusive=True).acquire()
+    with IndexLock(real, REFRESH_LOCK, exclusive=True), pytest.raises(IndexLockedError):
+        IndexLock(alias, REFRESH_LOCK, exclusive=True).acquire()
 
 
 def test_unwritable_lock_location_fails_open(
@@ -311,10 +324,13 @@ class TestReopeningIndexStore:
         self._store(data_dir, opener).open_now()
         assert seen == [True]
 
-    def test_replaced_store_is_not_closed_under_a_running_call(self, tmp_path: Path) -> None:
-        """Regression (reopening.py:42): a store replaced after a refresh is
-        closed only once the call still using it has finished."""
+    def test_stale_store_is_closed_before_the_next_opens(self, tmp_path: Path) -> None:
+        """Regression (reopening.py:42, reopening.py:150): a store made stale by
+        a refresh is not closed under a running call, and no replacement opens
+        until it is closed (calls meanwhile get the reopen-pending message)."""
         import asyncio
+
+        from pipecat_context_hub.services.index.reopening import REOPEN_PENDING_MESSAGE
 
         data_dir = tmp_path / "hub"
         first, second = MagicMock(), MagicMock()
@@ -327,19 +343,73 @@ class TestReopeningIndexStore:
             return []
 
         first.vector_search = slow_search
-        store = self._store(data_dir, MagicMock(side_effect=[first, second]))
+        opener = MagicMock(side_effect=[first, second])
+        store = self._store(data_dir, opener)
 
         async def scenario() -> None:
             call = asyncio.create_task(store.vector_search(MagicMock()))
             await started.wait()
             _simulate_refresh(data_dir)
-            assert store.unavailable_reason() is None  # reopens: second is current
+            assert store.unavailable_reason() == REOPEN_PENDING_MESSAGE
+            assert opener.call_count == 1  # nothing opened beside the stale store
             first.close.assert_not_called()
             finish.set()
             await call
             first.close.assert_called_once()
+            assert store.unavailable_reason() is None  # now reopens
+            assert opener.call_count == 2
 
         asyncio.run(scenario())
+
+    def test_reopen_after_a_refresh_does_not_reuse_the_stale_chroma_system(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (reopening.py:150), against real Chroma: chromadb shares
+        one System per path among open clients, so a store reopened while the
+        stale one was still in use served the stale graph. A refresh in another
+        process adds a closer match; after the reopen, search must see it."""
+        import asyncio
+        import subprocess
+        import textwrap
+
+        from pipecat_context_hub.services.index.reopening import REOPEN_PENDING_MESSAGE
+        from pipecat_context_hub.services.index.store import IndexStore
+        from pipecat_context_hub.shared.config import StorageConfig
+        from pipecat_context_hub.shared.types import IndexQuery
+        from tests.unit.test_index_store import _make_record
+
+        data_dir = tmp_path / "hub"
+        storage = StorageConfig(data_dir=data_dir)
+        seed = IndexStore(storage)
+        asyncio.run(seed.upsert([_make_record("old", embedding=[1.0, 0.0])]))
+        seed.close()
+
+        store = self._store(data_dir, lambda: IndexStore(storage))
+        query = IndexQuery(query_text="x", query_embedding=[0.0, 1.0], limit=1)
+        in_flight = store._acquire()  # a call still running when the refresh lands
+        assert [h.chunk.chunk_id for h in asyncio.run(in_flight.store.vector_search(query))] == [
+            "old"
+        ]
+        writer = textwrap.dedent(
+            f"""
+            from pathlib import Path
+            from pipecat_context_hub.services.index.vector import VectorIndex
+            from tests.unit.test_index_store import _make_record
+            index = VectorIndex(Path({str(storage.chroma_path)!r}))
+            index.upsert([_make_record("new", embedding=[0.0, 1.0])])
+            index.close()
+            """
+        )
+        subprocess.run([sys.executable, "-c", writer], check=True, cwd=Path.cwd())
+        _simulate_refresh(data_dir)
+        try:
+            assert store.unavailable_reason() == REOPEN_PENDING_MESSAGE
+            store._release(in_flight)
+            assert store.unavailable_reason() is None
+            hits = asyncio.run(store.vector_search(query))
+            assert [h.chunk.chunk_id for h in hits] == ["new"]
+        finally:
+            store.close()
 
     def test_reopen_failure_is_the_tool_answer(self, tmp_path: Path) -> None:
         """Regression (reopening.py:46): a reopen goes through the same

@@ -81,6 +81,7 @@ class TestVectorIndex:
 
     def test_disables_chroma_telemetry(self, tmp_path: Path):
         mock_client = Mock()
+        mock_client.list_collections.return_value = []
         mock_client.get_or_create_collection.return_value = Mock()
         mock_client._identifier = "mock-client"
 
