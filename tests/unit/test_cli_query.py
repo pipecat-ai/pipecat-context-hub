@@ -18,7 +18,7 @@ from pipecat_context_hub.server.dispatch import iter_tool_definitions
 from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL, create_server
 from pipecat_context_hub.services.index import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
-from pipecat_context_hub.shared.index_lock import EXIT_INDEX_UNREADY
+from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY
 from pipecat_context_hub.shared.paths import redact_home_in_text as _real_redact_home_in_text
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
@@ -105,7 +105,7 @@ class TestToolCommandParity:
         """Queries mid-refresh and a refresh refused by the lock are the same
         retry-later condition, so both exit with the shared code (75)."""
         from pipecat_context_hub import cli as hub_cli
-        from pipecat_context_hub.shared.index_lock import EXIT_REFRESH_IN_PROGRESS
+        from pipecat_context_hub.shared.exit_codes import EXIT_REFRESH_IN_PROGRESS
 
         assert EXIT_REFRESH_IN_PROGRESS == 75
         assert hub_cli._RefreshLockBusy("x").exit_code == EXIT_REFRESH_IN_PROGRESS

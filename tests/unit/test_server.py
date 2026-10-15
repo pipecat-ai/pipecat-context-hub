@@ -742,7 +742,7 @@ class TestServerInstructions:
         from click.testing import CliRunner
 
         from pipecat_context_hub.cli import main
-        from pipecat_context_hub.shared.index_lock import EXIT_INDEX_UNREADY
+        from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
         from pipecat_context_hub.services.index import IncompatibleIndexFormatError
         from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION

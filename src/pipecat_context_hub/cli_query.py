@@ -43,9 +43,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
+from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_REFRESH_IN_PROGRESS
 from pipecat_context_hub.shared.index_lock import (
-    EXIT_INDEX_UNREADY,
-    EXIT_REFRESH_IN_PROGRESS,
     RefreshInProgressError,
     refresh_excluded,
 )

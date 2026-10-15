@@ -35,14 +35,6 @@ _CONTENTION = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES})
 REFRESH_LOCK = "refresh.lock"
 SERVE_LOCK = "serve.lock"
 
-# Exit codes shared by `serve`, `refresh` and the one-shot query commands.
-# The local index is missing, empty, unreadable or incompatible.
-EXIT_INDEX_UNREADY = 2
-# sysexits EX_TEMPFAIL: the refresh lock is busy (a `refresh` is rewriting the
-# index); retry shortly.
-EXIT_REFRESH_IN_PROGRESS = 75
-
-
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # The refresh lock file's size steps through 1.._GENERATION_CYCLE, one step per
