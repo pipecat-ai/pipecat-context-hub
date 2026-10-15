@@ -534,7 +534,8 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   with or without `--prune`.
 - **`refresh` refuses to start: low disk, or another `refresh` running** —
   `refresh` first checks free space on the data-dir volume (default 5 GB;
-  `PIPECAT_HUB_MIN_FREE_GB=0` disables, other values set the threshold) and
+  `PIPECAT_HUB_MIN_FREE_GB=0` disables, other values set the threshold; with
+  `--reset-index` the check runs after the delete has freed the space) and
   takes an exclusive `refresh.lock` in the data dir, so two refreshes can't
   interleave writes to the same Chroma HNSW files. A running `serve` is only
   warned about (restart your MCP client afterwards to reload the rebuilt

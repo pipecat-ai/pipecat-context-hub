@@ -128,7 +128,10 @@ def _min_free_bytes(env: dict[str, str] | None = None) -> int:
         return int(_MIN_FREE_GB_DEFAULT * 1024**3)
     if not math.isfinite(gb) or gb < 0:
         return int(_MIN_FREE_GB_DEFAULT * 1024**3)
-    return int(gb * 1024**3)
+    try:
+        return int(gb * 1024**3)
+    except OverflowError:  # e.g. 1e300 GB overflows to inf
+        return int(_MIN_FREE_GB_DEFAULT * 1024**3)
 
 
 def _require_free_disk(data_dir: Path, *, min_free: int | None = None) -> None:
@@ -744,7 +747,7 @@ def serve(ctx: click.Context) -> None:
     # Best-effort: a lock failure must never stop the server from starting.
     try:
         serve_lock = IndexLock(config.storage.data_dir, SERVE_LOCK, exclusive=False)
-        serve_lock.acquire()
+        serve_lock.acquire(attempts=5)
         ctx.call_on_close(serve_lock.release)
     except (IndexLockedError, OSError):
         logger.debug("Could not take the serve lock; refresh won't see this server", exc_info=True)
@@ -1004,6 +1007,7 @@ def refresh(
         EmbeddingIndexWriter,
         EmbeddingService,
     )
+    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.fts import METADATA_CONTRACT_VERSION
     from pipecat_context_hub.services.ingest.docs_crawler import DocsCrawler
     from pipecat_context_hub.services.ingest.github_ingest import (
@@ -1039,7 +1043,11 @@ def refresh(
     )
     start = time.monotonic()
 
-    _require_free_disk(config.storage.data_dir)
+    # `--reset-index` is the recovery path for a runaway index that has filled
+    # the disk, so it must not be refused for lack of space the delete itself
+    # frees: its check runs after the delete, below.
+    if not reset_index:
+        _require_free_disk(config.storage.data_dir)
     refresh_lock = _acquire_refresh_lock_or_exit(config.storage.data_dir, logger)
 
     # Fail fast on an incompatible on-disk index before spending a network
@@ -1109,6 +1117,7 @@ def refresh(
         refresh_lock = _acquire_refresh_lock_or_exit(
             config.storage.data_dir, logger, warn_if_serving=False
         )
+        _require_free_disk(config.storage.data_dir)
         force = True
         # Storage was just deleted, so this always opens a fresh index — the
         # IncompatibleIndexFormatError this guards against can't fire here,
@@ -1906,6 +1915,13 @@ def refresh(
             recovered_repos=sorted(github.recovered_repos),
             unpruned_repo_count=unpruned_repo_count,
         )
+    except IncompatibleIndexFormatError as exc:
+        # Only the post-write HNSW guard raises this mid-run (the open-time
+        # checks fire in `_open_index_store_or_exit`). The ingesters re-raise it
+        # so a corrupt index stops the refresh instead of being recorded as one
+        # more per-source error while the remaining sources keep writing into it.
+        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
+        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
     finally:
         index_store.close()
 

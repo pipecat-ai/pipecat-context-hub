@@ -23,6 +23,7 @@ from git import TagReference
 from git.exc import BadObject, GitCommandError, InvalidGitRepositoryError, NoSuchPathError
 from packaging.version import InvalidVersion, Version
 
+from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.ingest.ingest_filters import (
     hash_source,
     is_storybook_file,
@@ -1394,6 +1395,10 @@ class GitHubRepoIngester:
         if records:
             try:
                 upserted = await self._writer.upsert(records)
+            except IncompatibleIndexFormatError:
+                # Corrupt index (post-write HNSW guard): abort the refresh
+                # rather than keep writing into it. See DocsCrawler.ingest.
+                raise
             except Exception as exc:
                 errors.append(f"IndexWriter.upsert failed for {repo_slug}: {exc}")
 

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.ingest.github_ingest import (
     _FRAMEWORK_REPO,
     _ROOT_FALLBACK_SKIP_ROOT_DIRS,
@@ -710,6 +711,29 @@ class TestGitHubRepoIngester:
                 update={"repos": repos or ["test-org/test-repo"]}
             ),
         )
+
+    async def test_ingest_propagates_index_corruption(self, tmp_path: Path):
+        """The post-write HNSW guard must abort the refresh, not become an error row."""
+        repo_dir = _create_fake_repo(
+            tmp_path / "data" / "repos",
+            "test-org_test-repo",
+            {"examples/bot1/main.py": "def run():\n    print('hello')\n"},
+        )
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        writer.upsert = AsyncMock(
+            side_effect=IncompatibleIndexFormatError(tmp_path, reason="corrupt persisted HNSW")
+        )
+        ingester = GitHubRepoIngester(config, writer)
+
+        from git import Repo as GitRepo
+
+        commit_sha = GitRepo(str(repo_dir)).head.commit.hexsha
+        with patch.object(
+            ingester, "clone_or_fetch", return_value=CloneResult(repo_dir, commit_sha, None)
+        ):
+            with pytest.raises(IncompatibleIndexFormatError, match="corrupt persisted HNSW"):
+                await ingester.ingest()
 
     async def test_ingest_processes_example_code(self, tmp_path: Path):
         """Full integration-style test with a real git repo on disk."""

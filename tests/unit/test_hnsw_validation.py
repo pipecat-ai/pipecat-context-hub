@@ -185,3 +185,29 @@ def test_vector_upsert_runs_write_guard(tmp_path: Path) -> None:
         check.assert_called_once()
     finally:
         index.close()
+
+
+def test_vector_upsert_checks_guard_after_every_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One large upsert must not keep growing a runaway file past the first bad batch."""
+    from tests.unit.test_index_store import _make_records
+
+    monkeypatch.setattr("pipecat_context_hub.services.index.vector._CHROMA_BATCH_SIZE", 2)
+    index = VectorIndex(tmp_path / "chroma")
+    try:
+        with patch.object(HnswWriteGuard, "check") as check:
+            index.upsert(_make_records(5))
+        assert check.call_count == 3  # ceil(5 / 2) batches
+
+        with patch.object(
+            HnswWriteGuard,
+            "check",
+            side_effect=IncompatibleIndexFormatError(tmp_path, reason="corrupt persisted HNSW"),
+        ) as failing:
+            with pytest.raises(IncompatibleIndexFormatError):
+                index.upsert(_make_records(10)[5:])  # 5 new ids, batches of 2
+        assert failing.call_count == 1
+        assert index._collection.count() == 5 + 2  # aborted after the first new batch
+    finally:
+        index.close()

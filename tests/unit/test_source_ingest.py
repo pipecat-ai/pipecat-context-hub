@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.ingest.ast_extractor import extract_module_info
 from pipecat_context_hub.services.ingest.source_ingest import (
     _SKIP_DIRS,
@@ -679,6 +682,33 @@ class TestSourceIngester:
 
         assert result.records_upserted == 0
         assert any("upsert failed" in e for e in result.errors)
+
+    async def test_ingest_propagates_index_corruption(self, tmp_path: Path):
+        """The post-write HNSW guard must abort the refresh, not become an error row."""
+        clone_dir = tmp_path / "repos" / "pipecat-ai_pipecat"
+        src_dir = clone_dir / "src" / "pipecat"
+        src_dir.mkdir(parents=True)
+
+        (src_dir / "__init__.py").write_text("")
+        (src_dir / "mod.py").write_text("x = 1\n")
+
+        _create_git_repo(
+            clone_dir,
+            {
+                "src/pipecat/__init__.py": "",
+                "src/pipecat/mod.py": "x = 1\n",
+            },
+        )
+
+        config = self._make_config(tmp_path)
+        writer = _make_mock_writer()
+        writer.upsert = AsyncMock(
+            side_effect=IncompatibleIndexFormatError(tmp_path, reason="corrupt persisted HNSW")
+        )
+        ingester = SourceIngester(config, writer, "pipecat-ai/pipecat")
+
+        with pytest.raises(IncompatibleIndexFormatError, match="corrupt persisted HNSW"):
+            await ingester.ingest()
 
     async def test_ingest_idempotent(self, tmp_path: Path):
         """Same commit SHA produces identical chunk IDs across runs."""

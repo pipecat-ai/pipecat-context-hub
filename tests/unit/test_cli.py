@@ -37,6 +37,24 @@ from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_global_config
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_refresh_guards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `refresh`'s lock and free-disk preflight off the developer's machine.
+
+    Many tests here invoke `refresh` against a mocked `IndexStore` without
+    choosing a data dir. `refresh` now takes a real `refresh.lock` and checks
+    real free space in that dir, so left alone those tests would create
+    `~/.pipecat-context-hub/refresh.lock`, fail whenever the developer has a
+    real `refresh` running ("already running"), and fail on a nearly-full disk.
+    Tests that pick their own data dir or threshold simply override these.
+    The default data dir is redirected via `Path.home` rather than
+    `PIPECAT_HUB_DATA_DIR`, because a real env var would outrank the `.env` /
+    `config.toml` data-dir sources several tests here deliberately exercise.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "isolated-home")
+    monkeypatch.setenv("PIPECAT_HUB_MIN_FREE_GB", "0")
+
+
 class TestWriteServeDebugProbe:
     """`_write_serve_debug_probe()` must never crash `serve` on failure —
     including when `Path.home()` itself raises (RuntimeError, not OSError),
@@ -534,6 +552,54 @@ class TestRefreshCommand:
         # docs:content_hash should NOT have been stored
         set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
         assert "docs:content_hash" not in set_calls
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_index_corruption_aborts_refresh(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A mid-run HNSW-guard failure stops the refresh with exit 2.
+
+        Regression: the ingesters used to swallow it into a per-source error,
+        so the refresh kept writing every remaining source into the corrupt
+        index and exited 0.
+        """
+        from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
+
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_crawler.ingest = AsyncMock(
+            side_effect=IncompatibleIndexFormatError(
+                tmp_path, reason="corrupt persisted HNSW segment x"
+            )
+        )
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 2, result.output
+        mock_github.ingest.assert_not_called()
+        mock_source.ingest.assert_not_called()
+        mock_store.set_metadata_batch.assert_not_called()
+        mock_store.close.assert_called()
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")

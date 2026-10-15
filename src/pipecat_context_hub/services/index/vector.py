@@ -497,9 +497,10 @@ class VectorIndex:
                     metadatas=metadatas[i:end],
                     embeddings=embeddings[i:end],
                 )
-            # A runaway link-list file grows silently until the disk fills;
-            # fail the write the moment the persisted graph exceeds its bound.
-            self._write_guard.check()
+                # A runaway link-list file grows silently until the disk fills;
+                # fail the write the moment the persisted graph exceeds its
+                # bound — per batch, so one large upsert can't keep growing it.
+                self._write_guard.check()
         logger.debug("Upserted %d records into vector index", len(ids))
         return len(ids)
 

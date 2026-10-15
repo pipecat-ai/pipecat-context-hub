@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from git import Repo as GitRepo
 
+from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.ingest.ast_extractor import (
     ClassInfo,
     FunctionInfo,
@@ -446,6 +447,10 @@ class SourceIngester:
         if records:
             try:
                 upserted = await self._writer.upsert(records)
+            except IncompatibleIndexFormatError:
+                # Corrupt index (post-write HNSW guard): abort the refresh
+                # rather than keep writing into it. See DocsCrawler.ingest.
+                raise
             except Exception as exc:
                 errors.append(f"IndexWriter.upsert failed: {exc}")
 

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.shared.config import ChunkingConfig, SourceConfig
 from pipecat_context_hub.shared.interfaces import IndexWriter
 from pipecat_context_hub.shared.markdown import fenced_ranges, inside_fence
@@ -377,6 +378,11 @@ class DocsCrawler:
         if all_records:
             try:
                 upserted = await self._writer.upsert(all_records)
+            except IncompatibleIndexFormatError:
+                # The post-write HNSW guard tripped: the index is corrupt, so
+                # abort the whole refresh instead of recording a per-source error
+                # and carrying on writing into it.
+                raise
             except Exception as e:
                 errors.append(f"Upsert failed: {e}")
 
