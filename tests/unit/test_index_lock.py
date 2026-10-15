@@ -530,6 +530,24 @@ def test_lock_file_symlink_is_not_followed(tmp_path: Path) -> None:
     assert victim.read_text() == "keep"
 
 
+@pytest.mark.parametrize("exclusive", [True, False])
+def test_lock_file_hard_link_is_not_written(tmp_path: Path, exclusive: bool) -> None:
+    """Regression (index_lock.py:137): a lock name planted as a hard link to a
+    file we own passed O_NOFOLLOW and the owner check, and the exclusive
+    acquire then truncated it (size step) and bumped its mtime."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep this content")
+    os.utime(victim, ns=(1, 1))
+    data_dir = tmp_path / "hub"
+    os.link(victim, lock_path(data_dir, REFRESH_LOCK))
+    lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=exclusive)
+    lock.acquire()  # best-effort: proceeds without a lock
+    assert lock._fd is None
+    lock.release()
+    assert victim.stat().st_mtime_ns == 1
+    assert victim.read_text() == "keep this content"
+
+
 @pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX only")
 def test_lock_file_owned_by_another_user_is_not_used(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

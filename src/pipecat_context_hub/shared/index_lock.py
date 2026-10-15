@@ -17,6 +17,7 @@ import contextlib
 import errno
 import logging
 import os
+import stat
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -53,15 +54,26 @@ class IndexLockedError(RuntimeError):
     """The data dir is locked by another process in an incompatible mode."""
 
 
-def _owned_by_us(fd: int) -> bool:
-    """False if the lock file was pre-created by another user (POSIX only)."""
-    getuid = getattr(os, "getuid", None)
-    if getuid is None:
-        return True
+def _unusable_lock_file(fd: int) -> str | None:
+    """Why the opened lock file must not be used, or None if it is fine.
+
+    The lock may live in a shared directory, and an exclusive acquire writes
+    to it (size step and mtime, see :func:`refresh_generation`), so it must be
+    our own regular file with no other name: a planted hard link to a file we
+    own would pass the owner check and get truncated. Ownership is POSIX only.
+    """
     try:
-        return bool(os.fstat(fd).st_uid == getuid())
+        st = os.fstat(fd)
     except OSError:
-        return True
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return "is not a regular file"
+    if st.st_nlink != 1:
+        return "has other hard links"
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and st.st_uid != getuid():
+        return "belongs to another user"
+    return None
 
 
 def _try_lock(fd: int, *, exclusive: bool) -> bool:
@@ -140,11 +152,10 @@ class IndexLock:
                 "Cannot create lock file %s (%s); continuing without a lock", self._path, exc
             )
             return
-        if not _owned_by_us(fd):
+        reason = _unusable_lock_file(fd)
+        if reason is not None:
             os.close(fd)
-            logger.warning(
-                "Lock file %s belongs to another user; continuing without a lock", self._path
-            )
+            logger.warning("Lock file %s %s; continuing without a lock", self._path, reason)
             return
         for attempt in range(max(attempts, 1)):
             if _try_lock(fd, exclusive=self._exclusive):

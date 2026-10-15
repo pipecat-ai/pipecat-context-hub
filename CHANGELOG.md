@@ -64,7 +64,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   hnswlib's on-disk layout is private: on a chromadb release other than the
   verified 1.5.x, header and structure mismatches are logged and skipped (the
   size bound still applies) instead of refusing every healthy index. Lock files
-  are opened without following symlinks and ignored if another user owns them.
+  are opened without following symlinks and ignored (with a warning) if another
+  user owns them or they are not a regular file with a single link.
 - **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
   unsafe to keep using; the incompatible-format and corrupt-HNSW errors subclass
   it. Ingesters re-raise it rather than recording one more per-source error, so a
