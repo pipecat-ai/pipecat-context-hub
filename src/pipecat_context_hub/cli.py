@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import shutil
+import sqlite3
 import sys
 import time
 from dataclasses import dataclass
@@ -100,21 +101,46 @@ def _open_index_store_or_exit(
     *rebuild* is ``--force``: only then may a lost vector collection beside a
     populated keyword index be recreated (see :class:`IndexStore`).
     """
+    from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
     from pipecat_context_hub.services.index.store import IndexStore
 
     try:
         # recover=True: refresh holds the exclusive refresh lock, so it alone
         # may repair an interrupted compaction while opening.
-        return IndexStore(config.storage, recover=True, create=True, rebuild=rebuild)
+        store = IndexStore(config.storage, recover=True, create=True, rebuild=rebuild)
     except (FatalIndexError, IndexUnavailableError) as exc:
         # A pre-1.0 Chroma dir or a corrupt graph (IncompatibleIndexFormatError),
         # an interrupted compaction the open could not restore
         # (CompactionRestoreError), or, without --force, a lost vector
-        # collection (MissingVectorCollectionError, raised before anything is
-        # written). exc.__str__ embeds the absolute path; redact for
+        # collection (MissingVectorCollectionError, raised before the vector
+        # half is touched). exc.__str__ embeds the absolute path; redact for
         # front-door parity with the serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(EXIT_INDEX_UNREADY) from exc
+    except sqlite3.DatabaseError as exc:
+        if isinstance(exc, sqlite3.OperationalError):
+            raise  # locked, busy, I/O: not a corrupt file, so no reset advice
+        # A corrupt keyword database ("file is not a database", "malformed"):
+        # same contract as the readers' unexpected-open-failure path.
+        logger.error(
+            "Failed to open index at %s: %s. %s %s",
+            redact_home(config.storage.data_dir),
+            redact_home_in_text(str(exc)),
+            RESET_INDEX_REMEDIATION,
+            bug_report_hint(),
+        )
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
+    if store.vector_lost:
+        # --force recreated a lost vector collection empty. The keyword half's
+        # per-source skip markers describe records that no longer have vectors:
+        # drop them, so a source this run fails to fetch is re-ingested by the
+        # next plain refresh instead of skipped as unchanged (keyword-only).
+        for key in store.get_all_metadata():
+            if key == "docs:content_hash" or (
+                key.startswith("repo:") and key.endswith(":commit_sha")
+            ):
+                store.delete_metadata(key)
+    return store
 
 
 # Free space `refresh` requires on the data-dir volume before it starts. The

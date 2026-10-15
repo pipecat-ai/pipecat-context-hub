@@ -221,6 +221,7 @@ class TestRefreshCommand:
     def _make_mocks(self):
         """Create shared mock objects for refresh tests."""
         mock_index_store = MagicMock()
+        mock_index_store.vector_lost = False  # a healthy index, not a lost vector half
         mock_index_store.get_metadata = MagicMock(return_value=None)
         mock_index_store.set_metadata = MagicMock()
         mock_index_store.delete_metadata = MagicMock()
@@ -5250,6 +5251,51 @@ class TestRefreshLostVectorCollection:
         store = _open_index_store_or_exit(config, logging.getLogger("test"), rebuild=True)
         store.close()
         assert _collection_names(storage) == ["latest"]
+
+    def test_force_open_drops_source_skip_markers(self, tmp_path, monkeypatch):
+        """Regression (cli.py:1265): --force recreated the lost vector half but
+        kept the keyword half's skip markers, so a source whose fetch failed in
+        that run kept its hash/SHA and every later plain refresh skipped it as
+        unchanged, leaving it keyword-only. The markers are dropped instead."""
+        import logging
+
+        from pipecat_context_hub.cli import _open_index_store_or_exit
+        from pipecat_context_hub.services.index.store import IndexStore
+        from tests.unit.test_index_store import _lose_vector_half
+
+        storage = self._env(tmp_path, monkeypatch)
+        _lose_vector_half(storage, empty_latest=False)
+        markers = {"docs:content_hash": "abc", "repo:o/r:commit_sha": "deadbeef"}
+        kept = {"framework_version": "latest", "repo:o/r:cleanup_failed": "1"}
+        store = IndexStore(storage, create=True, rebuild=True)  # write the metadata
+        for key, value in {**markers, **kept}.items():
+            store.set_metadata(key, value)
+        store.close()
+
+        store = _open_index_store_or_exit(HubConfig(), logging.getLogger("test"), rebuild=True)
+        try:
+            metadata = store.get_all_metadata()
+        finally:
+            store.close()
+        assert not set(markers) & set(metadata)
+        assert {k: metadata.get(k) for k in kept} == kept
+
+    def test_corrupt_keyword_database_exits_2(self, tmp_path, monkeypatch, caplog):
+        """Regression (cli.py:109): a malformed index.db raised a bare
+        sqlite3.DatabaseError (traceback, exit 1) instead of exit 2 with the
+        reset remedy the readers give."""
+        import logging
+
+        from pipecat_context_hub.cli import _open_index_store_or_exit
+
+        storage = self._env(tmp_path, monkeypatch)
+        storage.data_dir.mkdir(parents=True)
+        storage.sqlite_path.write_bytes(b"not a database" * 512)
+
+        with caplog.at_level("ERROR", logger="test"), pytest.raises(SystemExit) as exc:
+            _open_index_store_or_exit(HubConfig(), logging.getLogger("test"), rebuild=False)
+        assert exc.value.code == 2
+        assert "refresh --force --reset-index" in caplog.text
 
     @pytest.mark.parametrize(("args", "rebuild"), [([], False), (["--force"], True)])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
