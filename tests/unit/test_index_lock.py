@@ -530,6 +530,54 @@ def test_lock_file_symlink_is_not_followed(tmp_path: Path) -> None:
     assert victim.read_text() == "keep"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("dangling", [False, True])
+def test_lock_file_symlink_is_refused_without_o_nofollow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dangling: bool
+) -> None:
+    """Regression (index_lock.py:141): without O_NOFOLLOW (Windows) the open
+    followed a planted lock symlink, and the exclusive acquire truncated the
+    target (or created a dangling one). Emulated by zeroing the flag."""
+    from pipecat_context_hub.shared import index_lock
+
+    monkeypatch.setattr(index_lock, "_O_NOFOLLOW", 0)
+    victim = tmp_path / "victim.txt"
+    if not dangling:
+        victim.write_text("keep")
+        os.utime(victim, ns=(1, 1))
+    data_dir = tmp_path / "hub"
+    lock_path(data_dir, REFRESH_LOCK).symlink_to(victim)
+    lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=True)
+    lock.acquire()  # best-effort: proceeds without a lock
+    assert lock._fd is None
+    lock.release()
+    if dangling:
+        assert not victim.exists()
+    else:
+        assert victim.stat().st_mtime_ns == 1
+        assert victim.read_text() == "keep"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_lock_file_symlink_planted_after_the_check_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without O_NOFOLLOW, a symlink swapped in between the pre-open check and
+    the open is caught by the post-open re-check before anything is written."""
+    from pipecat_context_hub.shared import index_lock
+
+    monkeypatch.setattr(index_lock, "_O_NOFOLLOW", 0)
+    monkeypatch.setattr(Path, "is_symlink", lambda self: False)  # the race
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    data_dir = tmp_path / "hub"
+    lock_path(data_dir, REFRESH_LOCK).symlink_to(victim)
+    lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=True)
+    lock.acquire()
+    assert lock._fd is None
+    assert victim.read_text() == "keep"
+
+
 @pytest.mark.parametrize("exclusive", [True, False])
 def test_lock_file_hard_link_is_not_written(tmp_path: Path, exclusive: bool) -> None:
     """Regression (index_lock.py:137): a lock name planted as a hard link to a

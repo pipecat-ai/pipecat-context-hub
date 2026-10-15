@@ -46,14 +46,22 @@ class IndexLockedError(RuntimeError):
     """The data dir is locked by another process in an incompatible mode."""
 
 
-def _unusable_lock_file(fd: int) -> str | None:
+def _unusable_lock_file(fd: int, path: Path) -> str | None:
     """Why the opened lock file must not be used, or None if it is fine.
 
     The lock may live in a shared directory, and an exclusive acquire writes
     to it (size step and mtime, see :func:`refresh_generation`), so it must be
     our own regular file with no other name: a planted hard link to a file we
     own would pass the owner check and get truncated. Ownership is POSIX only.
+    Without ``O_NOFOLLOW`` (Windows) the open may have followed a symlink
+    planted after :meth:`IndexLock.acquire` checked, so *path* is re-checked.
     """
+    if not _O_NOFOLLOW:
+        try:
+            if stat.S_ISLNK(os.lstat(path).st_mode):
+                return "is a symbolic link"
+        except OSError:
+            return "could not be checked"
     try:
         st = os.fstat(fd)
     except OSError:
@@ -138,13 +146,19 @@ class IndexLock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             # O_NOFOLLOW: the lock lives beside the data dir, possibly in a
             # shared directory, so a planted symlink must not redirect it.
+            # Without it (Windows) the open follows links: refuse one first.
+            if not _O_NOFOLLOW and self._path.is_symlink():
+                logger.warning(
+                    "Lock file %s is a symbolic link; continuing without a lock", self._path
+                )
+                return
             fd = os.open(self._path, os.O_RDWR | os.O_CREAT | _O_NOFOLLOW, 0o600)
         except OSError as exc:  # unwritable parent / symlink: locking is best-effort
             logger.debug(
                 "Cannot create lock file %s (%s); continuing without a lock", self._path, exc
             )
             return
-        reason = _unusable_lock_file(fd)
+        reason = _unusable_lock_file(fd, self._path)
         if reason is not None:
             os.close(fd)
             logger.warning("Lock file %s %s; continuing without a lock", self._path, reason)
