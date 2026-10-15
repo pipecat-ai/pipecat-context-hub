@@ -5280,6 +5280,28 @@ class TestRefreshLostVectorCollection:
         assert not set(markers) & set(metadata)
         assert {k: metadata.get(k) for k in kept} == kept
 
+    def test_unusable_keyword_schema_exits_2(self, tmp_path, monkeypatch, caplog):
+        """Regression (cli.py:121): SQLite reports a schema the index cannot
+        use (a ``chunks`` table without ``content``) as OperationalError, which
+        the CLI re-raised as transient: traceback, exit 1, no reset remedy."""
+        import logging
+        import sqlite3
+
+        from pipecat_context_hub.cli import _open_index_store_or_exit
+
+        storage = self._env(tmp_path, monkeypatch)
+        storage.data_dir.mkdir(parents=True)
+        with sqlite3.connect(storage.sqlite_path) as conn:
+            conn.execute("CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, body TEXT)")
+            conn.execute("INSERT INTO chunks VALUES ('a', 'pipecat')")
+        conn.close()
+
+        with caplog.at_level("ERROR", logger="test"), pytest.raises(SystemExit) as exc:
+            _open_index_store_or_exit(HubConfig(), logging.getLogger("test"), rebuild=False)
+        assert exc.value.code == 2
+        assert "refresh --force --reset-index" in caplog.text
+        assert str(tmp_path) not in caplog.text
+
     def test_corrupt_keyword_database_exits_2(self, tmp_path, monkeypatch, caplog):
         """Regression (cli.py:109): a malformed index.db raised a bare
         sqlite3.DatabaseError (traceback, exit 1) instead of exit 2 with the

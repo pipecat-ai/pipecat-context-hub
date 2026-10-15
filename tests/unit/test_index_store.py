@@ -990,12 +990,47 @@ class TestIndexStoreReaderCreatesNothing:
             conn.execute("INSERT INTO chunks VALUES ('a', 'pipecat')")
         conn.close()
 
-        with pytest.raises(sqlite3.OperationalError, match="content"):
+        from pipecat_context_hub.services.index.errors import CorruptKeywordIndexError
+
+        with pytest.raises(CorruptKeywordIndexError, match="content") as exc_info:
             FTSIndex(db_path, create=True)
+        assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+        assert "refresh --force --reset-index" in str(exc_info.value)
         with sqlite3.connect(db_path) as conn:
             names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
         conn.close()
         assert names == {"chunks", "sqlite_autoindex_chunks_1"}  # nothing half-committed
+
+    def test_not_a_database_is_typed_unreadable(self, tmp_path: Path) -> None:
+        """Regression (cli.py:118): the CLI classified raw sqlite3 errors
+        itself; the keyword index now raises one typed error for both."""
+        from pipecat_context_hub.services.index.errors import CorruptKeywordIndexError
+
+        db_path = tmp_path / "index.db"
+        db_path.write_bytes(b"not a database" * 512)
+        for create in (False, True):
+            with pytest.raises(CorruptKeywordIndexError, match="not a database"):
+                FTSIndex(db_path, create=create)
+
+    def test_a_locked_database_is_not_called_unreadable(self, tmp_path: Path) -> None:
+        """A failure of the moment (here SQLITE_BUSY) is not told to reset."""
+        import sqlite3
+
+        db_path = tmp_path / "index.db"
+        FTSIndex(db_path, create=True).close()
+        connect = sqlite3.connect
+        holder = connect(db_path)
+        holder.execute("PRAGMA journal_mode=DELETE")  # so EXCLUSIVE blocks readers
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            with (
+                patch("sqlite3.connect", lambda path, **_: connect(path, timeout=0)),
+                pytest.raises(sqlite3.OperationalError, match="locked"),
+            ):
+                FTSIndex(db_path)
+        finally:
+            holder.rollback()
+            holder.close()
 
 
 class TestIndexStore:

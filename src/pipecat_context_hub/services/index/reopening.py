@@ -57,7 +57,10 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
     bug-report hint.
     """
     from pipecat_context_hub.services.index import IncompatibleIndexFormatError
-    from pipecat_context_hub.services.index.errors import IndexNotBuiltError
+    from pipecat_context_hub.services.index.errors import (
+        RESET_INDEX_REMEDIATION,
+        IndexNotBuiltError,
+    )
     from pipecat_context_hub.services.index.store import IndexStore as _IndexStore
 
     store: IndexStore | None = None
@@ -76,8 +79,7 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
         else:
             message = (
                 f"Failed to open index at {redact_home(storage.data_dir)}: "
-                f"{redact_home_in_text(str(exc))}. "
-                "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild."
+                f"{redact_home_in_text(str(exc))}. {RESET_INDEX_REMEDIATION}"
             )
         raise IndexUnavailableError(f"{message} {bug_report_hint()}") from exc
     return store

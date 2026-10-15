@@ -174,3 +174,20 @@ class MissingKeywordIndexError(IndexUnavailableError):
             f"The keyword index at {self.sqlite_path} is missing or incomplete. Run 'uv run "
             "pipecat-context-hub refresh --force' to rebuild it."
         )
+
+
+class CorruptKeywordIndexError(IndexUnavailableError):
+    """The keyword (SQLite FTS) database exists but cannot be read.
+
+    Not a database, malformed, or with a schema the index cannot use or
+    complete (``FTSIndex`` raises it from its open). A failure of the moment
+    (busy, locked, I/O, full disk, permissions) is not this: it propagates
+    unchanged, since a rebuild would not fix it.
+    """
+
+    def __init__(self, sqlite_path: Path | str, detail: str) -> None:
+        self.sqlite_path = Path(sqlite_path)
+        super().__init__(
+            f"The keyword index at {self.sqlite_path} is unreadable ({detail}). "
+            f"{RESET_INDEX_REMEDIATION}"
+        )

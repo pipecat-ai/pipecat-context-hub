@@ -16,7 +16,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
+from pipecat_context_hub.services.index.errors import (
+    CorruptKeywordIndexError,
+    MissingKeywordIndexError,
+)
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
@@ -84,6 +87,36 @@ _SCHEMA_OBJECTS = frozenset(
     {"chunks", "chunks_fts", "index_metadata", "chunks_ai", "chunks_ad", "chunks_au"}
 )
 
+# Primary SQLite result codes that describe the moment (contention, I/O,
+# resources, permissions), not the file: an open failing with one of these is
+# not told to rebuild the index. Every other code (SQLITE_NOTADB,
+# SQLITE_CORRUPT, SQLITE_ERROR for a schema the index cannot use, ...) is.
+_TRANSIENT_SQLITE_CODES = frozenset(
+    {
+        sqlite3.SQLITE_PERM,
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+        sqlite3.SQLITE_NOMEM,
+        sqlite3.SQLITE_READONLY,
+        sqlite3.SQLITE_INTERRUPT,
+        sqlite3.SQLITE_IOERR,
+        sqlite3.SQLITE_FULL,
+        sqlite3.SQLITE_CANTOPEN,
+        sqlite3.SQLITE_PROTOCOL,
+    }
+)
+
+
+def _is_unreadable(exc: BaseException) -> bool:
+    """Whether *exc* says the database file itself cannot be used.
+
+    False for transient failures and for errors SQLite gave no code for.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code is not None and code & 0xFF not in _TRANSIENT_SQLITE_CODES
+
 
 class FTSIndex:
     """SQLite FTS5 keyword index for full-text search.
@@ -102,7 +135,8 @@ class FTSIndex:
         (``refresh`` only) a missing database is created, and an incomplete
         one is completed and its FTS table rebuilt from ``chunks``, so rows
         written without the sync triggers are searchable rather than
-        silently missing.
+        silently missing. A database that cannot be read (or completed)
+        raises :class:`CorruptKeywordIndexError`.
         """
         self._sqlite_path = sqlite_path
         self._lock = threading.RLock()
@@ -135,16 +169,23 @@ class FTSIndex:
                     )
                     rebuild = "INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild');"
                 self._conn.executescript(f"BEGIN;\n{_SCHEMA_SQL}\n{rebuild}\nCOMMIT;")
-        except BaseException:
+        except BaseException as exc:
             self._conn.close()
+            if _is_unreadable(exc):
+                raise CorruptKeywordIndexError(sqlite_path, str(exc)) from exc
             raise
         self._closed = False
         logger.info("FTSIndex initialized at %s", sqlite_path)
 
     def has_records(self) -> bool:
-        """Whether any record is indexed."""
+        """Whether any record is indexed (the open's first read of ``chunks``)."""
         with self._lock:
-            return self._conn.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() is not None
+            try:
+                return self._conn.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() is not None
+            except sqlite3.DatabaseError as exc:
+                if _is_unreadable(exc):
+                    raise CorruptKeywordIndexError(self._sqlite_path, str(exc)) from exc
+                raise
 
     def close(self) -> None:
         """Close the database connection."""

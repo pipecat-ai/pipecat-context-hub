@@ -13,7 +13,6 @@ import logging
 import math
 import os
 import shutil
-import sqlite3
 import sys
 import time
 from dataclasses import dataclass
@@ -101,7 +100,6 @@ def _open_index_store_or_exit(
     *rebuild* is ``--force``: only then may a lost vector collection beside a
     populated keyword index be recreated (see :class:`IndexStore`).
     """
-    from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
     from pipecat_context_hub.services.index.store import IndexStore
 
     try:
@@ -111,24 +109,12 @@ def _open_index_store_or_exit(
     except (FatalIndexError, IndexUnavailableError) as exc:
         # A pre-1.0 Chroma dir or a corrupt graph (IncompatibleIndexFormatError),
         # an interrupted compaction the open could not restore
-        # (CompactionRestoreError), or, without --force, a lost vector
+        # (CompactionRestoreError), an unreadable keyword database
+        # (CorruptKeywordIndexError), or, without --force, a lost vector
         # collection (MissingVectorCollectionError, raised before the vector
         # half is touched). exc.__str__ embeds the absolute path; redact for
         # front-door parity with the serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
-        raise SystemExit(EXIT_INDEX_UNREADY) from exc
-    except sqlite3.DatabaseError as exc:
-        if isinstance(exc, sqlite3.OperationalError):
-            raise  # locked, busy, I/O: not a corrupt file, so no reset advice
-        # A corrupt keyword database ("file is not a database", "malformed"):
-        # same contract as the readers' unexpected-open-failure path.
-        logger.error(
-            "Failed to open index at %s: %s. %s %s",
-            redact_home(config.storage.data_dir),
-            redact_home_in_text(str(exc)),
-            RESET_INDEX_REMEDIATION,
-            bug_report_hint(),
-        )
         raise SystemExit(EXIT_INDEX_UNREADY) from exc
     if store.vector_lost:
         # --force recreated a lost vector collection empty. The keyword half's
