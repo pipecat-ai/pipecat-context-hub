@@ -492,6 +492,44 @@ class TestCompactSwap:
         finally:
             index.close()
 
+    @pytest.mark.parametrize("listing_fails", [False, True])
+    def test_transient_error_after_a_failed_copy_is_not_fatal(
+        self, tmp_path: Path, listing_fails: bool
+    ) -> None:
+        """Regression (vector.py:585): any get_collection(latest) error after a
+        failed pre-swap copy was taken to mean "no latest", so a transient
+        error (SQLite "database is locked") became a fatal CompactionSwapError
+        telling the user to restore an index that was intact."""
+        from pipecat_context_hub.services.index.errors import CompactionSwapError
+        from tests.unit.test_index_store import _make_records
+
+        index = VectorIndex(tmp_path / "chroma", create=True)
+        try:
+            index.upsert(_make_records(5))
+            locked = RuntimeError("database is locked")
+            with (
+                patch.object(HnswWriteGuard, "check", side_effect=RuntimeError("copy failed")),
+                patch.object(index._client, "get_collection", side_effect=locked),
+                patch.object(
+                    index._client,
+                    "list_collections",
+                    side_effect=locked if listing_fails else index._client.list_collections,
+                ),
+                pytest.raises(RuntimeError, match="copy failed") as excinfo,
+            ):
+                index.compact()
+            assert not isinstance(excinfo.value, CompactionSwapError)
+            assert index._collection.count() == 5
+            names = sorted(c.name for c in index._client.list_collections())
+            # Unknown state (listing failed): nothing is deleted.
+            assert names == (
+                sorted([COLLECTION_NAME, COMPACT_STAGING_NAME])
+                if listing_fails
+                else [COLLECTION_NAME]
+            )
+        finally:
+            index.close()
+
     def test_failed_promotion_and_rollback_is_fatal_and_recoverable(self, tmp_path: Path) -> None:
         """Regression (vector.py:549): when both the promotion and the rollback
         rename fail, compact() used to swallow the rollback failure, delete the

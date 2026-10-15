@@ -531,7 +531,8 @@ class VectorIndex:
         the old collection is untouched unless the copy verified. If it fails
         and leaves no ``latest`` (whichever step raised), raises
         :class:`CompactionSwapError` (fatal) and deletes nothing; refresh's
-        next open restores the backup.
+        next open restores the backup. If the collections can't even be
+        listed, it re-raises the original error and deletes nothing.
         """
         staging_name = COMPACT_STAGING_NAME
         with self._op_lock:
@@ -582,15 +583,25 @@ class VectorIndex:
             except BaseException as exc:
                 # Decide by the state left behind, not by which step raised: a
                 # rename can commit and still raise.
+                names: set[Any] | None
                 try:
-                    self._collection = self._client.get_collection(COLLECTION_NAME)
+                    names = {getattr(c, "name", c) for c in self._client.list_collections()}
                 except Exception:
+                    # Can't tell (e.g. a transient "database is locked"): not
+                    # proof the index is lost, so don't report it as such, and
+                    # keep everything. If ``latest`` really is gone, readers
+                    # say so and refresh's next open restores the backup.
+                    names = None
+                if names is not None and COLLECTION_NAME not in names:
                     # No ``latest``: readers fail until refresh restores the
                     # backup, so this must not pass for the non-fatal "index
                     # valid but larger" outcome. Destroy nothing.
                     raise CompactionSwapError(self._chroma_path) from exc
-                with contextlib.suppress(Exception):
-                    self._client.delete_collection(staging_name)
+                if names is not None:
+                    with contextlib.suppress(Exception):
+                        self._collection = self._client.get_collection(COLLECTION_NAME)
+                    with contextlib.suppress(Exception):
+                        self._client.delete_collection(staging_name)
                 raise
             self._collection = self._client.get_collection(COLLECTION_NAME)
             try:
