@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import logging
-import asyncio
 from collections.abc import Callable
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
-from pipecat_context_hub.shared.interfaces import IndexStatusReader
+from pipecat_context_hub.shared.interfaces import ServingIndex
 from pipecat_context_hub.shared.types import HubStatusOutput, RerankerStatus
 
 logger = logging.getLogger(__name__)
@@ -32,7 +31,7 @@ def _parse(value: str | None, cast: Callable[[str], _T]) -> _T | None:
 
 async def handle_get_hub_status(
     arguments: dict[str, Any],
-    index_store: IndexStatusReader,
+    index_store: ServingIndex,
     reranker_status: RerankerStatus | None = None,
 ) -> str:
     """Return index health metadata: freshness, record counts, commit SHAs.
@@ -44,26 +43,8 @@ async def handle_get_hub_status(
     # Import here to use the same version string as the server.
     from pipecat_context_hub.server.main import _SERVER_VERSION
 
-    # The concrete stores expose one snapshot operation so refresh cannot
-    # publish between the statistics and provenance reads. Keep the fallback
-    # for small third-party/test readers that predate this method.
-    snapshot = getattr(index_store, "get_status_snapshot", None)
-    if callable(snapshot):
-        snapshot_raw = await asyncio.to_thread(snapshot)
-        if isinstance(snapshot_raw, tuple) and len(snapshot_raw) == 2:
-            stats_raw, metadata_raw = snapshot_raw
-        else:
-            stats_raw, metadata_raw = await asyncio.gather(
-                asyncio.to_thread(index_store.get_index_stats),
-                asyncio.to_thread(index_store.get_all_metadata),
-            )
-    else:
-        stats_raw, metadata_raw = await asyncio.gather(
-            asyncio.to_thread(index_store.get_index_stats),
-            asyncio.to_thread(index_store.get_all_metadata),
-        )
-    stats = cast(dict[str, Any], stats_raw)
-    metadata = metadata_raw
+    stats: dict[str, Any] = index_store.get_index_stats()
+    metadata: dict[str, str] = index_store.get_all_metadata()
 
     duration = _parse(metadata.get("last_refresh_duration_seconds"), float)
     commits_ahead = _parse(metadata.get("indexed_framework_commits_ahead"), int)

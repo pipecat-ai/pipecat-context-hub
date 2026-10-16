@@ -32,7 +32,7 @@ NOW = datetime(2026, 2, 26, tzinfo=UTC)
 def fts_index(tmp_path):
     """Create an FTSIndex with a temporary database."""
     db_path = tmp_path / "metadata.db"
-    index = FTSIndex(db_path)
+    index = FTSIndex(db_path, create=True)
     yield index
     index.close()
 
@@ -83,11 +83,11 @@ class TestFTSMetadata:
 
     def test_metadata_persists_across_reopens(self, tmp_path):
         db_path = tmp_path / "metadata.db"
-        index1 = FTSIndex(db_path)
+        index1 = FTSIndex(db_path, create=True)
         index1.set_metadata("persist_key", "persist_value")
         index1.close()
 
-        index2 = FTSIndex(db_path)
+        index2 = FTSIndex(db_path, create=True)
         assert index2.get_metadata("persist_key") == "persist_value"
         index2.close()
 
@@ -236,22 +236,6 @@ class TestHandleGetHubStatus:
         assert output.total_records == 0
         assert output.counts_by_type == {}
         assert output.commit_shas == []
-
-    async def test_status_uses_one_generation_snapshot(self):
-        from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
-
-        store = self._mock_index_store()
-        store.get_status_snapshot.return_value = (
-            {"total": 7, "counts_by_type": {"doc": 7}, "commit_shas": ["same"]},
-            {"last_refresh_at": "same", "indexed_framework_version": "same"},
-        )
-        result_json = await handle_get_hub_status({}, store)
-        output = HubStatusOutput.model_validate_json(result_json)
-        assert output.total_records == 7
-        assert output.last_refresh_at == "same"
-        store.get_status_snapshot.assert_called_once_with()
-        store.get_index_stats.assert_not_called()
-        store.get_all_metadata.assert_not_called()
 
     async def test_with_refresh_metadata(self):
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status

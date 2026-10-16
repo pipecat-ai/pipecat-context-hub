@@ -286,6 +286,30 @@ class TestToolDispatch:
             name for name, _, _ in (*_BASE_TOOLS, _HUB_STATUS_TOOL)
         }
 
+    async def test_unavailable_reason_answers_without_touching_the_index(self, mock_retriever):
+        server = create_server(mock_retriever, unavailable_reason=lambda: "retry in 60-120 seconds")
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        result = await entry.handler(
+            cast(Any, None),
+            types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
+        )
+        assert isinstance(result, types.CallToolResult)
+        assert result.is_error is True
+        assert cast(types.TextContent, result.content[0]).text == "retry in 60-120 seconds"
+        mock_retriever.search_docs.assert_not_called()
+
+    async def test_unavailable_reason_none_dispatches_normally(self, mock_retriever):
+        server = create_server(mock_retriever, unavailable_reason=lambda: None)
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        mock_retriever.search_docs.side_effect = RuntimeError("reached the handler")
+        with pytest.raises(RuntimeError, match="reached the handler"):
+            await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
+            )
+
     async def test_unknown_tool_preserves_application_error(self, mock_retriever):
         server = create_server(mock_retriever)
         entry = server.get_request_handler("tools/call")
@@ -706,18 +730,21 @@ class TestServerInstructions:
         _assert_no_unsubstituted_placeholder('e.g. search_docs({"query": "TTS"})')
         _assert_no_unsubstituted_placeholder("a set like {a, b, c} or {ok}")
 
-    @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
+    @pytest.mark.parametrize("index_state", ["empty", "lost_vector", "incompatible"])
     def test_boot_failure_guidance_matches_index_recovery_paths(
         self, index_state, tmp_path, monkeypatch, caplog
     ):
         """Boot guidance must defer to the recovery emitted before MCP initialization.
 
-        Empty and incompatible indexes prescribe different commands on stderr,
-        but both exit before an MCP client can call ``get_hub_status``.
+        Empty, lost-vector and incompatible indexes prescribe different commands
+        on stderr, but all exit before an MCP client can call ``get_hub_status``.
+        Regression (main.py boot guidance): a lost vector collection beside keyword
+        records needs ``refresh --force``, which the guidance used to omit.
         """
         from click.testing import CliRunner
 
-        from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY, main
+        from pipecat_context_hub.cli import main
+        from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
         from pipecat_context_hub.services.index import IncompatibleIndexFormatError
         from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
@@ -732,6 +759,16 @@ class TestServerInstructions:
             index_store = MagicMock(return_value=store)
             emitted_remediation = "pipecat-context-hub refresh"
             guided_remediation = "pipecat-context-hub refresh"
+        elif index_state == "lost_vector":
+            from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+            chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
+            index_store = MagicMock(side_effect=MissingVectorCollectionError(chroma_path))
+            emitted_remediation = "pipecat-context-hub refresh --force' to rebuild it"
+            guided_remediation = (
+                "keyword records prescribes pipecat-context-hub refresh --force "
+                "(plain refresh refuses it)"
+            )
         else:
             chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
             index_store = MagicMock(side_effect=IncompatibleIndexFormatError(chroma_path))
@@ -739,13 +776,15 @@ class TestServerInstructions:
             guided_remediation = "pipecat-context-hub refresh --force --reset-index"
 
         monkeypatch.chdir(tmp_path)
+        # serve takes a lock beside the data dir: keep it out of the real home.
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(tmp_path / "hub"))
         with (
             patch("pipecat_context_hub.services.index.store.IndexStore", index_store),
             caplog.at_level("ERROR", logger="pipecat_context_hub.cli"),
         ):
             result = CliRunner().invoke(main, ["serve"])
 
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert emitted_remediation in caplog.text
         assert guided_remediation in _SERVER_INSTRUCTIONS.replace("``", "")
         assert "before MCP initialization" in _SERVER_INSTRUCTIONS

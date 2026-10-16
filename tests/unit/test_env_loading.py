@@ -381,7 +381,7 @@ class TestLoadGlobalConfigKeyFiltering:
         assert "PIPECAT_HUB_EXTRA_REPOS" in caplog.text
 
     def test_invocation_scoped_keys_pinned(self):
-        """Drift-alarm: the exact five-key skip-list, not just membership."""
+        """Drift-alarm: the exact six-key skip-list, not just membership."""
         assert _INVOCATION_SCOPED_KEYS == frozenset(
             {
                 PRUNE_ENV_VAR,
@@ -389,6 +389,7 @@ class TestLoadGlobalConfigKeyFiltering:
                 "PIPECAT_HUB_CONFIG_FILE",
                 "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK",
                 "PIPECAT_HUB_STABILITY_OUTPUT",
+                "PIPECAT_HUB_MIN_FREE_GB",
             }
         )
 

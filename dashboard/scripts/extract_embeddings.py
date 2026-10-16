@@ -2,14 +2,16 @@
 
 import json
 import os
+import sys
 import time
 
-import chromadb
 import numpy as np
 import umap
 
+from pipecat_context_hub.services.index.reopening import open_index_for_export
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.env_loading import load_env_layers
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 
 
 def _bootstrap() -> StorageConfig:
@@ -27,13 +29,17 @@ def _bootstrap() -> StorageConfig:
 def main() -> None:
     # Route through StorageConfig so PIPECAT_HUB_DATA_DIR is honoured (keeps the
     # dashboard pipeline consistent with refresh/serve and isolated test runs).
-    chroma_path = _bootstrap().chroma_path
+    storage = _bootstrap()
     out_path = os.path.join(os.path.dirname(__file__), "..", "public", "embeddings_3d.json")
 
     print("Connecting to ChromaDB...")
-    client = chromadb.PersistentClient(path=str(chroma_path))
-    col = client.get_collection("latest")
-    total = col.count()
+    # The shared reader open: refresh exclusion, the open-time checks, never
+    # creating a missing index, and refusing an empty one.
+    try:
+        index = open_index_for_export(storage)
+    except IndexUnavailableError as exc:
+        sys.exit(f"Error: {exc}")
+    total = index.vector_count()
     print(f"Collection has {total:,} records")
 
     # Fetch all embeddings + metadata in batches
@@ -45,10 +51,8 @@ def main() -> None:
 
     for offset in range(0, total, batch_size):
         print(f"  Fetching {offset}–{min(offset + batch_size, total)}...")
-        result = col.get(
-            limit=batch_size,
-            offset=offset,
-            include=["embeddings", "metadatas", "documents"],
+        result = index.get_vector_page(
+            offset=offset, limit=batch_size, include=["embeddings", "metadatas", "documents"]
         )
         all_ids.extend(result["ids"])
         all_embeddings.extend(result["embeddings"])

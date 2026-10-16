@@ -17,7 +17,7 @@ uv run pytest tests/ -v                             # full test suite
 uv run ruff check src/ tests/                       # lint
 uv run mypy src/ tests/                             # type check
 uv run pipecat-context-hub refresh                  # incremental rebuild
-uv run pipecat-context-hub refresh --force          # full re-ingest
+uv run pipecat-context-hub refresh --force          # full re-ingest + compacts the vector graph; prefer it after a pipecat upgrade
 uv run pipecat-context-hub refresh --force --reset-index  # recover unhealthy local Chroma state
 uv run pipecat-context-hub refresh --framework-version v0.0.96  # index framework at a specific tag
 uv run pipecat-context-hub refresh --framework-version head     # ...or at its default branch (default: latest release tag)
@@ -40,6 +40,10 @@ records left in place, with a warning naming the repo and record count. Pass
 readable from `config.toml`), to actually delete that data. Tainted repos
 (`PIPECAT_HUB_TAINTED_REPOS`) are always cleaned up regardless of `--prune`.
 
+`refresh` refuses to start with under 5 GB free on the data-dir volume;
+`PIPECAT_HUB_MIN_FREE_GB` (invocation-scoped like `PIPECAT_HUB_PRUNE`) changes
+the threshold, `0` disables it.
+
 Every MCP tool is also a **one-shot CLI subcommand** (same handlers, JSON on
 stdout, logs on stderr — see `cli_query.py`):
 
@@ -53,8 +57,17 @@ uv run pipecat-context-hub search-docs "TTS + STT"
 uv run pipecat-context-hub get-doc --path /guides/telephony/overview
 ```
 
-Exit codes: 0 success, 1 invalid input, 2 index missing/empty (stderr says to
-run `refresh`). A parity test (`tests/unit/test_cli_query.py`) enforces that
+Exit codes (`shared/exit_codes.py`): 0 success, 1 invalid input (also
+`refresh`'s low-disk refusal, and `--reset-index` when index files survive its delete), 2 index missing, empty, unreadable or incompatible
+(stderr says what to run; `refresh` also exits 2 when a fatal index error, such as
+a tripped HNSW write guard or a compaction swap that left no `latest`, stops it; when
+its open cannot restore an interrupted compaction, finds the keyword database
+corrupt or with an unusable schema, or, even with `--force`, finds it missing or empty
+beside vector records, saying to run `refresh --force --reset-index`; and,
+without `--force`, when the vector collection is missing or empty beside a populated
+keyword index: it leaves the vector half untouched and says to run `refresh --force`),
+75 a `refresh` is rewriting the index (stderr says to retry in 60-120 seconds;
+`refresh` itself also exits 75 when the refresh lock is busy). A parity test (`tests/unit/test_cli_query.py`) enforces that
 every MCP tool has a CLI command.
 
 A `justfile` is also available as a task runner:
@@ -133,11 +146,13 @@ src/pipecat_context_hub/
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
 │   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence
-│   ├── interfaces.py         # IndexWriter/Reader, Retriever, Ingester
+│   ├── interfaces.py         # IndexWriter/Reader, ServingIndex, Retriever, Ingester; FatalIndexError (ingesters re-raise: stops refresh), IndexUnavailableError (message for the caller)
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision
 │   ├── model_loading.py      # quiet_model_loading — offline-first HF env defaults (serve + CLI)
 │   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside (filesystem-identity predicates shared by every deletion guard)
+│   ├── index_lock.py         # refresh.lock (exclusive for refresh; readers hold it shared while opening: refresh_excluded) / serve.lock (shared) advisory flocks; serve_is_running
+│   ├── exit_codes.py         # EXIT_INDEX_UNREADY (2) / EXIT_REFRESH_IN_PROGRESS (75), shared by serve, refresh and the CLI queries
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
 │   ├── support_links.py      # RETRIEVAL_QUALITY_ISSUE_URL / BUG_REPORT_ISSUE_URL — single source for MCP + CLI report-hint URLs
 │   ├── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
@@ -146,7 +161,7 @@ src/pipecat_context_hub/
 │   ├── embedding.py          # EmbeddingService
 │   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
 │   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS tree-sitter, taxonomy, version extraction, deprecation map
-│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore
+│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, reopening (open_ready_index_store: the one reader open for serve + CLI; open_index_for_export: the same, taking the refresh hold itself, for the dashboard scripts; ReopeningIndexStore: serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard), chroma_schema (query_chroma_sqlite, the one raw read of Chroma's schema; chromadb_format_verified), errors (FatalIndexError subclasses incl. CompactionSwapError / CompactionRestoreError; InterruptedCompactionError, IndexNotBuiltError / MissingVectorCollectionError / MissingKeywordIndexError: readers never create the index, and IndexStore refuses a missing or empty vector half beside keyword records unless `refresh --force`; LostKeywordIndexError: IndexStore refuses a keyword half with no records beside vector records on every open, exit 2 with the reset remedy; CorruptKeywordIndexError: an unreadable keyword database, exit 2 with the reset remedy)
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/
     ├── main.py               # MCP server setup (_SERVER_VERSION here)

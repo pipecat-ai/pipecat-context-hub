@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
 from pipecat_context_hub.services.ingest.docs_crawler import (
     DocsCrawler,
     _MAX_LLMS_TXT_BYTES,
@@ -526,6 +527,35 @@ class TestDocsCrawlerIngest:
             result = await crawler.ingest()
 
         assert "Upsert failed" in result.errors[0]
+
+    async def test_ingest_propagates_index_corruption(
+        self,
+        crawler: DocsCrawler,
+        mock_writer: AsyncMock,
+    ):
+        """The post-write HNSW guard must abort the refresh, not become an error row."""
+        mock_writer.upsert.side_effect = IncompatibleIndexFormatError(
+            "/tmp/chroma", reason="corrupt persisted HNSW segment x"
+        )
+
+        with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
+            with pytest.raises(IncompatibleIndexFormatError, match="corrupt persisted HNSW"):
+                await crawler.ingest()
+
+    async def test_ingest_propagates_any_fatal_index_error(
+        self,
+        crawler: DocsCrawler,
+        mock_writer: AsyncMock,
+    ):
+        """Ingesters code against the IndexWriter boundary's FatalIndexError,
+        not one backend's concrete error type."""
+        from pipecat_context_hub.shared.interfaces import FatalIndexError
+
+        mock_writer.upsert.side_effect = FatalIndexError("writer says the index is unsafe")
+
+        with patch.object(crawler, "fetch_llms_txt", return_value=SAMPLE_LLMS_TXT):
+            with pytest.raises(FatalIndexError, match="unsafe"):
+                await crawler.ingest()
 
 
 class TestDocsCrawlerProtocol:

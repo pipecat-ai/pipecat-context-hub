@@ -4,284 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import random
-import os
-import sqlite3
-import subprocess
-import sys
-import threading
-from contextlib import contextmanager
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from unittest.mock import Mock, patch
 
 import pytest
 
 from pipecat_context_hub.services.index.fts import FTSIndex
-from pipecat_context_hub.services.index import fts as fts_module
-from pipecat_context_hub.services.index.locking import generation_lock, index_lock
-from pipecat_context_hub.services.index.store import (
-    IndexStore,
-    ReadOnlyIndexStore,
-    _create_backend_file,
-)
-from pipecat_context_hub.services.index.vector import (
-    VectorIndex,
-    _CHROMA_BATCH_SIZE,
-    _copy_tree_no_follow,
-)
-from pipecat_context_hub.services.index import safe_sqlite
+from pipecat_context_hub.services.index.store import IndexStore
+from pipecat_context_hub.services.index.vector import _CHROMA_BATCH_SIZE, VectorIndex
 from pipecat_context_hub.shared.config import StorageConfig
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 EMBEDDING_DIM = 384
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
-def test_store_refuses_symlinked_backend_file(tmp_path: Path) -> None:
-    """The writer boundary must not open a backend through a symlink."""
-    target = tmp_path / "victim.db"
-    target.write_bytes(b"keep")
-    data_dir = tmp_path / "index"
-    data_dir.mkdir()
-    (data_dir / "metadata.db").symlink_to(target)
-    with pytest.raises(ValueError, match="Unsafe index backend path"):
-        IndexStore(StorageConfig(data_dir=data_dir))
-    assert target.read_bytes() == b"keep"
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX WAL snapshot semantics")
-def test_read_only_fts_reopen_retains_wal_snapshot_owner(tmp_path: Path) -> None:
-    """Reopening a WAL reader must keep its private snapshot alive."""
-    db = tmp_path / "metadata.db"
-    writer = FTSIndex(db)
-    writer.set_metadata("snapshot", "alive")
-    reader = FTSIndex(db, read_only=True)
-    try:
-        assert reader._readonly_snapshot_dir is not None
-        reader.reopen()
-        assert reader._readonly_snapshot_dir is not None
-        assert reader.get_metadata("snapshot") == "alive"
-    finally:
-        reader.close()
-        writer.close()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX flock semantics")
-def test_legacy_read_releases_parent_guard_before_return(tmp_path: Path) -> None:
-    """A legacy read must not leak the parent transition guard."""
-    import fcntl
-
-    data_dir = tmp_path / "hub-data"
-    data_dir.mkdir()
-    (data_dir / "metadata.db").touch()
-    with index_lock(data_dir, exclusive=False, create=False):
-        pass
-
-    parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    finally:
-        fcntl.flock(parent_fd, fcntl.LOCK_UN)
-        os.close(parent_fd)
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX flock semantics")
-def test_legacy_read_rechecks_sibling_without_self_deadlock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A sibling published during legacy setup is acquired through its lock."""
-    data_dir = tmp_path / "hub-data"
-    data_dir.mkdir()
-    (data_dir / "metadata.db").touch()
-    lock_path = data_dir.parent / f".{data_dir.name}.index.lock"
-    original_lstat = Path.lstat
-    injected = False
-
-    def publish_sibling(path: Path):
-        nonlocal injected
-        if path == lock_path and not injected:
-            try:
-                return original_lstat(path)
-            except FileNotFoundError:
-                injected = True
-                lock_path.touch()
-                raise
-        return original_lstat(path)
-
-    monkeypatch.setattr(Path, "lstat", publish_sibling)
-    with index_lock(data_dir, exclusive=False, create=False):
-        assert lock_path.is_file()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative SQLite opens")
-def test_sqlite_snapshot_fallback_never_reopens_published_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """macOS-style hard-link failure must use descriptor bytes, not a pathname."""
-    db = tmp_path / "metadata.db"
-    with sqlite3.connect(db) as connection:
-        connection.execute("create table marker (value text)")
-        connection.execute("insert into marker values ('bound')")
-
-    calls: list[str] = []
-    original_connect = sqlite3.connect
-
-    def record_connect(database: str, **kwargs: Any):
-        calls.append(database)
-        return original_connect(database, uri=bool(kwargs.get("uri", False)))
-
-    monkeypatch.setattr(
-        safe_sqlite, "_link_open_fd", lambda *_args: (_ for _ in ()).throw(OSError())
-    )
-    monkeypatch.setattr(sqlite3, "connect", record_connect)
-    with safe_sqlite.connect_readonly(db, immutable=False) as connection:
-        assert connection.execute("select value from marker").fetchone() == ("bound",)
-    assert calls
-    assert str(db) not in calls[0]
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative reset")
-def test_vector_reset_rejects_generation_replaced_while_waiting_for_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Reset must delete only the generation captured before lock wait."""
-    chroma = tmp_path / "chroma"
-    chroma.mkdir()
-    (chroma / "original").write_text("keep")
-    replacement = tmp_path / "chroma-replacement"
-
-    index = object.__new__(VectorIndex)
-    index._chroma_path = chroma
-    index._read_only = False
-    index._op_lock = threading.RLock()
-    index._client = None
-    index._collection = None
-    index._closed = True
-    index._readonly_tempdir = None
-    index._lock_held = False
-
-    @contextmanager
-    def racing_lock(*_args: object, **_kwargs: object):
-        chroma.rename(replacement)
-        chroma.mkdir()
-        (chroma / "replacement").write_text("must survive")
-        yield
-
-    monkeypatch.setattr("pipecat_context_hub.services.index.vector.index_lock", racing_lock)
-    with pytest.raises(ValueError, match="Unsafe Chroma reset path"):
-        index.reset()
-    assert (replacement / "original").read_text() == "keep"
-    assert (chroma / "replacement").read_text() == "must survive"
-
-
-@pytest.mark.parametrize("sqlite_filename", ["../outside.db", str(Path("/tmp/outside.db"))])
-def test_store_refuses_sqlite_path_outside_data_dir(tmp_path: Path, sqlite_filename: str) -> None:
-    """A missing configured SQLite path must not escape before existence checks."""
-    data_dir = tmp_path / "index"
-    with pytest.raises(ValueError, match="Unsafe index backend path"):
-        IndexStore(StorageConfig(data_dir=data_dir, sqlite_filename=sqlite_filename))
-    assert not (tmp_path / "outside.db").exists()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
-def test_store_accepts_symlinked_data_root(tmp_path: Path) -> None:
-    real = tmp_path / "real"
-    real.mkdir()
-    linked = tmp_path / "linked"
-    linked.symlink_to(real, target_is_directory=True)
-    store = IndexStore(StorageConfig(data_dir=linked))
-    store.close()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
-def test_store_refuses_symlinked_chroma_directory(tmp_path: Path) -> None:
-    data_dir = tmp_path / "index"
-    data_dir.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (data_dir / "chroma").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError, match="Unsafe index backend path"):
-        IndexStore(StorageConfig(data_dir=data_dir))
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
-def test_store_rejects_backend_root_replaced_during_open(tmp_path: Path) -> None:
-    """Validation must cover a data-root replacement between checks and open."""
-    data_dir = tmp_path / "index"
-    data_dir.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    replacement = tmp_path / "index-original"
-    vector = Mock()
-
-    def race(_path: Path) -> Mock:
-        data_dir.rename(replacement)
-        data_dir.symlink_to(outside, target_is_directory=True)
-        return vector
-
-    with patch("pipecat_context_hub.services.index.store.VectorIndex", side_effect=race):
-        with pytest.raises(ValueError, match="Unsafe index backend path"):
-            IndexStore(StorageConfig(data_dir=data_dir))
-    vector.close.assert_called_once()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
-def test_store_rejects_new_backend_directory_replaced_during_open(tmp_path: Path) -> None:
-    """A newly materialised backend must not become an external symlink."""
-    data_dir = tmp_path / "index"
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    vector = Mock()
-
-    def race(path: Path) -> Mock:
-        path.rename(tmp_path / "chroma-original")
-        path.symlink_to(outside, target_is_directory=True)
-        return vector
-
-    with patch("pipecat_context_hub.services.index.store.VectorIndex", side_effect=race):
-        with pytest.raises(ValueError, match="Unsafe index backend path"):
-            IndexStore(StorageConfig(data_dir=data_dir))
-    vector.close.assert_called_once()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX hard-link fixture")
-def test_fts_writer_alias_stays_bound_when_published_path_is_replaced(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """SQLite must not open an attacker-selected replacement database."""
-    database = tmp_path / "metadata.db"
-    outside = tmp_path / "outside.db"
-    real_connect = sqlite3.connect
-    swapped = False
-
-    def replace_published_path(path: str, **kwargs: Any):
-        nonlocal swapped
-        if not swapped and Path(path).name == "metadata.db":
-            swapped = True
-            database.rename(tmp_path / "metadata-original.db")
-            database.symlink_to(outside)
-        return real_connect(path, **kwargs)
-
-    monkeypatch.setattr(sqlite3, "connect", replace_published_path)
-    with pytest.raises(ValueError, match="unsafe SQLite database path"):
-        FTSIndex(database)
-    assert not outside.exists()
-
-
-def test_metadata_only_reader_does_not_construct_chroma(tmp_path: Path) -> None:
-    """Status/deprecation reads must not snapshot or initialize Chroma."""
-    data_dir = tmp_path / "index"
-    writer = IndexStore(StorageConfig(data_dir=data_dir))
-    writer.close()
-    with patch(
-        "pipecat_context_hub.services.index.store.VectorIndex",
-        side_effect=AssertionError("metadata-only reader opened Chroma"),
-    ):
-        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir), include_vector=False)
-    assert reader.get_index_stats()["total"] == 0
-    reader.close()
 
 
 def _random_embedding(seed: int = 0) -> list[float]:
@@ -309,7 +46,7 @@ def _make_record(
         source_url=source_url,
         repo=repo,
         path=path,
-        indexed_at=datetime.now(tz=timezone.utc),
+        indexed_at=datetime.now(tz=UTC),
         embedding=embedding,
         metadata=metadata or {},
     )
@@ -339,12 +76,13 @@ def _make_records(
 class TestVectorIndex:
     @pytest.fixture()
     def vector_index(self, tmp_path: Path) -> Generator[VectorIndex, None, None]:
-        index = VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma", create=True)
         yield index
         index.close()
 
     def test_disables_chroma_telemetry(self, tmp_path: Path):
         mock_client = Mock()
+        mock_client.list_collections.return_value = []
         mock_client.get_or_create_collection.return_value = Mock()
         mock_client._identifier = "mock-client"
 
@@ -352,7 +90,7 @@ class TestVectorIndex:
             "pipecat_context_hub.services.index.vector.chromadb.PersistentClient",
             return_value=mock_client,
         ) as persistent_client:
-            index = VectorIndex(tmp_path / "chroma")
+            index = VectorIndex(tmp_path / "chroma", create=True)
             index.close()
 
         settings = persistent_client.call_args.kwargs["settings"]
@@ -360,32 +98,6 @@ class TestVectorIndex:
         assert settings.chroma_product_telemetry_impl == (
             "pipecat_context_hub.services.index.vector.NoOpProductTelemetryClient"
         )
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
-    def test_native_open_replacement_fails_closed_and_closes_client(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The pathname-only Chroma API must not leave a swapped client alive."""
-        chroma = tmp_path / "chroma"
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        replacement = tmp_path / "chroma-original"
-        mock_client = Mock()
-        mock_client.get_or_create_collection.return_value = Mock()
-
-        def race(*, path: str, settings: Any) -> Mock:
-            assert Path(path) == chroma
-            chroma.rename(replacement)
-            chroma.symlink_to(outside, target_is_directory=True)
-            return mock_client
-
-        monkeypatch.setattr(
-            "pipecat_context_hub.services.index.vector.chromadb.PersistentClient", race
-        )
-        with pytest.raises(ValueError, match="unsafe Chroma generation path"):
-            VectorIndex(chroma)
-        mock_client.close.assert_called_once()
-        assert not (outside / "chroma.sqlite3").exists()
 
     def test_upsert_and_search(self, vector_index: VectorIndex):
         records = _make_records(3)
@@ -634,12 +346,12 @@ class TestVectorIndex:
     def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new VectorIndex on the same path."""
         chroma_path = tmp_path / "chroma"
-        idx1 = VectorIndex(chroma_path)
+        idx1 = VectorIndex(chroma_path, create=True)
         records = _make_records(2)
         idx1.upsert(records)
 
         # Create a new index pointing at the same directory
-        idx2 = VectorIndex(chroma_path)
+        idx2 = VectorIndex(chroma_path, create=True)
         query = IndexQuery(
             query_text="test",
             query_embedding=records[0].embedding,
@@ -659,14 +371,14 @@ class TestVectorIndex:
         (risk #11) — re-opening a populated index must keep every record.
         """
         chroma_path = tmp_path / "chroma"
-        idx1 = VectorIndex(chroma_path)
+        idx1 = VectorIndex(chroma_path, create=True)
         records = _make_records(3)
         known_id = records[0].chunk_id
         idx1.upsert(records)
         idx1.close()
 
         # Re-open: _open_client calls get_or_create_collection with cosine.
-        idx2 = VectorIndex(chroma_path)
+        idx2 = VectorIndex(chroma_path, create=True)
         query = IndexQuery(query_text="test", query_embedding=records[0].embedding, limit=10)
         results = idx2.search(query)
         assert len(results) == 3, "get_or_create dropped rows on reopen"
@@ -691,7 +403,7 @@ class TestVectorIndexBatchStress:
 
     @pytest.fixture()
     def vector_index(self, tmp_path: Path) -> Generator[VectorIndex, None, None]:
-        index = VectorIndex(tmp_path / "chroma")
+        index = VectorIndex(tmp_path / "chroma", create=True)
         yield index
         index.close()
 
@@ -784,7 +496,7 @@ class TestVectorIndexBatchStress:
 class TestFTSIndex:
     @pytest.fixture()
     def fts_index(self, tmp_path: Path) -> Generator[FTSIndex, None, None]:
-        index = FTSIndex(tmp_path / "metadata.db")
+        index = FTSIndex(tmp_path / "metadata.db", create=True)
         yield index
         index.close()
 
@@ -798,32 +510,6 @@ class TestFTSIndex:
         assert len(results) == 3
         assert all(r.match_type == "keyword" for r in results)
         assert all(r.score > 0 for r in results)
-
-    def test_read_only_open_does_not_create_sqlite_sidecars(self, tmp_path: Path) -> None:
-        path = tmp_path / "metadata.db"
-        writer = FTSIndex(path)
-        writer.upsert([_make_record()])
-        writer.close()
-        reader = FTSIndex(path, read_only=True)
-        try:
-            assert reader.search(IndexQuery(query_text="pipecat", limit=1))
-        finally:
-            reader.close()
-        assert not path.with_name(path.name + "-shm").exists()
-        assert not path.with_name(path.name + "-wal").exists()
-
-    def test_read_only_open_reads_committed_wal(self, tmp_path: Path) -> None:
-        path = tmp_path / "metadata.db"
-        writer = FTSIndex(path)
-        writer.upsert([_make_record()])
-        try:
-            reader = FTSIndex(path, read_only=True)
-            try:
-                assert reader.search(IndexQuery(query_text="pipecat", limit=1))
-            finally:
-                reader.close()
-        finally:
-            writer.close()
 
     def test_upsert_empty(self, fts_index: FTSIndex):
         count = fts_index.upsert([])
@@ -1020,48 +706,15 @@ class TestFTSIndex:
     def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new FTSIndex on the same path."""
         db_path = tmp_path / "metadata.db"
-        idx1 = FTSIndex(db_path)
+        idx1 = FTSIndex(db_path, create=True)
         idx1.upsert([_make_record(content="pipecat persists")])
         idx1.close()
 
-        idx2 = FTSIndex(db_path)
+        idx2 = FTSIndex(db_path, create=True)
         query = IndexQuery(query_text="pipecat", limit=10)
         results = idx2.search(query)
         assert len(results) == 1
         idx2.close()
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX hard-link fixture")
-    def test_close_does_not_remove_sidecars_used_by_another_writer(self, tmp_path: Path) -> None:
-        """A writer close must not detach another connection's WAL/SHM aliases."""
-        path = tmp_path / "metadata.db"
-        first = FTSIndex(path)
-        second = FTSIndex(path)
-        try:
-            first.close()
-            assert path.with_name(path.name + "-wal").exists()
-            assert path.with_name(path.name + "-shm").exists()
-        finally:
-            second.close()
-        assert not path.with_name(path.name + "-wal").exists()
-        assert not path.with_name(path.name + "-shm").exists()
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX lock fixture")
-    def test_close_reacquires_generation_lock_after_construction(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The constructor's lock must not authorize an unlocked shutdown."""
-        path = tmp_path / "metadata.db"
-        index = FTSIndex(path, lock_held=True)
-        acquired: list[tuple[Path, bool]] = []
-
-        @contextmanager
-        def tracking_lock(data_dir: Path, *, exclusive: bool, **_kwargs: object):
-            acquired.append((data_dir, exclusive))
-            yield
-
-        monkeypatch.setattr(fts_module, "index_lock", tracking_lock)
-        index.close()
-        assert acquired == [(tmp_path, True)]
 
     def test_result_limit(self, fts_index: FTSIndex):
         records = [
@@ -1096,264 +749,506 @@ class TestFTSIndex:
 
 
 class TestIndexStoreInitRollback:
-    """If FTS construction fails after Vector opens, the Vector handle must
-    be closed before the exception propagates."""
+    """If Vector construction fails after FTS opens, the FTS handle must be
+    closed before the exception propagates."""
 
-    def test_fts_failure_closes_vector(self, tmp_path: Path, monkeypatch):
+    def test_vector_failure_closes_fts(self, tmp_path: Path, monkeypatch):
         from unittest.mock import MagicMock
+
         from pipecat_context_hub.services.index import store as store_mod
 
-        fake_vector = MagicMock()
-        monkeypatch.setattr(store_mod, "VectorIndex", MagicMock(return_value=fake_vector))
+        fake_fts = MagicMock()
+        fake_fts.has_records.return_value = False
+        monkeypatch.setattr(store_mod, "FTSIndex", MagicMock(return_value=fake_fts))
         monkeypatch.setattr(
-            store_mod, "FTSIndex", MagicMock(side_effect=RuntimeError("sqlite boom"))
+            store_mod, "VectorIndex", MagicMock(side_effect=RuntimeError("chroma boom"))
         )
 
-        with pytest.raises(RuntimeError, match="sqlite boom"):
-            IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
-        fake_vector.close.assert_called_once()
+        with pytest.raises(RuntimeError, match="chroma boom"):
+            IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"), create=True)
+        fake_fts.close.assert_called_once()
 
-    def test_failed_fts_open_removes_new_sqlite_sidecars(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """WAL/SHM created before a failed FTS constructor cannot poison retry."""
-        from pipecat_context_hub.services.index import store as store_mod
 
-        def fail_after_wal(path: Path, **_kwargs: Any) -> None:
-            path.with_name(path.name + "-wal").write_bytes(b"failed generation")
-            path.with_name(path.name + "-shm").write_bytes(b"failed generation")
-            raise RuntimeError("sqlite boom")
+def _lose_vector_half(config: StorageConfig, *, records: int = 3, empty_latest: bool) -> None:
+    """Build an index with *records*, then lose its ``latest`` collection.
 
-        monkeypatch.setattr(store_mod, "FTSIndex", fail_after_wal)
+    *empty_latest* leaves an empty ``latest`` in its place (what a refresh
+    that recreated it before refusing, or ``get_or_create``, used to leave).
+    """
+    import asyncio
+
+    from pipecat_context_hub.services.index.vector import COLLECTION_NAME
+
+    store = IndexStore(config, create=True)
+    asyncio.run(store.upsert(_make_records(records)))
+    store._vector._client.delete_collection(COLLECTION_NAME)
+    if empty_latest:
+        store._vector._client.create_collection(COLLECTION_NAME)
+    store.close()
+
+
+def _collection_names(config: StorageConfig) -> list[str]:
+    from pipecat_context_hub.services.index.chroma_schema import query_chroma_sqlite
+
+    rows = query_chroma_sqlite(
+        config.chroma_path, "SELECT name FROM collections ORDER BY name", immutable=True
+    )
+    return [row[0] for row in rows or ()]
+
+
+class TestLostVectorHalf:
+    """Regression (cli.py:105/115/123, errors.py:131): refresh opened with
+    create=True, so a lost ``latest`` was recreated empty *before* the CLI
+    compared counts and refused; after that refusal readers (which only
+    counted the keyword half) served with vector search silently empty. The
+    store now refuses a missing or empty vector half beside a populated
+    keyword half, for readers and for a refresh without ``rebuild``, before
+    anything is written."""
+
+    def test_refused_refresh_open_writes_nothing(self, tmp_path: Path) -> None:
+        """I1: no empty ``latest``, no schema change."""
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        _lose_vector_half(config, empty_latest=False)
+        before = _collection_names(config)
+
+        with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+            IndexStore(config, recover=True, create=True)  # refresh without --force
+        assert _collection_names(config) == before
+        assert "latest" not in before
+
+    @pytest.mark.parametrize("empty_latest", [False, True])
+    def test_reader_refuses_a_lost_vector_half(self, tmp_path: Path, empty_latest: bool) -> None:
+        """I2: however the state arose, including a pre-existing empty ``latest``."""
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        _lose_vector_half(config, empty_latest=empty_latest)
+
+        with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+            IndexStore(config)
+        with pytest.raises(IndexUnavailableError, match="refresh --force"):
+            open_ready_index_store(config)
+
+    def test_reader_with_a_missing_vector_database_says_force(self, tmp_path: Path) -> None:
+        """I5: with keyword records, plain ``refresh`` is refused, so a missing
+        chroma.sqlite3 must not prescribe it."""
+        import shutil
+
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        _lose_vector_half(config, empty_latest=False)
+        shutil.rmtree(config.chroma_path)
+
+        with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+            IndexStore(config)
+        with pytest.raises(MissingVectorCollectionError):
+            IndexStore(config, recover=True, create=True)
+        assert not config.chroma_path.exists()
+
+    @pytest.mark.parametrize("empty_latest", [False, True])
+    def test_rebuild_recreates_it(self, tmp_path: Path, empty_latest: bool) -> None:
+        """I4: ``refresh --force`` still opens (and refills) it."""
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        _lose_vector_half(config, empty_latest=empty_latest)
+
+        store = IndexStore(config, recover=True, create=True, rebuild=True)
+        try:
+            assert store.vector_count() == 0
+            assert store.vector_empty
+        finally:
+            store.close()
+        assert _collection_names(config) == ["latest"]
+
+    def test_rebuild_without_create_is_rejected(self, tmp_path: Path) -> None:
+        """Regression (store.py:34): ``rebuild=True`` without ``create`` was a
+        silent no-op (the vector half may only be recreated with *create*)."""
         data_dir = tmp_path / "hub-data"
-        with pytest.raises(RuntimeError, match="sqlite boom"):
-            IndexStore(StorageConfig(data_dir=data_dir))
-        assert not (data_dir / "metadata.db").exists()
-        assert not (data_dir / "metadata.db-wal").exists()
-        assert not (data_dir / "metadata.db-shm").exists()
+        with pytest.raises(ValueError, match="rebuild=True requires create=True"):
+            IndexStore(StorageConfig(data_dir=data_dir), rebuild=True)
+        assert not data_dir.exists()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX writer alias fixture")
-    def test_fts_constructor_failure_closes_connection_and_alias(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Schema setup failures release the native connection and alias directory."""
-        path = tmp_path / "metadata.db"
-        opened: list[sqlite3.Connection] = []
-        real_connect = sqlite3.connect
+    def test_first_run_and_healthy_reopen_are_unchanged(self, tmp_path: Path) -> None:
+        """I4: an empty data dir and a healthy index open as before."""
+        import asyncio
 
-        def tracking_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-            connection = real_connect(*args, **kwargs)
-            opened.append(connection)
-            return connection
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        store = IndexStore(config, recover=True, create=True)  # first run
+        assert store.vector_empty  # created empty: no skip marker may vouch for it
+        asyncio.run(store.upsert(_make_records(3)))
+        store.close()
+        for kwargs in ({}, {"recover": True, "create": True}):
+            store = IndexStore(config, **kwargs)
+            try:
+                assert store.vector_count() == 3
+                assert not store.vector_empty
+            finally:
+                store.close()
 
-        # ``fts`` and this test share the stdlib module object; patching the
-        # imported module avoids reaching through a private module attribute
-        # that mypy deliberately does not export.
-        monkeypatch.setattr(sqlite3, "connect", tracking_connect)
-        monkeypatch.setattr(fts_module, "_SCHEMA_SQL", "CREATE TABLE broken(")
-        with pytest.raises(sqlite3.OperationalError):
-            FTSIndex(path)
 
-        assert opened
-        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-            opened[0].execute("SELECT 1")
-        assert not list(tmp_path.glob(".pipecat-context-hub-writer-*"))
+class TestLostKeywordHalf:
+    """Regression (store.py:71): with ``index.db`` lost beside a populated
+    vector half, a refresh (``--force`` included) created an empty keyword
+    half and went on. The repo commit markers lived in the lost half, so the
+    refresh could not find a retained, unconfigured repo's vectors: they
+    survived (and were compacted forward) as vector-only records that neither
+    cleanup nor ``--prune`` could reach. Every open now refuses that state
+    before writing to the vector half."""
 
-    def test_writer_backend_creation_without_descriptor_relative_open(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Backend creation fails closed without secure directory descriptors."""
-        monkeypatch.setattr(os, "supports_dir_fd", set())
-        with pytest.raises(ValueError, match="Secure backend file creation"):
-            IndexStore(StorageConfig(data_dir=tmp_path / "windows-style"))
+    @staticmethod
+    def _lose_keyword_half(config: StorageConfig, *, records: int = 3, empty: bool) -> None:
+        """Build an index with *records*, then delete (or empty) its keyword half."""
+        import asyncio
 
-    def test_backend_placeholders_are_removed_when_vector_init_fails(
-        self, tmp_path: Path, monkeypatch
-    ):
-        monkeypatch.setattr(
-            VectorIndex,
-            "__init__",
-            lambda self, path: (_ for _ in ()).throw(RuntimeError("vector boom")),
+        store = IndexStore(config, create=True)
+        asyncio.run(store.upsert(_make_records(records)))
+        if empty:
+            store._fts.clear()
+        store.close()
+        if not empty:
+            config.sqlite_path.unlink()
+
+    @pytest.mark.parametrize("empty", [False, True])
+    @pytest.mark.parametrize("rebuild", [False, True])
+    def test_refresh_open_refuses(self, tmp_path: Path, empty: bool, rebuild: bool) -> None:
+        from pipecat_context_hub.services.index.errors import LostKeywordIndexError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        self._lose_keyword_half(config, empty=empty)
+
+        with pytest.raises(LostKeywordIndexError, match="refresh --force --reset-index"):
+            IndexStore(config, recover=True, create=True, rebuild=rebuild)
+        # The vector half is untouched, and a retry refuses again (the empty
+        # keyword database the refused open may leave is no way past it).
+        with pytest.raises(LostKeywordIndexError):
+            IndexStore(config, recover=True, create=True, rebuild=rebuild)
+        vector = VectorIndex(config.chroma_path)
+        try:
+            assert vector.count() == 3
+        finally:
+            vector.close()
+
+    def test_reader_refuses_with_the_reset_remedy(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.errors import (
+            LostKeywordIndexError,
+            MissingKeywordIndexError,
         )
-        data_dir = tmp_path / "hub-data"
-        with pytest.raises(RuntimeError, match="vector boom"):
-            IndexStore(StorageConfig(data_dir=data_dir))
-        assert not (data_dir / "metadata.db").exists()
-        assert not (data_dir / "chroma" / "chroma.sqlite3").exists()
-        assert not (data_dir / "chroma").exists()
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 
-    def test_read_only_store_exposes_no_writer_methods(self, tmp_path: Path):
-        # Build the persisted shape through the writer, then reopen through the
-        # reader boundary and assert mutation methods are not part of its API.
-        writer = IndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
-        writer.close()
-        reader = ReadOnlyIndexStore(StorageConfig(data_dir=tmp_path / "hub-data"))
-        try:
-            assert not hasattr(reader, "reset")
-            assert not hasattr(reader, "upsert")
-        finally:
-            reader.close()
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        self._lose_keyword_half(config, empty=False)
+        # Missing: the keyword half's own error, which now prescribes the reset
+        # (`refresh --force` alone would be refused here).
+        with pytest.raises(MissingKeywordIndexError, match="--reset-index"):
+            IndexStore(config)
+        # Empty (what a refused refresh leaves): the store's error, not
+        # "index is empty, run refresh".
+        with pytest.raises(LostKeywordIndexError):
+            IndexStore(config, create=True)
+        with pytest.raises(LostKeywordIndexError):
+            IndexStore(config)
+        with pytest.raises(IndexUnavailableError, match="--reset-index"):
+            open_ready_index_store(config)
 
-    def test_read_only_open_does_not_create_missing_lock_file(self, tmp_path: Path) -> None:
-        data_dir = tmp_path / "hub-data"
-        writer = IndexStore(StorageConfig(data_dir=data_dir))
-        writer.close()
-        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
-        try:
-            assert not (data_dir / ".index.lock").exists()
-            assert (data_dir.parent / f".{data_dir.name}.index.lock").exists()
-        finally:
-            reader.close()
-
-    def test_read_only_open_does_not_create_legacy_lock_file(self, tmp_path: Path) -> None:
-        data_dir = tmp_path / "hub-data"
-        writer = IndexStore(StorageConfig(data_dir=data_dir))
-        writer.close()
-        lock_path = data_dir.parent / f".{data_dir.name}.index.lock"
-        lock_path.unlink()
-        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
-        try:
-            assert not lock_path.exists()
-        finally:
-            reader.close()
-
-    def test_generation_lock_creates_missing_nested_parents(self, tmp_path: Path) -> None:
-        data_dir = tmp_path / "missing" / "nested" / "hub-data"
-        with generation_lock(data_dir):
-            assert data_dir.parent.is_dir()
-            assert data_dir.parent.parent.is_dir()
-
-    def test_writer_open_refuses_incomplete_reset_marker(self, tmp_path: Path) -> None:
-        data_dir = tmp_path / "hub-data"
-        data_dir.mkdir()
-        (data_dir / ".reset-state.json").write_text('{"vector_reset": true}')
-        with pytest.raises(ValueError, match="reset is incomplete"):
-            IndexStore(StorageConfig(data_dir=data_dir))
-
-    def test_windows_backend_creation_uses_safe_path_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("vector_batches_written", [0, 1])
+    def test_interrupted_first_refresh_is_not_a_lost_keyword_half(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vector_batches_written: int
     ) -> None:
-        path = tmp_path / "nested" / "metadata.db"
-        path.parent.mkdir()
-        monkeypatch.setattr(os, "name", "nt")
-        monkeypatch.setattr(
-            "pipecat_context_hub.services.index.store._open_directory_chain", lambda _path: -1
-        )
-        with pytest.raises(ValueError, match="Secure backend file creation"):
-            _create_backend_file(path)
+        """Regression (store.py:94): upsert wrote the vector half first, so a
+        first refresh killed during its (batched, long) vector write left
+        vectors beside an empty keyword half: indistinguishable from a lost
+        ``index.db``, it was refused on every later refresh until
+        ``--reset-index``. Keyword rows are now written first, so the same
+        interruption leaves keyword records ahead of the vectors, which
+        ``refresh --force`` rebuilds."""
+        import asyncio
 
-    def test_windows_snapshot_uses_safe_path_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        from chromadb.api.models.Collection import Collection
+
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        monkeypatch.setattr("pipecat_context_hub.services.index.vector._CHROMA_BATCH_SIZE", 2)
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        records = _make_records(5)
+        real_upsert = Collection.upsert
+        calls = 0
+
+        def killed_mid_write(self: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal calls
+            if calls == vector_batches_written:
+                raise RuntimeError("killed")
+            calls += 1
+            return real_upsert(self, *args, **kwargs)
+
+        store = IndexStore(config, recover=True, create=True)  # the first refresh
+        try:
+            with (
+                patch.object(Collection, "upsert", killed_mid_write),
+                pytest.raises(RuntimeError, match="killed"),
+            ):
+                asyncio.run(store.upsert(records))
+        finally:
+            store.close()
+
+        if vector_batches_written == 0:
+            # Nothing vectorised: a plain refresh says to run --force.
+            with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+                IndexStore(config, recover=True, create=True)
+        store = IndexStore(config, recover=True, create=True, rebuild=True)  # refresh --force
+        try:
+            asyncio.run(store.upsert(records))
+            assert store.vector_count() == 5
+            assert store.get_index_stats()["total"] == 5
+        finally:
+            store.close()
+
+    def test_missing_keyword_half_beside_an_empty_vector_half_is_rebuilt(
+        self, tmp_path: Path
     ) -> None:
-        source = tmp_path / "source"
-        source.mkdir()
-        (source / "chroma.sqlite3").write_bytes(b"safe")
-        monkeypatch.setattr(os, "name", "nt")
-        monkeypatch.setattr(os, "supports_dir_fd", set())
-        with pytest.raises(ValueError, match="Secure Chroma snapshots"):
-            _copy_tree_no_follow(source, tmp_path / "snapshot")
+        """Unchanged: with no vectors either, refresh recreates the keyword half."""
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        IndexStore(config, create=True).close()
+        config.sqlite_path.unlink()
+        for rebuild in (False, True):
+            store = IndexStore(config, recover=True, create=True, rebuild=rebuild)
+            try:
+                assert store.vector_empty
+            finally:
+                store.close()
+        assert config.sqlite_path.is_file()
+
+
+class TestIndexStoreReaderCreatesNothing:
+    """Regression (store.py:38, vector.py:353): ``create=False`` reached only
+    the vector half, so a reader open still created ``index.db`` and its
+    schema; and ``create`` defaulted to True, so a reader that forgot to opt
+    out (scripts/smoke_check_framework_version.py) created the whole index."""
+
+    def test_default_open_of_a_missing_index_creates_nothing(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.errors import IndexNotBuiltError
+
+        data_dir = tmp_path / "hub-data"
+        with pytest.raises(IndexNotBuiltError, match=r"is empty \(0 records\)"):
+            IndexStore(StorageConfig(data_dir=data_dir))
+        assert not data_dir.exists()
+
+    def test_reader_open_without_a_keyword_index_does_not_create_one(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        store = IndexStore(config, create=True)
+        asyncio.run(store.upsert(_make_records(2)))  # vectors present: a reset is needed
+        store.close()
+        config.sqlite_path.unlink()
+        with pytest.raises(MissingKeywordIndexError, match="--reset-index"):
+            IndexStore(config, create=False)
+        assert not config.sqlite_path.exists()
+        with pytest.raises(MissingKeywordIndexError):
+            FTSIndex(config.sqlite_path)  # the default is a reader too
+        assert not config.sqlite_path.exists()
+
+    def test_reader_open_of_an_uninitialized_keyword_index_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (fts.py:101): a 0-byte ``index.db`` passed the reader's
+        is_file() guard, and the open then set WAL mode and wrote the schema."""
+        from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
+
+        db_path = tmp_path / "index.db"
+        db_path.touch()
+        with pytest.raises(MissingKeywordIndexError):
+            FTSIndex(db_path)
+        assert db_path.stat().st_size == 0
+        assert not db_path.with_name("index.db-wal").exists()
+        FTSIndex(db_path, create=True).close()  # a writer still initializes it
+        FTSIndex(db_path).close()
+
+    def test_reader_open_of_an_initialized_keyword_index_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (fts.py:115): ``create`` gated only existence, so every
+        reader open still ran the WAL pragma, the schema DDL and a commit."""
+        import sqlite3
+
+        db_path = tmp_path / "index.db"
+        FTSIndex(db_path, create=True).close()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("PRAGMA journal_mode=DELETE")
+        conn.close()
+
+        FTSIndex(db_path).close()
+        with sqlite3.connect(db_path) as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        conn.close()
+
+    def test_partially_initialized_keyword_index(self, tmp_path: Path) -> None:
+        """Regression (fts.py:103): a database with ``chunks`` rows but no FTS
+        table passed the reader's check, and the open then created an empty
+        FTS table, so keyword search silently found nothing. A reader now
+        refuses it; refresh completes the schema and rebuilds the FTS table."""
+        import sqlite3
+
+        from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
+
+        db_path = tmp_path / "index.db"
+        fts = FTSIndex(db_path, create=True)
+        records = _make_records(3)
+        fts.upsert(records)
+        fts.close()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP TABLE chunks_fts")
+        conn.close()
+
+        with pytest.raises(MissingKeywordIndexError):
+            FTSIndex(db_path)
+        fts = FTSIndex(db_path, create=True)
+        try:
+            assert len(fts.search(IndexQuery(query_text="pipecat", limit=10))) == 3
+        finally:
+            fts.close()
+
+    def test_failed_fts_rebuild_leaves_the_schema_incomplete(self, tmp_path: Path) -> None:
+        """Regression (fts.py:123): completing the schema committed before the
+        FTS rebuild ran, so a rebuild that failed left every schema object in
+        place; the next open skipped the rebuild and readers accepted a
+        ``chunks`` table whose FTS index was empty. Both now commit together.
+        The rebuild is made to fail by a ``chunks`` table without ``content``."""
+        import sqlite3
+
+        db_path = tmp_path / "index.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, body TEXT)")
+            conn.execute("INSERT INTO chunks VALUES ('a', 'pipecat')")
+        conn.close()
+
+        from pipecat_context_hub.services.index.errors import CorruptKeywordIndexError
+
+        with pytest.raises(CorruptKeywordIndexError, match="content") as exc_info:
+            FTSIndex(db_path, create=True)
+        assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+        assert "refresh --force --reset-index" in str(exc_info.value)
+        with sqlite3.connect(db_path) as conn:
+            names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        conn.close()
+        assert names == {"chunks", "sqlite_autoindex_chunks_1"}  # nothing half-committed
+
+    def test_not_a_database_is_typed_unreadable(self, tmp_path: Path) -> None:
+        """Regression (cli.py:118): the CLI classified raw sqlite3 errors
+        itself; the keyword index now raises one typed error for both."""
+        from pipecat_context_hub.services.index.errors import CorruptKeywordIndexError
+
+        db_path = tmp_path / "index.db"
+        db_path.write_bytes(b"not a database" * 512)
+        for create in (False, True):
+            with pytest.raises(CorruptKeywordIndexError, match="not a database"):
+                FTSIndex(db_path, create=create)
+
+    def test_a_locked_database_is_not_called_unreadable(self, tmp_path: Path) -> None:
+        """A failure of the moment (here SQLITE_BUSY) is not told to reset."""
+        import sqlite3
+
+        db_path = tmp_path / "index.db"
+        FTSIndex(db_path, create=True).close()
+        connect = sqlite3.connect
+        holder = connect(db_path)
+        holder.execute("PRAGMA journal_mode=DELETE")  # so EXCLUSIVE blocks readers
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            with (
+                patch("sqlite3.connect", lambda path, **_: connect(path, timeout=0)),
+                pytest.raises(sqlite3.OperationalError, match="locked"),
+            ):
+                FTSIndex(db_path)
+        finally:
+            holder.rollback()
+            holder.close()
+
+    @pytest.mark.parametrize("transient", [True, False])
+    def test_reader_open_advises_reset_only_for_a_damaged_index(
+        self, tmp_path: Path, transient: bool
+    ) -> None:
+        """Regression (reopening.py:80): every untyped open failure, including
+        a locked keyword database, was told to delete the index with
+        ``--reset-index``. A failure of the moment now gets a retry hint; an
+        unclassified one keeps the reset advice."""
+        import sqlite3
+
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        if transient:
+            exc: Exception = sqlite3.OperationalError("database is locked")
+            exc.sqlite_errorcode = sqlite3.SQLITE_BUSY  # type: ignore[attr-defined]
+        else:
+            exc = RuntimeError("something unexpected")
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        IndexStore(config, create=True).close()  # a built index
+        with (
+            patch("pipecat_context_hub.services.index.store.FTSIndex", side_effect=exc),
+            pytest.raises(IndexUnavailableError) as exc_info,
+        ):
+            open_ready_index_store(config)
+        message = str(exc_info.value)
+        assert ("--reset-index" in message) is not transient
+        assert ("retry" in message) is transient
+
+
+def test_schema_objects_list_matches_the_schema_sql() -> None:
+    """``_SCHEMA_OBJECTS`` (what an open treats as an initialized database) is
+    listed by hand beside ``_SCHEMA_SQL``: an object added to one and not the
+    other makes readers reject healthy databases, or writers skip a repair."""
+    import sqlite3
+
+    from pipecat_context_hub.services.index import fts
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(fts._SCHEMA_SQL)
+        created = {
+            name
+            for (name,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger') "
+                "AND name NOT LIKE 'chunks_fts\\_%' ESCAPE '\\'"
+            )
+        }
+    finally:
+        conn.close()
+    assert created == set(fts._SCHEMA_OBJECTS)
+
+
+class TestResetOfAStoreOpenedWithoutRebuild:
+    """Regression (vector.py ``reset``): a reset deletes the Chroma directory and
+    reopens it. A store opened with a populated keyword half gets the vector half
+    with ``create`` False, so the reopen raised ``MissingVectorCollectionError``
+    after the delete and left the store with no vector client."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_async_searches_do_not_share_lock_reentrancy(
-        self, tmp_path: Path
-    ) -> None:
-        """Each blocking search owns its lock in its worker thread."""
-        data_dir = tmp_path / "hub-data"
-        data_dir.mkdir()
-        store = object.__new__(IndexStore)
-        store._data_dir = data_dir
+    async def test_reset_recreates_the_vector_half(self, tmp_path: Path) -> None:
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        first = IndexStore(config, create=True)
+        await first.upsert(_make_records(3))
+        first.close()
 
-        class FakeBackend:
-            def search(self, _query: IndexQuery) -> list[IndexResult]:
-                return []
-
-        typed_store = cast(Any, store)
-        typed_store._vector = FakeBackend()
-        typed_store._fts = FakeBackend()
-        query = IndexQuery(query_text="pipecat", limit=1)
-
-        results = await asyncio.gather(store.vector_search(query), store.keyword_search(query))
-        assert all(result == [] for result in results)
-
-    def test_read_only_open_preserves_persisted_chroma_bytes_and_mtimes(
-        self, tmp_path: Path
-    ) -> None:
-        data_dir = tmp_path / "hub-data"
-        writer = IndexStore(StorageConfig(data_dir=data_dir))
-        writer._vector.upsert([_make_record()])
-        writer.close()
-
-        chroma_files = [path for path in (data_dir / "chroma").rglob("*") if path.is_file()]
-        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in chroma_files}
-        reader = ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
-        reader.close()
-        assert {
-            path: (path.read_bytes(), path.stat().st_mtime_ns) for path in chroma_files
-        } == before
-
-    def test_read_only_snapshot_without_descriptor_relative_open(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        data_dir = tmp_path / "windows-style"
-        writer = IndexStore(StorageConfig(data_dir=data_dir))
-        writer._vector.upsert([_make_record()])
-        writer.close()
-        monkeypatch.setattr(os, "supports_dir_fd", set())
-        with pytest.raises(ValueError, match="Secure Chroma snapshots"):
-            ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
-
-    def test_read_only_open_rejects_missing_collection_without_recreating_it(
-        self, tmp_path: Path
-    ) -> None:
-        data_dir = tmp_path / "hub-data"
-        writer = IndexStore(StorageConfig(data_dir=data_dir))
-        writer.close()
-        import chromadb
-
-        client: Any = chromadb.PersistentClient(path=str(data_dir / "chroma"))
-        client.delete_collection("latest")
-        client.close()
-
-        with pytest.raises(Exception, match="not found|does not exist"):
-            ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
-        check: Any = chromadb.PersistentClient(path=str(data_dir / "chroma"))
+        store = IndexStore(config, create=True)  # keyword records: vector create=False
         try:
-            assert all(collection.name != "latest" for collection in check.list_collections())
+            store.reset()
+            assert store.vector_count() == 0
+            await store.upsert(_make_records(1))
+            assert store.vector_count() == 1
         finally:
-            check.close()
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement fixture")
-    def test_read_only_store_rechecks_backend_identity_after_vector_open(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        data_dir = tmp_path / "hub-data"
-        writer = IndexStore(StorageConfig(data_dir=data_dir))
-        writer.close()
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        replacement = tmp_path / "chroma-original"
-        fake_vector = Mock()
-
-        def race(_path: Path, *, read_only: bool) -> Mock:
-            assert read_only is True
-            chroma = data_dir / "chroma"
-            chroma.rename(replacement)
-            chroma.symlink_to(outside, target_is_directory=True)
-            return fake_vector
-
-        monkeypatch.setattr(
-            "pipecat_context_hub.services.index.store.VectorIndex", Mock(side_effect=race)
-        )
-        with pytest.raises(ValueError, match="Unsafe index backend path"):
-            ReadOnlyIndexStore(StorageConfig(data_dir=data_dir))
-        fake_vector.close.assert_called_once()
+            store.close()
 
 
 class TestIndexStore:
     @pytest.fixture()
     def store(self, tmp_path: Path) -> Generator[IndexStore, None, None]:
         config = StorageConfig(data_dir=tmp_path / "hub-data")
-        store = IndexStore(config)
+        store = IndexStore(config, create=True)
         yield store
         store.close()
 
@@ -1371,79 +1266,6 @@ class TestIndexStore:
         results = await store.vector_search(query)
         assert len(results) == 3
         assert all(r.match_type == "vector" for r in results)
-
-    def test_long_lived_store_reopens_replaced_generation(self, tmp_path: Path) -> None:
-        data_dir = tmp_path / "hub-data"
-        first = IndexStore(StorageConfig(data_dir=data_dir))
-        record = _make_record(chunk_id="old-generation")
-        first._vector.upsert([record])
-        try:
-            reset_script = (
-                "import sys; "
-                "from pathlib import Path; "
-                "from pipecat_context_hub.services.index.store import IndexStore; "
-                "from pipecat_context_hub.shared.config import StorageConfig; "
-                "s=IndexStore(StorageConfig(data_dir=Path(sys.argv[1]))); "
-                "s.reset(); s.close()"
-            )
-            subprocess.run(
-                [sys.executable, "-c", reset_script, str(data_dir)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            query = IndexQuery(
-                query_text="pipecat",
-                query_embedding=record.embedding,
-                limit=10,
-            )
-            assert first._vector.search(query) == []
-        finally:
-            first.close()
-
-    @pytest.mark.asyncio
-    async def test_public_hybrid_search_keeps_vector_and_fts_in_one_generation_lock(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A hybrid request cannot publish between its two backend reads."""
-        import pipecat_context_hub.services.index.store as store_module
-
-        data_dir = tmp_path / "hub-data"
-        data_dir.mkdir()
-        store = object.__new__(IndexStore)
-        store._data_dir = data_dir
-        store._generation_id = None
-        lock_depth = 0
-        observations: list[int] = []
-
-        class Lock:
-            def __enter__(self):
-                nonlocal lock_depth
-                lock_depth += 1
-
-            def __exit__(self, *_args):
-                nonlocal lock_depth
-                lock_depth -= 1
-
-        def fake_lock(_path: Path, *, exclusive: bool):
-            assert exclusive is True
-            return Lock()
-
-        class Backend:
-            def get_metadata(self, _key: str) -> None:
-                return None
-
-            def search(self, _query: IndexQuery) -> list[IndexResult]:
-                observations.append(lock_depth)
-                return []
-
-        typed_store = cast(Any, store)
-        typed_store._vector = Backend()
-        typed_store._fts = Backend()
-        monkeypatch.setattr(store_module, "index_lock", fake_lock)
-        result = await store.hybrid_search(IndexQuery(query_text="pipecat", limit=1))
-        assert result == ([], [])
-        assert observations == [1, 1]
 
     @pytest.mark.asyncio
     async def test_upsert_and_keyword_search(self, store: IndexStore):
@@ -1659,12 +1481,7 @@ class TestIndexStore:
         with pytest.raises(RuntimeError, match="vector reset failed"):
             store.reset()
 
-        assert calls == ["vector"]
-        assert (store.data_dir / ".reset-state.json").is_file()
-
-    def test_reset_state_is_removed_only_after_both_backends_succeed(self, store: IndexStore):
-        store.reset()
-        assert not (store.data_dir / ".reset-state.json").exists()
+        assert calls == ["vector", "fts"]
 
     def test_satisfies_writer_protocol(self, store: IndexStore):
         """Verify IndexStore has all IndexWriter methods."""
@@ -1680,12 +1497,12 @@ class TestIndexStore:
     async def test_persistence(self, tmp_path: Path):
         """Verify data survives creating a new IndexStore on the same path."""
         config = StorageConfig(data_dir=tmp_path / "persist-data")
-        store1 = IndexStore(config)
+        store1 = IndexStore(config, create=True)
         records = _make_records(2)
         await store1.upsert(records)
         store1.close()
 
-        store2 = IndexStore(config)
+        store2 = IndexStore(config, create=True)
         vq = IndexQuery(
             query_text="test",
             query_embedding=records[0].embedding,
@@ -1769,7 +1586,7 @@ class TestFTSCallGraphFilters:
 
     def test_yields_filter_matches(self, tmp_path: Path):
         """FTS search with yields filter returns matching records."""
-        fts = FTSIndex(tmp_path / "fts.db")
+        fts = FTSIndex(tmp_path / "fts.db", create=True)
         rec_with = _make_record(
             chunk_id="m1",
             content="run_tts method yields audio frames",
@@ -1791,7 +1608,7 @@ class TestFTSCallGraphFilters:
 
     def test_calls_filter_matches(self, tmp_path: Path):
         """FTS search with calls filter returns matching records."""
-        fts = FTSIndex(tmp_path / "fts.db")
+        fts = FTSIndex(tmp_path / "fts.db", create=True)
         rec_with = _make_record(
             chunk_id="m1",
             content="process_frame calls push_frame to forward data",
@@ -1814,7 +1631,7 @@ class TestFTSCallGraphFilters:
 
     def test_yields_filter_no_partial_match(self, tmp_path: Path):
         """Yields filter does not match partial substrings."""
-        fts = FTSIndex(tmp_path / "fts.db")
+        fts = FTSIndex(tmp_path / "fts.db", create=True)
         rec = _make_record(
             chunk_id="m1",
             content="yields TTSAudioRawFrame from method body",
@@ -1833,7 +1650,7 @@ class TestVectorCallGraphFilters:
 
     def test_yields_post_filter(self, tmp_path: Path):
         """Vector search with yields filter returns only matching records."""
-        vi = VectorIndex(tmp_path / "chroma")
+        vi = VectorIndex(tmp_path / "chroma", create=True)
         embedding = _random_embedding(42)
         rec_with = _make_record(
             chunk_id="v1",
@@ -1864,7 +1681,7 @@ class TestVectorCallGraphFilters:
 
     def test_calls_post_filter(self, tmp_path: Path):
         """Vector search with calls filter returns only matching records."""
-        vi = VectorIndex(tmp_path / "chroma")
+        vi = VectorIndex(tmp_path / "chroma", create=True)
         embedding = _random_embedding(44)
         rec_with = _make_record(
             chunk_id="v1",

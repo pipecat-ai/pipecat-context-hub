@@ -8,35 +8,44 @@ single namespace for v0.
 from __future__ import annotations
 
 import contextlib
-import errno
 import json
 import logging
-import os
 import shutil
-import sqlite3
-import stat
-import tempfile
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryEvent
 from overrides import override
 
-from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
-from pipecat_context_hub.services.index.hnsw_validation import validate_persisted_hnsw
-from pipecat_context_hub.services.index.locking import index_lock
-from pipecat_context_hub.services.index.safe_sqlite import connect_readonly
+from pipecat_context_hub.services.index.chroma_schema import (
+    chromadb_format_verified,
+    query_chroma_sqlite,
+)
+from pipecat_context_hub.services.index.errors import (
+    CompactionRestoreError,
+    CompactionSwapError,
+    IncompatibleIndexFormatError,
+    InterruptedCompactionError,
+    MissingVectorCollectionError,
+)
+from pipecat_context_hub.services.index.hnsw_validation import (
+    HnswWriteGuard,
+    validate_persisted_hnsw,
+)
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
-from pipecat_context_hub.shared.paths import is_reparse_link
 
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "latest"
+# Collections VectorIndex.compact() writes; see its docstring.
+COMPACT_STAGING_NAME = f"{COLLECTION_NAME}_compact"
+COMPACT_BACKUP_NAME = f"{COLLECTION_NAME}_precompact"
 
 # ChromaDB limits batch operations to ~5,461 embeddings. Use a safe limit.
 _CHROMA_BATCH_SIZE = 5000
@@ -59,50 +68,32 @@ def _detect_incompatible_format(chroma_path: Path) -> None:
     no ``chroma.sqlite3``, the file is not a readable SQLite database, or it has
     no recognizable ``migrations`` table.
     """
-    db_path = chroma_path / "chroma.sqlite3"
-    try:
-        db_info = db_path.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        if exc.errno == getattr(errno, "ENOTSUP", 95):
-            # Keep the established package-level diagnostic used when a
-            # read-only Chroma snapshot cannot be made safely.
-            raise ValueError(
-                "Secure Chroma snapshots require descriptor-relative SQLite opens"
-            ) from exc
-        raise IncompatibleIndexFormatError(
-            chroma_path, reason="unable to inspect chroma.sqlite3; refusing native loading"
-        ) from exc
-    if is_reparse_link(db_path) or not stat.S_ISREG(db_info.st_mode):
-        raise IncompatibleIndexFormatError(
-            chroma_path, reason="unsafe chroma.sqlite3 path; refusing native loading"
-        )
-    try:
-        with connect_readonly(db_path, immutable=True) as conn:
-            try:
-                has_migrations = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='migrations'"
-                ).fetchone()
-                if has_migrations is None:
-                    return
-                row = conn.execute(
-                    "SELECT MAX(version) FROM migrations WHERE dir='sysdb'"
-                ).fetchone()
-            except sqlite3.Error:
-                return
-    except OSError as exc:
-        if exc.errno == getattr(errno, "ENOTSUP", 95):
-            raise ValueError(
-                "Secure Chroma snapshots require descriptor-relative SQLite opens"
-            ) from exc
-        raise IncompatibleIndexFormatError(
-            chroma_path, reason="unsafe chroma.sqlite3 path; refusing native loading"
-        ) from exc
-
+    # No migrations table (not a Chroma db) or unreadable: rows is None or
+    # [(None,)], and chromadb surfaces its own error.
+    rows = query_chroma_sqlite(
+        chroma_path, "SELECT MAX(version) FROM migrations WHERE dir='sysdb'", immutable=True
+    )
+    row = rows[0] if rows else None
     max_version = row[0] if row else None
     if max_version is not None and max_version < _MIN_SUPPORTED_SYSDB_MIGRATION:
         raise IncompatibleIndexFormatError(chroma_path, detected_sysdb_migration=max_version)
+
+
+def _persisted_collection_exists(chroma_path: Path, name: str) -> bool:
+    """Whether ``chroma.sqlite3`` lists collection *name*, read before any client opens.
+
+    False when the database is absent or its schema unreadable, so callers
+    fall back to the stricter check.
+    """
+    rows = query_chroma_sqlite(
+        chroma_path, "SELECT 1 FROM collections WHERE name=?", (name,), immutable=True
+    )
+    return bool(rows)
+
+
+def _collection_names(client: Any) -> set[Any]:
+    """Names of the client's collections (1.x returns objects, older names)."""
+    return {getattr(c, "name", c) for c in client.list_collections()}
 
 
 class NoOpProductTelemetryClient(ProductTelemetryClient):
@@ -369,172 +360,6 @@ def _record_has_tags(result: IndexResult, tags: list[str]) -> bool:
     return all(t in record_tags for t in tags)
 
 
-def _copy_tree_no_follow(source: Path, destination: Path) -> None:
-    """Copy a published tree without ever following a swapped link.
-
-    ``shutil.copytree(..., symlinks=True)`` still opens a file by pathname
-    after its directory entry was inspected.  A concurrent replacement can
-    therefore turn a regular file into a symlink between those operations.
-    Descriptor reads plus identity checks make the copied snapshot fail closed
-    instead of reading outside the published tree.
-    """
-    if os.open not in getattr(os, "supports_dir_fd", set()):
-        # Pathname copies cannot make the parent no-reparse guarantee on
-        # Windows. Refuse the snapshot rather than copying bytes through a
-        # junction that can be swapped after lstat().
-        raise ValueError("Secure Chroma snapshots are unavailable")
-
-    def copy_dir(source_fd: int, source_name: str, target: Path) -> None:
-        target.mkdir(parents=True, exist_ok=True)
-        for entry in os.scandir(source_fd):
-            name = entry.name
-            target_path = target / name
-            entry_info = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
-            if stat.S_ISLNK(entry_info.st_mode):
-                raise ValueError(f"Unsafe read-only Chroma path: {name}")
-            if stat.S_ISDIR(entry_info.st_mode):
-                child_flags = (
-                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-                )
-                child_fd = os.open(name, child_flags, dir_fd=source_fd)
-                try:
-                    opened = os.fstat(child_fd)
-                    if (opened.st_dev, opened.st_ino) != (entry_info.st_dev, entry_info.st_ino):
-                        raise ValueError(f"Unsafe read-only Chroma path: {name}")
-                    copy_dir(child_fd, name, target_path)
-                finally:
-                    os.close(child_fd)
-                continue
-            if not stat.S_ISREG(entry_info.st_mode):
-                raise ValueError(f"Unsafe read-only Chroma path: {name}")
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-            source_file_fd = os.open(name, flags, dir_fd=source_fd)
-            output_fd = -1
-            try:
-                opened = os.fstat(source_file_fd)
-                if (opened.st_dev, opened.st_ino) != (entry_info.st_dev, entry_info.st_ino):
-                    raise ValueError(f"Unsafe read-only Chroma path: {name}")
-                output_fd = os.open(
-                    target_path,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                )
-                with (
-                    os.fdopen(source_file_fd, "rb") as input_stream,
-                    os.fdopen(output_fd, "wb") as output,
-                ):
-                    source_file_fd = -1
-                    output_fd = -1
-                    shutil.copyfileobj(input_stream, output)
-                after = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
-                if (after.st_dev, after.st_ino) != (entry_info.st_dev, entry_info.st_ino):
-                    raise ValueError(f"Unsafe read-only Chroma path: {name}")
-            finally:
-                if source_file_fd != -1:
-                    os.close(source_file_fd)
-                if output_fd != -1:
-                    os.close(output_fd)
-
-    source_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    source_fd = os.open(source, source_flags)
-    try:
-        source_info = os.fstat(source_fd)
-        if is_reparse_link(source) or not stat.S_ISDIR(source_info.st_mode):
-            raise ValueError(f"Unsafe read-only Chroma path: {source.name}")
-        copy_dir(source_fd, source.name, destination)
-    finally:
-        os.close(source_fd)
-
-
-def _remove_tree_no_follow(
-    root: Path,
-    *,
-    expected_parent: tuple[int, int] | None = None,
-    expected_root: tuple[int, int] | None = None,
-) -> None:
-    """Remove a directory through descriptor-relative, no-follow operations."""
-    if os.open not in getattr(os, "supports_dir_fd", set()):
-        raise ValueError("Secure Chroma reset is unavailable")
-    root = root.absolute()
-    if is_reparse_link(root):
-        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-    try:
-        parent_info = root.parent.lstat()
-        root_info = root.lstat()
-    except OSError as exc:
-        raise ValueError(f"Unsafe Chroma reset path: {root.name}") from exc
-    if not stat.S_ISDIR(parent_info.st_mode) or is_reparse_link(root.parent):
-        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-    if not stat.S_ISDIR(root_info.st_mode):
-        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-    if expected_parent is not None and (parent_info.st_dev, parent_info.st_ino) != expected_parent:
-        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-    if expected_root is not None and (root_info.st_dev, root_info.st_ino) != expected_root:
-        raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-    parent_fd = os.open(
-        str(root.parent),
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    root_fd = -1
-    try:
-        opened_parent = os.fstat(parent_fd)
-        if (opened_parent.st_dev, opened_parent.st_ino) != (
-            parent_info.st_dev,
-            parent_info.st_ino,
-        ):
-            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-        if (
-            expected_parent is not None
-            and (opened_parent.st_dev, opened_parent.st_ino) != expected_parent
-        ):
-            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-        root_fd = os.open(
-            root.name,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=parent_fd,
-        )
-        opened_root = os.fstat(root_fd)
-        if (opened_root.st_dev, opened_root.st_ino) != (root_info.st_dev, root_info.st_ino):
-            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-        if expected_root is not None and (opened_root.st_dev, opened_root.st_ino) != expected_root:
-            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-
-        def remove_children(directory_fd: int, directory_path: Path) -> None:
-            for entry in os.scandir(directory_fd):
-                info = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
-                entry_path = directory_path / entry.name
-                if stat.S_ISDIR(info.st_mode) and not is_reparse_link(entry_path):
-                    child_fd = os.open(
-                        entry.name,
-                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-                        dir_fd=directory_fd,
-                    )
-                    try:
-                        child_info = os.fstat(child_fd)
-                        if (child_info.st_dev, child_info.st_ino) != (info.st_dev, info.st_ino):
-                            raise ValueError(f"Unsafe Chroma reset path: {entry.name}")
-                        remove_children(child_fd, entry_path)
-                    finally:
-                        os.close(child_fd)
-                    after = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
-                    if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino):
-                        raise ValueError(f"Unsafe Chroma reset path: {entry.name}")
-                    os.rmdir(entry.name, dir_fd=directory_fd)
-                else:
-                    # Unlink links as links; never recurse through them.
-                    os.unlink(entry.name, dir_fd=directory_fd)
-
-        remove_children(root_fd, root)
-        current_root = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
-        if (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino):
-            raise ValueError(f"Unsafe Chroma reset path: {root.name}")
-        os.rmdir(root.name, dir_fd=parent_fd)
-    finally:
-        if root_fd != -1:
-            os.close(root_fd)
-        os.close(parent_fd)
-
-
 class VectorIndex:
     """ChromaDB vector index for embedding similarity search.
 
@@ -543,178 +368,125 @@ class VectorIndex:
     so indexes survive process restarts.
     """
 
-    def __init__(
-        self, chroma_path: Path, *, read_only: bool = False, lock_held: bool = False
-    ) -> None:
+    def __init__(self, chroma_path: Path, *, recover: bool = False, create: bool = False) -> None:
+        """Open the index at *chroma_path*.
+
+        *recover*, which only ``refresh`` sets (it holds the exclusive refresh
+        lock), lets this open restore a compaction interrupted between its two
+        renames. Readers hold that lock only shared, so for them the same state
+        raises :class:`InterruptedCompactionError` instead.
+
+        *create* lets the open create the index (directory, database and an
+        empty ``latest`` collection) when it is missing. Only ``refresh``
+        passes True, and only when nothing is indexed or it rebuilds every
+        source (``IndexStore`` decides). Otherwise a missing database or
+        collection raises :class:`MissingVectorCollectionError` before
+        anything is created.
+        """
         self._chroma_path = chroma_path
-        self._read_only = read_only
-        self._lock_held = lock_held
-        self._readonly_tempdir: tempfile.TemporaryDirectory[str] | None = None
+        self._recover = recover
+        self._create = create
         self._client: Any = None
         self._collection: Any = None
         self._closed = True
-        self._generation_identity: tuple[tuple[int, int], tuple[int, int] | None] | None = None
         self._op_lock = threading.RLock()
-        try:
-            self._open_client(lock_held=lock_held)
-        except BaseException:
-            if self._readonly_tempdir is not None:
-                self._readonly_tempdir.cleanup()
-                self._readonly_tempdir = None
-            raise
+        self._open_client()
 
-    def _copy_read_only_snapshot(self) -> Path:
-        """Copy a validated Chroma tree before opening the writer-oriented API.
-
-        Chroma's local ``PersistentClient`` has no read-only mode and may write
-        migrations, locks, or collection metadata while opening.  A private
-        snapshot keeps those writes away from the published index.  Symlinks
-        and reparse points are copied as links first, then rejected before the
-        snapshot is opened, so a read-only query cannot follow an external
-        path supplied by a corrupt or swapped index.
-        """
-        tempdir = tempfile.TemporaryDirectory(prefix="pipecat-context-hub-chroma-")
-        snapshot = Path(tempdir.name) / "chroma"
-        try:
-            _copy_tree_no_follow(self._chroma_path, snapshot)
-            for path in snapshot.rglob("*"):
-                if is_reparse_link(path):
-                    raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
-                if not path.is_dir() and not stat.S_ISREG(path.stat().st_mode):
-                    raise ValueError(f"Unsafe read-only Chroma path: {path.name}")
-        except BaseException:
-            tempdir.cleanup()
-            raise
-        self._readonly_tempdir = tempdir
-        return snapshot
-
-    def _source_identity(self) -> tuple[tuple[int, int], tuple[int, int] | None]:
-        """Return the directory/database identity for the current generation."""
-        try:
-            directory = self._chroma_path.lstat()
-            if is_reparse_link(self._chroma_path) or not stat.S_ISDIR(directory.st_mode):
-                raise ValueError("unsafe Chroma generation path")
-            db_path = self._chroma_path / "chroma.sqlite3"
-            try:
-                db = db_path.lstat()
-            except FileNotFoundError:
-                db = None
-            if db is not None and (is_reparse_link(db_path) or not stat.S_ISREG(db.st_mode)):
-                raise ValueError("unsafe Chroma database path")
-            return (
-                (directory.st_dev, directory.st_ino),
-                None if db is None else (db.st_dev, db.st_ino),
-            )
-        except (OSError, RuntimeError) as exc:
-            raise ValueError("Chroma generation is unavailable") from exc
-
-    def _open_client(self, *, lock_held: bool = False) -> None:
+    def _open_client(self) -> None:
         """Open the persistent Chroma client and the ``latest`` collection."""
-        # Validation, snapshotting, and native opening must observe one
-        # generation. A writer lock also coordinates WAL-backed SQLite state;
-        # ``allow_wal`` is safe only under this lock.
-        lock_context = (
-            contextlib.nullcontext()
-            if lock_held
-            else index_lock(
-                self._chroma_path.parent,
-                exclusive=not self._read_only,
-                create=not self._read_only,
-            )
-        )
-        # The format probe is read-only and can fail before taking a
-        # coordination lock (important for legacy/corrupt directories that
-        # have no sibling lock). Native opening and all later probes remain
-        # inside the generation lock below.
+        if not self._create and not (self._chroma_path / "chroma.sqlite3").is_file():
+            # Raise before anything below creates files.
+            raise MissingVectorCollectionError(self._chroma_path)
+        # Probe for a pre-1.0 on-disk format BEFORE constructing the client,
+        # which would otherwise crash opaquely or rewrite 0.6 state.
         _detect_incompatible_format(self._chroma_path)
-        with lock_context:
-            validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME, allow_wal=True)
-            client_path = self._chroma_path
-            if self._read_only:
-                client_path = self._copy_read_only_snapshot()
-                validate_persisted_hnsw(client_path, COLLECTION_NAME, allow_wal=True)
-            else:
-                self._chroma_path.mkdir(parents=True, exist_ok=True)
-            # Recheck the published root immediately before native Chroma
-            # opens it. The descriptor-safe probes above must not hand a
-            # replaced/symlinked path to a writer-oriented native library.
-            native_identity = self._source_identity()
-            if native_identity != self._source_identity():
-                raise ValueError("Chroma generation changed before native open")
-            self._client = chromadb.PersistentClient(
-                path=str(client_path),
-                settings=ChromaSettings(
-                    anonymized_telemetry=False,
-                    chroma_product_telemetry_impl=(
-                        "pipecat_context_hub.services.index.vector.NoOpProductTelemetryClient"
-                    ),
+        # Status reads metadata without loading the HNSW graph. Reject the
+        # observed oversized-graph corruption before the native client can
+        # initialize successfully and later SIGSEGV on the first search.
+        resolved = self._chroma_path.resolve()
+        validate_persisted_hnsw(resolved, COLLECTION_NAME)
+        # Check only a graph this open may load. The parked backup is loaded
+        # only when ``latest`` is gone (a compaction interrupted mid-swap,
+        # which _open_collection restores). Beside a ``latest`` it is a
+        # leftover the next compaction drops, and must not block the index.
+        if not _persisted_collection_exists(resolved, COLLECTION_NAME):
+            validate_persisted_hnsw(resolved, COMPACT_BACKUP_NAME)
+        self._chroma_path.mkdir(parents=True, exist_ok=True)
+        client: Any = chromadb.PersistentClient(
+            path=str(self._chroma_path),
+            settings=ChromaSettings(
+                anonymized_telemetry=False,
+                chroma_product_telemetry_impl=(
+                    "pipecat_context_hub.services.index.vector.NoOpProductTelemetryClient"
                 ),
-            )
-            try:
-                if self._read_only:
-                    self._collection = self._client.get_collection(name=COLLECTION_NAME)
-                else:
-                    self._collection = self._client.get_or_create_collection(
-                        name=COLLECTION_NAME,
-                        metadata={"hnsw:space": "cosine"},
-                    )
-            except (KeyError, ValueError) as exc:
-                # The persisted collection configuration is unreadable. This is the
-                # one corruption the pre-open sysdb-migration probe cannot catch:
-                # an older chromadb (0.6) process that wrote to this 1.x directory
-                # leaves a ``config_json_str`` without the ``_type`` discriminator,
-                # so chromadb's own ``CollectionConfigurationInternal.from_json``
-                # raises ``KeyError: '_type'`` (or a ValueError on an unknown type)
-                # while loading the existing collection. A fresh/empty directory
-                # never hits this path (creation does not parse an existing config),
-                # so translating it here only ever fires on a genuinely poisoned
-                # index. Surface the typed, actionable error instead of the opaque
-                # one so ``serve``/``refresh`` print the reset remediation.
-                raise IncompatibleIndexFormatError(
-                    self._chroma_path,
-                    reason=(
-                        "the persisted collection configuration is unreadable "
-                        f"({exc!r}); this happens when an older chromadb (0.6) "
-                        "process writes to a 1.x index directory"
-                    ),
-                ) from exc
-            # Native Chroma accepts only a pathname. Bind the resulting
-            # client to the identities validated immediately before opening
-            # and fail closed if a replacement won the final open window.
-            try:
-                opened_identity = self._source_identity()
-            except BaseException:
-                # A native client may have opened a pathname that was swapped
-                # during construction. Release it before surfacing the
-                # fail-closed identity error; the pathname API cannot undo
-                # bytes a hostile native open may already have touched.
-                try:
-                    self._client.close()
-                finally:
-                    self._client = None
-                    self._collection = None
-                raise
-            if not self._read_only and (
-                opened_identity[0] != native_identity[0]
-                or (native_identity[1] is not None and opened_identity[1] != native_identity[1])
-            ):
-                try:
-                    self._client.close()
-                finally:
-                    self._client = None
-                    self._collection = None
-                raise ValueError("Chroma generation changed during native open")
+            ),
+        )
+        try:
+            self._collection = self._open_collection(client)
+        except BaseException:
+            # Release the client's reference to Chroma's per-path System:
+            # a leaked one would be reused (stale) by every later open.
+            with contextlib.suppress(Exception):
+                client.close()
+            raise
+        self._client = client
         self._closed = False
-        self._generation_identity = self._source_identity()
+        self._write_guard = HnswWriteGuard(self._chroma_path.resolve())
         logger.info("VectorIndex initialized at %s", self._chroma_path)
 
-    def reopen_if_replaced(self, *, lock_held: bool = False, force: bool = False) -> None:
-        """Reopen after replacement, or force a new in-place generation."""
-        with self._op_lock:
-            if not force and self._source_identity() == self._generation_identity:
-                return
-            self._release_client()
-            self._open_client(lock_held=lock_held or self._lock_held)
+    def _open_collection(self, client: Any) -> Any:
+        """Return the ``latest`` collection, first undoing an interrupted compaction."""
+        try:
+            names = _collection_names(client)
+            if COLLECTION_NAME not in names and COMPACT_BACKUP_NAME in names:
+                # compact() died between its two renames. get_or_create below
+                # would create an empty ``latest`` and strand every record
+                # under the backup name (vector search silently empty while
+                # FTS still has them).
+                if not self._recover:
+                    raise InterruptedCompactionError(self._chroma_path)
+                logger.warning("Restoring the vector collection from an interrupted compaction")
+                try:
+                    client.get_collection(COMPACT_BACKUP_NAME).modify(name=COLLECTION_NAME)
+                except (KeyError, ValueError):
+                    raise  # an unreadable config: translated below
+                except Exception as exc:
+                    # Decide by the state left behind, as compact() does: a
+                    # rename can commit and still raise.
+                    try:
+                        restored = COLLECTION_NAME in _collection_names(client)
+                    except Exception:
+                        restored = False
+                    if not restored:
+                        # Still unreadable: fatal (refresh exits 2, not a traceback).
+                        raise CompactionRestoreError(self._chroma_path) from exc
+                    logger.warning("The restore rename raised after committing", exc_info=True)
+            elif COLLECTION_NAME not in names and not self._create:
+                raise MissingVectorCollectionError(self._chroma_path)
+            return client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+        except (KeyError, ValueError) as exc:
+            # The persisted collection configuration is unreadable. This is the
+            # one corruption the pre-open sysdb-migration probe cannot catch:
+            # an older chromadb (0.6) process that wrote to this 1.x directory
+            # leaves a ``config_json_str`` without the ``_type`` discriminator,
+            # so chromadb's own ``CollectionConfigurationInternal.from_json``
+            # raises ``KeyError: '_type'`` (or a ValueError on an unknown type)
+            # while loading the existing collection. A fresh/empty directory
+            # never hits this path (creation does not parse an existing config),
+            # so translating it here only ever fires on a genuinely poisoned
+            # index. Surface the typed, actionable error instead of the opaque
+            # one so ``serve``/``refresh`` print the reset remediation.
+            raise IncompatibleIndexFormatError(
+                self._chroma_path,
+                reason=(
+                    "the persisted collection configuration is unreadable "
+                    f"({exc!r}); this happens when an older chromadb (0.6) "
+                    "process writes to a 1.x index directory"
+                ),
+            ) from exc
 
     def _release_client(self) -> None:
         """Release this client's Chroma resources via the public close API.
@@ -741,9 +513,19 @@ class VectorIndex:
         self._collection = None
         self._client = None
         self._closed = True
-        if self._readonly_tempdir is not None:
-            self._readonly_tempdir.cleanup()
-            self._readonly_tempdir = None
+
+    def count(self) -> int:
+        """Number of records in the collection."""
+        with self._op_lock:
+            return int(self._collection.count())
+
+    def get_page(self, *, offset: int, limit: int, include: list[Any]) -> dict[str, Any]:
+        """Raw records ``offset`` to ``offset + limit`` (ids plus *include* fields).
+
+        For export tools (the dashboard scripts) that walk the whole collection.
+        """
+        with self._op_lock:
+            return dict(self._collection.get(limit=limit, offset=offset, include=include))
 
     def close(self) -> None:
         """Release this client's Chroma resources."""
@@ -758,54 +540,156 @@ class VectorIndex:
         System from ChromaDB's shared cache, so the subsequent ``_open_client``
         rebuilds a fresh System over the recreated directory.
         """
-        if self._read_only:
-            raise RuntimeError("read-only VectorIndex cannot reset")
         with self._op_lock:
-            try:
-                parent_before = self._chroma_path.parent.lstat()
-                root_before = self._chroma_path.lstat()
-            except OSError as exc:
-                raise ValueError("Unsafe Chroma reset path") from exc
-            if (
-                is_reparse_link(self._chroma_path.parent)
-                or not stat.S_ISDIR(parent_before.st_mode)
-                or is_reparse_link(self._chroma_path)
-                or not stat.S_ISDIR(root_before.st_mode)
-            ):
-                raise ValueError("Unsafe Chroma reset path")
-            with index_lock(self._chroma_path.parent, exclusive=True):
-                self._release_client()
-                _remove_tree_no_follow(
-                    self._chroma_path,
-                    expected_parent=(parent_before.st_dev, parent_before.st_ino),
-                    expected_root=(root_before.st_dev, root_before.st_ino),
-                )
-                if self._chroma_path.exists() or self._chroma_path.is_symlink():
-                    raise OSError(f"Chroma reset did not remove {self._chroma_path}")
-                # Reopen before releasing the generation lock. A concurrent
-                # refresh must not publish a new generation between delete and
-                # collection creation.
-                self._open_client(lock_held=True)
-                logger.info("VectorIndex reset at %s", self._chroma_path)
+            self._release_client()
+            shutil.rmtree(self._chroma_path, ignore_errors=True)
+            # A reset is a deliberate wipe-and-recreate: the reopen below must
+            # create the database and collection it just deleted, even for a
+            # store opened with create=False (which would raise
+            # MissingVectorCollectionError after the delete).
+            self._create = True
+            self._open_client()
+            logger.info("VectorIndex reset at %s", self._chroma_path)
 
     def clear(self) -> None:
         """Drop all records by deleting and recreating the collection."""
-        if self._read_only:
-            raise RuntimeError("read-only VectorIndex cannot clear")
         with self._op_lock:
-            with index_lock(self._chroma_path.parent, exclusive=True):
-                self.reopen_if_replaced(lock_held=True)
-                self._client.delete_collection(COLLECTION_NAME)
-                self._collection = self._client.get_or_create_collection(
-                    name=COLLECTION_NAME,
-                    metadata={"hnsw:space": "cosine"},
-                )
+            self._client.delete_collection(COLLECTION_NAME)
+            self._collection = self._client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
             logger.info("VectorIndex cleared")
+
+    def compact(self) -> int:
+        """Rebuild the collection so its HNSW graph holds only live records.
+
+        ``delete`` + re-``add`` of the same ids (what ``refresh --force`` does)
+        leaves the deleted elements in the persisted graph, so it grows by the
+        full corpus on every forced refresh (20k -> 80k elements for 20k live
+        records over four rounds, 2026-10-15 spike). A bigger graph is more
+        data for the next load to get wrong. This copies the live records into
+        a staging collection, swaps it in, and removes the orphaned segment
+        directory of the old one. Returns the number of records carried over;
+        the old collection is untouched unless the copy verified. If it fails
+        and leaves no ``latest`` (whichever step raised), raises
+        :class:`CompactionSwapError` (fatal) and deletes nothing; refresh's
+        next open restores the backup. If the collections can't even be
+        listed, it re-raises the original error and deletes nothing.
+        """
+        staging_name = COMPACT_STAGING_NAME
+        with self._op_lock:
+            old = self._collection
+            total = int(old.count())
+            for leftover in (staging_name, COMPACT_BACKUP_NAME):  # from an interrupted run
+                with contextlib.suppress(Exception):
+                    self._client.delete_collection(leftover)
+            staging = self._client.create_collection(
+                name=staging_name, metadata={"hnsw:space": "cosine"}
+            )
+            try:
+                copied = 0
+                while copied < total:
+                    page = old.get(
+                        limit=_CHROMA_BATCH_SIZE,
+                        offset=copied,
+                        include=["documents", "metadatas", "embeddings"],
+                    )
+                    ids = page["ids"]
+                    if not ids:
+                        break
+                    staging.add(
+                        ids=ids,
+                        documents=page["documents"],
+                        metadatas=page["metadatas"],
+                        embeddings=page["embeddings"],
+                    )
+                    # Same per-batch runaway check as upsert(): the staging
+                    # graph is written by the same native code.
+                    self._write_guard.check()
+                    copied += len(ids)
+                if staging.count() != total:
+                    raise RuntimeError(
+                        f"compaction copied {staging.count()} of {total} records; keeping old index"
+                    )
+                # Swap without ever leaving no ``latest``: park the old
+                # collection under a backup name, promote staging, and only
+                # then drop the backup. A crash between the two renames leaves
+                # the backup, which _open_client renames back.
+                old.modify(name=COMPACT_BACKUP_NAME)
+                try:
+                    staging.modify(name=COLLECTION_NAME)
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        old.modify(name=COLLECTION_NAME)
+                    raise
+            except BaseException as exc:
+                # Decide by the state left behind, not by which step raised: a
+                # rename can commit and still raise.
+                names: set[Any] | None
+                try:
+                    names = _collection_names(self._client)
+                except Exception:
+                    # Can't tell (e.g. a transient "database is locked"): not
+                    # proof the index is lost, so don't report it as such, and
+                    # keep everything. If ``latest`` really is gone, readers
+                    # say so and refresh's next open restores the backup.
+                    names = None
+                if names is not None and COLLECTION_NAME not in names:
+                    # No ``latest``: readers fail until refresh restores the
+                    # backup, so this must not pass for the non-fatal "index
+                    # valid but larger" outcome. Destroy nothing.
+                    raise CompactionSwapError(self._chroma_path) from exc
+                if names is not None:
+                    with contextlib.suppress(Exception):
+                        self._collection = self._client.get_collection(COLLECTION_NAME)
+                    with contextlib.suppress(Exception):
+                        self._client.delete_collection(staging_name)
+                raise
+            self._collection = self._client.get_collection(COLLECTION_NAME)
+            try:
+                self._client.delete_collection(COMPACT_BACKUP_NAME)
+            except Exception:
+                logger.warning(
+                    "Could not drop the pre-compaction collection; the next compaction removes it",
+                    exc_info=True,
+                )
+            self._write_guard = HnswWriteGuard(self._chroma_path.resolve())
+            self._remove_orphan_segment_dirs()
+        logger.info("VectorIndex compacted: %d records", total)
+        return total
+
+    def _remove_orphan_segment_dirs(self) -> None:
+        """Delete UUID segment dirs no longer referenced by chroma.sqlite3.
+
+        Chroma leaves a dropped collection's segment directory (and its
+        bloated graph) on disk. Best effort: skipped unless the segment table
+        was readable and non-empty, and on a chromadb release whose on-disk
+        layout this was not verified against (a changed ``segments`` table
+        could otherwise make live data look orphaned).
+        """
+        if not chromadb_format_verified():
+            return
+        rows = query_chroma_sqlite(self._chroma_path, "SELECT id FROM segments", immutable=False)
+        referenced = {str(row[0]) for row in rows or ()}
+        if not referenced:
+            return
+        for entry in self._chroma_path.iterdir():
+            try:
+                canonical = str(UUID(entry.name))
+            except ValueError:
+                continue
+            # Only the spelling Chroma itself writes (lowercase, hyphenated) is
+            # compared against the table; UUID() also accepts upper-case and
+            # hyphen-less names, which would otherwise never match a row and be
+            # deleted as "orphans".
+            if entry.name != canonical:
+                continue
+            if entry.is_dir() and entry.name not in referenced:
+                shutil.rmtree(entry, ignore_errors=True)
 
     def upsert(self, records: list[ChunkedRecord]) -> int:
         """Upsert records into ChromaDB. Returns count of records written."""
-        if self._read_only:
-            raise RuntimeError("read-only VectorIndex cannot upsert")
         if not records:
             return 0
 
@@ -830,8 +714,7 @@ class VectorIndex:
         if not ids:
             return 0
 
-        with self._op_lock, index_lock(self._chroma_path.parent, exclusive=True):
-            self.reopen_if_replaced(lock_held=True)
+        with self._op_lock:
             # ChromaDB limits batch operations to ~5,461 embeddings.
             for i in range(0, len(ids), _CHROMA_BATCH_SIZE):
                 end = i + _CHROMA_BATCH_SIZE
@@ -841,15 +724,16 @@ class VectorIndex:
                     metadatas=metadatas[i:end],
                     embeddings=embeddings[i:end],
                 )
+                # A runaway link-list file grows silently until the disk fills;
+                # fail the write the moment the persisted graph exceeds its
+                # bound — per batch, so one large upsert can't keep growing it.
+                self._write_guard.check()
         logger.debug("Upserted %d records into vector index", len(ids))
         return len(ids)
 
     def delete_by_content_type(self, content_type: str) -> int:
         """Delete all records matching a content type. Returns count deleted."""
-        if self._read_only:
-            raise RuntimeError("read-only VectorIndex cannot delete records")
-        with self._op_lock, index_lock(self._chroma_path.parent, exclusive=True):
-            self.reopen_if_replaced(lock_held=True)
+        with self._op_lock:
             where_clause: dict[str, Any] = {"content_type": {"$eq": content_type}}
             existing = self._collection.get(where=where_clause, include=[])
             ids = existing["ids"]
@@ -866,10 +750,7 @@ class VectorIndex:
 
     def delete_by_repo(self, repo: str) -> int:
         """Delete all records matching a repo. Returns count deleted."""
-        if self._read_only:
-            raise RuntimeError("read-only VectorIndex cannot delete records")
-        with self._op_lock, index_lock(self._chroma_path.parent, exclusive=True):
-            self.reopen_if_replaced(lock_held=True)
+        with self._op_lock:
             where_clause: dict[str, Any] = {"repo": {"$eq": repo}}
             existing = self._collection.get(where=where_clause, include=[])
             ids = existing["ids"]
@@ -883,10 +764,7 @@ class VectorIndex:
 
     def delete_by_source(self, source_url: str) -> int:
         """Delete all records matching a source URL. Returns count deleted."""
-        if self._read_only:
-            raise RuntimeError("read-only VectorIndex cannot delete records")
-        with self._op_lock, index_lock(self._chroma_path.parent, exclusive=True):
-            self.reopen_if_replaced(lock_held=True)
+        with self._op_lock:
             where_clause: dict[str, Any] = {"source_url": {"$eq": source_url}}
             existing = self._collection.get(where=where_clause, include=[])
             ids = existing["ids"]
@@ -907,9 +785,6 @@ class VectorIndex:
             return []
 
         with self._op_lock:
-            # The outer IndexStore lock serializes this check with refresh;
-            # reopen in-place if another process replaced the Chroma tree.
-            self.reopen_if_replaced(lock_held=True)
             needs_post_filter = any(
                 k in query.filters
                 for k in ("path", "capability_tags", "class_name", "module_path", "yields", "calls")

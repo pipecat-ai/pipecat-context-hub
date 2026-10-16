@@ -493,6 +493,7 @@ class TestConfigTomlExampleParity:
             "PIPECAT_HUB_CONFIG_FILE",
             "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK",
             "PIPECAT_HUB_STABILITY_OUTPUT",
+            "PIPECAT_HUB_MIN_FREE_GB",
         }
         assert internal_vars.isdisjoint(example_keys | readme_keys), (
             "An invocation-scoped key leaked into config.toml.example or the "

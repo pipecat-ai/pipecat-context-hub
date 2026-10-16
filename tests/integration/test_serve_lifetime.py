@@ -28,7 +28,7 @@ def seeded_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A tmp `$HOME` holding a minimal non-empty index.
 
     `cli.serve` fail-fasts with exit code 2 when the index is empty
-    (see `_EXIT_INDEX_UNREADY` in cli.py). The lifetime tests only care
+    (`EXIT_INDEX_UNREADY` in shared/exit_codes.py). The lifetime tests only care
     that `serve` reaches the transport; they don't need real data. This
     fixture seeds one record into `<tmp_home>/.pipecat-context-hub/` so
     subprocesses launched with `env["HOME"]=<tmp_home>` find a usable
@@ -48,7 +48,7 @@ def seeded_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     home = tmp_path_factory.mktemp("serve_lifetime_home")
     data_dir = home / ".pipecat-context-hub"
     storage = StorageConfig(data_dir=data_dir)
-    store = IndexStore(storage)
+    store = IndexStore(storage, create=True)
     try:
         writer = EmbeddingIndexWriter(store, EmbeddingService(EmbeddingConfig()))
         record = ChunkedRecord(

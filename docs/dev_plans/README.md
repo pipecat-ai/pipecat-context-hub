@@ -3,10 +3,12 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-10-15 | feature | Windows index locking: shared locks via `LockFileEx`, `--reset-index` vs running `serve`, Windows CI for the lock path | Planned (design notes) | vr000m | _(not started)_ | `20261015-feature-windows-index-locking.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-10-14 | fix | Index write guards: post-write HNSW size check, refresh disk preflight, refresh/serve locks (runaway 325 GB `link_lists.bin`) | Complete (PR #139) | Claude | `fix/index-write-guards` | `20261014-fix-index-write-guards.md` |
 | 2026-10-16 | feature | ChatGPT plugin 0.2.4 visibility and setup refinement | Complete — candidate ready for consolidated review | Codex | `feature/chatgpt-local-plugin` | `20261016-feature-chatgpt-plugin-0-2-4.md` |
 | 2026-10-02 | Feature | CLI-first Pipecat plugin: setup, explore, build and deploy | Complete — 0.2.3 accepted/published (user-confirmed); fresh setup/Work activation unqualified | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
 | 2026-10-02 | chore | Security update: PyJWT 2.15.0; integrates PR #137 (PR #136) | Complete (v0.8.1; PR #136) | Dependabot / vr000m | `dependabot/uv/pyjwt-2.15.0` | _(no plan file)_ |
@@ -31,7 +33,7 @@
 | 2026-06-12 | feat | Staleness footer on tool responses (both front doors) | Complete (v0.2.0) | markbackman | `feat/staleness-footer` | _(no plan file)_ |
 | 2026-06-12 | feat | One-shot CLI query subcommands (every MCP tool as a shell command) | Complete (v0.2.0) | markbackman | `feat/cli-query-subcommands` | `20260612-feature-cli-query-subcommands.md` |
 | 2026-06-06 | feat | Add RN transports to default ingest; keep pipecat-cli opt-in; pip-audit fix + justfile↔CI ignore parity | Complete (v0.2.0) | vr000m | `feat/ingest-rn-transports-and-cli` | _(no plan file)_ |
-| 2026-05-30 | chore | chromadb 1.x migration + Python 3.14 prep (format break) | Historic subset recorded (v0.1.0; remaining release gates not claimed) | vr000m | `chore/chromadb-1x-python-314` | `20260529-chore-chromadb-1x-python-314.md` |
+| 2026-05-30 | chore | chromadb 1.x migration + Python 3.14 prep (format break) | Complete (v0.1.0) | vr000m | `chore/chromadb-1x-python-314` | `20260529-chore-chromadb-1x-python-314.md` |
 | 2026-05-30 | fix | Bound `serve` lifetime to real client under `uv run` (grandparent-death watchdog) | Complete (v0.1.0) | vr000m | `fix/serve-uv-run-grandparent-watchdog` | `20260530-fix-serve-uv-run-grandparent-watchdog.md` |
 | 2026-04-21 | bug | Bound `serve` process lifetime to its client (parent-death watchdog) | Complete (v0.0.18) | vr000m | `feature/serve-orphan-watchdog` | `20260421-bug-serve-orphan-watchdog.md` |
 | 2026-04-20 | feature | Reranker Startup Telemetry (banner, HF cache-path diagnostics, degraded-hub guideline) | Complete (v0.0.17) | vr000m | `feature/reranker-startup-telemetry` | _(no plan file)_ |

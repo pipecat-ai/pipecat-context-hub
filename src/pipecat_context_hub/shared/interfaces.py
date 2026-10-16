@@ -7,7 +7,7 @@ Concrete implementations are wired together during integration (T8).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from pipecat_context_hub.shared.types import (
     ChunkedRecord,
@@ -27,7 +27,6 @@ from pipecat_context_hub.shared.types import (
     SearchExamplesInput,
     SearchExamplesOutput,
 )
-
 
 # ---------------------------------------------------------------------------
 # Index service protocols
@@ -57,34 +56,43 @@ class IndexReader(Protocol):
         """Return results ranked by FTS5 keyword relevance."""
         ...
 
-    async def hybrid_search(self, query: IndexQuery) -> tuple[list[IndexResult], list[IndexResult]]:
-        """Return vector and keyword results from one generation when supported."""
-        ...
 
+class ServingIndex(IndexReader, Protocol):
+    """The read surface ``serve`` exposes to tool handlers.
 
-class IndexStatusReader(IndexReader, Protocol):
-    """Read-only index surface needed by status and one-shot query callers."""
+    Satisfied by ``IndexStore`` and by ``serve``'s reopening handle.
+    """
 
     @property
     def data_dir(self) -> Path:
-        """Return the persisted index directory."""
+        """Path to the index data directory."""
+        ...
+
+    def get_index_stats(self) -> dict[str, Any]:
+        """Return index statistics (counts by type, total, commit SHAs)."""
         ...
 
     def get_all_metadata(self) -> dict[str, str]:
-        """Return persisted index metadata without changing it."""
+        """Return all persistent index metadata as a dict."""
         ...
 
-    def get_index_stats(self) -> dict[str, object]:
-        """Return persisted index counts and provenance."""
-        ...
 
-    def get_status_snapshot(self) -> tuple[dict[str, object], dict[str, str]]:
-        """Return statistics and metadata from one published generation."""
-        ...
+class FatalIndexError(RuntimeError):
+    """The on-disk index is unsafe to keep using (incompatible or corrupt).
 
-    def close(self) -> None:
-        """Release read handles."""
-        ...
+    Raised by an ``IndexWriter`` (or on open). Ingesters must re-raise it
+    rather than record it as one more per-source error, so a refresh stops
+    instead of writing every remaining source into a damaged index.
+    """
+
+
+class IndexUnavailableError(RuntimeError):
+    """The index cannot serve this call right now; ``str(exc)`` says why.
+
+    The message is meant for the calling agent (e.g. "retry in 60-120
+    seconds" while a refresh rewrites the index, or how to rebuild an empty
+    or unreadable index).
+    """
 
 
 # ---------------------------------------------------------------------------

@@ -147,7 +147,7 @@ def seeded_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Create the smallest real index that lets ``serve`` reach MCP."""
     home = tmp_path_factory.mktemp("mcp_v2_home")
     data_dir = home / ".pipecat-context-hub"
-    store = IndexStore(StorageConfig(data_dir=data_dir))
+    store = IndexStore(StorageConfig(data_dir=data_dir), create=True)
     try:
         record = ChunkedRecord(
             chunk_id="mcp-v2-seed",

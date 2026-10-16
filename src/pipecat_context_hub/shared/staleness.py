@@ -30,8 +30,10 @@ import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
 if TYPE_CHECKING:
-    from pipecat_context_hub.shared.interfaces import IndexStatusReader
+    from pipecat_context_hub.shared.interfaces import ServingIndex
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,7 @@ def _stale_after_days() -> float:
     return value
 
 
-def staleness_info(index_store: IndexStatusReader) -> dict[str, Any] | None:
+def staleness_info(index_store: ServingIndex) -> dict[str, Any] | None:
     """Return the ``index_staleness`` payload, or None when fresh/unknown.
 
     Reads ``last_refresh_at`` per call rather than caching, so a long-lived
@@ -100,7 +102,7 @@ def staleness_info(index_store: IndexStatusReader) -> dict[str, Any] | None:
     }
 
 
-def annotate_response(result_json: str, index_store: IndexStatusReader) -> str:
+def annotate_response(result_json: str, index_store: ServingIndex) -> str:
     """Inject ``index_staleness`` into a tool handler's JSON response.
 
     Returns the input unchanged when the index is fresh, when the payload
@@ -120,6 +122,12 @@ def annotate_response(result_json: str, index_store: IndexStatusReader) -> str:
             return result_json
         payload["index_staleness"] = info
         return json.dumps(payload)
+    except IndexUnavailableError:
+        # The index went unavailable between the handler and this read (a
+        # refresh started, or a reopen is pending): an expected race, not a
+        # failure worth a traceback. The response is still good; skip the footer.
+        logger.debug("Skipping the staleness annotation: index unavailable", exc_info=True)
+        return result_json
     except Exception:
         logger.exception("Failed to annotate response with staleness info")
         return result_json

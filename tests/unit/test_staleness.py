@@ -4,25 +4,16 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
-import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import main
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.staleness import annotate_response, staleness_info
 
 runner = CliRunner()
-
-
-@pytest.fixture(autouse=True)
-def _seed_persisted_index_for_mocked_store(tmp_path: Path) -> None:
-    """Represent the persisted marker required before opening a mocked store."""
-    (tmp_path / "metadata.db").write_bytes(b"marker")
-    (tmp_path / "chroma").mkdir()
-    (tmp_path / "chroma" / "chroma.sqlite3").write_bytes(b"marker")
 
 
 def _store_refreshed_days_ago(days: float) -> MagicMock:
@@ -109,6 +100,16 @@ class TestAnnotateResponse:
         raw = '{"hits": []}'
         assert annotate_response(raw, store) == raw
 
+    def test_index_unavailable_is_skipped_quietly(self, caplog):
+        """A refresh starting between the handler and the footer is an expected
+        race: the response survives and nothing is logged as an error."""
+        store = MagicMock()
+        store.get_all_metadata.side_effect = IndexUnavailableError("retry in 60-120 seconds")
+        raw = '{"hits": []}'
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.shared.staleness"):
+            assert annotate_response(raw, store) == raw
+        assert caplog.records == []
+
     def test_no_parsed_shortcut_parameter(self):
         """``annotate_response`` takes exactly ``(result_json, index_store)``.
 
@@ -134,7 +135,7 @@ class TestBothFrontDoors:
     def test_cli_response_carries_footer_when_stale(self, tmp_path):
         with (
             patch(
-                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
+                "pipecat_context_hub.services.index.store.IndexStore",
                 return_value=_store_refreshed_days_ago(21),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
@@ -147,7 +148,7 @@ class TestBothFrontDoors:
     def test_cli_status_is_never_annotated(self, tmp_path):
         with (
             patch(
-                "pipecat_context_hub.services.index.store.ReadOnlyIndexStore",
+                "pipecat_context_hub.services.index.store.IndexStore",
                 return_value=_store_refreshed_days_ago(21),
             ),
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),

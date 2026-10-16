@@ -8,24 +8,19 @@ fields for filtering.
 from __future__ import annotations
 
 import json
-import contextlib
 import logging
-import os
 import sqlite3
-import stat
 import threading
-import tempfile
-import shutil
-import uuid
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
+from pipecat_context_hub.services.index.errors import (
+    CorruptKeywordIndexError,
+    MissingKeywordIndexError,
+)
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
-from pipecat_context_hub.shared.paths import is_reparse_link
-from pipecat_context_hub.services.index.locking import index_lock
 
 logger = logging.getLogger(__name__)
 
@@ -86,204 +81,54 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
 END;
 """
 
+# Every table and trigger _SCHEMA_SQL creates: an open that finds all of them
+# has an initialized database and writes nothing.
+_SCHEMA_OBJECTS = frozenset(
+    {"chunks", "chunks_fts", "index_metadata", "chunks_ai", "chunks_ad", "chunks_au"}
+)
 
-def _identity(info: os.stat_result | None) -> tuple[int, int] | None:
-    return None if info is None else (info.st_dev, info.st_ino)
-
-
-def _sidecar_identity(path: Path) -> tuple[int, int] | None:
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise ValueError(f"unsafe SQLite sidecar path: {path.name}") from exc
-    if is_reparse_link(path) or not stat.S_ISREG(info.st_mode):
-        raise ValueError(f"unsafe SQLite sidecar path: {path.name}")
-    return (info.st_dev, info.st_ino)
-
-
-class _WriterAliasDir:
-    """Descriptor-owned temporary directory for a writer SQLite alias."""
-
-    def __init__(
-        self, path: Path, published_parent_fd: int, alias_parent_fd: int, directory_fd: int
-    ) -> None:
-        self.name = str(path)
-        self._path = path
-        self._published_parent_fd = published_parent_fd
-        self._alias_parent_fd = alias_parent_fd
-        self._directory_fd = directory_fd
-
-    def cleanup(self) -> None:
-        if self._directory_fd == -1:
-            return
-        for name in (self._path.name, f"{self._path.name}-wal", f"{self._path.name}-shm"):
-            with contextlib.suppress(FileNotFoundError, OSError):
-                os.unlink(name, dir_fd=self._directory_fd)
-        os.close(self._directory_fd)
-        self._directory_fd = -1
-        with contextlib.suppress(FileNotFoundError, OSError):
-            os.rmdir(self._path.name, dir_fd=self._alias_parent_fd)
-        os.close(self._alias_parent_fd)
-        os.close(self._published_parent_fd)
-        self._alias_parent_fd = -1
-        self._published_parent_fd = -1
-
-    def stat(self, name: str) -> os.stat_result:
-        return os.stat(name, dir_fd=self._directory_fd, follow_symlinks=False)
-
-    def stat_parent(self, name: str) -> os.stat_result:
-        return os.stat(name, dir_fd=self._published_parent_fd, follow_symlinks=False)
-
-    def link_to_parent(self, source: str, destination: str) -> None:
-        os.link(
-            source,
-            destination,
-            src_dir_fd=self._directory_fd,
-            dst_dir_fd=self._published_parent_fd,
-            follow_symlinks=False,
-        )
+# Primary SQLite result codes that describe the moment (contention, I/O,
+# resources, permissions), not the file: an open failing with one of these is
+# not told to rebuild the index. Every other code (SQLITE_NOTADB,
+# SQLITE_CORRUPT, SQLITE_ERROR for a schema the index cannot use, ...) is.
+_TRANSIENT_SQLITE_CODES = frozenset(
+    {
+        sqlite3.SQLITE_PERM,
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+        sqlite3.SQLITE_NOMEM,
+        sqlite3.SQLITE_READONLY,
+        sqlite3.SQLITE_INTERRUPT,
+        sqlite3.SQLITE_IOERR,
+        sqlite3.SQLITE_FULL,
+        sqlite3.SQLITE_CANTOPEN,
+        sqlite3.SQLITE_PROTOCOL,
+    }
+)
 
 
-def _open_directory_chain(path: Path) -> int:
-    """Open a directory path without following a replaceable component."""
-    if os.open not in getattr(os, "supports_dir_fd", set()):
-        raise OSError("secure SQLite writer aliases are unavailable")
-    absolute = path.expanduser().resolve(strict=True)
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(absolute.anchor, flags)
-    try:
-        for component in absolute.parts[1:]:
-            next_fd = os.open(component, flags, dir_fd=fd)
-            os.close(fd)
-            fd = next_fd
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
+def _is_unreadable(exc: BaseException) -> bool:
+    """Whether *exc* says the database file itself cannot be used.
 
-
-def _writer_alias(
-    sqlite_path: Path,
-) -> tuple[_WriterAliasDir, Path, Path, set[Path]]:
-    """Bind a writer connection to a descriptor-validated database inode.
-
-    SQLite accepts only pathnames, so opening the published pathname directly
-    leaves a replacement window between the caller's no-follow checks and the
-    native constructor. A same-filesystem hard link made after opening the
-    original descriptor pins the connection to that inode. Existing WAL/SHM
-    sidecars receive the same treatment; newly-created sidecars are published
-    back to the original names after the schema transaction commits.
+    False for transient failures and for errors SQLite gave no code for.
     """
-    if os.open not in getattr(os, "supports_dir_fd", set()):
-        raise OSError("secure SQLite writer aliases are unavailable")
-    parent_fd = _open_directory_chain(sqlite_path.parent)
-    try:
-        alias_parent_fd = _open_directory_chain(sqlite_path.parent.parent)
-    except BaseException:
-        os.close(parent_fd)
-        raise
-    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-    db_fd = -1
-    alias_dir: _WriterAliasDir | None = None
-    try:
-        db_fd = os.open(sqlite_path.name, flags, dir_fd=parent_fd)
-    except FileNotFoundError:
-        db_fd = os.open(
-            sqlite_path.name,
-            flags | os.O_CREAT | os.O_EXCL,
-            0o600,
-            dir_fd=parent_fd,
-        )
-    try:
-        db_info = os.fstat(db_fd)
-        if not stat.S_ISREG(db_info.st_mode):
-            raise ValueError("unsafe SQLite database path")
-        alias_name = None
-        for _ in range(100):
-            candidate_name = f".pipecat-context-hub-writer-{uuid.uuid4().hex}"
-            try:
-                os.mkdir(candidate_name, 0o700, dir_fd=alias_parent_fd)
-            except FileExistsError:
-                continue
-            alias_name = candidate_name
-            break
-        if alias_name is None:
-            raise OSError("unable to create secure SQLite writer alias")
-        alias = sqlite_path.parent.parent / alias_name / sqlite_path.name
-        alias_dir_path = sqlite_path.parent.parent / alias_name
-        try:
-            alias_dir_fd = os.open(
-                alias_name,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=alias_parent_fd,
-            )
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.rmdir(alias_name, dir_fd=alias_parent_fd)
-            raise
-        alias_dir = _WriterAliasDir(alias_dir_path, parent_fd, alias_parent_fd, alias_dir_fd)
-        published: set[Path] = set()
-        try:
-            os.link(
-                sqlite_path.name,
-                sqlite_path.name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=alias_dir_fd,
-                follow_symlinks=False,
-            )
-            alias_info = os.stat(sqlite_path.name, dir_fd=alias_dir_fd, follow_symlinks=False)
-            if (alias_info.st_dev, alias_info.st_ino) != (db_info.st_dev, db_info.st_ino):
-                raise ValueError("SQLite database path changed while opening")
-            for suffix in ("-wal", "-shm"):
-                source = sqlite_path.with_name(sqlite_path.name + suffix)
-                try:
-                    source_info = os.stat(source.name, dir_fd=parent_fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    continue
-                if not stat.S_ISREG(source_info.st_mode):
-                    raise ValueError(f"unsafe SQLite {suffix[1:].upper()} path")
-                target = alias.with_name(alias.name + suffix)
-                os.link(
-                    source.name,
-                    target.name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=alias_dir_fd,
-                    follow_symlinks=False,
-                )
-                target_info = os.stat(target.name, dir_fd=alias_dir_fd, follow_symlinks=False)
-                if (target_info.st_dev, target_info.st_ino) != (
-                    source_info.st_dev,
-                    source_info.st_ino,
-                ):
-                    raise ValueError(f"SQLite {suffix[1:].upper()} path changed while opening")
-            # The alias directory is a sibling of the published parent.  A
-            # replacement of that parent therefore cannot redirect this
-            # pathname before SQLite opens it (and its inode is hard-linked to
-            # the descriptor-validated database above).
-            return alias_dir, alias, alias, published
-        except BaseException:
-            alias_dir.cleanup()
-            raise
-    finally:
-        if db_fd != -1:
-            os.close(db_fd)
-        if alias_dir is None:
-            os.close(alias_parent_fd)
-            os.close(parent_fd)
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code is not None and code & 0xFF not in _TRANSIENT_SQLITE_CODES
 
 
-def _checked_sidecar(path: Path, label: str) -> os.stat_result | None:
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise ValueError(f"unsafe SQLite {label} path") from exc
-    if is_reparse_link(path) or not stat.S_ISREG(info.st_mode):
-        raise ValueError(f"unsafe SQLite {label} path")
-    return info
+def is_transient_open_error(exc: BaseException) -> bool:
+    """Whether an open failed for a reason of the moment (busy, locked, I/O,
+    permissions, ...) that retrying, not rebuilding the index, addresses."""
+    if isinstance(exc, OSError):
+        return True
+    code = getattr(exc, "sqlite_errorcode", None)
+    return (
+        isinstance(exc, sqlite3.Error)
+        and code is not None
+        and code & 0xFF in _TRANSIENT_SQLITE_CODES
+    )
 
 
 class FTSIndex:
@@ -293,294 +138,79 @@ class FTSIndex:
     filtering. Data persists in a SQLite database file on disk.
     """
 
-    def __init__(
-        self, sqlite_path: Path, *, read_only: bool = False, lock_held: bool = False
-    ) -> None:
+    def __init__(self, sqlite_path: Path, *, create: bool = False) -> None:
+        """Open the keyword index at *sqlite_path*.
+
+        Only an incomplete schema is written to, so opening an initialized
+        database never writes. A reader (*create* False) never writes: a
+        missing database, or one whose schema is incomplete (e.g. a 0-byte
+        file), raises :class:`MissingKeywordIndexError`. With *create*
+        (``refresh`` only) a missing database is created, and an incomplete
+        one is completed and its FTS table rebuilt from ``chunks``, so rows
+        written without the sync triggers are searchable rather than
+        silently missing. A database that cannot be read (or completed)
+        raises :class:`CorruptKeywordIndexError`.
+        """
         self._sqlite_path = sqlite_path
-        self._read_only = read_only
-        self._lock_held = lock_held
         self._lock = threading.RLock()
-        self._readonly_snapshot_dir: tempfile.TemporaryDirectory[str] | None = None
-        self._writer_alias_dir: _WriterAliasDir | None = None
-        self._writer_alias_path: Path | None = None
-        self._writer_connection_path: Path | None = None
-        self._published_sidecars: set[Path] = set()
-        self._sidecar_identities: dict[Path, tuple[int, int] | None] = {}
-        sidecar_identities: dict[Path, tuple[int, int] | None] = {}
-        initial_identity: tuple[int, int] | None = None
-        if read_only:
-            # ``mode=ro`` (rather than immutable mode) asks SQLite to replay a
-            # committed WAL without creating or writing any sidecars. A live
-            # writer is coordinated by the index generation lock; a WAL
-            # reparse point is always rejected before SQLite sees it.
-            wal_path = sqlite_path.with_name(f"{sqlite_path.name}-wal")
-            wal_info = _checked_sidecar(wal_path, "WAL")
-            shm_path = sqlite_path.with_name(f"{sqlite_path.name}-shm")
-            shm_info = _checked_sidecar(shm_path, "SHM")
-            sidecar_identities = {
-                wal_path: _identity(wal_info),
-                shm_path: _identity(shm_info),
-            }
-            try:
-                initial_info = sqlite_path.lstat()
-            except OSError as exc:
-                raise ValueError("unsafe SQLite database path") from exc
-            if is_reparse_link(sqlite_path) or not stat.S_ISREG(initial_info.st_mode):
-                raise ValueError("unsafe SQLite database path")
-            initial_identity = (initial_info.st_dev, initial_info.st_ino)
-            connection_path = sqlite_path
-            if wal_info is not None:
-                # Python's sqlite wrapper cannot open a pathname relative to
-                # an already-validated directory descriptor. Snapshot the
-                # validated main/WAL/SHM files through no-follow descriptors,
-                # then let SQLite open only that private, identity-stable copy.
-                # This prevents a concurrent sidecar replacement from being
-                # consumed before the identity check runs.
-                snapshot_dir = tempfile.TemporaryDirectory(prefix="pipecat-context-hub-fts-")
-                snapshot_root = Path(snapshot_dir.name)
-                try:
-                    sources = [sqlite_path, wal_path]
-                    if shm_info is not None:
-                        sources.append(shm_path)
-                    for source in sources:
-                        source_info = source.lstat()
-                        expected = _identity(source_info)
-                        fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-                        try:
-                            opened = os.fstat(fd)
-                            if expected != _identity(opened):
-                                raise ValueError("SQLite path changed while snapshotting")
-                            destination = snapshot_root / source.name
-                            with destination.open("wb") as output:
-                                with os.fdopen(os.dup(fd), "rb") as input_stream:
-                                    shutil.copyfileobj(input_stream, output)
-                            after = os.fstat(fd)
-                            if _identity(after) != expected:
-                                raise ValueError("SQLite path changed while snapshotting")
-                        finally:
-                            os.close(fd)
-                except BaseException:
-                    snapshot_dir.cleanup()
-                    raise
-                self._readonly_snapshot_dir = snapshot_dir
-                connection_path = snapshot_root / sqlite_path.name
-            query = "mode=ro" if wal_info is not None else "mode=ro&immutable=1"
-            uri = f"file:{quote(str(connection_path), safe='/')}?{query}"
-            try:
-                self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
-            except BaseException:
-                if self._readonly_snapshot_dir is not None:
-                    self._readonly_snapshot_dir.cleanup()
-                    self._readonly_snapshot_dir = None
-                raise
-        else:
-            (
-                self._writer_alias_dir,
-                self._writer_alias_path,
-                self._writer_connection_path,
-                self._published_sidecars,
-            ) = _writer_alias(sqlite_path)
-            try:
-                self._conn = sqlite3.connect(
-                    str(self._writer_connection_path), check_same_thread=False
-                )
-            except BaseException:
-                self._writer_alias_dir.cleanup()
-                self._writer_alias_dir = None
-                self._writer_alias_path = None
-                self._writer_connection_path = None
-                raise
-        self._closed = False
+        if not create and not sqlite_path.is_file():
+            raise MissingKeywordIndexError(sqlite_path)
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
         try:
-            info = sqlite_path.lstat()
-            if is_reparse_link(sqlite_path) or not stat.S_ISREG(info.st_mode):
-                raise ValueError("unsafe SQLite database path")
-            identity = (info.st_dev, info.st_ino)
-            if initial_identity is not None and identity != initial_identity:
-                raise ValueError("SQLite database path changed while opening")
-            if sidecar_identities and any(
-                _sidecar_identity(path) != expected for path, expected in sidecar_identities.items()
-            ):
-                raise ValueError("SQLite WAL/SHM path changed while opening")
-            if not read_only:
+            present = {
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')"
+                )
+            }
+            missing = _SCHEMA_OBJECTS - present
+            if missing and not create:
+                raise MissingKeywordIndexError(sqlite_path)
+            if missing:
                 self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.executescript(_SCHEMA_SQL)
-                self._conn.commit()
-                alias_path = self._writer_alias_path
-                alias_dir = self._writer_alias_dir
-                if alias_path is not None and alias_dir is not None:
-                    for suffix in ("-wal", "-shm"):
-                        sidecar_name = f"{alias_path.name}{suffix}"
-                        try:
-                            alias_sidecar_info = alias_dir.stat(sidecar_name)
-                        except FileNotFoundError:
-                            continue
-                        published = sqlite_path.with_name(sqlite_path.name + suffix)
-                        try:
-                            existing = alias_dir.stat_parent(published.name)
-                        except FileNotFoundError:
-                            alias_dir.link_to_parent(sidecar_name, published.name)
-                            self._published_sidecars.add(published)
-                        else:
-                            if not stat.S_ISREG(existing.st_mode):
-                                raise ValueError(f"unsafe SQLite {suffix[1:].upper()} path")
-                            if (existing.st_dev, existing.st_ino) != (
-                                alias_sidecar_info.st_dev,
-                                alias_sidecar_info.st_ino,
-                            ):
-                                raise ValueError(
-                                    f"SQLite {suffix[1:].upper()} path changed while opening"
-                                )
-            self._identity = identity
-            # ``lock_held`` only describes the lock used while constructing this
-            # connection.  The constructor returns after that generation lock has
-            # been released, so retaining the flag would let ``close`` unlink
-            # published WAL/SHM sidecars without reacquiring it.
-            self._lock_held = False
-            tracked_sidecars = (
-                sqlite_path.with_name(f"{sqlite_path.name}-wal"),
-                sqlite_path.with_name(f"{sqlite_path.name}-shm"),
-            )
-            self._sidecar_identities = {path: _sidecar_identity(path) for path in tracked_sidecars}
-            logger.info("FTSIndex initialized at %s", sqlite_path)
-        except BaseException:
-            # The native connection and the descriptor-owned alias are both
-            # live before schema setup and sidecar publication finish.  Any
-            # validation, PRAGMA, schema, or publication failure must release
-            # both so a retry cannot inherit a leaked connection or alias.
-            with contextlib.suppress(BaseException):
-                self._conn.close()
-            if self._readonly_snapshot_dir is not None:
-                with contextlib.suppress(BaseException):
-                    self._readonly_snapshot_dir.cleanup()
-                self._readonly_snapshot_dir = None
-            if self._writer_alias_dir is not None:
-                with contextlib.suppress(BaseException):
-                    self._writer_alias_dir.cleanup()
-                self._writer_alias_dir = None
-                self._writer_alias_path = None
-                self._writer_connection_path = None
-            self._closed = True
+                # One transaction: completing the schema and rebuilding the FTS
+                # table commit together, so a failed rebuild leaves the schema
+                # incomplete and the next refresh retries it (rather than
+                # finding every object present and skipping the rebuild).
+                rebuild = ""
+                if "chunks" in present:
+                    logger.warning(
+                        "Keyword index at %s was incomplete (missing %s); rebuilding its FTS table",
+                        sqlite_path,
+                        ", ".join(sorted(missing)),
+                    )
+                    rebuild = "INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild');"
+                self._conn.executescript(f"BEGIN;\n{_SCHEMA_SQL}\n{rebuild}\nCOMMIT;")
+        except BaseException as exc:
+            self._conn.close()
+            if _is_unreadable(exc):
+                raise CorruptKeywordIndexError(sqlite_path, str(exc)) from exc
             raise
+        self._closed = False
+        logger.info("FTSIndex initialized at %s", sqlite_path)
+
+    def has_records(self) -> bool:
+        """Whether any record is indexed (the open's first read of ``chunks``)."""
+        with self._lock:
+            try:
+                return self._conn.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() is not None
+            except sqlite3.DatabaseError as exc:
+                if _is_unreadable(exc):
+                    raise CorruptKeywordIndexError(self._sqlite_path, str(exc)) from exc
+                raise
 
     def close(self) -> None:
         """Close the database connection."""
         with self._lock:
             if self._closed:
                 return
-            lock_context = None
-            locked = self._lock_held
-            if not locked:
-                lock_context = index_lock(self._sqlite_path.parent, exclusive=True)
-                try:
-                    lock_context.__enter__()
-                    locked = True
-                except (OSError, RuntimeError, ValueError):
-                    # The connection still must be closed if its parent was
-                    # replaced. Without the generation lock, leave published
-                    # sidecars in place rather than unlinking a new generation.
-                    lock_context = None
-            try:
-                self._conn.close()
-                self._closed = True
-                if locked and not self._read_only:
-                    for path in set(self._sidecar_identities) | self._published_sidecars:
-                        # A second writer owns a hard-linked alias of this
-                        # sidecar. Keep the published name in that case.
-                        expected = self._sidecar_identities.get(path)
-                        with contextlib.suppress(OSError, ValueError):
-                            parent_fd = _open_directory_chain(path.parent)
-                            try:
-                                info = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-                                if expected == (info.st_dev, info.st_ino) and info.st_nlink <= 2:
-                                    os.unlink(path.name, dir_fd=parent_fd)
-                            finally:
-                                os.close(parent_fd)
-                self._published_sidecars.clear()
-                if self._readonly_snapshot_dir is not None:
-                    self._readonly_snapshot_dir.cleanup()
-                    self._readonly_snapshot_dir = None
-                if self._writer_alias_dir is not None:
-                    self._writer_alias_dir.cleanup()
-                    self._writer_alias_dir = None
-                    self._writer_alias_path = None
-                    self._writer_connection_path = None
-            finally:
-                if locked and lock_context is not None:
-                    lock_context.__exit__(None, None, None)
-
-    def reopen_if_replaced(self) -> bool:
-        """Reopen after another process publishes a new SQLite generation."""
-        with self._lock:
-            try:
-                info = self._sqlite_path.lstat()
-            except OSError as exc:
-                raise ValueError("SQLite database generation is unavailable") from exc
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-                raise ValueError("unsafe SQLite database path")
-            identity = (info.st_dev, info.st_ino)
-            current_sidecars = {
-                self._sqlite_path.with_name(f"{self._sqlite_path.name}-wal"),
-                self._sqlite_path.with_name(f"{self._sqlite_path.name}-shm"),
-            }
-            sidecars_changed = any(
-                _sidecar_identity(path) != self._sidecar_identities.get(path)
-                for path in current_sidecars
-            )
-            if identity == self._identity and not sidecars_changed:
-                return False
-            self.close()
-            replacement = FTSIndex(self._sqlite_path, read_only=self._read_only)
-            self._conn = replacement._conn
-            # A WAL-backed read-only connection may point at a private
-            # snapshot.  Transfer ownership of that directory together with
-            # the connection; otherwise ``replacement`` is finalized on
-            # return and deletes files still in use by ``self._conn``.
-            self._readonly_snapshot_dir = replacement._readonly_snapshot_dir
-            replacement._readonly_snapshot_dir = None
-            self._writer_alias_dir = replacement._writer_alias_dir
-            replacement._writer_alias_dir = None
-            self._writer_alias_path = replacement._writer_alias_path
-            replacement._writer_alias_path = None
-            self._writer_connection_path = replacement._writer_connection_path
-            replacement._writer_connection_path = None
-            self._published_sidecars = replacement._published_sidecars
-            replacement._published_sidecars = set()
-            self._closed = False
-            self._identity = replacement._identity
-            self._sidecar_identities = replacement._sidecar_identities
-            return True
-
-    def reopen(self) -> None:
-        """Reopen even when the database inode is unchanged.
-
-        Refresh publishes records in place, so inode identity alone cannot
-        tell a long-lived reader that its native SQLite/FTS state belongs to
-        the prior generation.
-        """
-        with self._lock:
-            read_only = self._read_only
-            self.close()
-            replacement = FTSIndex(self._sqlite_path, read_only=read_only)
-            self._conn = replacement._conn
-            self._readonly_snapshot_dir = replacement._readonly_snapshot_dir
-            replacement._readonly_snapshot_dir = None
-            self._writer_alias_dir = replacement._writer_alias_dir
-            replacement._writer_alias_dir = None
-            self._writer_alias_path = replacement._writer_alias_path
-            replacement._writer_alias_path = None
-            self._writer_connection_path = replacement._writer_connection_path
-            replacement._writer_connection_path = None
-            self._published_sidecars = replacement._published_sidecars
-            replacement._published_sidecars = set()
-            self._closed = False
-            self._identity = replacement._identity
-            self._sidecar_identities = replacement._sidecar_identities
+            self._conn.close()
+            self._closed = True
 
     def clear(self) -> None:
         """Delete all records from the chunks table (triggers sync FTS)."""
         with self._lock:
-            self.reopen_if_replaced()
             self._conn.execute("DELETE FROM chunks")
             self._conn.commit()
             logger.info("FTSIndex cleared")
@@ -588,7 +218,6 @@ class FTSIndex:
     def clear_metadata(self) -> None:
         """Delete all persisted index metadata."""
         with self._lock:
-            self.reopen_if_replaced()
             self._conn.execute("DELETE FROM index_metadata")
             self._conn.commit()
             logger.info("FTSIndex metadata cleared")
@@ -605,7 +234,6 @@ class FTSIndex:
             return 0
 
         with self._lock:
-            self.reopen_if_replaced()
             count = 0
             for record in records:
                 meta_json = json.dumps(record.metadata)
@@ -645,7 +273,6 @@ class FTSIndex:
     def delete_by_content_type(self, content_type: str) -> int:
         """Delete all records with a given content type. Returns count deleted."""
         with self._lock:
-            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 "SELECT COUNT(*) FROM chunks WHERE content_type = ?",
                 (content_type,),
@@ -668,7 +295,6 @@ class FTSIndex:
     def delete_by_repo(self, repo: str) -> int:
         """Delete all records with a given repo. Returns count deleted."""
         with self._lock:
-            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 "SELECT COUNT(*) FROM chunks WHERE repo = ?",
                 (repo,),
@@ -689,7 +315,6 @@ class FTSIndex:
     def delete_by_source(self, source_url: str) -> int:
         """Delete all records with a given source URL. Returns count deleted."""
         with self._lock:
-            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 "SELECT COUNT(*) FROM chunks WHERE source_url = ?",
                 (source_url,),
@@ -714,7 +339,6 @@ class FTSIndex:
         lookup and the FTS MATCH clause is skipped.
         """
         with self._lock:
-            self.reopen_if_replaced()
             # Direct lookup by chunk_id — bypass FTS MATCH
             if "chunk_id" in query.filters:
                 return self._get_by_chunk_id(query.filters["chunk_id"])
@@ -803,7 +427,6 @@ class FTSIndex:
     def _get_by_chunk_id(self, chunk_id: str) -> list[IndexResult]:
         """Direct lookup by chunk_id, bypassing FTS MATCH."""
         with self._lock:
-            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 """
                 SELECT chunk_id, content, content_type, source_url,
@@ -900,7 +523,6 @@ class FTSIndex:
     def set_metadata(self, key: str, value: str) -> None:
         """Upsert a key-value pair in the index_metadata table."""
         with self._lock:
-            self.reopen_if_replaced()
             now = datetime.now().astimezone().isoformat()
             self._conn.execute(
                 """
@@ -917,7 +539,6 @@ class FTSIndex:
     def get_metadata(self, key: str) -> str | None:
         """Get a metadata value by key, or None if not found."""
         with self._lock:
-            self.reopen_if_replaced()
             cursor = self._conn.execute("SELECT value FROM index_metadata WHERE key = ?", (key,))
             row = cursor.fetchone()
             return row[0] if row else None
@@ -925,7 +546,6 @@ class FTSIndex:
     def delete_metadata(self, key: str) -> None:
         """Remove a metadata key if it exists."""
         with self._lock:
-            self.reopen_if_replaced()
             self._conn.execute("DELETE FROM index_metadata WHERE key = ?", (key,))
             self._conn.commit()
 
@@ -938,7 +558,6 @@ class FTSIndex:
         observes a partially-updated related-key set.
         """
         with self._lock:
-            self.reopen_if_replaced()
             now = datetime.now().astimezone().isoformat()
             for key, value in pairs.items():
                 self._conn.execute(
@@ -958,14 +577,12 @@ class FTSIndex:
     def get_all_metadata(self) -> dict[str, str]:
         """Return all index_metadata as a dict."""
         with self._lock:
-            self.reopen_if_replaced()
             cursor = self._conn.execute("SELECT key, value FROM index_metadata")
             return dict(cursor.fetchall())
 
     def get_counts_by_repo(self) -> dict[str, int]:
         """Return record counts grouped by repo. Includes a 'docs' key for doc chunks."""
         with self._lock:
-            self.reopen_if_replaced()
             counts: dict[str, int] = {}
             # Doc chunks have no repo — count them separately
             cursor = self._conn.execute("SELECT COUNT(*) FROM chunks WHERE content_type = 'doc'")
@@ -982,7 +599,6 @@ class FTSIndex:
     def get_index_stats(self) -> dict[str, Any]:
         """Return record counts by content_type, total count, and distinct commit SHAs."""
         with self._lock:
-            self.reopen_if_replaced()
             cursor = self._conn.execute(
                 "SELECT content_type, COUNT(*) FROM chunks GROUP BY content_type"
             )
