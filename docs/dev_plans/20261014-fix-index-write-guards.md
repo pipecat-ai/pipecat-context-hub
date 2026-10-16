@@ -191,3 +191,15 @@ control, so the pre-load walk is the real defence.
   `20261015-feature-windows-index-locking.md`.
 - Header-version strictness, orphan-segment mtime handling: not exercised; left
   as is.
+- A data dir given as a symlink is resolved for the lock path but used
+  unresolved for index work, so retargeting the link during a run splits the
+  two. Same class as a lock file replaced outside the hub (needs write access
+  to the operator's own directories); resolving once would have to cover every
+  opener, not just `refresh`. Not fixed.
+- `serve`'s per-call gate (`unavailable_reason`) and a post-refresh reopen run
+  on the event loop, as do `ReopeningIndexStore`'s sync reads. The probe is a
+  non-blocking flock; the reopen is rare. Moving them to worker threads would
+  move Chroma's native open/close off the loop thread; not done.
+- The opt-in benchmarks (`tests/benchmarks/`) open the live index with
+  `IndexStore` (read-only, `create=False`) without `refresh_excluded`.
+  Developer tools; not changed.

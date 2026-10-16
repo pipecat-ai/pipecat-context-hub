@@ -7,25 +7,6 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-- **`refresh --force` compacts the vector graph.** Delete + re-add left the deleted
-  elements in the persisted HNSW graph, growing it by the whole corpus on every
-  forced refresh (20k -> 80k elements for 20k live records over four rounds). A
-  forced refresh now rebuilds the collection from the live records at the end and
-  removes the old segment directory (on the verified chromadb 1.5.x only; on other
-  releases it is left on disk). Non-fatal if it fails, except when the HNSW guard
-  trips on a graph written during the refresh, or the swap fails leaving no
-  `latest` collection: either stops the refresh (exit 2), the latter without deleting
-  anything, so the next `refresh` restores the index. The old collection is parked under a backup name until
-  the rebuilt one is in place; a swap interrupted by a crash is restored by the
-  next `refresh` (readers never write to the index: until then they report it and
-  say to run `refresh`; a restore that itself fails stops that refresh with exit 2
-  and says to rebuild with `refresh --force --reset-index`), and the staging writes get the same per-batch HNSW guard
-  as upserts.
-- **`serve` and the one-shot CLI open the index the same way.** Both go through
-  one open-and-check, so an empty, unreadable, or incompatible index gets the same
-  message from either (the empty-index text no longer mentions `serve`).
-
 ### Added
 - **No reads while a refresh rewrites the index.** `serve` answers tool calls with
   a "retry in 60-120 seconds" error (and still starts, with the index unopened, if
@@ -56,10 +37,7 @@ This project uses [Semantic Versioning](https://semver.org/).
   vectors (re-add it for that run, or `--prune` it). A corrupt keyword database, or
   one with a schema the index cannot use, makes `refresh` exit 2 with the
   `--reset-index` remedy, as the readers do (a locked, busy or unreadable-by-permissions
-  one is not: readers report it with a retry hint).
-  Opening an initialized keyword database no longer writes to it; `refresh`
-  completes an incomplete one and rebuilds its full-text table from the stored
-  records in one transaction, so a failed rebuild is retried by the next `refresh`. The dashboard
+  one is not: readers report it with a retry hint). The dashboard
   scripts report any open failure (including an incompatible index) with the
   operator message, not a traceback. The stale handle is closed after its last call before the rebuilt
   index is opened (calls in between are asked to retry in a few seconds):
@@ -86,9 +64,7 @@ This project uses [Semantic Versioning](https://semver.org/).
   are ignored (with a warning, proceeding unlocked) if they are a symlink, another
   user owns them, or they are not a regular file with a single link; they are
   opened without following symlinks (on Windows, which lacks `O_NOFOLLOW`, a
-  symlink is refused before and after the open). `refresh --reset-index` now exits 1
-  instead of rebuilding when the index files survive the delete (on Windows, a running
-  `serve` holds them open: stop it, then retry). The hub never deletes or replaces
+  symlink is refused before and after the open). The hub never deletes or replaces
   a lock file; if something outside it does while the lock is held, two refreshes
   can overlap (accepted on every platform).
 - **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
@@ -98,12 +74,41 @@ This project uses [Semantic Versioning](https://semver.org/).
   keep writing into a damaged index. An `IndexWriter` signals that state by
   raising it.
 
+### Changed
+- **`refresh --force` compacts the vector graph.** Delete + re-add left the deleted
+  elements in the persisted HNSW graph, growing it by the whole corpus on every
+  forced refresh (20k -> 80k elements for 20k live records over four rounds). A
+  forced refresh now rebuilds the collection from the live records at the end and
+  removes the old segment directory (on the verified chromadb 1.5.x only; on other
+  releases it is left on disk). Non-fatal if it fails, except when the HNSW guard
+  trips on a graph written during the refresh, or the swap fails leaving no
+  `latest` collection: either stops the refresh (exit 2), the latter without deleting
+  anything, so the next `refresh` restores the index. The old collection is parked under a backup name until
+  the rebuilt one is in place; a swap interrupted by a crash is restored by the
+  next `refresh` (readers never write to the index: until then they report it and
+  say to run `refresh`; a restore that itself fails stops that refresh with exit 2
+  and says to rebuild with `refresh --force --reset-index`), and the staging writes get the same per-batch HNSW guard
+  as upserts.
+- **`serve` and the one-shot CLI open the index the same way.** Both go through
+  one open-and-check, so an empty, unreadable, or incompatible index gets the same
+  message from either (the empty-index text no longer mentions `serve`).
+- **Opening an initialized keyword database no longer writes to it.** `refresh`
+  completes an incomplete one and rebuilds its full-text table from the stored
+  records in one transaction, so a failed rebuild is retried by the next `refresh`.
+- **`refresh --reset-index` exits 1 instead of rebuilding when the index files
+  survive the delete** (on Windows, a running `serve` holds them open: stop it,
+  then retry).
+
 ### Fixed
 - **Open-time index checks read what Chroma will open.** A writer killed
   mid-transaction leaves a hot rollback journal beside `chroma.sqlite3`; the
   format and HNSW checks read the database ignoring it, so they could validate
   segments Chroma's own open then rolls back. With a journal present they now
   open the database read-write (never creating it) so SQLite rolls it back first.
+- **A failed docs delete no longer leaves a stale "docs unchanged" marker.** When
+  deleting the old docs records failed and clearing `docs:content_hash` failed
+  too, the marker survived, so the next plain `refresh` skipped the docs whose
+  vectors were already gone. The end-of-run metadata write now retries the clear.
 
 ### Security
 - **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`
