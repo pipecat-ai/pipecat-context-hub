@@ -386,7 +386,7 @@ live local index:
    validation message on stderr, empty stdout
 5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —
    exit 2, stderr says to run `refresh`, and (this is an empty-index first
-   run, the most routine of the three `_EXIT_INDEX_UNREADY` paths) also
+   run, the most routine of the three `EXIT_INDEX_UNREADY` (`shared/exit_codes.py`) paths) also
    carries the "if this persists after trying that, file a bug report at
    .../issues/new?template=bug-report.yml" hint. E2e counterpart (real CLI
    subprocess against a genuinely empty on-disk index, no mocks):
