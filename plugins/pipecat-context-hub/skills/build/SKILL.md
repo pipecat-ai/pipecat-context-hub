@@ -18,7 +18,12 @@ payload. Do not upload secrets, deploy or start remote agent sessions here.
 
 1. Confirm this chat has native local execution using a harmless shell command.
    Inspect `pipecat --version` and `pipecat init --help`. If unavailable, explain
-   the missing capability without installing/upgrading tools automatically.
+   the missing capability without installing/upgrading tools automatically. If
+   the version is older than the requested capability requires, hand off to
+   [Setup's older-CLI flow](../setup/SKILL.md#handle-an-older-pipecat-cli) and
+   present one approval-gated upgrade proposal; do not upgrade merely because a
+   newer release exists. Continue with the installed CLI when it supports the
+   requested build.
    Use `pipecat init --list-options` only if advertised; parse its JSON and
    retain the actual service identifiers and transport combinations. Installed
    help/options take precedence over newer docs. Never assume `--eval`, inferred

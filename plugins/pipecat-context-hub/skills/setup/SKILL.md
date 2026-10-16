@@ -30,7 +30,12 @@ Skills supply instructions, not execution permissions or installation hooks.
    deletion or opening.
    If native execution is unavailable, report setup and grounded retrieval
    unavailable and provide the user's remaining setup steps; do not install an adapter.
-2. Discover PCH through [Explore's CLI retrieval](../explore/SKILL.md#cli-retrieval):
+2. Batch the bounded read-only preflight before proposing any mutation. In one
+   pass, inspect native execution, the selected PCH command/status, `pipecat
+   --version`, `pipecat init --help` and, for Cloud, the required read-only help
+   and organisation metadata. Do not ask for approval for these reads and do not
+   split them into separate approval prompts. Report all findings together.
+   Discover PCH through [Explore's CLI retrieval](../explore/SKILL.md#cli-retrieval):
    verify `pipecat context-hub` or standalone `pipecat-context-hub`, installed
    help and JSON `status`. Inspect failures before choosing a path: exit 2 alone
    does not prove an empty index. Record versions, index path, count, refresh
@@ -51,8 +56,17 @@ Skills supply instructions, not execution permissions or installation hooks.
    Explain that first indexing downloads models and source repositories and can
    take several minutes. Use only already-authorised changes. If the user has
    explicitly requested installation and initial indexing, proceed
-   within that scope; otherwise obtain one setup approval covering the proposed
-   changes before executing them. A readiness-only request stays read-only.
+   within that scope; otherwise obtain one setup approval covering the complete
+   proposed mutation set before executing it. Group compatible installation and
+   initial-index operations under that approval, while keeping credentials,
+   project writes and deployment as separate workflow approvals. A readiness-only
+   request stays read-only.
+
+   Do not select or require a ChatGPT approval mode. If the user asks about
+   reducing interruptions, explain that approval behavior is controlled by the
+   host/workspace and that any lower-friction choice is their decision for
+   trusted read-only work; it never covers installs, writes, credentials or
+   deployment.
 
 ## Required workflow CLIs
 
@@ -86,6 +100,24 @@ Verify actual installed versions and required subcommand help after installation
 If `pipecat context-hub --help` works, use that PCH installation; otherwise retain
 or install standalone PCH separately. A working Pipecat/Cloud CLI is mandatory
 for the requested Build/Deploy capability, separately from PCH query readiness.
+
+## Handle an older Pipecat CLI
+
+When the installed Pipecat CLI is older than the version needed for the user's
+requested capability, or the user explicitly asks for the latest CLI, report the
+current version, the missing/changed capability and the package manager that was
+actually detected. Construct one exact upgrade command that preserves every
+existing selected extension and constraint. For a `uv` tool, this is typically an
+`uv tool install --upgrade "pipecat-ai[cli]"` command with the retained `--with`
+packages; for a managed virtual environment, use that environment's
+`python -m pip install --upgrade` route. Do not guess a manager or path.
+
+Present the command and its expected changes for one explicit approval. Only
+after approval, run the upgrade, re-check `pipecat --version` and
+`pipecat init --help`, and verify PCH/Cloud subcommands again. If the manager is
+unknown, provide the command the user can run rather than mutating the host. A
+newer release alone is not a reason to upgrade, and an approved CLI upgrade does
+not authorise refreshing the Hub index, changing project locks or deploying.
 
 ## Install missing PCH and create the initial index
 

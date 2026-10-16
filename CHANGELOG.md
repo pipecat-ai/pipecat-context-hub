@@ -8,6 +8,11 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Candidate plugin 0.2.4 improves discovery wording for voice and multimodal
+  agent ideas, batches read-only setup checks into one approval proposal, and
+  offers an explicit verified upgrade path for an older Pipecat CLI. It does not
+  change ChatGPT approval settings, install itself before activation, or upgrade
+  a host silently.
 - Skills-only Pipecat Context Hub plugin 0.2.3 uses PCH CLI queries for Explore,
   Build and Deploy grounding. Portable preparation needs no installed Hub and
   includes four skills and cat-mark assets, with no MCP configuration or hooks.

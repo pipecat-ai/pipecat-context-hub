@@ -1,12 +1,14 @@
 # Pipecat Context Hub skills-only plugin
 
-Explore voice AI ideas, choose language and speech models supported by Pipecat,
-and build agents using sourced documentation, API definitions and examples. Explore
-STT/LLM/TTS pipelines and real-time speech-to-speech through
+Explore voice and multimodal agent ideas, choose language and speech models
+supported by Pipecat, and build agents using sourced documentation, API definitions
+and examples. Explore STT/LLM/TTS pipelines and real-time speech-to-speech through
 [Pipecat's supported services](https://docs.pipecat.ai/api-reference/server/services/supported-services).
 The listing describes these capabilities in general terms. Explore retrieves
 documentation and examples for the specific services relevant to the user's idea;
-automatic recommendation/selection in ChatGPT remains untested.
+automatic recommendation/selection in ChatGPT remains untested. The host controls
+whether an uninstalled plugin is surfaced; this package cannot detect or install
+itself before activation.
 
 This plugin packages four workflows: Setup, Explore, Build and Deploy. It uses
 PCH command-line queries for grounded documentation, API definitions and examples.
@@ -64,10 +66,20 @@ it needs explicit setup authorisation and an absent or demonstrably empty index.
 A stale populated index is reused; repair/reset and upgrades are separate requests.
 Fresh-user installation and cloud persistence remain unqualified until observed.
 
+Setup batches its read-only discovery and presents one approval for the complete
+local installation/index change set. It does not change ChatGPT's approval mode.
+Approval behavior is controlled by the host/workspace; a lower-friction user
+choice for trusted read-only work never authorises installs, writes, credentials
+or deployment.
+If the installed Pipecat CLI is too old for the requested workflow, Setup reports
+the detected manager and exact upgrade command, asks for approval, then verifies
+the CLI and PCH commands after the upgrade. Unknown managers receive instructions
+only; no host mutation is attempted.
+
 ## Explore an idea or concept
 
-Use the [explore skill](skills/explore/SKILL.md) for a voice-agent idea or framework
-concept. It discovers the PCH query commands, checks `status`, retrieves relevant
+Use the [explore skill](skills/explore/SKILL.md) for a voice or multimodal agent idea
+or framework concept. It discovers the PCH query commands, checks `status`, retrieves relevant
 concepts and detail, and cites returned source URLs. It uses `pipecat context-hub`
 when available, otherwise standalone `pipecat-context-hub`. Both dispatch the same
 handlers and return JSON on stdout; diagnostics remain on stderr.
@@ -92,6 +104,10 @@ secret access or deployment. Missing runtime/index offers explicit Setup. CLI
 status before/after confirms unchanged index/version provenance; no refresh occurs.
 A stale index can provide dated evidence with a stated coverage limit. Neither PCH
 query route needs a Cloud account.
+
+For image/video or other multimodal requests, the skill checks for modality-specific
+evidence and reports when the indexed corpus does not cover it. It does not turn a
+generic voice result into a vision claim.
 
 ## Build a local app
 

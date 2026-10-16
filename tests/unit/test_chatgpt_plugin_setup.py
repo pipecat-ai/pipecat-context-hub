@@ -860,3 +860,26 @@ def test_plugin_contract_requires_read_only_and_untrusted_evidence_guards() -> N
     assert "scripts/safe_cloud_metadata.py" in setup
     assert "do not retry by printing raw output" in deploy_words
     assert "do not retry by printing raw output" in setup_words
+
+
+def test_candidate_024_metadata_and_upgrade_contract() -> None:
+    manifest = json.loads((_SOURCE / "plugin.json").read_text())
+    interface = manifest["extensions"]["com.openai"]["interface"]
+    setup = (_SOURCE / "skills" / "setup" / "SKILL.md").read_text()
+    build = (_SOURCE / "skills" / "build" / "SKILL.md").read_text()
+    explore = (_SOURCE / "skills" / "explore" / "SKILL.md").read_text()
+    readme = (_SOURCE / "README.md").read_text()
+
+    assert manifest["version"] == "0.2.4"
+    assert "multimodal" in manifest["description"]
+    assert "multimodal" in interface["shortDescription"]
+    assert "multimodal" in interface["longDescription"]
+    assert any("multimodal" in prompt for prompt in interface["defaultPrompt"])
+    assert "Batch the bounded read-only preflight" in setup
+    assert "one setup approval covering the complete" in setup
+    assert "Handle an older Pipecat CLI" in setup
+    assert "Do not select or require a ChatGPT approval mode" in setup
+    assert "approval-gated upgrade proposal" in build
+    assert "retrieve the requested modality explicitly" in explore
+    assert "cannot detect or install" in readme
+    assert "does not change ChatGPT's approval mode" in readme

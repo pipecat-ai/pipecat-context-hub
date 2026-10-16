@@ -1,18 +1,18 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "pipecat-context-hub",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "license": "BSD-2-Clause",
   "repository": "https://github.com/pipecat-ai/pipecat-context-hub",
-  "description": "Explore voice AI ideas and build Pipecat agents with supported language and speech models, including speech-to-speech, using sourced documentation, APIs and examples.",
+  "description": "Explore voice and multimodal agent ideas and build Pipecat agents with supported language and speech models, including speech-to-speech, using sourced documentation, APIs and examples.",
   "extensions": {
     "com.openai": {
       "onboardingSkill": "./skills/setup/SKILL.md",
       "interface": {
         "displayName": "Pipecat Context Hub",
         "developerName": "Daily.co/Pipecat.ai",
-        "shortDescription": "Build voice AI with Pipecat",
-        "longDescription": "Build voice AI agents with Pipecat, from an idea to a local app and Pipecat Cloud deployment. Explore speech-to-text (STT), language models (LLMs), text-to-speech (TTS) and real-time speech-to-speech pipelines using Pipecat documentation, API definitions and example code. Explore the documentation and examples relevant to your idea. The plugin guides setup and requires an environment that can run Python commands. Cloud deployment requires a Pipecat Cloud login and your approval.",
+        "shortDescription": "Voice & multimodal Pipecat",
+        "longDescription": "Build voice and multimodal agents with Pipecat, from an idea to a local app and Pipecat Cloud deployment. Explore speech-to-text (STT), language models (LLMs), text-to-speech (TTS), real-time speech-to-speech and other supported multimodal patterns using Pipecat documentation, API definitions and example code. Explore the documentation and examples relevant to your idea; the plugin reports when a requested modality is not covered by the indexed sources. The plugin guides setup and requires an environment that can run Python commands. Cloud deployment requires a Pipecat Cloud login and your approval.",
         "category": "Developer Tools",
         "capabilities": [
           "Read",
@@ -24,7 +24,7 @@
         "termsOfServiceURL": "https://www.daily.co/legal/terms-of-service/",
         "defaultPrompt": [
           "Set up Pipecat Context Hub.",
-          "Explain an STT + TTS voice agent using sourced docs and examples.",
+          "Explore a voice or multimodal Pipecat agent using sourced docs and examples.",
           "Prepare my Pipecat app for Cloud deployment."
         ],
         "composerIcon": "./assets/cat-mark.svg",
