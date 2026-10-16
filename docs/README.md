@@ -580,9 +580,10 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   `refresh --force --reset-index`, without touching the vector collection: the
   keyword database is where `refresh` records which repos it indexed, so
   without it the vectors of a repo no longer configured could never be
-  replaced or pruned. (A first `refresh` interrupted between writing a batch's
-  vectors and its keyword rows leaves the same state, and needs the same
-  reset.) A missing keyword database beside an empty or absent vector
+  replaced or pruned. (An interrupted `refresh` never leaves this state:
+  keyword rows are written before their vectors, so a first `refresh` stopped
+  mid-write leaves keyword records ahead of the vectors, and
+  `refresh --force` rebuilds it.) A missing keyword database beside an empty or absent vector
   collection is simply rebuilt by `refresh`. A corrupt keyword
   database (or one whose schema it cannot use) also makes `refresh` exit **2**,
   saying to run `refresh --force --reset-index`; a locked or busy one does not.

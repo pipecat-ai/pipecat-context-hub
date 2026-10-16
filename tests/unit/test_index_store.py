@@ -954,6 +954,58 @@ class TestLostKeywordHalf:
         with pytest.raises(IndexUnavailableError, match="--reset-index"):
             open_ready_index_store(config)
 
+    @pytest.mark.parametrize("vector_batches_written", [0, 1])
+    def test_interrupted_first_refresh_is_not_a_lost_keyword_half(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vector_batches_written: int
+    ) -> None:
+        """Regression (store.py:94): upsert wrote the vector half first, so a
+        first refresh killed during its (batched, long) vector write left
+        vectors beside an empty keyword half: indistinguishable from a lost
+        ``index.db``, it was refused on every later refresh until
+        ``--reset-index``. Keyword rows are now written first, so the same
+        interruption leaves keyword records ahead of the vectors, which
+        ``refresh --force`` rebuilds."""
+        import asyncio
+
+        from chromadb.api.models.Collection import Collection
+
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        monkeypatch.setattr("pipecat_context_hub.services.index.vector._CHROMA_BATCH_SIZE", 2)
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        records = _make_records(5)
+        real_upsert = Collection.upsert
+        calls = 0
+
+        def killed_mid_write(self: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal calls
+            if calls == vector_batches_written:
+                raise RuntimeError("killed")
+            calls += 1
+            return real_upsert(self, *args, **kwargs)
+
+        store = IndexStore(config, recover=True, create=True)  # the first refresh
+        try:
+            with (
+                patch.object(Collection, "upsert", killed_mid_write),
+                pytest.raises(RuntimeError, match="killed"),
+            ):
+                asyncio.run(store.upsert(records))
+        finally:
+            store.close()
+
+        if vector_batches_written == 0:
+            # Nothing vectorised: a plain refresh says to run --force.
+            with pytest.raises(MissingVectorCollectionError, match="refresh --force"):
+                IndexStore(config, recover=True, create=True)
+        store = IndexStore(config, recover=True, create=True, rebuild=True)  # refresh --force
+        try:
+            asyncio.run(store.upsert(records))
+            assert store.vector_count() == 5
+            assert store.get_index_stats()["total"] == 5
+        finally:
+            store.close()
+
     def test_missing_keyword_half_beside_an_empty_vector_half_is_rebuilt(
         self, tmp_path: Path
     ) -> None:

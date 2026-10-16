@@ -186,10 +186,13 @@ control, so the pre-load walk is the real defence.
   `--prune`); not fixed here.
 - The mirror case is refused rather than repaired: a keyword half with no
   records beside vector records (`LostKeywordIndexError`) needs
-  `--reset-index`, even when it comes from a first `refresh` interrupted
-  between a batch's vector and keyword writes (indistinguishable from a lost
-  `index.db`). The refused open may leave an empty `index.db`; later opens
-  refuse it the same way.
+  `--reset-index`. An interrupted write cannot produce it: `IndexStore.upsert`
+  writes keyword rows before vectors and its deletes remove vectors first, so
+  every vector keeps its keyword row at any interruption point, and a first
+  `refresh` interrupted mid-write leaves keyword records ahead of the vectors,
+  which `refresh --force` rebuilds. Only a lost or emptied `index.db` reaches
+  it. The refused open may leave an empty `index.db`; later opens refuse it the
+  same way.
 - chromadb format coupling: `hnsw_validation` parses hnswlib's private format.
   It fails closed only on verified chromadb releases (`VERIFIED_CHROMADB_RELEASES`,
   1.5); elsewhere header/structure mismatches warn and skip, and orphan segment

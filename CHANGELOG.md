@@ -29,7 +29,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   by every `refresh`, `--force` included (exit 2, "run `refresh --force --reset-index`";
   the vector collection is not touched): the keyword database is where `refresh` records
   which repos it indexed, so carrying the vectors forward left those of a repo no
-  longer configured searchable but beyond the reach of cleanup and `--prune`. A plain
+  longer configured searchable but beyond the reach of cleanup and `--prune`. Writes
+  add keyword rows before their vectors (deletes remove vectors first), so an
+  interrupted `refresh`, a first one included, never leaves that state: it leaves
+  keyword records ahead of the vectors, which `refresh --force` rebuilds. A plain
   `refresh` that finds the vector collection lost or
   empty that way exits 2 with the same advice, without touching the vector collection, instead of
   skipping unchanged sources and leaving vector search empty. `refresh --force`

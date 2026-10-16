@@ -143,12 +143,20 @@ class IndexStore:
         logger.info("IndexStore reset")
 
     async def upsert(self, records: list[ChunkedRecord]) -> int:
-        """Insert or update records in both indexes. Returns count written."""
-        vector_count = self._vector.upsert(records)
+        """Insert or update records in both indexes. Returns count written.
+
+        Keyword rows first, vectors second (deletes run the other way), so a
+        write interrupted at any point leaves no vector without its keyword
+        row. An interrupted first refresh therefore leaves keyword records
+        ahead of the vectors, which ``refresh --force`` rebuilds, never the
+        vectors-without-keyword-rows state :class:`LostKeywordIndexError`
+        refuses (that one means ``index.db`` itself was lost).
+        """
+        fts_count = self._fts.upsert(records)
         try:
-            fts_count = self._fts.upsert(records)
+            vector_count = self._vector.upsert(records)
         except Exception:
-            logger.exception("FTS upsert failed; vector index may have diverged")
+            logger.exception("Vector upsert failed; keyword index may have diverged")
             raise
         if vector_count != fts_count:
             logger.warning("Index divergence: vector=%d fts=%d records", vector_count, fts_count)
