@@ -19,7 +19,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   lock exits 75 like the queries. An index read already in progress when a
   refresh starts finishes on the handle it has; any read that starts after it
   (including a running call's next one) gets the retry message instead of
-  reopening the index mid-write. The dashboard scripts open the index
+  reopening the index mid-write. Closing `serve`'s index handle at shutdown is
+  final: a call arriving afterwards is answered "shutting down" instead of
+  reopening an index nothing will close. The dashboard scripts open the index
   the same way (refresh exclusion plus the open-time checks), and exit with the
   `refresh` hint on a missing or empty index instead of creating one. Readers
   never create the index (only `refresh` does): a vector collection that is lost (or
