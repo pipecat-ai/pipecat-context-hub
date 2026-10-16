@@ -144,6 +144,8 @@ class _FakeDocsCrawler:
 class _FakeGitHubRepoIngester:
     def __init__(self, config: HubConfig, *_args, **_kwargs) -> None:
         self._repos_dir = config.storage.data_dir / "repos"
+        # refresh reads this after the pre-flight clone pass (cli.py).
+        self.recovered_repos: set[str] = set()
 
     def clone_or_fetch(
         self, repo_slug: str, checkout: bool = True, tag: str | None = None
