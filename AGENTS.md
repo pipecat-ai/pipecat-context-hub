@@ -4,6 +4,11 @@ Project conventions and decisions for AI coding agents working on this codebase.
 
 ## Pre-Merge Live MCP Smoke Test
 
+Run populated-index, serve, watchdog, and semantic-query smoke items on POSIX
+systems only. Windows intentionally fails these operations closed because the
+descriptor-relative no-reparse filesystem contract is unavailable; Windows CI
+covers package and path-safety checks.
+
 Before merging any PR that touches retrieval, tool handlers, index backends,
 or types, reconnect the MCP server and run these queries against the live
 local index. Unit tests mock the retrieval layer and cannot catch page
@@ -246,8 +251,9 @@ the indexed pipecat version; re-verify against the current registry if they drif
     PID, then `kill -9` the shell (or close the terminal). The orphaned
     `serve` process must exit on its own within ~5s. Confirm with
     `pgrep -fl pipecat-context-hub` — no stale entry should remain.
-    A successful trigger logs `Shutting down: parent_died original_ppid=N
-    current_ppid=1` at INFO before exit.
+    A direct-parent launch logs `Shutting down: parent_died original_ppid=N
+    current_ppid=1`; an `uv run` launch uses the grandparent watchdog and
+    logs `Shutting down: client_died ...` instead.
 43. **Idle-timeout backstop smoke test** — exercises the idle watchdog
     in its explicit-override mode (since the default idle timeout is now
     auto-disabled under `uv run`, where the grandparent watchdog covers
@@ -273,10 +279,12 @@ the indexed pipecat version; re-verify against the current registry if they drif
     pipecat-context-hub serve` — the pre-warm lines must be absent
     and replaced by `Model pre-warm skipped: PIPECAT_HUB_WARMUP=0`.
     Confirms the first-query cold-start fix is active on boot and the
-    opt-out escape hatch works (matters on Windows CPU where cold
-    loads once took 30-130s and could exceed Claude Code's
-    tool-permission window; the ONNX backend loads in under a second,
-    so pre-warm is now an optimisation rather than a necessity).
+    opt-out escape hatch works. Older Windows CPU measurements once showed
+    30-130s cold loads; that is historical context only. The current Windows
+    contract is package/path smoke, while populated index operations
+    (including serve and pre-warm) fail closed. The ONNX backend loads in
+    under a second on supported POSIX hosts, so pre-warm is now an
+    optimisation rather than a necessity. Run this smoke on POSIX only.)
 45. **`location` surfaced (PR #85).** A `deprecated: true` response carries a
     `location` field as `path/to/file.py` (relative to the pipecat repo
     root) pointing at the file holding the deprecation marker — e.g. `ResampyResampler` →
@@ -369,6 +377,20 @@ the indexed pipecat version; re-verify against the current registry if they drif
     a regression where the source-level wiring (`instructions=...` passed
     to `create_server`) stays intact but delivery on the wire breaks (e.g.
     an MCP SDK kwarg rename).
+
+51. **Persisted graph corruption / first-search crash (2026-10-04).** The exact
+    failed query was `search_docs("TTS + STT")`: initialize/status succeeded,
+    then Chroma 1.5.9 SIGSEGVed loading the vector graph and MCP returned
+    `Transport closed`. Single-concept docs/API queries failed too. On a healthy
+    index, repeat the exact query and then status on the same connection. With
+    an oversized persisted HNSW `link_lists.bin`, fresh `serve`, `status` and
+    CLI `search-docs "TTS + STT"` must instead exit **2 before initialization**,
+    with `corrupt persisted HNSW` and `refresh --force --reset-index` on stderr
+    and empty stdout. The probe must not change index files or run recovery.
+    Regressions: `tests/unit/test_hnsw_validation.py` freezes the real header
+    and logical file size; `tests/integration/test_report_hint_e2e.py` freezes
+    the query against synthetic corruption. This bounded size check does not
+    prove all persisted graph data is healthy.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

@@ -10,6 +10,10 @@ Connect Pipecat Context Hub to [Cursor](https://cursor.com/) as an MCP server ov
 
 ## Build the Local Index
 
+Run the populated-index workflow on POSIX (macOS or Linux). Windows installs
+can inspect help and package metadata, but refresh and semantic index
+operations fail closed.
+
 Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash
@@ -46,7 +50,8 @@ Create or edit `~/.cursor/mcp.json` (same format as above).
 2. Open Cursor Settings > MCP to confirm `pipecat-context-hub` appears and shows a green status.
 3. In the AI chat, ask a question about Pipecat — the server's tools should be invoked automatically.
 
-You can also verify the server starts correctly from the command line:
+You can also inspect the server command from the command line (this is only a
+help check, not an MCP handshake):
 
 ```bash
 uvx pipecat-ai-context-hub serve --help
@@ -56,5 +61,5 @@ uvx pipecat-ai-context-hub serve --help
 
 - **Server not appearing**: Ensure `.cursor/mcp.json` exists in your project root directory.
 - **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
-- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
+- **Empty results**: On macOS or Linux, run `uvx pipecat-ai-context-hub refresh` to populate the index. Windows populated refresh and semantic index operations are unsupported; run the refresh on a POSIX machine instead.
 - **Red status indicator**: Check the Cursor MCP logs for error details.

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+import contextlib
+import asyncio
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from mcp import types
@@ -16,6 +19,8 @@ from pipecat_context_hub.server.tools.check_deprecation import (
     resolve_framework_version,
 )
 from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+from pipecat_context_hub.services.index.locking import index_lock
 from pipecat_context_hub.server.dispatch import (
     BASE_TOOLS,
     HUB_STATUS_TOOL_TUPLE,
@@ -226,7 +231,7 @@ def create_server(
             ]
         )
 
-    def _annotate(result_json: str) -> str:
+    async def _annotate(result_json: str) -> str:
         """Attach the index_staleness footer when the index is old.
 
         Skipped for get_hub_status (it *is* the staleness report) by virtue
@@ -236,7 +241,10 @@ def create_server(
         """
         if index_store is None:
             return result_json
-        return annotate_response(result_json, index_store)
+        # Metadata reads acquire the cross-process generation lock.  Keep
+        # that synchronous wait out of the MCP event loop so an in-progress
+        # refresh cannot stall unrelated requests or watchdog progress.
+        return await asyncio.to_thread(annotate_response, result_json, index_store)
 
     async def call_tool(_ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
         # Mark the call in-flight so the idle watchdog treats the whole
@@ -270,11 +278,38 @@ def create_server(
             # check_deprecation dispatches via retriever.deprecation_map, with the
             # indexed framework version as the default for version-relative status.
             if name == "check_deprecation":
-                dep_map = getattr(retriever, "deprecation_map", None)
-                fw_version = resolve_framework_version(index_store, dep_map)
+                map_path = getattr(retriever, "_deprecation_map_path", None)
+                # Refresh holds the exclusive generation lock while replacing
+                # records, metadata, and the map. Keep the map load and
+                # provenance read in one shared-generation window so a request
+                # cannot pair a new map with old records (or vice versa).
+                data_dir = getattr(index_store, "data_dir", None)
+                lock = (
+                    # Metadata access synchronizes a long-lived writer store
+                    # when a refresh publishes in place; hold the exclusive
+                    # generation lock for the map + provenance pair so the
+                    # nested accessor can safely reopen before reading.
+                    index_lock(data_dir, exclusive=True)
+                    if isinstance(data_dir, Path)
+                    else contextlib.nullcontext()
+                )
+
+                def load_deprecation_context() -> tuple[Any, str | None]:
+                    with lock:
+                        dep_map = (
+                            DeprecationMap.load(map_path)
+                            if map_path is not None
+                            else getattr(retriever, "deprecation_map", None)
+                        )
+                        return dep_map, resolve_framework_version(index_store, dep_map)
+
+                # Both the lock wait and synchronous metadata/map reads must
+                # run off the event loop; refresh can hold this lock for
+                # several minutes.
+                dep_map, fw_version = await asyncio.to_thread(load_deprecation_context)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return types.CallToolResult(
-                    content=[types.TextContent(type="text", text=_annotate(result_json))]
+                    content=[types.TextContent(type="text", text=await _annotate(result_json))]
                 )
 
             handler = get_tool_handler(name)
@@ -283,7 +318,7 @@ def create_server(
 
             result_json = await handler(args, retriever)
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=_annotate(result_json))]
+                content=[types.TextContent(type="text", text=await _annotate(result_json))]
             )
         except (ValidationError, IndexUnavailableError) as exc:
             # IndexUnavailableError: the index became unusable mid-call (e.g. a

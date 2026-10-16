@@ -10,6 +10,10 @@ Connect Pipecat Context Hub to [Claude Code](https://code.claude.com/) as an MCP
 
 ## Build the Local Index
 
+Run the populated-index workflow on POSIX (macOS or Linux). Windows installs
+can inspect help and package metadata, but refresh and semantic index
+operations fail closed.
+
 Build the local index before serving. The first run downloads the package, models, and sources — allow a few minutes:
 
 ```bash
@@ -18,7 +22,10 @@ uvx pipecat-ai-context-hub refresh
 
 This populates `~/.pipecat-context-hub/`.
 
-> **Tip:** with the `gh` CLI authenticated, `refresh` also fetches GitHub release notes for deprecation data; without it, `check_deprecation` coverage is limited.
+> **Tip:** `refresh` reads Pipecat's machine-readable
+> `scripts/deprecations/deprecations.json` (and, when present,
+> `scripts/deprecations/removals.json`) from the indexed framework checkout.
+> `check_deprecation` therefore does not require GitHub CLI authentication.
 
 ## Configure
 
@@ -126,4 +133,4 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
   (project-scoped, for teams) should you check `.mcp.json` at the project root
   (not inside `.claude/`) instead.
 - **Command not found**: Ensure `uv` is installed and on your PATH (`uvx` ships with `uv`).
-- **Empty results**: Run `uvx pipecat-ai-context-hub refresh` to populate the index.
+- **Empty results**: On macOS or Linux, run `uvx pipecat-ai-context-hub refresh` to populate the index. Windows populated refresh and semantic index operations are unsupported; run the refresh on a POSIX machine instead.

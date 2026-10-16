@@ -8,6 +8,9 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Plugin-specific release notes live in
+  [`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
+  This changelog retains repository and Context Hub package history.
 - **No reads while a refresh rewrites the index.** `serve` answers tool calls with
   a "retry in 60-120 seconds" error (and still starts, with the index unopened, if
   launched mid-refresh); one-shot CLI queries exit 75 (`EX_TEMPFAIL`) with the same

@@ -13,6 +13,11 @@ Pipecat Context Hub is a local-first MCP server that provides fresh Pipecat docu
 
 ## Quick Start
 
+The populated local index uses descriptor-relative, no-reparse filesystem
+operations and is supported on POSIX systems. Windows installations can run
+help and package checks, but refresh, serve, reset, and semantic queries fail
+closed rather than opening an unsafe index.
+
 Install [`uv`](https://docs.astral.sh/uv/), then follow three steps (the same for every client):
 
 1. **Build** the local index
@@ -26,11 +31,25 @@ uvx pipecat-ai-context-hub refresh
 
 # 2. Add config — see the client-specific guide
 
-# 3. Verify
-uvx pipecat-ai-context-hub serve --help
+# 3. Verify the stdio MCP handshake (the server must return an initialize response)
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"setup-check","version":"0.1.0"}}}' \
+  | uvx pipecat-ai-context-hub serve
 ```
 
 > **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat packages are `pipecat-ai*`); the command and MCP server name are `pipecat-context-hub`. Both spellings of the command resolve once installed.
+
+The optional [skills-only Pipecat plugin](../../plugins/pipecat-context-hub/README.md)
+provides Setup, grounded Explore, local Build and approved Cloud Deploy workflows.
+It uses `pipecat context-hub` or standalone `pipecat-context-hub` through native
+execution, with no bundled MCP connection. Plugin installation supplies skills
+and assets; ask "Set up Pipecat Context Hub" to check prerequisites and perform
+only authorised missing-runtime and initial-index setup. Full-plugin setup also
+covers required Pipecat/Cloud CLIs and Cloud account signup/login. Healthy
+installations/indexes are reused, and existing standalone MCP clients are unchanged.
+Clean local/cloud onboarding and autonomous activation of the CLI-first release
+remain unqualified. The earlier stdio experiment's local build and approved READY
+Cloud evidence remain dated in the [evaluation report](../evaluations/pipecat-context-hub-plugin.md); they do not
+prove fresh-user, provider/session or ChatGPT Work support for this release.
 
 ## How It Works
 

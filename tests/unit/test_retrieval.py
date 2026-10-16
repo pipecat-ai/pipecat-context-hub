@@ -527,6 +527,29 @@ class TestHybridRetrieverSearchDocs:
         assert len(output.hits) == 0
         assert output.evidence.confidence == 0.0
 
+    async def test_public_search_uses_generation_safe_hybrid_reader(self):
+        """The production reader's public hybrid operation is not bypassed."""
+        result = _make_result("hybrid", content="generation-safe result")
+
+        class GenerationSafeReader:
+            def __init__(self) -> None:
+                self.hybrid_calls = 0
+
+            async def hybrid_search(self, _query):
+                self.hybrid_calls += 1
+                return [result], []
+
+            async def vector_search(self, _query):
+                raise AssertionError("vector fallback bypassed hybrid reader")
+
+            async def keyword_search(self, _query):
+                raise AssertionError("keyword fallback bypassed hybrid reader")
+
+        reader = GenerationSafeReader()
+        output = await HybridRetriever(reader).search_docs(SearchDocsInput(query="generation"))
+        assert output.hits
+        assert reader.hybrid_calls == 1
+
 
 class TestHybridRetrieverGetDoc:
     """Tests for HybridRetriever.get_doc()."""
@@ -1452,6 +1475,37 @@ class TestDecomposeQuery:
 
 class TestMultiConceptSearch:
     """Tests for HybridRetriever multi-concept decomposition."""
+
+    async def test_multi_concept_uses_one_batched_generation_read(self):
+        """All concepts share one reader snapshot when the store supports batching."""
+
+        class BatchedReader:
+            def __init__(self):
+                self.queries = []
+
+            async def vector_search(self, query):
+                raise AssertionError("batched reader should use hybrid_search_many")
+
+            async def keyword_search(self, query):
+                raise AssertionError("batched reader should use hybrid_search_many")
+
+            async def hybrid_search(self, query):
+                raise AssertionError("batched reader should use hybrid_search_many")
+
+            async def hybrid_search_many(self, queries):
+                self.queries.append(queries)
+                return [
+                    ([_make_result(f"{query.query_text}-id", content=query.query_text)], [])
+                    for query in queries
+                ]
+
+        reader = BatchedReader()
+        retriever = HybridRetriever(reader)
+        output = await retriever.search_docs(SearchDocsInput(query="TTS + STT", limit=4))
+
+        assert len(reader.queries) == 1
+        assert [query.query_text for query in reader.queries[0]] == ["TTS", "STT"]
+        assert {hit.doc_id for hit in output.hits} == {"TTS-id", "STT-id"}
 
     async def test_multi_concept_returns_all_concepts(self):
         """Multi-concept query returns results from all concepts."""

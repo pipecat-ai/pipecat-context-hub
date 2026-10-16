@@ -46,6 +46,28 @@ invocation downloads the package and local models (allow a few minutes).
 > packages are `pipecat-ai*`); the command and MCP server name are
 > `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
+The optional [skills-only Pipecat plugin](../plugins/pipecat-context-hub/README.md)
+provides Setup, grounded Explore, local Build and approved Cloud Deploy workflows.
+It uses `pipecat context-hub` or standalone `pipecat-context-hub` through native
+execution, with no bundled MCP connection. Plugin installation supplies skills
+and assets; ask "Set up Pipecat Context Hub" to check prerequisites and perform
+only authorised missing-runtime and initial-index setup. Full-plugin setup also
+covers required Pipecat/Cloud CLIs and Cloud account signup/login. Healthy
+installations/indexes are reused, and existing standalone MCP clients are unchanged.
+Clean local/cloud onboarding and autonomous activation of the CLI-first release
+remain unqualified. The earlier stdio experiment's local build and approved READY
+Cloud evidence remain dated in the [evaluation report](evaluations/pipecat-context-hub-plugin.md); they do not
+prove fresh-user, provider/session or ChatGPT Work support for this release.
+
+### Platform contract
+
+The persisted Chroma/SQLite index and semantic retrieval path currently require
+POSIX descriptor-relative, no-reparse filesystem operations. On Windows the
+package and path/ingest helpers remain installable, but `refresh`, `serve` and
+semantic queries fail closed with an index-safety error rather than using an
+unsafe pathname-only fallback. Do not treat the Windows CI package smoke as
+index support; use a POSIX host for a populated local index.
+
 ### Inside the Pipecat CLI
 
 Installing this package alongside `pipecat-ai[cli]` mounts it as `pipecat context-hub`,
@@ -81,9 +103,10 @@ uvx pipecat-ai-context-hub refresh --force
 uvx pipecat-ai-context-hub refresh --force --reset-index
 ```
 
-> **Tip:** When `gh` CLI is authenticated, `refresh` also fetches GitHub release
-> notes for deprecation data. Without it, `check_deprecation` coverage will be
-> limited.
+> **Tip:** `refresh` reads Pipecat's machine-readable
+> `scripts/deprecations/deprecations.json` (and, when present,
+> `scripts/deprecations/removals.json`) from the indexed framework checkout.
+> `check_deprecation` therefore does not require GitHub CLI authentication.
 
 ## Start the Server
 
@@ -288,9 +311,12 @@ and docs come from the live `docs.pipecat.ai`, which is unversioned.
 ## Index Metadata Contract
 
 External tooling — editor plugins, CI checks, the Pipecat CLI — often needs one
-cheap answer: *how old is this index, and which pipecat version is it for?* Every
-in-process query path opens ChromaDB, so importing the hub or shelling out to
-`status` is too slow to run on every invocation of another tool.
+cheap answer: *how old is this index, and which pipecat version is it for?*
+Lookup-only paths such as `status` and `check-deprecation` avoid constructing
+the native Chroma client, but still validate the persisted Chroma SQLite file
+and HNSW safety metadata; semantic paths additionally open ChromaDB. Importing the hub
+or shelling out to `status` is still too slow to run on every invocation of
+another tool, so the direct metadata contract remains useful.
 
 The `index_metadata` table in `<data dir>/metadata.db` is therefore a **published
 read contract**. Read it directly, read-only, with the standard library:
@@ -381,7 +407,7 @@ works immediately; version comparison starts working after the next refresh.
 | `PIPECAT_HUB_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Swap reranker model. Allowed: `cross-encoder/ms-marco-MiniLM-L-6-v2` (~91 MB), `cross-encoder/ms-marco-MiniLM-L-12-v2` (~134 MB), `cross-encoder/ms-marco-TinyBERT-L-2-v2` (~18 MB) |
 | `PIPECAT_HUB_IDLE_TIMEOUT_SECS` | `1800` | Idle backstop: exit `serve` if no MCP request arrives for this many seconds. **Auto-disabled** when `serve` has reliable client-death detection (direct-parent launch, or `uv run` with a resolvable grandparent) — it would otherwise reap a warm hub mid-session. Stays armed when detection is unavailable (Windows, parent-watch disabled, unresolved grandparent). Set an explicit value (incl. `0`) to override the auto-decision. |
 | `PIPECAT_HUB_PARENT_WATCH_INTERVAL` | `2.0` | Hidden tuning knob (primarily for tests): poll interval (seconds) for the parent-death watchdog. Floored at `0.1s` when non-zero. Set to `0` to disable the watchdog. |
-| `PIPECAT_HUB_WARMUP` | `1` | Pre-warm embedding + cross-encoder at `serve` boot so the first MCP query doesn't pay the cold-start cost (matters most on Windows CPU, where cold loads can take 30-130s). Set to `0` to skip (faster boot, slower first query). |
+| `PIPECAT_HUB_WARMUP` | `1` | Pre-warm embedding + cross-encoder at `serve` boot so the first MCP query doesn't pay the cold-start cost on supported POSIX hosts. Set to `0` to skip (faster boot, slower first query). |
 
 See [`.env.example`](../.env.example) for curated repo bundles you can copy
 into your `.env`, and [`config.toml.example`](../config.toml.example) for the
@@ -664,17 +690,16 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 
 ### Windows
 
-- **Refresh appears to hang or returns zero code results** — a prior
-  `refresh` may have left a clone half-initialised (common after an
-  interrupted run or antivirus quarantine). `pipecat-context-hub` now
-  detects this on the next refresh and re-clones automatically; look for
-  `Recovered N corrupt clone(s): …` in the summary. As a manual remedy you
-  can delete `%LOCALAPPDATA%\pipecat-context-hub\repos\`.
-- **`UnicodeEncodeError` in the refresh summary** — the summary table uses
-  box-drawing characters that some Windows code pages (cp1252, cp1254,
-  etc.) cannot encode. The server falls back to ASCII automatically. To
-  opt into the full Unicode output, set `PYTHONIOENCODING=utf-8` before
-  invoking `refresh`, or use Windows Terminal (which defaults to UTF-8).
+- **Index commands fail closed** — populated `refresh`, `serve`, and semantic
+  queries require POSIX descriptor-relative filesystem operations. The Windows
+  CI job proves package installation and path/ingest helpers only; it does not
+  provide a supported populated index. Run the hub on a POSIX host instead of
+  deleting the Windows cache and retrying `refresh`.
+- Windows does not produce a populated refresh summary: populated index
+  operations fail closed before the refresh crawl. If a summary from an older
+  POSIX run is being displayed through a Windows console, set
+  `PYTHONIOENCODING=utf-8` or use Windows Terminal for Unicode output; run the
+  actual refresh on a supported POSIX host.
 
 ### Can't see which config a `serve` session actually used
 
