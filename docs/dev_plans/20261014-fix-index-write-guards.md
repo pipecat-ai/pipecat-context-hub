@@ -187,6 +187,7 @@ control, so the pre-load walk is the real defence.
   across an index open (seconds) looks like a running refresh to other readers
   after their 3x20 ms retries (CLI exit 75, or the retry message from another
   `serve`). A real fix is `LockFileEx` via ctypes, untestable without a Windows
-  host.
+  host. Gaps, requirements and verification plan:
+  `20261015-feature-windows-index-locking.md`.
 - Header-version strictness, orphan-segment mtime handling: not exercised; left
   as is.
