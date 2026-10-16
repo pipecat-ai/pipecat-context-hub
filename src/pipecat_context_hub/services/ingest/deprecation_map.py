@@ -126,12 +126,21 @@ class DeprecationMap:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> DeprecationMap:
-        """Deserialize from a JSON-compatible dict."""
+    def from_dict(cls, data: dict[str, object], *, strict: bool = False) -> DeprecationMap:
+        """Deserialize from a JSON-compatible dict.
+
+        Lenient by default: what cannot be used is skipped. With ``strict``, data
+        that is not the shape :meth:`to_dict` writes raises ``ValueError`` instead
+        — see :func:`_validate_serialized_entry`.
+        """
         entries: dict[str, DeprecationEntry] = {}
         raw_entries = data.get("entries", {})
+        if strict and not isinstance(raw_entries, dict):
+            raise ValueError("deprecation map 'entries' is not an object")
         if isinstance(raw_entries, dict):
             for key, val in raw_entries.items():
+                if strict:
+                    _validate_serialized_entry(key, val)
                 if isinstance(val, dict):
                     entries[key] = DeprecationEntry(
                         old_path=str(val.get("old_path", key)),
@@ -177,24 +186,48 @@ class DeprecationMap:
 
         Returns an empty map on failure, with ``load_error`` recording whether
         the file was ``"missing"`` or ``"unreadable"``. A file that parses but
-        is not the shape :meth:`to_dict` writes is ``"unreadable"`` too:
-        :meth:`from_dict` skips what it cannot use, which would pass a broken
-        map off as one with no deprecations.
+        is not the shape :meth:`to_dict` writes is ``"unreadable"`` too: a
+        lenient :meth:`from_dict` skips or defaults what it cannot use, which
+        would pass a broken map off as one with no deprecations, or a bare
+        ``{}`` entry off as a deprecation of its key.
         """
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            entries = data["entries"] if isinstance(data, dict) else None
-            if not isinstance(entries, dict) or not all(
-                isinstance(val, dict) for val in entries.values()
-            ):
+            if not isinstance(data, dict) or "entries" not in data:
                 raise ValueError("not a deprecation map")
-            return cls.from_dict(data)
+            return cls.from_dict(data, strict=True)
         except FileNotFoundError:
             logger.debug("Deprecation map not found at %s", path)
             return cls(load_error="missing")
         except Exception:
             logger.debug("Could not load deprecation map from %s", path)
             return cls(load_error="unreadable")
+
+
+# Keys every release's ``to_dict`` has written for an entry (since the map was
+# introduced); a saved entry without them was not written by the hub.
+_SERIALIZED_REQUIRED_KEYS = ("old_path", "new_path", "deprecated_in", "removed_in", "note")
+# Keys added to ``to_dict`` later; maps saved by earlier releases lack them.
+_SERIALIZED_OPTIONAL_KEYS = ("kind", "relation", "location", "announced_removed_in")
+_SERIALIZED_STATUSES = ("deprecated", "removed")
+
+
+def _validate_serialized_entry(key: object, val: object) -> None:
+    """Raise ``ValueError`` unless *val* is an entry :meth:`DeprecationMap.to_dict` could write."""
+    if not isinstance(key, str) or not isinstance(val, dict):
+        raise ValueError("deprecation map entry is not an object")
+    missing = [k for k in _SERIALIZED_REQUIRED_KEYS if k not in val]
+    if missing:
+        raise ValueError(f"deprecation map entry {key!r} lacks {missing}")
+    if not isinstance(val["old_path"], str) or not val["old_path"]:
+        raise ValueError(f"deprecation map entry {key!r} has no old_path")
+    if not isinstance(val["note"], str):
+        raise ValueError(f"deprecation map entry {key!r} has a non-string note")
+    for k in ("new_path", "deprecated_in", "removed_in", *_SERIALIZED_OPTIONAL_KEYS):
+        if val.get(k) is not None and not isinstance(val[k], str):
+            raise ValueError(f"deprecation map entry {key!r} has a non-string {k}")
+    if val.get("status", "deprecated") not in _SERIALIZED_STATUSES:
+        raise ValueError(f"deprecation map entry {key!r} has an unknown status")
 
 
 class DeprecationRegistryError(Exception):

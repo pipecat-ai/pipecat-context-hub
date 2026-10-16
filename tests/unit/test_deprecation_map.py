@@ -167,6 +167,106 @@ class TestDeprecationMapSerialization:
         assert loaded.entries == {}
         assert loaded.load_error == "unreadable"
 
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {},
+            {"old_path": "Pipeline"},
+            {"new_path": None, "deprecated_in": None, "removed_in": None, "note": ""},
+            {
+                "old_path": "",
+                "new_path": None,
+                "deprecated_in": None,
+                "removed_in": None,
+                "note": "",
+            },
+            {
+                "old_path": 1,
+                "new_path": None,
+                "deprecated_in": None,
+                "removed_in": None,
+                "note": "",
+            },
+            {
+                "old_path": "Pipeline",
+                "new_path": None,
+                "deprecated_in": None,
+                "removed_in": None,
+                "note": "",
+                "status": "current",
+            },
+            {
+                "old_path": "Pipeline",
+                "new_path": ["X"],
+                "deprecated_in": None,
+                "removed_in": None,
+                "note": "",
+            },
+        ],
+    )
+    def test_load_entry_not_written_by_to_dict_is_unreadable(
+        self, tmp_path: Path, entry: dict[str, object]
+    ) -> None:
+        """Regression (deprecation_map.py:187): the shape check accepted any dict
+        entry, and from_dict defaulted old_path to the key and status to
+        "deprecated", so ``{"Pipeline": {}}`` reported a current API as deprecated."""
+        path = tmp_path / "deprecation_map.json"
+        path.write_text(json.dumps({"entries": {"Pipeline": entry}}), encoding="utf-8")
+        loaded = DeprecationMap.load(path)
+        assert loaded.entries == {}
+        assert loaded.load_error == "unreadable"
+        assert loaded.check("Pipeline") is None
+
+    def test_load_minimal_entry_from_an_earlier_release(self, tmp_path: Path) -> None:
+        """Maps saved before kind/relation/location/status/announced_removed_in
+        existed carry only the original five keys; they must still load."""
+        path = tmp_path / "deprecation_map.json"
+        entry = {
+            "old_path": "pipecat.services.grok",
+            "new_path": "pipecat.services.xai",
+            "deprecated_in": "0.0.50",
+            "removed_in": None,
+            "note": "",
+        }
+        path.write_text(
+            json.dumps({"pipecat_commit_sha": "abc", "entries": {"pipecat.services.grok": entry}}),
+            encoding="utf-8",
+        )
+        loaded = DeprecationMap.load(path)
+        assert loaded.load_error is None
+        found = loaded.check("pipecat.services.grok")
+        assert found is not None
+        assert found.new_path == "pipecat.services.xai"
+        assert found.status == "deprecated"
+
+    def test_load_round_trips_a_full_map_written_by_to_dict(self, tmp_path: Path) -> None:
+        path = tmp_path / "deprecation_map.json"
+        dm = DeprecationMap(
+            entries={
+                "Old": DeprecationEntry(
+                    old_path="Old",
+                    new_path="New",
+                    deprecated_in="1.0.0",
+                    removed_in="2.0.0",
+                    note="moved",
+                    kind="class",
+                    relation="rename",
+                    location="pipecat/x.py:1",
+                ),
+                "Gone": DeprecationEntry(
+                    old_path="Gone",
+                    status="removed",
+                    removed_in="2.1.0",
+                    announced_removed_in="2.0.0",
+                ),
+            },
+            pipecat_commit_sha="deadbeef",
+        )
+        dm.save(path)
+        loaded = DeprecationMap.load(path)
+        assert loaded.load_error is None
+        assert loaded == dm
+
     def test_load_explicit_empty_entries_is_not_an_error(self, tmp_path: Path) -> None:
         path = tmp_path / "deprecation_map.json"
         path.write_text('{"entries": {}}', encoding="utf-8")
