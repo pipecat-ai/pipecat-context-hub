@@ -2047,6 +2047,41 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         mock_is_cls.assert_not_called()  # no rebuild over the leftovers
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    def test_reset_index_refuses_to_rebuild_over_an_undeleted_deprecation_map(
+        self, mock_gh_cls, mock_is_cls, tmp_path, monkeypatch
+    ):
+        """Regression (cli.py:1192): the survivor check covered only the
+        keyword database and the vector directory. A surviving
+        deprecation_map.json, which a run that does not republish it keeps,
+        was served beside the rebuilt index (stale check_deprecation data)."""
+        data_dir = tmp_path / "data-home"
+        data_dir.mkdir()
+        (data_dir / "deprecation_map.json").write_text("{}")
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", lambda *_a, **_k: None)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 1, result.output
+        assert "could not delete" in result.output
+        assert "deprecation_map.json" in result.output
+        mock_is_cls.assert_not_called()
+
+    def test_index_artifact_paths_cover_what_serve_loads(self, tmp_path):
+        """The survivor check and the readers share one list of paths."""
+        from pipecat_context_hub.shared.config import StorageConfig
+
+        storage = StorageConfig(data_dir=tmp_path)
+        assert storage.index_artifact_paths == (
+            storage.sqlite_path,
+            storage.chroma_path,
+            storage.deprecation_map_path,
+        )
+        assert storage.deprecation_map_path == tmp_path / "deprecation_map.json"
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
     @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
     @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")

@@ -168,6 +168,20 @@ class StorageConfig(BaseModel):
         """Full path to ChromaDB directory. Included in model_dump()/JSON."""
         return self.data_dir / self.chroma_dirname
 
+    @property
+    def deprecation_map_path(self) -> Path:
+        """The deprecation map ``refresh`` publishes and ``serve`` loads."""
+        return self.data_dir / "deprecation_map.json"
+
+    @property
+    def index_artifact_paths(self) -> tuple[Path, ...]:
+        """Every file ``serve`` reads as the built index.
+
+        ``refresh --reset-index`` refuses to rebuild while any of them
+        survives its delete: a survivor would be served beside the new index.
+        """
+        return (self.sqlite_path, self.chroma_path, self.deprecation_map_path)
+
 
 class RerankerConfig(BaseModel):
     """Cross-encoder reranking settings.

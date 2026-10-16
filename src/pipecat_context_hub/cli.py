@@ -960,7 +960,7 @@ def serve(ctx: click.Context) -> None:
         # alongside the index, so it is reloaded on every index reopen too.
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
-        dep_map_path = config.storage.data_dir / "deprecation_map.json"
+        dep_map_path = config.storage.deprecation_map_path
 
         def _load_deprecation_map() -> None:
             retriever.deprecation_map = DeprecationMap.load(dep_map_path)
@@ -1189,10 +1189,10 @@ def refresh(
         _delete_local_index_storage(config.storage.data_dir)
         # The delete ignores errors; Windows refuses to delete a file another
         # process (a running `serve`) holds open. Never rebuild over the rest.
+        # The deprecation map counts too: a stale one would be served beside
+        # the rebuilt index when this run does not republish it.
         undeleted = [
-            redact_home(path)
-            for path in (config.storage.sqlite_path, config.storage.chroma_path)
-            if path.exists()
+            redact_home(path) for path in config.storage.index_artifact_paths if path.exists()
         ]
         if undeleted:
             raise click.ClickException(
@@ -1797,7 +1797,7 @@ def refresh(
             build_deprecation_map_from_registry,
         )
 
-        dep_map_path = config.storage.data_dir / "deprecation_map.json"
+        dep_map_path = config.storage.deprecation_map_path
 
         # Reuse the same record-replacement gate as framework provenance below,
         # so the map and the stamp can never describe different revisions.

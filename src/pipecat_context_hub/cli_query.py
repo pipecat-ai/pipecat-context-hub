@@ -360,9 +360,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
 
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
-        retriever.deprecation_map = DeprecationMap.load(
-            config.storage.data_dir / "deprecation_map.json"
-        )
+        retriever.deprecation_map = DeprecationMap.load(config.storage.deprecation_map_path)
 
         yield _QueryRuntime(
             retriever=retriever,

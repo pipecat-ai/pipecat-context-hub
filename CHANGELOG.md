@@ -107,9 +107,10 @@ This project uses [Semantic Versioning](https://semver.org/).
 - **Opening an initialized keyword database no longer writes to it.** `refresh`
   completes an incomplete one and rebuilds its full-text table from the stored
   records in one transaction, so a failed rebuild is retried by the next `refresh`.
-- **`refresh --reset-index` exits 1 instead of rebuilding when the index files
-  survive the delete** (on Windows, a running `serve` holds them open: stop it,
-  then retry).
+- **`refresh --reset-index` exits 1 instead of rebuilding when an index file
+  survives the delete** (the keyword database, the vector directory, or the
+  deprecation map, which would otherwise be served beside the rebuilt index; on
+  Windows, a running `serve` holds them open: stop it, then retry).
 
 ### Fixed
 - **Open-time index checks read what Chroma will open.** A writer killed
