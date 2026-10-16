@@ -21,6 +21,7 @@ import sys
 import threading
 from collections.abc import Generator
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,9 +29,10 @@ import pytest
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import main
+from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.services.ingest.github_ingest import CloneResult
 from pipecat_context_hub.shared.config import HubConfig, RerankerConfig, StorageConfig
-from pipecat_context_hub.shared.types import IngestResult, SearchDocsInput
+from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, SearchDocsInput
 
 _ENABLE_ENV = "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK"
 _OUTPUT_ENV = "PIPECAT_HUB_STABILITY_OUTPUT"
@@ -216,6 +218,26 @@ def _invoke_refresh(data_dir: Path) -> None:
     assert result.exit_code == 0, result.output
 
 
+def _seed_index(data_dir: Path) -> None:
+    """Give the refreshed index one record: the fake ingesters write none, and
+    `serve` refuses an empty index."""
+    store = IndexStore(StorageConfig(data_dir=data_dir), create=True)
+    try:
+        record = ChunkedRecord(
+            chunk_id="bench-seed",
+            content="seed record for the runtime stability benchmark",
+            content_type="doc",
+            source_url="https://docs.pipecat.ai/seed",
+            path="/seed",
+            indexed_at=datetime.now(tz=UTC),
+            embedding=[0.1] * 384,
+            metadata={"title": "seed"},
+        )
+        asyncio.run(store.upsert([record]))
+    finally:
+        store.close()
+
+
 def _invoke_serve(data_dir: Path) -> None:
     runner = CliRunner()
     config = _make_config(data_dir)
@@ -274,7 +296,10 @@ class TestRuntimeStability:
             refresh_snapshots[-1],
         )
 
-        serve_dir = base_dir / "serve-data"
+        # serve never creates an index and refuses an empty one, so it opens
+        # the one the refresh cycles above built, plus a seed record.
+        _seed_index(refresh_dir)
+        serve_dir = refresh_dir
         serve_snapshots: list[ResourceSnapshot] = []
         for _ in range(_SERVE_CYCLES):
             _invoke_serve(serve_dir)
