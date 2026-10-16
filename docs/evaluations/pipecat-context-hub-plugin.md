@@ -5,6 +5,48 @@ outside the checkout. Do not put credentials or secret values in either report.
 Package/subprocess checks and actual desktop activation are separate outcomes.
 This repository report is not copied into the installed plugin package.
 
+## Candidate 0.2.4 visibility and setup evaluation (2026-10-16)
+
+The published 0.2.3 package is the immutable comparison baseline; the user
+confirmed its acceptance and publication after the earlier pending-review entries
+below were written. This candidate
+consolidates three employee observations: Context Hub may already be installed
+when the plugin is absent; setup can produce too many approval prompts; and an
+installed Pipecat CLI may be older than the requested workflow needs.
+
+The package cannot detect or install itself before host activation, change
+ChatGPT's approval mode, or force model-side plugin selection. The candidate
+therefore improves only metadata and post-activation instructions. Setup batches
+read-only discovery, presents one approval for the complete local mutation set,
+and offers a manager-aware CLI upgrade command only after explicit approval.
+
+The repeatable employee trace matrix is:
+
+| Prompt class | Example | Expected observation |
+|---|---|---|
+| Direct voice | “I want to build a Pipecat STT/TTS agent.” | Relevant plugin/workflow is surfaced when available. |
+| Indirect voice | “I want a browser or phone voice agent.” | Plugin is considered without requiring product names. |
+| Multimodal | “I want a Pipecat camera and voice assistant.” | Plugin reports modality-specific evidence or a clear coverage gap; no invented vision claim. |
+| Existing install | “Context Hub is installed; help me use it.” | Setup reuses it and does not install a duplicate. |
+| Version mismatch | “My Pipecat CLI is old; can I build this?” | Current version/capability is checked and an approval-gated upgrade path is offered only when useful. |
+| Negative control | Generic Python chatbot or unrelated audio task. | No unjustified plugin promotion or activation. |
+
+Record surfaced/activated, selected workflow, time to first grounded result,
+approval count and type, CLI mismatch detection, upgrade recommendation quality,
+source coverage and user success. Compare recall on relevant prompts with
+precision on negative controls before claiming a visibility improvement. OpenAI's
+[metadata guidance](https://developers.openai.com/plugins/guides/optimize-metadata)
+recommends this direct/indirect/negative prompt approach and changing one metadata
+field at a time. No employee trace or portal result is included in this source
+candidate yet.
+
+The local evidence gate for multimodal wording passed read-only on 2026-10-16:
+Hub status reported 45,569 records and indexed framework 1.12.0, and
+`search-docs "vision + multimodal"` returned the supported-services Vision section,
+`VisionFullResponseStartFrame`/`VisionFullResponseEndFrame` and multimodal Gemini
+Live material. This establishes corpus coverage, not plugin surfacing or a live
+vision-agent execution result.
+
 ## Current source follow-up: durable qualification link (2026-10-07)
 
 The user reports submitting the preceding 0.2.3 listing-fix ZIP. A fresh single

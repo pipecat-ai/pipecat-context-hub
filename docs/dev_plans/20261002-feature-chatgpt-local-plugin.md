@@ -1,6 +1,6 @@
 # Local Pipecat plugin: idea to Cloud deployment experiment
 
-**Status**: Complete — local Codex acceptance; ChatGPT Work remains unqualified
+**Status**: Complete — 0.2.3 published; 0.2.4 follow-up in progress
 **Component**: plugin packaging, retrieval instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-02
@@ -239,8 +239,9 @@ Portable OpenAI plugin packaging and host capability boundary; pinned launch ind
 - [x] Prepare a commit-pinned replacement for the submitted 0.2.3 package's
   branch-qualified evaluation link.
 - [ ] Observe revised-skill activation in ChatGPT Work.
-- [ ] Recheck the publisher portal outcome. The submitted ZIP is unchanged; the
-  durable-link replacement is prepared but not uploaded.
+- [x] Recheck the publisher portal outcome. The user confirmed that 0.2.3 was
+  accepted and published; the 0.2.4 follow-up is tracked in the
+  [current plan](20261016-feature-chatgpt-plugin-0-2-4.md).
 
 Chronological command output, hashes, Cloud identifiers, package manifests,
 historical failures and per-run results live in the
@@ -250,6 +251,11 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
 ## Findings
 
 ### Later decisions that supersede the reviewed contract
+
+- **2026-10-16 — publication status correction:** the user confirmed that the
+  submitted 0.2.3 plugin was accepted and published. Earlier pending-review and
+  unverified-portal wording remains historical chronology; current 0.2.4 work is
+  tracked in the [visibility and setup refinement plan](20261016-feature-chatgpt-plugin-0-2-4.md).
 
 - **2026-10-14 — superseded stdio renderer architecture:** the original
   stdio/MCP renderer described in R3, the `mcp.template.json` file entry, the
@@ -352,7 +358,7 @@ package changes live in [CHANGELOG.md](../../CHANGELOG.md).
 | Cloud | One approved corrected source build/deploy independently verified ready with the approved resources and existing secret identity | No provider session or secret write was exercised |
 | Index safety | Observed oversized persisted-HNSW failure refused before native Chroma construction | Existing reset guidance retained; coverage is deliberately bounded |
 | Presentation | Cat-mark assets, labelled logos, publisher metadata, privacy and terms links included | Host rendering and portal review are separate outcomes |
-| Publication | 0.2.3 listing-fix ZIP reported submitted; commit-pinned durable-link replacement prepared | Replacement not uploaded; portal decision pending |
+| Publication | 0.2.3 listing-fix package accepted and published (user-confirmed) | 0.2.4 candidate is tracked separately; host-side activation remains unqualified |
 | Quality | Phase 5 full gate passed Ruff, mypy, security checks and 1,847 tests with 7 skips | Later listing/link-only edits passed 17 packaging tests and focused integrity/PII checks; the earlier full-suite result remains dated |
 
 This plan now records the contract, the decisions that changed it, and the final

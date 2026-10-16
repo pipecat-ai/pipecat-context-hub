@@ -3,11 +3,12 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-10-02 | Feature | CLI-first Pipecat plugin: setup, explore, build and deploy | Complete — 0.2.3 submitted (user-reported); durable-link replacement prepared; portal review/fresh setup/Work unqualified | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
+| 2026-10-02 | Feature | CLI-first Pipecat plugin: setup, explore, build and deploy | Complete — 0.2.3 accepted/published (user-confirmed); fresh setup/Work activation unqualified | Codex | `feature/chatgpt-local-plugin` | [Plan](20261002-feature-chatgpt-local-plugin.md) |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-10-16 | feature | ChatGPT plugin 0.2.4 visibility and setup refinement | Complete — candidate ready for consolidated review | Codex | `feature/chatgpt-local-plugin` | `20261016-feature-chatgpt-plugin-0-2-4.md` |
 | 2026-10-02 | chore | Security update: PyJWT 2.15.0; integrates PR #137 (PR #136) | Complete (v0.8.1; PR #136) | Dependabot / vr000m | `dependabot/uv/pyjwt-2.15.0` | _(no plan file)_ |
 | 2026-10-02 | chore | Security updates: urllib3 2.8.0 and OAuthLib 4.0.0 (PR #137) | Complete (v0.8.1; PR #137; integrated via #136) | Dependabot / vr000m | `dependabot/uv/urllib3-2.8.0` | _(no plan file)_ |
 | 2026-09-09 | chore | Migrate `mcp` Python SDK 1.x → 2.x (lowlevel `Server` API rewrite; issue #127) | Complete (v0.8.0; PR #132) | Claude | `chore/mcp-sdk-2x-migration` | `20260909-chore-mcp-sdk-2x-migration.md` |
