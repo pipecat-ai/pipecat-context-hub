@@ -965,6 +965,13 @@ def serve(ctx: click.Context) -> None:
 
         def _load_deprecation_map() -> None:
             retriever.deprecation_map = DeprecationMap.load(dep_map_path)
+            if retriever.deprecation_map.load_error:
+                logger.warning(
+                    "Deprecation map %s (%s); check_deprecation cannot report "
+                    "deprecations until `refresh` rebuilds it",
+                    retriever.deprecation_map.load_error,
+                    redact_home(dep_map_path),
+                )
             if retriever.deprecation_map.entries:
                 logger.info(
                     "Loaded deprecation map: %d entries", len(retriever.deprecation_map.entries)

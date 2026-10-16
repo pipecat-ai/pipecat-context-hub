@@ -143,6 +143,21 @@ class TestDeprecationMapSerialization:
     def test_load_missing_file(self, tmp_path: Path) -> None:
         loaded = DeprecationMap.load(tmp_path / "nonexistent.json")
         assert loaded.entries == {}
+        assert loaded.load_error == "missing"
+
+    def test_load_unreadable_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "deprecation_map.json"
+        path.write_text("{not json", encoding="utf-8")
+        loaded = DeprecationMap.load(path)
+        assert loaded.entries == {}
+        assert loaded.load_error == "unreadable"
+
+    def test_load_valid_empty_map_is_not_an_error(self, tmp_path: Path) -> None:
+        """A refresh against a pipecat without a registry saves an empty map; that
+        is a real answer, not a load failure."""
+        path = tmp_path / "deprecation_map.json"
+        DeprecationMap().save(path)
+        assert DeprecationMap.load(path).load_error is None
 
     def test_save_failure_mid_write_preserves_prior_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

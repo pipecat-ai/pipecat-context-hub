@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import asyncio
+import json
+from pathlib import Path
+
 import pytest
 
-from pipecat_context_hub.server.tools.check_deprecation import resolve_framework_version
+from pipecat_context_hub.server.tools.check_deprecation import (
+    handle_check_deprecation,
+    resolve_framework_version,
+)
+from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
 
 def _index_store(metadata: dict[str, object]) -> MagicMock:
@@ -111,3 +119,38 @@ class TestResolveFrameworkVersion:
         dep_map = MagicMock()
         dep_map.pipecat_commit_sha = "def456"
         assert resolve_framework_version(store, dep_map) == "1.2.0"
+
+
+class TestUnloadableMap:
+    """An unloadable map answers "not deprecated" for everything; say so."""
+
+    @pytest.mark.parametrize(
+        ("content", "fragment"),
+        [(None, "is missing"), ("{not json", "could not be read")],
+    )
+    def test_warns_instead_of_asserting_current(
+        self, tmp_path: Path, content: str | None, fragment: str
+    ) -> None:
+        path = tmp_path / "deprecation_map.json"
+        if content is not None:
+            path.write_text(content, encoding="utf-8")
+        out = json.loads(
+            asyncio.run(
+                handle_check_deprecation({"symbol": "PipelineTask"}, DeprecationMap.load(path))
+            )
+        )
+        assert out["deprecated"] is False
+        assert out["status"] is None
+        assert fragment in out["note"]
+        assert "refresh" in out["note"]
+
+    def test_loaded_empty_map_still_reports_current(self, tmp_path: Path) -> None:
+        path = tmp_path / "deprecation_map.json"
+        DeprecationMap().save(path)
+        out = json.loads(
+            asyncio.run(
+                handle_check_deprecation({"symbol": "PipelineTask"}, DeprecationMap.load(path))
+            )
+        )
+        assert out["status"] == "current"
+        assert out["note"] is None

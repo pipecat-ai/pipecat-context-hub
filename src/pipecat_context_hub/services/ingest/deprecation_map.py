@@ -22,7 +22,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from packaging.version import InvalidVersion, Version
 
@@ -74,6 +74,9 @@ class DeprecationMap:
 
     entries: dict[str, DeprecationEntry] = field(default_factory=dict)
     pipecat_commit_sha: str = ""
+    load_error: Literal["missing", "unreadable"] | None = field(default=None, compare=False)
+    """Set by :meth:`load` when the file could not be read, so callers can tell an
+    unloadable map from a genuinely empty one. Never serialized."""
 
     def check(self, symbol: str) -> DeprecationEntry | None:
         """Look up whether a symbol is deprecated.
@@ -170,13 +173,20 @@ class DeprecationMap:
 
     @classmethod
     def load(cls, path: Path) -> DeprecationMap:
-        """Load a deprecation map from a JSON file. Returns empty map on failure."""
+        """Load a deprecation map from a JSON file.
+
+        Returns an empty map on failure, with ``load_error`` recording whether
+        the file was ``"missing"`` or ``"unreadable"``.
+        """
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             return cls.from_dict(data)
+        except FileNotFoundError:
+            logger.debug("Deprecation map not found at %s", path)
+            return cls(load_error="missing")
         except Exception:
             logger.debug("Could not load deprecation map from %s", path)
-            return cls()
+            return cls(load_error="unreadable")
 
 
 class DeprecationRegistryError(Exception):
