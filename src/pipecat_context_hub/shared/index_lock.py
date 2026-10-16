@@ -94,20 +94,26 @@ def _try_lock(fd: int, *, exclusive: bool) -> bool:
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
         except OSError as exc:
-            return _fail_open(exc)
+            return _fail_open(exc, exclusive=exclusive)
         return True
     try:
         fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
     except OSError as exc:
-        return _fail_open(exc)
+        return _fail_open(exc, exclusive=exclusive)
     return True
 
 
-def _fail_open(exc: OSError) -> bool:
-    """False for genuine contention; True (lock unavailable, proceed) otherwise."""
+def _fail_open(exc: OSError, *, exclusive: bool) -> bool:
+    """False for genuine contention; True (lock unavailable, proceed) otherwise.
+
+    Proceeding unlocked is only worth a warning for an exclusive (writer)
+    lock: a reader has nothing to protect that a writer's own warning does not
+    already report, and readers run on every query.
+    """
     if exc.errno in _CONTENTION or exc.errno == getattr(errno, "EDEADLK", None):
         return False
-    logger.debug("File locking unavailable (%s); continuing without a lock", exc)
+    log = logger.warning if exclusive else logger.debug
+    log("File locking unavailable (%s); continuing without a lock", exc)
     return True
 
 
@@ -165,9 +171,12 @@ class IndexLock:
                 return
             fd = os.open(self._path, os.O_RDWR | os.O_CREAT | _O_NOFOLLOW, 0o600)
         except OSError as exc:  # unwritable parent / symlink: locking is best-effort
-            logger.debug(
-                "Cannot create lock file %s (%s); continuing without a lock", self._path, exc
-            )
+            # A writer (exclusive) running unprotected is worth a warning, as
+            # for the symlink / not-a-regular-file cases below (e.g. a data dir
+            # whose parent is read-only, such as a container volume mounted at
+            # /data); readers stay quiet, since they run on every query.
+            log = logger.warning if self._exclusive else logger.debug
+            log("Cannot create lock file %s (%s); continuing without a lock", self._path, exc)
             return
         reason = _unusable_lock_file(fd, self._path)
         if reason is not None:

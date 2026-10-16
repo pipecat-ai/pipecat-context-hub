@@ -190,6 +190,38 @@ def test_unsupported_locking_fails_open(tmp_path: Path, monkeypatch: pytest.Monk
     IndexLock(tmp_path, REFRESH_LOCK, exclusive=True).acquire()
 
 
+def test_writer_warns_when_it_cannot_create_its_lock_file(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A refresh that proceeds unprotected must say so (e.g. a read-only /data
+    volume); readers, which run on every query, stay quiet."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    data_dir = blocker / "hub"  # the lock's parent is a file: it can never be created
+    with caplog.at_level(logging.WARNING, logger="pipecat_context_hub.shared.index_lock"):
+        IndexLock(data_dir, REFRESH_LOCK, exclusive=False).acquire()
+        assert "continuing without a lock" not in caplog.text
+        IndexLock(data_dir, REFRESH_LOCK, exclusive=True).acquire()
+    assert "continuing without a lock" in caplog.text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="patches fcntl.flock")
+def test_writer_warns_when_locking_is_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import fcntl
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(fcntl, "flock", boom)
+    with caplog.at_level(logging.WARNING, logger="pipecat_context_hub.shared.index_lock"):
+        IndexLock(tmp_path, REFRESH_LOCK, exclusive=False).acquire()
+        assert "continuing without a lock" not in caplog.text
+        IndexLock(tmp_path, REFRESH_LOCK, exclusive=True).acquire()
+    assert "File locking unavailable" in caplog.text
+
+
 def test_lock_survives_deleting_the_data_dir(tmp_path: Path) -> None:
     """`--reset-index` rmtree's the data dir; the lock must not live inside it."""
     import shutil
