@@ -17,16 +17,33 @@ independent plugin release history and is included in prepared plugin copies.
 
 ## [0.2.3] - Published
 
+> First publicly available plugin release. This release consolidates all work
+> from the earlier internal and pre-publication revisions.
+
 ### Added
 
 - Skills-only Setup, Explore, Build and Deploy workflows using Pipecat Context
   Hub CLI queries for grounded documentation, API definitions and examples.
+- Native `pipecat context-hub` retrieval is preferred when available, with the
+  standalone `pipecat-context-hub` command as a fallback. Build and Deploy
+  workflows retain their local execution, Pipecat CLI and Cloud-login
+  requirements.
 - Approved publisher metadata, product and support links, Daily's public
   privacy-policy and terms-of-service links, three starter prompts, and a
-  bundled privacy notice.
+  bundled privacy notice with the packaged branding assets.
 
 ### Changed
 
 - Listing and Explore metadata describe voice AI, STT/LLM/TTS and real-time
   speech-to-speech integrations without claiming automatic recommendation or
   selection in ChatGPT.
+- The portable package contains skills and assets, not Python, the Hub runtime,
+  an index, credentials or Cloud infrastructure. Setup discovers the host and
+  proposes only explicitly approved local changes.
+
+### Removed
+
+- MCP configuration and lifecycle hooks were removed from the public plugin
+  after the prototype because the supported local HTTP/certificate path was
+  unavailable. Standalone Context Hub MCP access remains supported for other
+  clients.
