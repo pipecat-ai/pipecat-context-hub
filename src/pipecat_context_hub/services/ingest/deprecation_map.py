@@ -108,21 +108,7 @@ class DeprecationMap:
         """Serialize to a JSON-compatible dict."""
         return {
             "pipecat_commit_sha": self.pipecat_commit_sha,
-            "entries": {
-                k: {
-                    "old_path": e.old_path,
-                    "new_path": e.new_path,
-                    "deprecated_in": e.deprecated_in,
-                    "removed_in": e.removed_in,
-                    "note": e.note,
-                    "kind": e.kind,
-                    "relation": e.relation,
-                    "location": e.location,
-                    "status": e.status,
-                    "announced_removed_in": e.announced_removed_in,
-                }
-                for k, e in self.entries.items()
-            },
+            "entries": {k: _entry_to_dict(e) for k, e in self.entries.items()},
         }
 
     @classmethod
@@ -170,10 +156,18 @@ class DeprecationMap:
         file — closing the same failure mode round 9's registry-read guard
         covers, reached here via a write failure instead of a read failure.
         """
+        # The writer enforces what the reader requires: a map that `load` would
+        # reject as unreadable is never published, so `save` succeeding implies
+        # `load` succeeds. The caller keeps the previous map (see refresh).
+        payload = self.to_dict()
+        entries = payload["entries"]
+        assert isinstance(entries, dict)  # nosec B101 - to_dict's own shape
+        for key, val in entries.items():
+            _validate_serialized_entry(key, val)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
         try:
-            tmp_path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+            tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             tmp_path.replace(path)
         except Exception:
             tmp_path.unlink(missing_ok=True)
@@ -202,6 +196,37 @@ class DeprecationMap:
         except Exception:
             logger.debug("Could not load deprecation map from %s", path)
             return cls(load_error="unreadable")
+
+
+def _entry_to_dict(entry: DeprecationEntry) -> dict[str, object]:
+    """The one serialized form of an entry (``DeprecationMap.to_dict`` and the
+    writer-side validation both use it)."""
+    return {
+        "old_path": entry.old_path,
+        "new_path": entry.new_path,
+        "deprecated_in": entry.deprecated_in,
+        "removed_in": entry.removed_in,
+        "note": entry.note,
+        "kind": entry.kind,
+        "relation": entry.relation,
+        "location": entry.location,
+        "status": entry.status,
+        "announced_removed_in": entry.announced_removed_in,
+    }
+
+
+def _unpublishable_reason(entry: DeprecationEntry) -> str | None:
+    """Why *entry* could not be saved and loaded back, or ``None`` if it can.
+
+    The registry builders run every record through this, so an untrusted record
+    (a null or non-string field) is skipped with a warning instead of making
+    ``save`` refuse the whole map, or worse, publishing one ``load`` rejects.
+    """
+    try:
+        _validate_serialized_entry(entry.old_path, _entry_to_dict(entry))
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 # Keys every release's ``to_dict`` has written for an entry (since the map was
@@ -312,11 +337,15 @@ def build_deprecation_map_from_registry(
             new_path=rec.get("replacement") or None,
             deprecated_in=rec.get("deprecated_in"),
             removed_in=rec.get("removed_in"),
-            note=rec.get("message", ""),
+            note=rec.get("message") or "",
             kind=rec.get("kind"),
             relation=rec.get("relation"),
             location=rec.get("location"),
         )
+        problem = _unpublishable_reason(entry)
+        if problem is not None:
+            logger.warning("Deprecation registry: skipping record %r: %s", subject, problem)
+            continue
         # Bare subjects are assumed globally unique in the registry. If two
         # records collide on the same bare key (e.g. same-named classes in
         # different modules), the last one silently wins the bare lookup — the
@@ -334,7 +363,12 @@ def build_deprecation_map_from_registry(
         # Register a fully-qualified alias so "pipecat.x.y.ClassName" resolves the
         # same as the bare "ClassName". Module records are already fully qualified.
         module = rec.get("module")
-        if module and rec.get("kind") != "module" and not subject.startswith(module + "."):
+        if (
+            isinstance(module, str)
+            and module
+            and rec.get("kind") != "module"
+            and not subject.startswith(module + ".")
+        ):
             aliases[f"{module}.{subject}"] = entry
 
     for key, entry in aliases.items():
@@ -400,12 +434,16 @@ def add_removals_from_registry(dep_map: DeprecationMap, removals_path: Path) -> 
             new_path=rec.get("replacement") or None,
             deprecated_in=rec.get("deprecated_in"),
             removed_in=rec.get("removed_in"),
-            note=rec.get("message", ""),
+            note=rec.get("message") or "",
             kind=rec.get("kind"),
             relation=rec.get("relation"),
             status="removed",
             announced_removed_in=rec.get("announced_removed_in"),
         )
+        problem = _unpublishable_reason(entry)
+        if problem is not None:
+            logger.warning("Removals registry: skipping record %r: %s", subject, problem)
+            continue
         existing = dep_map.entries.get(subject)
         if existing is not None and existing.status != "removed":
             # Never let a removal silently shadow an *active* deprecation on the
@@ -425,7 +463,12 @@ def add_removals_from_registry(dep_map: DeprecationMap, removals_path: Path) -> 
             dep_map.entries[subject] = entry
         added += 1
         module = rec.get("module")
-        if module and rec.get("kind") != "module" and not subject.startswith(module + "."):
+        if (
+            isinstance(module, str)
+            and module
+            and rec.get("kind") != "module"
+            and not subject.startswith(module + ".")
+        ):
             aliases[f"{module}.{subject}"] = entry
 
     for key, entry in aliases.items():

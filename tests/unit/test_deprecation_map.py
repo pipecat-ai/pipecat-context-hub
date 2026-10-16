@@ -829,3 +829,109 @@ class TestCheckDeprecationVersionAware:
             )
         )
         assert result["status"] == "removed"
+
+
+class TestWriterReaderContract:
+    """``save`` succeeding implies ``load`` succeeds (round-trips equal).
+
+    Regression (deprecation_map.py:310): ``load`` rejects entries ``to_dict``
+    could not have written, but the registry builders copied untrusted JSON
+    fields unchecked, so a registry record with a null or non-string field made
+    ``refresh`` publish a map its own reader called unreadable, and every later
+    ``refresh`` rebuilt the same file. The builders now skip such a record (with
+    a warning) and ``save`` refuses what ``load`` would reject.
+    """
+
+    _GOOD = {"subject": "GoodThing", "replacement": "Better", "deprecated_in": "1.0.0"}
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"subject": "Bad", "message": 5},
+            {"subject": "Bad", "replacement": ["Other"]},
+            {"subject": "Bad", "deprecated_in": 1.2},
+            {"subject": "Bad", "removed_in": {"v": 2}},
+            {"subject": "Bad", "kind": 3},
+            {"subject": "Bad", "relation": ["x"]},
+            {"subject": "Bad", "location": {}},
+            {"subject": 7},
+        ],
+        ids=lambda rec: json.dumps(rec),
+    )
+    def test_registry_builder_skips_an_untrusted_record_and_the_map_round_trips(
+        self, tmp_path: Path, bad: dict[str, object], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        registry = tmp_path / "deprecations.json"
+        registry.write_text(json.dumps({"deprecations": [bad, self._GOOD]}), encoding="utf-8")
+        with caplog.at_level("WARNING"):
+            built = build_deprecation_map_from_registry(registry, commit_sha="sha")
+        assert set(built.entries) == {"GoodThing"}
+        assert "GoodThing" in built.entries
+        assert "skipping record" in caplog.text
+
+        path = tmp_path / "deprecation_map.json"
+        built.save(path)
+        loaded = DeprecationMap.load(path)
+        assert loaded.load_error is None
+        assert loaded.entries == built.entries
+
+    def test_a_null_message_is_the_declared_default_not_a_defect(self, tmp_path: Path) -> None:
+        registry = tmp_path / "deprecations.json"
+        registry.write_text(
+            json.dumps({"deprecations": [{**self._GOOD, "message": None}]}), encoding="utf-8"
+        )
+        built = build_deprecation_map_from_registry(registry)
+        assert built.entries["GoodThing"].note == ""
+        path = tmp_path / "deprecation_map.json"
+        built.save(path)
+        assert DeprecationMap.load(path).entries == built.entries
+
+    def test_non_string_module_does_not_break_the_alias_step(self, tmp_path: Path) -> None:
+        registry = tmp_path / "deprecations.json"
+        registry.write_text(
+            json.dumps({"deprecations": [{**self._GOOD, "module": 5}]}), encoding="utf-8"
+        )
+        built = build_deprecation_map_from_registry(registry)
+        assert set(built.entries) == {"GoodThing"}
+
+    def test_removals_builder_skips_an_untrusted_record_and_the_map_round_trips(
+        self, tmp_path: Path
+    ) -> None:
+        registry = tmp_path / "deprecations.json"
+        registry.write_text(json.dumps({"deprecations": [self._GOOD]}), encoding="utf-8")
+        removals = tmp_path / "removals.json"
+        removals.write_text(
+            json.dumps(
+                {
+                    "removals": [
+                        {"subject": "Gone", "removed_in": "2.0.0", "announced_removed_in": 5},
+                        {"subject": "AlsoGone", "removed_in": "2.0.0", "message": None},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        built = build_deprecation_map_from_registry(registry)
+        add_removals_from_registry(built, removals)
+        assert "Gone" not in built.entries
+        assert built.entries["AlsoGone"].status == "removed"
+        path = tmp_path / "deprecation_map.json"
+        built.save(path)
+        loaded = DeprecationMap.load(path)
+        assert loaded.load_error is None and loaded.entries == built.entries
+
+    def test_save_refuses_what_load_would_reject_and_keeps_the_previous_map(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "deprecation_map.json"
+        good = DeprecationMap(entries={"Old": DeprecationEntry(old_path="Old", new_path="New")})
+        good.save(path)
+        before = path.read_bytes()
+
+        bad = DeprecationMap(
+            entries={"Old": DeprecationEntry(old_path="Old", note=None)}  # type: ignore[arg-type]
+        )
+        with pytest.raises(ValueError, match="non-string note"):
+            bad.save(path)
+        assert path.read_bytes() == before
+        assert not list(tmp_path.glob("*.tmp.*"))
