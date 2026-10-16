@@ -30,6 +30,8 @@ import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
 if TYPE_CHECKING:
     from pipecat_context_hub.shared.interfaces import ServingIndex
 
@@ -120,6 +122,12 @@ def annotate_response(result_json: str, index_store: ServingIndex) -> str:
             return result_json
         payload["index_staleness"] = info
         return json.dumps(payload)
+    except IndexUnavailableError:
+        # The index went unavailable between the handler and this read (a
+        # refresh started, or a reopen is pending): an expected race, not a
+        # failure worth a traceback. The response is still good; skip the footer.
+        logger.debug("Skipping the staleness annotation: index unavailable", exc_info=True)
+        return result_json
     except Exception:
         logger.exception("Failed to annotate response with staleness info")
         return result_json

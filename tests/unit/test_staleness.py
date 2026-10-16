@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 from click.testing import CliRunner
 
 from pipecat_context_hub.cli import main
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.staleness import annotate_response, staleness_info
 
 runner = CliRunner()
@@ -98,6 +99,16 @@ class TestAnnotateResponse:
         store.get_all_metadata.side_effect = RuntimeError("boom")
         raw = '{"hits": []}'
         assert annotate_response(raw, store) == raw
+
+    def test_index_unavailable_is_skipped_quietly(self, caplog):
+        """A refresh starting between the handler and the footer is an expected
+        race: the response survives and nothing is logged as an error."""
+        store = MagicMock()
+        store.get_all_metadata.side_effect = IndexUnavailableError("retry in 60-120 seconds")
+        raw = '{"hits": []}'
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.shared.staleness"):
+            assert annotate_response(raw, store) == raw
+        assert caplog.records == []
 
     def test_no_parsed_shortcut_parameter(self):
         """``annotate_response`` takes exactly ``(result_json, index_store)``.
