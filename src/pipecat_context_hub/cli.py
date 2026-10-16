@@ -135,7 +135,13 @@ def _repo_slug_of_sha_key(key: str) -> str | None:
     return None
 
 
-def _repo_cleanup_failed_key(slug: str) -> str:
+def _repo_delete_pending_key(slug: str) -> str:
+    """Write-ahead flag: a delete of ``slug``'s records has started and no
+    clean re-ingest has followed it yet (it may have failed, or been aborted).
+
+    The on-disk name ``cleanup_failed`` predates the write-ahead use; it is
+    kept so indexes written by earlier versions keep their flags.
+    """
     return f"repo:{slug}:cleanup_failed"
 
 
@@ -146,7 +152,7 @@ def _repo_vector_empty_key(slug: str) -> str:
 def _repo_reingest_flag_keys(slug: str) -> tuple[str, str]:
     """Flags that each block ``slug``'s unchanged-skip shortcut until a
     successful re-ingest (or the repo's removal) clears them all."""
-    return _repo_cleanup_failed_key(slug), _repo_vector_empty_key(slug)
+    return _repo_delete_pending_key(slug), _repo_vector_empty_key(slug)
 
 
 def _distrust_skip_markers(index_store: IndexStore) -> None:
@@ -521,7 +527,7 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     repo commit marker are cleared in one atomic batch (a batch call can't
     leave partial state, so there is no ordering concern between them).
 
-    Write-ahead: the repo's ``cleanup_failed`` flag is set *before* the
+    Write-ahead: the repo's delete-pending flag is set *before* the
     records are touched and cleared only with the commit marker, so a partial
     delete (vector side gone, FTS rows left) can never sit behind an
     unchanged-skip marker. If the flag cannot be written, nothing is deleted.
@@ -529,7 +535,7 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
     try:
-        index_store.set_metadata(_repo_cleanup_failed_key(slug), "1")
+        index_store.set_metadata(_repo_delete_pending_key(slug), "1")
         await index_store.delete_by_repo(slug)
     except Exception:
         _module_logger.exception(
@@ -1549,8 +1555,8 @@ def refresh(
             # can't tell those apart from a healthy repo. Don't take the
             # unchanged-skip shortcut while either flag is set; force a
             # re-ingest instead, which clears both on success below.
-            cleanup_failed = (
-                index_store.get_metadata(_repo_cleanup_failed_key(repo_slug)) is not None
+            delete_pending = (
+                index_store.get_metadata(_repo_delete_pending_key(repo_slug)) is not None
             )
             vector_empty = index_store.get_metadata(_repo_vector_empty_key(repo_slug)) is not None
             if (
@@ -1558,7 +1564,7 @@ def refresh(
                 and stored_sha == commit_sha
                 and indexed_records > 0
                 and repo_slug not in github.recovered_repos
-                and not cleanup_failed
+                and not delete_pending
                 and not vector_empty
             ):
                 logger.info(
@@ -1586,10 +1592,11 @@ def refresh(
                         repo_slug,
                         commit_sha[:8],
                     )
-                elif not force and stored_sha == commit_sha and cleanup_failed:
+                elif not force and stored_sha == commit_sha and delete_pending:
                     logger.warning(
-                        "Repo %s SHA unchanged (sha=%s…) but a prior cleanup "
-                        "failed — re-ingesting to reconcile the index",
+                        "Repo %s SHA unchanged (sha=%s…) but an earlier delete of "
+                        "its records was not followed by a clean re-ingest "
+                        "(failed or interrupted) — re-ingesting to reconcile the index",
                         repo_slug,
                         commit_sha[:8],
                     )
@@ -1629,7 +1636,7 @@ def refresh(
                 # trusting a partial index. The flag is cleared on a clean
                 # re-ingest; if it can't be written, the records are left
                 # intact.
-                index_store.set_metadata(_repo_cleanup_failed_key(repo_slug), "1")
+                index_store.set_metadata(_repo_delete_pending_key(repo_slug), "1")
                 await index_store.delete_by_repo(repo_slug)
             except Exception as exc:
                 msg = f"Failed to delete stale records for {repo_slug}: {exc}"

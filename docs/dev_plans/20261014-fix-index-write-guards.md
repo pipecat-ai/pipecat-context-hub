@@ -64,7 +64,8 @@ established; the open-time check only fires when an index is opened.
    marker keys are built and parsed only through `cli.py`'s `_DOCS_HASH_KEY` /
    `_repo_sha_key` / `_repo_slug_of_sha_key` / `_repo_reingest_flag_keys`.
    Every delete of records a skip marker vouches for is write-ahead: `refresh`
-   drops `docs:content_hash`, or sets `repo:<slug>:cleanup_failed`, before
+   drops `docs:content_hash`, or sets `repo:<slug>:cleanup_failed` (a
+   write-ahead "delete pending" flag; the on-disk name predates that use), before
    deleting, and if that write fails it deletes nothing and reports the source
    as errored. The repo flag is cleared only by a clean re-ingest or the repo's
    full cleanup, so no abort mid-run can leave a marker vouching for deleted

@@ -1230,6 +1230,7 @@ class TestRefreshCommand:
         flag,
         tmp_path,
         monkeypatch,
+        caplog,
     ):
         """Round 9 Finding #3 regression: a repo whose stale cleanup
         previously failed (leaving `repo:<slug>:cleanup_failed` set) must NOT
@@ -1271,12 +1272,19 @@ class TestRefreshCommand:
         )
 
         monkeypatch.chdir(tmp_path)
-        result = CliRunner().invoke(main, ["refresh"])
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh"])
 
         assert result.exit_code == 0, result.output
         # SHA is unchanged and records "exist" (per get_counts_by_repo), but
         # the cleanup_failed flag must force a real re-ingest, not a skip.
         assert target_repo in ingested_repo_calls
+        # The flag is written ahead of every delete, so it does not mean a
+        # cleanup failed (an aborted refresh leaves it too); the log must not
+        # say one did.
+        assert "prior cleanup failed" not in caplog.text
+        if flag == "cleanup_failed":
+            assert "not followed by a clean re-ingest" in caplog.text
 
         # A clean re-ingest (no errors) must clear the flag.
         deleted_keys = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
