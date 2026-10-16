@@ -70,6 +70,7 @@ from packaging.version import InvalidVersion, Version
 from pipecat_context_hub.services.index.store import IndexStore
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_env_layers
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 
 _FRAMEWORK_REPO = "pipecat-ai/pipecat"
 
@@ -211,7 +212,13 @@ def _read_metadata(config: HubConfig, data_dir: Path) -> dict[str, str]:
     discipline ``_bootstrap()`` documents.
     """
     storage = config.storage.model_copy(update={"data_dir": data_dir})
-    store = IndexStore(storage)
+    try:
+        # A reader open never creates the index, so a refresh that failed before
+        # building one raises here; report no metadata so each check below
+        # records its own failure instead of the whole run dying on a traceback.
+        store = IndexStore(storage)
+    except IndexUnavailableError:
+        return {}
     try:
         return store.get_all_metadata()
     finally:
