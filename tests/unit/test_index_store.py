@@ -1062,6 +1062,52 @@ class TestIndexStoreReaderCreatesNothing:
         assert ("retry" in message) is transient
 
 
+def test_schema_objects_list_matches_the_schema_sql() -> None:
+    """``_SCHEMA_OBJECTS`` (what an open treats as an initialized database) is
+    listed by hand beside ``_SCHEMA_SQL``: an object added to one and not the
+    other makes readers reject healthy databases, or writers skip a repair."""
+    import sqlite3
+
+    from pipecat_context_hub.services.index import fts
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(fts._SCHEMA_SQL)
+        created = {
+            name
+            for (name,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger') "
+                "AND name NOT LIKE 'chunks_fts\\_%' ESCAPE '\\'"
+            )
+        }
+    finally:
+        conn.close()
+    assert created == set(fts._SCHEMA_OBJECTS)
+
+
+class TestResetOfAStoreOpenedWithoutRebuild:
+    """Regression (vector.py ``reset``): a reset deletes the Chroma directory and
+    reopens it. A store opened with a populated keyword half gets the vector half
+    with ``create`` False, so the reopen raised ``MissingVectorCollectionError``
+    after the delete and left the store with no vector client."""
+
+    @pytest.mark.asyncio
+    async def test_reset_recreates_the_vector_half(self, tmp_path: Path) -> None:
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        first = IndexStore(config, create=True)
+        await first.upsert(_make_records(3))
+        first.close()
+
+        store = IndexStore(config, create=True)  # keyword records: vector create=False
+        try:
+            store.reset()
+            assert store.vector_count() == 0
+            await store.upsert(_make_records(1))
+            assert store.vector_count() == 1
+        finally:
+            store.close()
+
+
 class TestIndexStore:
     @pytest.fixture()
     def store(self, tmp_path: Path) -> Generator[IndexStore, None, None]:

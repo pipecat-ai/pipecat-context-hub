@@ -527,6 +527,11 @@ class VectorIndex:
         with self._op_lock:
             self._release_client()
             shutil.rmtree(self._chroma_path, ignore_errors=True)
+            # A reset is a deliberate wipe-and-recreate: the reopen below must
+            # create the database and collection it just deleted, even for a
+            # store opened with create=False (which would raise
+            # MissingVectorCollectionError after the delete).
+            self._create = True
             self._open_client()
             logger.info("VectorIndex reset at %s", self._chroma_path)
 
