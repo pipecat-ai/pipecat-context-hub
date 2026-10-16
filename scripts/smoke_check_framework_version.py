@@ -67,7 +67,7 @@ from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
-from pipecat_context_hub.services.index.store import IndexStore
+from pipecat_context_hub.services.index.reopening import open_index_for_export
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_env_layers
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
@@ -203,7 +203,7 @@ def _check_deprecation_at_version(
 def _read_metadata(config: HubConfig, data_dir: Path) -> dict[str, str]:
     """Read all persisted index metadata without going through the MCP server.
 
-    A short-lived ``IndexStore`` open+close, mirroring how
+    A short-lived reader open+close, mirroring how
     ``smoke_check_removals.py`` reaches into internals directly rather than
     round-tripping through a query subprocess for data ``get_hub_status``
     doesn't expose (``deprecation_map_commit_sha``). Reuses the bootstrapped
@@ -213,11 +213,13 @@ def _read_metadata(config: HubConfig, data_dir: Path) -> dict[str, str]:
     """
     storage = config.storage.model_copy(update={"data_dir": data_dir})
     try:
-        # A reader open never creates the index, so a refresh that failed before
-        # building one raises here; report no metadata so each check below
+        # The shared reader open: it never creates the index and turns every
+        # open failure (missing, empty, incompatible, corrupt) into
+        # IndexUnavailableError. Report no metadata so each check below
         # records its own failure instead of the whole run dying on a traceback.
-        store = IndexStore(storage)
-    except IndexUnavailableError:
+        store = open_index_for_export(storage)
+    except IndexUnavailableError as exc:
+        print(f"  (index unreadable: {exc})", file=sys.stderr)
         return {}
     try:
         return store.get_all_metadata()
