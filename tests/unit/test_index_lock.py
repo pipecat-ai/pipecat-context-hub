@@ -489,6 +489,20 @@ class TestReopeningIndexStore:
         opener.assert_called_once()
         real.close.assert_called_once()
 
+    def test_close_wins_over_a_running_refresh(self, tmp_path: Path) -> None:
+        """Regression (reopening.py:171): the gate checked the refresh lock
+        before the closed state, so a closed store answered "retry in 60-120
+        seconds" while a refresh ran, though it will never reopen."""
+        from pipecat_context_hub.services.index.reopening import CLOSED_MESSAGE
+
+        data_dir = tmp_path / "hub"
+        data_dir.mkdir()
+        store = self._store(data_dir, MagicMock())
+        store.open_now()
+        store.close()
+        with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+            assert store.unavailable_reason() == CLOSED_MESSAGE
+
     def test_close_before_first_open_stays_closed(self, tmp_path: Path) -> None:
         from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 

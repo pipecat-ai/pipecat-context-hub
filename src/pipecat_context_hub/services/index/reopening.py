@@ -167,7 +167,10 @@ class ReopeningIndexStore:
         While a refresh runs this answers "retry in 60-120 seconds" without
         touching the index. Otherwise it (re)opens the index if needed, so a
         refresh that started and finished between two calls is still noticed.
+        After :meth:`close` it answers ``CLOSED_MESSAGE``, refresh or not.
         """
+        if self._closed:
+            return CLOSED_MESSAGE
         if refresh_in_progress(self._data_dir):
             return REFRESH_IN_PROGRESS_MESSAGE
         try:
