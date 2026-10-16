@@ -163,8 +163,6 @@ control, so the pre-load walk is the real defence.
   - `tests/unit/test_hnsw_validation.py` and `tests/integration/test_report_hint_e2e.py`
     import `_make_records`/`_make_record` from `tests/unit/test_index_store.py`; move
     them into a shared helper module (like `tests/_ingest_helpers.py`).
-  - `AGENTS.md` does not describe `refresh.lock`, exit 75, or `--reset-index`'s exit 1
-    when index files survive (CLAUDE.md and `docs/README.md` do).
   - Unverified: whether Chroma has written `header.bin` and `link_lists.bin` before
     `upsert()` returns (the per-batch `HnswWriteGuard` would otherwise see a
     half-written pair). 7,141 validations against a live writer in the spike were all
