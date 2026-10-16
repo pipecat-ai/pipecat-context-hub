@@ -11,8 +11,8 @@
       "interface": {
         "displayName": "Pipecat Context Hub",
         "developerName": "Daily.co/Pipecat.ai",
-        "shortDescription": "Voice & multimodal Pipecat",
-        "longDescription": "Build voice and multimodal agents with Pipecat, from an idea to a local app and Pipecat Cloud deployment. Explore speech-to-text (STT), language models (LLMs), text-to-speech (TTS), real-time speech-to-speech and other supported multimodal patterns using Pipecat documentation, API definitions and example code. Explore the documentation and examples relevant to your idea; the plugin reports when a requested modality is not covered by the indexed sources. The plugin guides setup and requires an environment that can run Python commands. Cloud deployment requires a Pipecat Cloud login and your approval.",
+        "shortDescription": "Voice ai & multimodal agent with Pipecat",
+        "longDescription": "Build voice ai and multimodal agents with Pipecat, from an idea to a local app and Pipecat Cloud deployment. Explore speech-to-text (STT), language models (LLMs), text-to-speech (TTS), real-time speech-to-speech and other supported multimodal patterns using Pipecat documentation, API definitions and example code. Explore the documentation and examples relevant to your idea; the plugin reports when a requested modality is not covered by the indexed sources. The plugin guides setup and requires an environment that can run Python commands. Cloud deployment requires a Pipecat Cloud login and your approval.",
         "category": "Developer Tools",
         "capabilities": [
           "Read",
