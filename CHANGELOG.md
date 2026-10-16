@@ -95,7 +95,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   next `refresh` (readers never write to the index: until then they report it and
   say to run `refresh`; a restore that itself fails stops that refresh with exit 2
   and says to rebuild with `refresh --force --reset-index`), and the staging writes get the same per-batch HNSW guard
-  as upserts.
+  as upserts. A backup left beside the rebuilt collection (its drop failed) is never
+  loaded, so its graph is not checked and cannot block opening the index; the next
+  compaction drops it.
 - **`serve` and the one-shot CLI open the index the same way.** Both go through
   one open-and-check, so an empty, unreadable, or incompatible index gets the same
   message from either (the empty-index text no longer mentions `serve`).

@@ -692,6 +692,80 @@ class TestCompactSwap:
         finally:
             index.close()
 
+    @staticmethod
+    def _corrupt_parked_backup(chroma: Path) -> None:
+        """Persist a real graph under the backup name, then damage its link lists."""
+        client: Any = chromadb.PersistentClient(path=str(chroma))
+        try:
+            backup = client.create_collection(
+                COMPACT_BACKUP_NAME,
+                embedding_function=None,
+                configuration={"hnsw": {"sync_threshold": 100, "batch_size": 100}},
+            )
+            backup.add(
+                ids=[str(i) for i in range(150)],
+                embeddings=[[float(i), 1.0, 2.0] for i in range(150)],
+            )
+        finally:
+            client.close()
+        rows = chroma_schema.query_chroma_sqlite(
+            chroma,
+            "SELECT s.id FROM segments s JOIN collections c ON s.collection=c.id "
+            "WHERE c.name=? AND s.type=?",
+            (COMPACT_BACKUP_NAME, "urn:chroma:segment/vector/hnsw-local-persisted"),
+            immutable=True,
+        )
+        assert rows
+        links_path = chroma / str(rows[0][0]) / "link_lists.bin"
+        with links_path.open("ab") as links:
+            links.write(b"\0" * 4)  # trailing bytes after the last element
+        # Written by an earlier run: older than any write guard this test opens.
+        os.utime(links_path, (0, 0))
+        with pytest.raises(CorruptHnswGraphError, match="trailing bytes"):
+            validate_persisted_hnsw(chroma.resolve(), COMPACT_BACKUP_NAME)
+
+    def test_corrupt_leftover_backup_beside_latest_does_not_block_the_open(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (vector.py:397): a backup compact() failed to drop was
+        validated on every open, though nothing loads it while ``latest``
+        exists, so a corrupt leftover made a valid index unopenable and
+        prescribed ``--reset-index``. The next compaction drops it."""
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma, create=True)
+        index.upsert(_make_records(5))
+        index.close()
+        self._corrupt_parked_backup(chroma)
+
+        VectorIndex(chroma).close()  # a reader
+        index = VectorIndex(chroma, recover=True, create=True)  # how refresh opens it
+        try:
+            assert index._collection.name == COLLECTION_NAME
+            assert index._collection.count() == 5
+            index.compact()
+            assert [c.name for c in index._client.list_collections()] == [COLLECTION_NAME]
+        finally:
+            index.close()
+
+    def test_corrupt_backup_is_still_rejected_when_it_is_restored(self, tmp_path: Path) -> None:
+        """The other branch: with ``latest`` gone the open would load the
+        backup, so its graph is still checked before the native client opens."""
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma, create=True)
+        index.upsert(_make_records(5))
+        index._client.delete_collection(COLLECTION_NAME)
+        index.close()
+        self._corrupt_parked_backup(chroma)
+
+        with patch("pipecat_context_hub.services.index.vector.chromadb.PersistentClient") as native:
+            with pytest.raises(CorruptHnswGraphError, match="trailing bytes"):
+                VectorIndex(chroma, recover=True, create=True)
+            native.assert_not_called()
+
     def test_reader_open_never_repairs_an_interrupted_compaction(self, tmp_path: Path) -> None:
         """Regression (vector.py:409, vector.py:443): readers hold the refresh
         lock only shared, so their open must not rename collections (two of

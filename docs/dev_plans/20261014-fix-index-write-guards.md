@@ -122,7 +122,10 @@ established; the open-time check only fires when an index is opened.
    promoting staging; a crash between the two renames is restored when `refresh`
    next opens the index (`IndexStore(..., recover=True)`, under its exclusive
    lock). Readers never repair it: they get `InterruptedCompactionError` ("run
-   refresh").
+   refresh"). The open-time graph check covers the backup only when `latest`
+   is missing, the one case in which the open loads it; a backup left beside
+   `latest` (its drop failed) is never loaded, is dropped by the next
+   compaction, and does not block an open.
 8. `shared.interfaces.FatalIndexError`: the on-disk index is unsafe to keep
    using. The index errors (`IncompatibleIndexFormatError`,
    `CorruptHnswGraphError`) subclass it; ingesters re-raise it instead of

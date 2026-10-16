@@ -79,6 +79,18 @@ def _detect_incompatible_format(chroma_path: Path) -> None:
         raise IncompatibleIndexFormatError(chroma_path, detected_sysdb_migration=max_version)
 
 
+def _persisted_collection_exists(chroma_path: Path, name: str) -> bool:
+    """Whether ``chroma.sqlite3`` lists collection *name*, read before any client opens.
+
+    False when the database is absent or its schema unreadable, so callers
+    fall back to the stricter check.
+    """
+    rows = query_chroma_sqlite(
+        chroma_path, "SELECT 1 FROM collections WHERE name=?", (name,), immutable=True
+    )
+    return bool(rows)
+
+
 def _collection_names(client: Any) -> set[Any]:
     """Names of the client's collections (1.x returns objects, older names)."""
     return {getattr(c, "name", c) for c in client.list_collections()}
@@ -391,10 +403,14 @@ class VectorIndex:
         # Status reads metadata without loading the HNSW graph. Reject the
         # observed oversized-graph corruption before the native client can
         # initialize successfully and later SIGSEGV on the first search.
-        validate_persisted_hnsw(self._chroma_path.resolve(), COLLECTION_NAME)
-        # A compaction interrupted mid-swap leaves the live graph under the
-        # backup name, and _open_collection may load it.
-        validate_persisted_hnsw(self._chroma_path.resolve(), COMPACT_BACKUP_NAME)
+        resolved = self._chroma_path.resolve()
+        validate_persisted_hnsw(resolved, COLLECTION_NAME)
+        # Check only a graph this open may load. The parked backup is loaded
+        # only when ``latest`` is gone (a compaction interrupted mid-swap,
+        # which _open_collection restores). Beside a ``latest`` it is a
+        # leftover the next compaction drops, and must not block the index.
+        if not _persisted_collection_exists(resolved, COLLECTION_NAME):
+            validate_persisted_hnsw(resolved, COMPACT_BACKUP_NAME)
         self._chroma_path.mkdir(parents=True, exist_ok=True)
         client: Any = chromadb.PersistentClient(
             path=str(self._chroma_path),
