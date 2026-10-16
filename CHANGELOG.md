@@ -105,10 +105,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   format and HNSW checks read the database ignoring it, so they could validate
   segments Chroma's own open then rolls back. With a journal present they now
   open the database read-write (never creating it) so SQLite rolls it back first.
-- **A failed docs delete no longer leaves a stale "docs unchanged" marker.** When
-  deleting the old docs records failed and clearing `docs:content_hash` failed
-  too, the marker survived, so the next plain `refresh` skipped the docs whose
-  vectors were already gone. The end-of-run metadata write now retries the clear.
+- **A failed or interrupted delete no longer leaves a stale "unchanged" marker.**
+  `refresh` cleared `docs:content_hash`, or flagged a repo `cleanup_failed`, only
+  after deleting its records, so a failed marker write or an abort in between
+  left the marker vouching for vectors that were gone, and the next plain
+  `refresh` skipped that source. The marker is now invalidated before the
+  delete; if that write fails, the records are left in place and the source is
+  reported as errored.
 
 ### Security
 - **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`

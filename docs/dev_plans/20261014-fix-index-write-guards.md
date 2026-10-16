@@ -62,7 +62,13 @@ established; the open-time check only fires when an index is opened.
    tainted-ref purge find repos. So a source whose fetch fails in that run is
    re-ingested by the next plain refresh instead of staying keyword-only. The
    marker keys are built and parsed only through `cli.py`'s `_DOCS_HASH_KEY` /
-   `_repo_sha_key` / `_repo_slug_of_sha_key` / `_repo_reingest_flag_keys`. An open writes only an incomplete keyword schema
+   `_repo_sha_key` / `_repo_slug_of_sha_key` / `_repo_reingest_flag_keys`.
+   Every delete of records a skip marker vouches for is write-ahead: `refresh`
+   drops `docs:content_hash`, or sets `repo:<slug>:cleanup_failed`, before
+   deleting, and if that write fails it deletes nothing and reports the source
+   as errored. The repo flag is cleared only by a clean re-ingest or the repo's
+   full cleanup, so no abort mid-run can leave a marker vouching for deleted
+   records. An open writes only an incomplete keyword schema
    (`refresh` completes it and rebuilds the FTS table from `chunks` in one
    transaction, so a failed rebuild is retried next time); a reader refuses one.
    A keyword database `FTSIndex` cannot use (any SQLite result code other than
