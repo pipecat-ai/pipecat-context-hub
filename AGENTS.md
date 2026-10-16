@@ -396,6 +396,17 @@ live local index:
    subprocess against a genuinely empty on-disk index, no mocks):
    `tests/integration/test_report_hint_e2e.py::
    test_cli_empty_index_delivers_bug_report_hint_on_stderr`.
+5a. **Refresh lock and refresh refusals** (when `shared/index_lock.py`, `cli.py`'s
+   `refresh`, or the exit codes change). `refresh` holds an exclusive
+   `<dirname>.refresh.lock` (a sibling of the data dir, so `--reset-index` cannot
+   delete it); readers hold it shared only while opening. While a `refresh` is
+   rewriting the index, `status` / `search-*` / `get-doc` / `check-deprecation`
+   exit 75 (`EXIT_REFRESH_IN_PROGRESS`, retry in 60-120 s), and a second `refresh`
+   that finds the lock busy also exits 75. `refresh` refuses to start with under
+   5 GB free on the data-dir volume (exit 1; `PIPECAT_HUB_MIN_FREE_GB`, `0` disables).
+   `refresh --force --reset-index` exits 1 if index files survive its delete.
+   Unit counterparts: `tests/unit/test_index_lock.py`, `tests/unit/test_cli.py`,
+   `tests/unit/test_cli_query.py`, `tests/unit/test_index_state_matrix.py`.
 6a. **Pipecat CLI bridge** (when `plugin.py`, the command set, or `pyproject.toml`
    entry points change). Unit tests mount the bridge in-process; this confirms the
    real entry-point discovery path, which they cannot:
