@@ -148,7 +148,7 @@ class HybridRetriever:
         # readers that implement only the original two-method protocol.
         hybrid_search = getattr(type(self._index), "hybrid_search", None)
         if hybrid_search is not None:
-            vector_results, keyword_results = await self._index.hybrid_search(query)
+            vector_results, keyword_results = await hybrid_search(self._index, query)
         else:
             vector_results, keyword_results = await asyncio.gather(
                 self._index.vector_search(query),
