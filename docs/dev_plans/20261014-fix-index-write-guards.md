@@ -1,6 +1,6 @@
 # Index write guards (runaway HNSW `link_lists.bin`)
 
-**Branch:** `fix/index-write-guards` | **Review Gates:** none
+**Branch:** `fix/index-write-guards` | **Review Gates:** none | **Status:** Complete (PR #139 open; Windows follow-up: `20261015-feature-windows-index-locking.md`)
 
 ## Problem
 On 2026-10-13 `~/.pipecat-context-hub` was 351 GB: `chroma/<segment>/link_lists.bin`

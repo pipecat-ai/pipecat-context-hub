@@ -578,7 +578,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   saying to run `refresh --force --reset-index`; a locked or busy one does not.
   `refresh --force` recreates the lost collection, and whenever `refresh` finds
   the vector collection empty it stops trusting every source's unchanged-skip
-  marker (repos stay known to the cleanup and taint passes), so a source whose
+  marker (it drops the docs content hash and flags each indexed repo
+  `repo:<slug>:vector_empty`, separate from `cleanup_failed`; repos stay known
+  to the cleanup and taint passes), so a source whose
   fetch fails in that run is re-ingested by the next plain `refresh` rather than
   left keyword-only. It re-ingests only the sources in its configuration: a repo indexed earlier but
   absent from this invocation's config keeps its keyword records but gets no

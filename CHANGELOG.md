@@ -48,8 +48,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   empty that way exits 2 with the same advice, without touching the vector collection, instead of
   skipping unchanged sources and leaving vector search empty. `refresh --force`
   recreates it, and a `refresh` that finds the vector collection empty stops trusting
-  every source's unchanged-skip marker (without forgetting which repos are indexed, so
-  stale-repo cleanup and tainted-ref purges still find them), so a source whose
+  every source's unchanged-skip marker (it drops the docs content hash and flags each
+  indexed repo `repo:<slug>:vector_empty`, kept apart from `cleanup_failed`; the repos
+  stay known, so stale-repo cleanup and tainted-ref purges still find them), so a source whose
   fetch fails in that run is re-ingested by the next plain `refresh`; a repo indexed
   earlier but absent from that run's config keeps its keyword records with no
   vectors (re-add it for that run, or `--prune` it). A corrupt keyword database, or
@@ -87,7 +88,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   opened without following symlinks (on Windows, which lacks `O_NOFOLLOW`, a
   symlink is refused before and after the open). `refresh --reset-index` now exits 1
   instead of rebuilding when the index files survive the delete (on Windows, a running
-  `serve` holds them open: stop it, then retry).
+  `serve` holds them open: stop it, then retry). The hub never deletes or replaces
+  a lock file; if something outside it does while the lock is held, two refreshes
+  can overlap (accepted on every platform).
 - **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
   unsafe to keep using; the incompatible-format and corrupt-HNSW errors subclass
   it. Ingesters re-raise it rather than recording one more per-source error, so a
@@ -101,6 +104,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   format and HNSW checks read the database ignoring it, so they could validate
   segments Chroma's own open then rolls back. With a journal present they now
   open the database read-write (never creating it) so SQLite rolls it back first.
+
+### Security
+- **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`
+  (reached via `huggingface-hub`) to clear PYSEC-2026-4217, which `pip-audit`
+  flagged in the Security CI job. Lock-only change.
 
 ## [0.8.1] - 2026-10-02
 

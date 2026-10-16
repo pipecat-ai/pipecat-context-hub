@@ -58,7 +58,7 @@ uv run pipecat-context-hub get-doc --path /guides/telephony/overview
 ```
 
 Exit codes (`shared/exit_codes.py`): 0 success, 1 invalid input (also
-`refresh`'s low-disk refusal), 2 index missing, empty, unreadable or incompatible
+`refresh`'s low-disk refusal, and `--reset-index` when index files survive its delete), 2 index missing, empty, unreadable or incompatible
 (stderr says what to run; `refresh` also exits 2 when a fatal index error, such as
 a tripped HNSW write guard or a compaction swap that left no `latest`, stops it; when
 its open cannot restore an interrupted compaction, or finds the keyword database
