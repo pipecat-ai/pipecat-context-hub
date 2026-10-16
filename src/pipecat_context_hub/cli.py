@@ -98,7 +98,8 @@ def _open_index_store_or_exit(
     and the post-delete rebuild) so the error handling — including the
     redacted, front-door-consistent error message — cannot drift between them.
     *rebuild* is ``--force``: only then may a lost vector collection beside a
-    populated keyword index be recreated (see :class:`IndexStore`).
+    populated keyword index be recreated (see :class:`IndexStore`). A lost
+    keyword half beside vector records is refused either way.
     """
     from pipecat_context_hub.services.index.store import IndexStore
 
@@ -110,9 +111,11 @@ def _open_index_store_or_exit(
         # A pre-1.0 Chroma dir or a corrupt graph (IncompatibleIndexFormatError),
         # an interrupted compaction the open could not restore
         # (CompactionRestoreError), an unreadable keyword database
-        # (CorruptKeywordIndexError), or, without --force, a lost vector
+        # (CorruptKeywordIndexError), without --force a lost vector
         # collection (MissingVectorCollectionError, raised before the vector
-        # half is touched). exc.__str__ embeds the absolute path; redact for
+        # half is touched), or, even with --force, a lost keyword half beside
+        # vector records (LostKeywordIndexError: the reset remedy).
+        # exc.__str__ embeds the absolute path; redact for
         # front-door parity with the serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
         raise SystemExit(EXIT_INDEX_UNREADY) from exc

@@ -165,14 +165,38 @@ class MissingKeywordIndexError(IndexUnavailableError):
     """A reader found no initialized keyword (SQLite FTS) database to open.
 
     Readers never create one: an empty keyword index beside a populated
-    vector index would make keyword search silently return nothing.
+    vector index would make keyword search silently return nothing. The
+    remedy is a reset, not ``refresh --force``: when the vector half has
+    records, a refresh refuses the lost keyword half too
+    (:class:`LostKeywordIndexError`).
     """
 
     def __init__(self, sqlite_path: Path | str) -> None:
         self.sqlite_path = Path(sqlite_path)
         super().__init__(
-            f"The keyword index at {self.sqlite_path} is missing or incomplete. Run 'uv run "
-            "pipecat-context-hub refresh --force' to rebuild it."
+            f"The keyword index at {self.sqlite_path} is missing or incomplete. "
+            f"{RESET_INDEX_REMEDIATION}"
+        )
+
+
+class LostKeywordIndexError(IndexUnavailableError):
+    """The keyword half has no records while the vector half has some.
+
+    The keyword half holds the per-source bookkeeping (each repo's commit
+    marker, record counts), which is how ``refresh`` finds the records of a
+    source it no longer indexes. Without it, vector records of such a source
+    would survive every refresh (and ``--prune``), searchable by vector only.
+    ``IndexStore`` raises it for every open, ``refresh --force`` included,
+    before the vector half is written; the remedy is a reset.
+    """
+
+    def __init__(self, sqlite_path: Path | str, chroma_path: Path | str) -> None:
+        self.sqlite_path = Path(sqlite_path)
+        self.chroma_path = Path(chroma_path)
+        super().__init__(
+            f"The keyword index at {self.sqlite_path} is missing or empty while the vector "
+            f"index at {self.chroma_path} still holds records, so a refresh could not tell "
+            f"which of them to keep. {RESET_INDEX_REMEDIATION}"
         )
 
 

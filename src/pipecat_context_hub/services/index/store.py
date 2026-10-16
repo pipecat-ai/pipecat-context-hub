@@ -14,6 +14,7 @@ from typing import Any
 
 from pipecat_context_hub.services.index.errors import (
     IndexNotBuiltError,
+    LostKeywordIndexError,
     MissingVectorCollectionError,
 )
 from pipecat_context_hub.services.index.fts import FTSIndex
@@ -55,6 +56,13 @@ class IndexStore:
         it; :attr:`vector_empty` then reports it. Readers (and a
         refresh without ``--force``) therefore never run on an index whose
         vector search would silently come back empty.
+
+        The mirror case, a keyword half with no records (missing, or created
+        by this open) beside a vector half with records, raises
+        :class:`LostKeywordIndexError` for every open, *rebuild* included:
+        the per-source bookkeeping that lets refresh find (and replace or
+        prune) a source's vectors is gone, so only a reset recovers it. No
+        vector record is written before it is raised.
         """
         if rebuild and not create:
             raise ValueError("rebuild=True requires create=True")
@@ -81,6 +89,10 @@ class IndexStore:
             self.vector_empty = vector.count() == 0
             if indexed and self.vector_empty and not rebuild:
                 raise MissingVectorCollectionError(config.chroma_path)
+            # Vectors with no keyword records: not even *rebuild* may proceed,
+            # since the keyword half is how refresh finds a source's records.
+            if not indexed and not self.vector_empty:
+                raise LostKeywordIndexError(config.sqlite_path, config.chroma_path)
         except BaseException:
             # Close what came up so callers don't inherit a leaked Chroma
             # handle (or SQLite connection) on a half-constructed store.

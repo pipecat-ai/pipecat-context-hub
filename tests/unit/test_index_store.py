@@ -889,6 +889,87 @@ class TestLostVectorHalf:
                 store.close()
 
 
+class TestLostKeywordHalf:
+    """Regression (store.py:71): with ``index.db`` lost beside a populated
+    vector half, a refresh (``--force`` included) created an empty keyword
+    half and went on. The repo commit markers lived in the lost half, so the
+    refresh could not find a retained, unconfigured repo's vectors: they
+    survived (and were compacted forward) as vector-only records that neither
+    cleanup nor ``--prune`` could reach. Every open now refuses that state
+    before writing to the vector half."""
+
+    @staticmethod
+    def _lose_keyword_half(config: StorageConfig, *, records: int = 3, empty: bool) -> None:
+        """Build an index with *records*, then delete (or empty) its keyword half."""
+        import asyncio
+
+        store = IndexStore(config, create=True)
+        asyncio.run(store.upsert(_make_records(records)))
+        if empty:
+            store._fts.clear()
+        store.close()
+        if not empty:
+            config.sqlite_path.unlink()
+
+    @pytest.mark.parametrize("empty", [False, True])
+    @pytest.mark.parametrize("rebuild", [False, True])
+    def test_refresh_open_refuses(self, tmp_path: Path, empty: bool, rebuild: bool) -> None:
+        from pipecat_context_hub.services.index.errors import LostKeywordIndexError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        self._lose_keyword_half(config, empty=empty)
+
+        with pytest.raises(LostKeywordIndexError, match="refresh --force --reset-index"):
+            IndexStore(config, recover=True, create=True, rebuild=rebuild)
+        # The vector half is untouched, and a retry refuses again (the empty
+        # keyword database the refused open may leave is no way past it).
+        with pytest.raises(LostKeywordIndexError):
+            IndexStore(config, recover=True, create=True, rebuild=rebuild)
+        vector = VectorIndex(config.chroma_path)
+        try:
+            assert vector.count() == 3
+        finally:
+            vector.close()
+
+    def test_reader_refuses_with_the_reset_remedy(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.errors import (
+            LostKeywordIndexError,
+            MissingKeywordIndexError,
+        )
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        self._lose_keyword_half(config, empty=False)
+        # Missing: the keyword half's own error, which now prescribes the reset
+        # (`refresh --force` alone would be refused here).
+        with pytest.raises(MissingKeywordIndexError, match="--reset-index"):
+            IndexStore(config)
+        # Empty (what a refused refresh leaves): the store's error, not
+        # "index is empty, run refresh".
+        with pytest.raises(LostKeywordIndexError):
+            IndexStore(config, create=True)
+        with pytest.raises(LostKeywordIndexError):
+            IndexStore(config)
+        with pytest.raises(IndexUnavailableError, match="--reset-index"):
+            open_ready_index_store(config)
+
+    def test_missing_keyword_half_beside_an_empty_vector_half_is_rebuilt(
+        self, tmp_path: Path
+    ) -> None:
+        """Unchanged: with no vectors either, refresh recreates the keyword half."""
+        config = StorageConfig(data_dir=tmp_path / "hub-data")
+        IndexStore(config, create=True).close()
+        config.sqlite_path.unlink()
+        for rebuild in (False, True):
+            store = IndexStore(config, recover=True, create=True, rebuild=rebuild)
+            try:
+                assert store.vector_empty
+            finally:
+                store.close()
+        assert config.sqlite_path.is_file()
+
+
 class TestIndexStoreReaderCreatesNothing:
     """Regression (store.py:38, vector.py:353): ``create=False`` reached only
     the vector half, so a reader open still created ``index.db`` and its

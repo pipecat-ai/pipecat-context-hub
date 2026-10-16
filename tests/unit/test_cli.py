@@ -5548,6 +5548,27 @@ class TestRefreshLostVectorCollection:
         store.close()
         assert _collection_names(storage) == ["latest"]
 
+    @patch(
+        "pipecat_context_hub.services.embedding.EmbeddingService",
+        side_effect=AssertionError("refresh went past the open"),
+    )
+    def test_force_refresh_refuses_a_lost_keyword_half(
+        self, _mock_es, tmp_path, monkeypatch, caplog
+    ):
+        """Regression (store.py:71): ``refresh --force`` with ``index.db`` lost
+        created an empty keyword half and carried every vector forward,
+        including those of retained repos it could no longer find."""
+        from tests.unit.test_index_store import TestLostKeywordHalf
+
+        storage = self._env(tmp_path, monkeypatch)
+        TestLostKeywordHalf._lose_keyword_half(storage, empty=False)
+
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 2, result.output
+        assert "refresh --force --reset-index" in caplog.text
+
     def test_force_open_writes_no_metadata(self, tmp_path, monkeypatch):
         """Regression (cli.py:133): the open helper itself deleted every skip
         marker after a lost-vector rebuild. It now only opens; it reports the
