@@ -22,8 +22,7 @@ from pipecat_context_hub.server.dispatch import (
     get_tool_handler,
     iter_tool_definitions,
 )
-from pipecat_context_hub.services.index.store import IndexStore
-from pipecat_context_hub.shared.interfaces import Retriever
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError, Retriever, ServingIndex
 from pipecat_context_hub.shared.staleness import annotate_response
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
@@ -164,9 +163,12 @@ so the maintainers can diagnose from the trace alone.
 
 If the MCP connection fails at boot with a non-zero exit code, the failure \
 happened before MCP initialization, so ``get_hub_status`` is unavailable. \
-Follow the remediation in the startup stderr first, then reconnect. Empty \
-indexes prescribe ``pipecat-context-hub refresh``; unreadable or incompatible \
-indexes prescribe ``pipecat-context-hub refresh --force --reset-index``. Only \
+Follow the remediation in the startup stderr first, then reconnect. An empty \
+index (or an interrupted compaction) prescribes ``pipecat-context-hub refresh``; \
+a lost vector collection beside keyword records prescribes \
+``pipecat-context-hub refresh --force`` (plain ``refresh`` refuses it); \
+unreadable or incompatible indexes, and a missing, empty or corrupt keyword \
+index, prescribe ``pipecat-context-hub refresh --force --reset-index``. Only \
 request ``get_hub_status`` after successful initialization. If the prescribed \
 remediation does not resolve the boot failure, share the startup stderr with \
 the user and suggest they file a bug report at {BUG_REPORT_ISSUE_URL}.
@@ -182,9 +184,10 @@ _assert_no_unsubstituted_placeholder(_SERVER_INSTRUCTIONS)
 
 def create_server(
     retriever: Retriever,
-    index_store: IndexStore | None = None,
+    index_store: ServingIndex | None = None,
     reranker_status_provider: Callable[[], RerankerStatus] | None = None,
     idle_tracker: IdleTracker | None = None,
+    unavailable_reason: Callable[[], str | None] | None = None,
 ) -> Server:
     """Create and configure the MCP server with all tool handlers.
 
@@ -195,6 +198,11 @@ def create_server(
     current reranker state. Evaluated on every ``get_hub_status`` call so
     post-startup availability changes (e.g. first-query load failures)
     are reflected. When omitted, reranking is reported as disabled.
+
+    *unavailable_reason* is a zero-arg callable evaluated before every tool
+    call. When it returns a message (e.g. an index rebuild is in progress),
+    the call is answered with that message as a tool error instead of touching
+    the index, so the calling agent can retry later.
     """
     tool_registry = tuple(iter_tool_definitions(include_hub_status=index_store is not None))
 
@@ -243,6 +251,14 @@ def create_server(
             name = params.name
             args = params.arguments or {}
 
+            if unavailable_reason is not None:
+                unavailable = unavailable_reason()
+                if unavailable:
+                    return types.CallToolResult(
+                        content=[types.TextContent(type="text", text=unavailable)],
+                        is_error=True,
+                    )
+
             # get_hub_status has a different dispatch signature (needs index_store)
             if name == "get_hub_status" and index_store is not None:
                 status = reranker_status_provider() if reranker_status_provider else None
@@ -269,7 +285,9 @@ def create_server(
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=_annotate(result_json))]
             )
-        except ValidationError as exc:
+        except (ValidationError, IndexUnavailableError) as exc:
+            # IndexUnavailableError: the index became unusable mid-call (e.g. a
+            # refresh started); its message tells the agent what to do.
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=str(exc))],
                 is_error=True,

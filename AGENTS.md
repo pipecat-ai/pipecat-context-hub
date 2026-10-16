@@ -350,8 +350,11 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `get_hub_status` response and startup logs before suggesting a bug report.
     A non-zero boot exit happens before MCP initialization, so the instructions
     instead tell the agent to follow the remediation in startup stderr first
-    (`refresh` for an empty index or `refresh --force --reset-index` for an
-    unreadable/incompatible index), reconnect, and request `get_hub_status`
+    (`refresh` for an empty index or an interrupted compaction, `refresh --force`
+    for a lost vector collection beside keyword records — plain `refresh`
+    refuses that state — or `refresh --force --reset-index` for an
+    unreadable/incompatible index or a missing, empty or corrupt keyword
+    index), reconnect, and request `get_hub_status`
     only after initialization succeeds. This is
     advisory text for the connecting agent, not a code path triggered by an
     exception — it only reaches clients that speak MCP (`serve`). The
@@ -385,13 +388,25 @@ live local index:
 4. `uv run pipecat-context-hub get-doc` (no flags) — exit 1, one-line
    validation message on stderr, empty stdout
 5. `PIPECAT_HUB_DATA_DIR=$(mktemp -d) uv run pipecat-context-hub status` —
-   exit 2, stderr says to run `refresh`, and (this is an empty-index first
-   run, the most routine of the three `_EXIT_INDEX_UNREADY` paths) also
+   exit 2 (`EXIT_INDEX_UNREADY`, `shared/exit_codes.py`), stderr says to
+   run `refresh`, and (this is an empty-index first run, the most routine
+   of the three exit-2 paths) also
    carries the "if this persists after trying that, file a bug report at
    .../issues/new?template=bug-report.yml" hint. E2e counterpart (real CLI
    subprocess against a genuinely empty on-disk index, no mocks):
    `tests/integration/test_report_hint_e2e.py::
    test_cli_empty_index_delivers_bug_report_hint_on_stderr`.
+5a. **Refresh lock and refresh refusals** (when `shared/index_lock.py`, `cli.py`'s
+   `refresh`, or the exit codes change). `refresh` holds an exclusive
+   `<dirname>.refresh.lock` (a sibling of the data dir, so `--reset-index` cannot
+   delete it); readers hold it shared only while opening. While a `refresh` is
+   rewriting the index, `status` / `search-*` / `get-doc` / `check-deprecation`
+   exit 75 (`EXIT_REFRESH_IN_PROGRESS`, retry in 60-120 s), and a second `refresh`
+   that finds the lock busy also exits 75. `refresh` refuses to start with under
+   5 GB free on the data-dir volume (exit 1; `PIPECAT_HUB_MIN_FREE_GB`, `0` disables).
+   `refresh --force --reset-index` exits 1 if index files survive its delete.
+   Unit counterparts: `tests/unit/test_index_lock.py`, `tests/unit/test_cli.py`,
+   `tests/unit/test_cli_query.py`, `tests/unit/test_index_state_matrix.py`.
 6a. **Pipecat CLI bridge** (when `plugin.py`, the command set, or `pyproject.toml`
    entry points change). Unit tests mount the bridge in-process; this confirms the
    real entry-point discovery path, which they cannot:

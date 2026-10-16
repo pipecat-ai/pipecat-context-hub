@@ -59,6 +59,25 @@ def resolve_framework_version(index_store: Any, deprecation_map: Any = None) -> 
     return str(version)
 
 
+def _unloadable_map_note(deprecation_map: Any) -> str | None:
+    """Why the map could not be loaded, or ``None`` when it loaded.
+
+    An unloadable map is indistinguishable from an empty one in every verdict,
+    so each "not deprecated" answer would otherwise look trustworthy.
+    """
+    reason = getattr(deprecation_map, "load_error", None)
+    if reason == "missing":
+        what = "is missing"
+    elif reason == "unreadable":
+        what = "could not be read"
+    else:
+        return None
+    return (
+        f"Deprecation map {what}, so no symbol can be reported as deprecated. "
+        "Run `refresh` to rebuild it."
+    )
+
+
 async def handle_check_deprecation(
     arguments: dict[str, Any],
     deprecation_map: Any,
@@ -84,6 +103,10 @@ async def handle_check_deprecation(
 
     entry = deprecation_map.check(inp.symbol)
     if entry is None:
+        unloadable = _unloadable_map_note(deprecation_map)
+        if unloadable is not None:
+            # No verdict: "current" would assert something the map never checked.
+            return CheckDeprecationOutput(deprecated=False, note=unloadable).model_dump_json()
         return CheckDeprecationOutput(deprecated=False, status="current").model_dump_json()
 
     target_version = inp.version or framework_version

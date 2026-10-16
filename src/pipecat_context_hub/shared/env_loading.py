@@ -67,6 +67,11 @@ PRUNE_ENV_VAR = "PIPECAT_HUB_PRUNE"
 # serve-time debug-probe gate — the structural sibling of PRUNE_ENV_VAR.
 DEBUG_PROBE_ENV_VAR = "PIPECAT_HUB_DEBUG_PROBE"
 
+# Single source of truth for the PIPECAT_HUB_MIN_FREE_GB literal, referenced
+# (not re-hardcoded) by _INVOCATION_SCOPED_KEYS below and by cli.py's
+# refresh free-disk check.
+MIN_FREE_GB_ENV_VAR = "PIPECAT_HUB_MIN_FREE_GB"
+
 _ENV_PREFIX = "PIPECAT_HUB_"
 
 # Declared above the frozensets below (rather than after them) so those sets
@@ -81,7 +86,9 @@ _DATA_DIR_ENV_VAR = "PIPECAT_HUB_DATA_DIR"
 # never be persistently enabled by a machine-global file; CONFIG_FILE is the
 # loader's own lookup-path seam (honoring it from inside the file it locates
 # would be circular); the two STABILITY_* vars are pytest-invocation-only dev
-# controls for the opt-in stability benchmark suite.
+# controls for the opt-in stability benchmark suite; MIN_FREE_GB is a per-run
+# override of refresh's free-disk safety check, so a machine-global file must not
+# be able to switch the check off for every later refresh.
 _INVOCATION_SCOPED_KEYS = frozenset(
     {
         PRUNE_ENV_VAR,
@@ -89,6 +96,7 @@ _INVOCATION_SCOPED_KEYS = frozenset(
         _CONFIG_FILE_ENV_VAR,
         "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK",
         "PIPECAT_HUB_STABILITY_OUTPUT",
+        MIN_FREE_GB_ENV_VAR,
     }
 )
 

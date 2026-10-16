@@ -248,6 +248,13 @@ re-resolves on every refresh — a plain incremental `refresh` picks up a new
 release without `--force`. Prereleases are skipped unless the repo has nothing
 else.
 
+After a pipecat upgrade, though, prefer `refresh --force`. A new release replaces
+the framework repo's records, and Chroma only marks deleted vectors dead: the
+persisted graph keeps them and never reuses their slots, so each plain refresh
+that replaces records leaves the graph larger than the live corpus. Only a
+`--force` refresh compacts it (it re-ingests every source, so it is slower).
+Skipping it is safe: queries stay correct and only the graph file is oversized.
+
 That default keeps the framework aligned with the rest of the index: the docs
 site publishes from a release-time promotion, and the example repos depend on
 released wheels. A default-branch framework checkout would be the only source
@@ -343,6 +350,10 @@ only when `indexed_framework_commits_ahead` is `0`. For a floor — a `head`
 refresh, or an index built before this contract — it evaluates symbols at their
 intrinsic registry status instead, rather than answering as though the index were
 the older release the floor names.
+
+If the deprecation map is missing or unreadable, `check_deprecation` returns a
+null `status` and a note to run `refresh` rather than answering `current` for
+every symbol, and `serve` logs a warning at startup.
 
 ### Compatibility
 
@@ -532,6 +543,86 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   Variables table above. Tainted repos
   (`PIPECAT_HUB_TAINTED_REPOS`) are unaffected — they are always cleaned up,
   with or without `--prune`.
+- **`refresh` refuses to start: low disk, or another `refresh` running** —
+  `refresh` first checks free space on the data-dir volume (default 5 GB;
+  `PIPECAT_HUB_MIN_FREE_GB=0` disables, other non-negative numbers set the
+  threshold in GB, and an unparsable, negative, or non-finite value, or one
+  too large to convert to bytes (e.g. `1e300`), silently falls back to the
+  5 GB default; with
+  `--reset-index` the check runs after the delete has freed the space.
+  `PIPECAT_HUB_MIN_FREE_GB` is invocation-scoped like `PIPECAT_HUB_PRUNE`: set
+  it in the environment, not `config.toml`, which is why it is not in the
+  Environment Variables table; below it, `refresh` exits **1**) and
+  takes an exclusive `refresh.lock` (a sibling file of the data dir,
+  `<dirname>.refresh.lock`, e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
+  it), so two refreshes can't interleave writes to the same Chroma HNSW files.
+  Locking is best-effort: if the lock file is a symlink, not a regular file,
+  has other hard links, or belongs to another user, it is not used and the
+  command logs `Lock file … continuing without a lock` and proceeds unlocked
+  (as it does where file locking is unsupported). On Windows, which can't open
+  without following symlinks, a link swapped in during the open is refused only
+  after the open, which can already have created an empty file at its target
+  (and the start-of-refresh timestamp bump goes by path); doing that needs
+  symlink privilege and write access to the data dir's parent, and is accepted.
+  The hub never deletes or replaces a lock file; if something outside it does
+  while the lock is held, the next process locks the new file and two refreshes
+  can overlap (accepted on every platform). `--reset-index` exits **1** without
+  rebuilding when any index file (keyword database, vector directory or
+  deprecation map) survives its delete (on Windows, a running
+  `serve` holds them open: stop it, then retry).
+  **While a refresh runs, nothing reads the index:** `serve` answers every tool
+  call with an error saying "retry in 60-120 seconds" (a `serve` started
+  mid-refresh still connects, with the index unopened), and one-shot CLI
+  queries exit **75** (`EX_TEMPFAIL`) with the same message on stderr. Readers
+  open the index under a shared hold on `refresh.lock`, so a refresh waits (up
+  to ~10 s) for an open in progress rather than starting under it (if readers
+  still hold it, `refresh` says so: just retry it). A `refresh` refused by the
+  lock (another refresh, or readers outlasting the wait) also exits **75**. The
+  dashboard scripts (`just dashboard-build`) open the index the same way, so
+  they too refuse to start while a refresh runs, and on a missing or empty
+  index they exit with the `refresh` hint instead of creating one. Readers
+  never create the index: if its vector collection has gone missing or empty
+  beside a populated keyword database, queries say to run `refresh --force`
+  rather than returning empty results, and a plain `refresh` that finds the
+  vector collection lost that way exits **2** with the same advice, without
+  touching it (it would otherwise skip every unchanged source and leave vector
+  search empty). The reverse, a keyword database missing, incomplete or empty
+  beside a vector collection that still has records, makes queries and every
+  `refresh` (`--force` included) exit **2** saying to run
+  `refresh --force --reset-index`, without touching the vector collection: the
+  keyword database is where `refresh` records which repos it indexed, so
+  without it the vectors of a repo no longer configured could never be
+  replaced or pruned. (An interrupted `refresh` never leaves this state:
+  keyword rows are written before their vectors, so a first `refresh` stopped
+  mid-write leaves keyword records ahead of the vectors, and
+  `refresh --force` rebuilds it.) A missing keyword database beside an empty or absent vector
+  collection is simply rebuilt by `refresh`. A corrupt keyword
+  database (or one whose schema it cannot use) also makes `refresh` exit **2**,
+  saying to run `refresh --force --reset-index`; a locked or busy one does not.
+  `refresh --force` recreates the lost collection, and whenever `refresh` finds
+  the vector collection empty it stops trusting every source's unchanged-skip
+  marker (it drops the docs content hash and flags each indexed repo
+  `repo:<slug>:vector_empty`, separate from `cleanup_failed`; repos stay known
+  to the cleanup and taint passes), so a source whose
+  fetch fails in that run is re-ingested by the next plain `refresh` rather than
+  left keyword-only. It re-ingests only the sources in its configuration: a repo indexed earlier but
+  absent from this invocation's config keeps its keyword records but gets no
+  vectors back, so re-add it to the config for that run, or pass `--prune` to
+  drop it. `serve`
+  reopens the rebuilt index (with the same readiness checks as at startup) and
+  reloads the deprecation map by itself once the refresh ends, so no MCP client
+  restart is needed; a call that lands while an earlier call still uses the old
+  index is asked to retry in a few seconds. After a `--force` refresh the vector graph is rebuilt from
+  the live records (delete + re-add otherwise left dead elements that grew the
+  graph by the whole corpus each time; the swap never leaves the index without
+  its collection, and one interrupted by a crash is restored by the next
+  `refresh` — until then queries say to run it; if the swap fails leaving no
+  collection, that `refresh` exits 2 without deleting anything and the next
+  `refresh` restores it; if that restore fails too, it exits 2 and says to
+  rebuild with `refresh --force --reset-index`). After each upsert batch the vector index re-checks the persisted HNSW graph
+  and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
+  header-derived bound — the runaway-file corruption that once took ~325 GB
+  of a disk. Recover with `refresh --force --reset-index`.
 - **`serve` exits immediately with code 2** — the index is empty or
   unopenable. Run `uvx pipecat-ai-context-hub refresh` (or
   `refresh --force --reset-index` if the error message mentions a failed

@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from pipecat_context_hub.services.index.store import IndexStore
+from pipecat_context_hub.shared.interfaces import ServingIndex
 from pipecat_context_hub.shared.types import HubStatusOutput, RerankerStatus
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ def _parse(value: str | None, cast: Callable[[str], _T]) -> _T | None:
 
 async def handle_get_hub_status(
     arguments: dict[str, Any],
-    index_store: IndexStore,
+    index_store: ServingIndex,
     reranker_status: RerankerStatus | None = None,
 ) -> str:
     """Return index health metadata: freshness, record counts, commit SHAs.

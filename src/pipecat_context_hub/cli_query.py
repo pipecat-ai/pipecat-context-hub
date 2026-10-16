@@ -14,8 +14,9 @@ Design notes:
 - Output contract: stdout carries exactly the tool handler's JSON — the same
   payload an MCP client receives — so callers can pipe it to a parser. Logs
   and error messages go to stderr. Exit codes: 0 on success, 1 on invalid
-  input, ``_EXIT_INDEX_UNREADY`` (2) when the local index is missing, empty,
-  or unreadable.
+  input, ``EXIT_INDEX_UNREADY`` (2) when the local index is missing, empty,
+  unreadable, or incompatible, and ``EXIT_REFRESH_IN_PROGRESS`` (75) when a ``refresh`` is
+  rewriting the index (stderr says to retry in 60-120 seconds).
 - Quiet by default: query commands downgrade logging to WARNING (explicit
   ``--log-level`` wins) and silence third-party model-loading chatter, since
   the captured stderr of a one-shot command lands in an agent's context.
@@ -42,6 +43,12 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
+from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_REFRESH_IN_PROGRESS
+from pipecat_context_hub.shared.index_lock import (
+    RefreshInProgressError,
+    refresh_excluded,
+)
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
 from pipecat_context_hub.shared.paths import redact_home_in_text
 from pipecat_context_hub.shared.reranker import runtime_reranker_reason
@@ -69,9 +76,6 @@ def _echo_stderr_warning(text: str) -> None:
     click.echo(redact_home_in_text(text), err=True)
 
 
-# Exit code for a missing/empty/unreadable local index. Keep in sync with
-# ``cli._EXIT_INDEX_UNREADY`` (enforced by tests/unit/test_cli_query.py).
-_EXIT_INDEX_UNREADY = 2
 _EXIT_BAD_INPUT = 1
 
 
@@ -320,49 +324,23 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     than a traceback, because the primary caller is a coding agent that will
     read stderr and run the suggested command.
     """
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
-    from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.services.index.reopening import open_ready_index_store
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
 
-    # IndexStore.__init__ opens two backends (Chroma + SQLite) and does not roll
-    # back if a *post-construction* call (get_index_stats) then raises, so close
-    # whatever came up before exiting — mirrors the guarded close `serve` does.
-    index_store: IndexStore | None = None
     try:
-        index_store = IndexStore(config.storage)
-        stats = index_store.get_index_stats()
-    except IncompatibleIndexFormatError as exc:
-        if index_store is not None:
-            with contextlib.suppress(Exception):
-                index_store.close()
-        # exc.__str__ embeds the absolute chroma_path, so redact the whole
-        # composed message (not just a data_dir token, which is absent here).
-        _echo_stderr_warning(f"Error: {exc}\n{bug_report_hint()}")
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
-    except Exception as exc:
-        if index_store is not None:
-            with contextlib.suppress(Exception):
-                index_store.close()
-        # Both the data_dir token and the {exc} rendering (e.g. a
-        # FileNotFoundError carrying .../chroma.sqlite3) can leak an absolute
-        # path, so redact the full formatted string, not a single argument.
-        _echo_stderr_warning(
-            f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
-            "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
-            f"{bug_report_hint()}"
-        )
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+        # Open under a shared hold on the refresh lock, so a refresh can't be
+        # rewriting the index while it is opened (nor start mid-open). Same
+        # open-and-check as `serve`, so the two report the same problems.
+        with refresh_excluded(config.storage.data_dir):
+            index_store = open_ready_index_store(config.storage)
+    except RefreshInProgressError as exc:
+        _echo_stderr_warning(f"Error: {exc}")
+        raise SystemExit(EXIT_REFRESH_IN_PROGRESS) from exc
+    except IndexUnavailableError as exc:
+        _echo_stderr_warning(f"Error: {exc}")
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
 
     try:
-        if stats.get("total", 0) == 0:
-            _echo_stderr_warning(
-                f"Error: the index at {config.storage.data_dir} is empty.\n"
-                "Run 'pipecat-context-hub refresh' first to build it "
-                "(the first run downloads models and indexes sources — allow a few minutes).\n"
-                f"{bug_report_hint()}"
-            )
-            raise SystemExit(_EXIT_INDEX_UNREADY)
-
         embedding_svc = None
         cross_encoder = None
         if needs_embeddings:
@@ -382,9 +360,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
 
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
-        retriever.deprecation_map = DeprecationMap.load(
-            config.storage.data_dir / "deprecation_map.json"
-        )
+        retriever.deprecation_map = DeprecationMap.load(config.storage.deprecation_map_path)
 
         yield _QueryRuntime(
             retriever=retriever,
@@ -393,8 +369,7 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
             cross_encoder=cross_encoder,
         )
     finally:
-        if index_store is not None:
-            index_store.close()
+        index_store.close()
 
 
 def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:

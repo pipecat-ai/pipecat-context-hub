@@ -28,6 +28,7 @@ from pipecat_context_hub.services.ingest.ingest_filters import (
     is_storybook_file,
 )
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.interfaces import FatalIndexError
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
@@ -1394,6 +1395,10 @@ class GitHubRepoIngester:
         if records:
             try:
                 upserted = await self._writer.upsert(records)
+            except FatalIndexError:
+                # Corrupt index (post-write HNSW guard): abort the refresh
+                # rather than keep writing into it. See DocsCrawler.ingest.
+                raise
             except Exception as exc:
                 errors.append(f"IndexWriter.upsert failed for {repo_slug}: {exc}")
 

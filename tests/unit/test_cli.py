@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
@@ -35,6 +37,24 @@ from pipecat_context_hub.services.ingest.github_ingest import CloneResult, TagNo
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_global_config
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_refresh_guards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `refresh`'s lock and free-disk preflight off the developer's machine.
+
+    Many tests here invoke `refresh` against a mocked `IndexStore` without
+    choosing a data dir. `refresh` now takes a real `refresh.lock` and checks
+    real free space in that dir, so left alone those tests would create
+    `~/.pipecat-context-hub/refresh.lock`, fail whenever the developer has a
+    real `refresh` running ("already running"), and fail on a nearly-full disk.
+    Tests that pick their own data dir or threshold simply override these.
+    The default data dir is redirected via `Path.home` rather than
+    `PIPECAT_HUB_DATA_DIR`, because a real env var would outrank the `.env` /
+    `config.toml` data-dir sources several tests here deliberately exercise.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "isolated-home")
+    monkeypatch.setenv("PIPECAT_HUB_MIN_FREE_GB", "0")
 
 
 class TestWriteServeDebugProbe:
@@ -202,6 +222,7 @@ class TestRefreshCommand:
     def _make_mocks(self):
         """Create shared mock objects for refresh tests."""
         mock_index_store = MagicMock()
+        mock_index_store.vector_empty = False  # a healthy index, not an empty vector half
         mock_index_store.get_metadata = MagicMock(return_value=None)
         mock_index_store.set_metadata = MagicMock()
         mock_index_store.delete_metadata = MagicMock()
@@ -291,10 +312,188 @@ class TestRefreshCommand:
         result = runner.invoke(main, ["refresh", "--force"])
 
         assert result.exit_code == 0
+        # Forced refresh deletes + re-adds everything: the graph is compacted after.
+        mock_store.compact_vector.assert_called_once()
         # With --force, docs should be re-ingested despite matching hash
         mock_crawler.ingest.assert_called_once()
         # With --force, repos should be re-ingested despite matching SHA
         assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
+
+    def _live_metadata(self, mock_store, meta: dict[str, str]) -> None:
+        """Back the mock store's metadata calls with the mutable *meta* dict."""
+
+        def batch(pairs: dict[str, str], *, delete_keys: Any = ()) -> None:
+            meta.update(pairs)
+            for key in delete_keys:
+                meta.pop(key, None)
+
+        mock_store.get_metadata = MagicMock(side_effect=meta.get)
+        mock_store.get_all_metadata = MagicMock(side_effect=lambda: dict(meta))
+        mock_store.set_metadata = MagicMock(side_effect=meta.__setitem__)
+        mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
+        mock_store.set_metadata_batch = MagicMock(side_effect=batch)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_vector_half_created_beside_skip_markers_reingests_them(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (store.py:81): with no keyword records the open created
+        the vector half without reporting a loss, so a plain refresh skipped
+        docs on a surviving ``docs:content_hash`` and left them unindexed."""
+        import hashlib
+
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_store.vector_empty = True  # no keyword records, but the vector half opened empty
+        mock_store.get_counts_by_repo = MagicMock(return_value={})
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        content = "# Page\nSource: https://example.com\nContent here"
+        meta = {
+            "docs:content_hash": hashlib.sha256(content.encode()).hexdigest(),
+            **_sha_metadata("abc123"),
+        }
+        self._live_metadata(mock_store, meta)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_crawler.ingest.assert_called_once()  # not skipped as unchanged
+        assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_lost_vector_rebuild_keeps_repo_markers_and_retries_failed_sources(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (cli.py:133): after a lost-vector rebuild every
+        ``repo:*:commit_sha`` key was deleted, so an unconfigured repo was
+        orphaned from the stale-repo cleanup (and a tainted one from its
+        purge). Repo markers now survive; a source this run fails to fetch is
+        still re-ingested next run (docs hash dropped, repo flagged)."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_store.vector_empty = True
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_crawler.fetch_llms_txt = AsyncMock(side_effect=RuntimeError("docs offline"))
+        failing = _DEFAULT_REPOS[-1]
+
+        def clone(slug: str, *_args: Any, **_kwargs: Any) -> CloneResult:
+            if slug == failing:
+                raise RuntimeError("network down")
+            return CloneResult(Path("/tmp/repo"), "abc123", None)
+
+        mock_github.clone_or_fetch = MagicMock(side_effect=clone)
+        meta = {
+            "docs:content_hash": "old",
+            "repo:gone/repo:commit_sha": "old",
+            **_sha_metadata("abc123"),
+        }
+        self._live_metadata(mock_store, meta)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force", "--prune"])
+
+        assert result.exit_code == 0, result.output
+        # The unconfigured repo was still found, so --prune removed it.
+        mock_store.delete_by_repo.assert_any_await("gone/repo")
+        # Failed this run: next plain refresh must not skip them.
+        assert "docs:content_hash" not in meta
+        assert meta[f"repo:{failing}:commit_sha"] == "abc123"
+        assert meta[f"repo:{failing}:vector_empty"] == "1"
+        assert f"repo:{failing}:cleanup_failed" not in meta  # no cleanup failed
+        # Re-ingested this run: flag cleared again; pruned repo leaves none.
+        assert f"repo:{_DEFAULT_REPOS[0]}:vector_empty" not in meta
+        assert not [k for k in meta if k.startswith("repo:gone/repo:")]
+
+    @pytest.mark.parametrize("fatal", [None, "corrupt", "swap"])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_compaction_failure_is_fatal_only_for_a_corrupt_graph(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        fatal,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (cli.py:1822): compaction is best effort, but an HNSW guard
+        failure during it means a runaway/corrupt graph, which stops the refresh
+        (exit 2, no completion metadata) as it does everywhere else. So does a
+        swap whose rollback also failed (vector.py:549): no readable collection
+        is left, so refresh must not report success."""
+        from pipecat_context_hub.services.index.errors import (
+            CompactionSwapError,
+            CorruptHnswGraphError,
+        )
+
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_store.compact_vector.side_effect = {
+            None: RuntimeError("compaction hiccup"),
+            "corrupt": CorruptHnswGraphError(tmp_path, reason="corrupt persisted HNSW"),
+            "swap": CompactionSwapError(tmp_path),
+        }[fatal]
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        if fatal:
+            assert result.exit_code == 2
+            mock_store.set_metadata_batch.assert_not_called()
+        else:
+            assert result.exit_code == 0
+            mock_store.set_metadata_batch.assert_called_once()
+        mock_store.close.assert_called()
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -542,6 +741,54 @@ class TestRefreshCommand:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_index_corruption_aborts_refresh(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A mid-run HNSW-guard failure stops the refresh with exit 2.
+
+        Regression: the ingesters used to swallow it into a per-source error,
+        so the refresh kept writing every remaining source into the corrupt
+        index and exited 0.
+        """
+        from pipecat_context_hub.services.index.errors import IncompatibleIndexFormatError
+
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        mock_crawler.ingest = AsyncMock(
+            side_effect=IncompatibleIndexFormatError(
+                tmp_path, reason="corrupt persisted HNSW segment x"
+            )
+        )
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 2, result.output
+        mock_github.ingest.assert_not_called()
+        mock_source.ingest.assert_not_called()
+        mock_store.set_metadata_batch.assert_not_called()
+        mock_store.close.assert_called()
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_repo_sha_not_stored_on_ingest_error(
         self,
         mock_si_cls,
@@ -582,14 +829,21 @@ class TestRefreshCommand:
         result = runner.invoke(main, ["refresh"])
 
         assert result.exit_code == 0
-        # repo:*:commit_sha should NOT have been stored for changed repos with errors
+        # repo:*:commit_sha should NOT have been stored as a clean marker for
+        # changed repos with errors
         set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
         for repo in _DEFAULT_REPOS:
             assert f"repo:{repo}:commit_sha" not in set_calls
-        # Failed repos should have their cached SHA deleted (P1)
-        delete_calls = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        # Failed repos keep a marker (cleanup finds them by it) but are
+        # flagged delete-pending, so the next refresh retries them (P1)
+        batched = {
+            key: value
+            for call in mock_store.set_metadata_batch.call_args_list
+            for key, value in call.args[0].items()
+        }
         for repo in _DEFAULT_REPOS:
-            assert f"repo:{repo}:commit_sha" in delete_calls
+            assert batched[f"repo:{repo}:commit_sha"] == "abc123"
+            assert batched[f"repo:{repo}:cleanup_failed"] == "1"
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -610,7 +864,7 @@ class TestRefreshCommand:
         tmp_path,
         monkeypatch,
     ):
-        """--force with ingest failure deletes cached SHA so next refresh retries."""
+        """--force with ingest failure flags the repo so next refresh retries."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -628,17 +882,88 @@ class TestRefreshCommand:
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
-        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        self._live_metadata(mock_store, meta)
 
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
         result = runner.invoke(main, ["refresh", "--force"])
 
         assert result.exit_code == 0
-        # Failed repos should have cached SHA deleted, not preserved
-        delete_calls = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        # Failed repos keep their marker but are flagged, so the unchanged-skip
+        # shortcut cannot take them on the next plain refresh
         for repo in _DEFAULT_REPOS:
-            assert f"repo:{repo}:commit_sha" in delete_calls
+            assert meta[f"repo:{repo}:commit_sha"] == "abc123"
+            assert meta[f"repo:{repo}:cleanup_failed"] == "1"
+        mock_github.ingest.reset_mock()
+        result = runner.invoke(main, ["refresh"])
+        assert result.exit_code == 0
+        assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
+
+    @pytest.mark.parametrize("failure", ["checkout", "delete", "ingest"])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_failed_repo_stays_discoverable_by_prune(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        failure,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (cli.py:1794): a changed repo whose refresh failed lost
+        its commit marker while it could still hold records, so once it was
+        dropped from configuration no `--prune` could find it to purge them."""
+        extra = "extra-org/flaky-repo"
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_store.get_counts_by_repo = MagicMock(
+            return_value={**{r: 13 for r in _DEFAULT_REPOS}, extra: 7}
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        if failure == "checkout":
+            mock_github.checkout_commit = MagicMock(
+                side_effect=lambda path, sha: (_ for _ in ()).throw(RuntimeError("checkout"))
+            )
+        elif failure == "delete":
+            mock_store.delete_by_repo = AsyncMock(side_effect=RuntimeError("delete"))
+        else:
+            mock_github.ingest = AsyncMock(
+                return_value=MagicMock(records_upserted=0, errors=["ingest"])
+            )
+        meta = {**_sha_metadata("abc123"), f"repo:{extra}:commit_sha": "old111"}
+        self._live_metadata(mock_store, meta)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_EXTRA_REPOS", extra)
+
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        # The records it may still hold describe the last indexed commit.
+        assert meta[f"repo:{extra}:commit_sha"] == "old111"
+        assert meta[f"repo:{extra}:cleanup_failed"] == "1"
+
+        # Dropped from configuration before a successful retry: --prune must
+        # still find it.
+        monkeypatch.delenv("PIPECAT_HUB_EXTRA_REPOS")
+        mock_store.delete_by_repo = AsyncMock(return_value=0)
+        result = CliRunner().invoke(main, ["refresh", "--prune"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_await(extra)
+        assert not [k for k in meta if k.startswith(f"repo:{extra}:")]
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -964,6 +1289,7 @@ class TestRefreshCommand:
         set_calls = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
         assert set_calls.get("repo:pipecat-ai/pipecat:cleanup_failed") == "1"
 
+    @pytest.mark.parametrize("flag", ["cleanup_failed", "vector_empty"])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
     @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
@@ -980,8 +1306,10 @@ class TestRefreshCommand:
         mock_eiw_cls,
         mock_es_cls,
         mock_is_cls,
+        flag,
         tmp_path,
         monkeypatch,
+        caplog,
     ):
         """Round 9 Finding #3 regression: a repo whose stale cleanup
         previously failed (leaving `repo:<slug>:cleanup_failed` set) must NOT
@@ -1007,7 +1335,7 @@ class TestRefreshCommand:
         meta = {
             "docs:content_hash": content_hash,
             **_sha_metadata("abc123"),
-            f"repo:{target_repo}:cleanup_failed": "1",
+            f"repo:{target_repo}:{flag}": "1",
         }
         mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
 
@@ -1023,16 +1351,23 @@ class TestRefreshCommand:
         )
 
         monkeypatch.chdir(tmp_path)
-        result = CliRunner().invoke(main, ["refresh"])
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh"])
 
         assert result.exit_code == 0, result.output
         # SHA is unchanged and records "exist" (per get_counts_by_repo), but
         # the cleanup_failed flag must force a real re-ingest, not a skip.
         assert target_repo in ingested_repo_calls
+        # The flag is written ahead of every delete, so it does not mean a
+        # cleanup failed (an aborted refresh leaves it too); the log must not
+        # say one did.
+        assert "prior cleanup failed" not in caplog.text
+        if flag == "cleanup_failed":
+            assert "not followed by a clean re-ingest" in caplog.text
 
         # A clean re-ingest (no errors) must clear the flag.
         deleted_keys = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
-        assert f"repo:{target_repo}:cleanup_failed" in deleted_keys
+        assert f"repo:{target_repo}:{flag}" in deleted_keys
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -1770,6 +2105,89 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         assert not sentinel_file.exists()
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    def test_reset_index_refuses_to_rebuild_over_undeleted_index_files(
+        self, mock_gh_cls, mock_is_cls, tmp_path, monkeypatch
+    ):
+        """Regression (cli.py:246): the delete ignores errors, so on Windows a
+        `serve` holding the index open left files behind and the rebuild ran
+        over them. Simulated with an rmtree that deletes nothing."""
+        data_dir = tmp_path / "data-home"
+        (data_dir / "chroma").mkdir(parents=True)
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", lambda *_a, **_k: None)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 1, result.output
+        assert "could not delete" in result.output
+        assert "chroma" in result.output
+        mock_is_cls.assert_not_called()  # no rebuild over the leftovers
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    def test_reset_index_refuses_to_rebuild_over_an_undeleted_deprecation_map(
+        self, mock_gh_cls, mock_is_cls, tmp_path, monkeypatch
+    ):
+        """Regression (cli.py:1192): the survivor check covered only the
+        keyword database and the vector directory. A surviving
+        deprecation_map.json, which a run that does not republish it keeps,
+        was served beside the rebuilt index (stale check_deprecation data)."""
+        data_dir = tmp_path / "data-home"
+        data_dir.mkdir()
+        (data_dir / "deprecation_map.json").write_text("{}")
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", lambda *_a, **_k: None)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 1, result.output
+        assert "could not delete" in result.output
+        assert "deprecation_map.json" in result.output
+        mock_is_cls.assert_not_called()
+
+    @pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    def test_reset_index_refuses_to_rebuild_over_a_surviving_sqlite_sidecar(
+        self, mock_gh_cls, mock_is_cls, tmp_path, monkeypatch, suffix
+    ):
+        """Regression (config.py:183): a partial delete that removed the keyword
+        database but left its WAL, shared-memory or journal file passed the
+        survivor check, and SQLite then recovered stale pages into (or refused)
+        the rebuilt database."""
+        data_dir = tmp_path / "data-home"
+        data_dir.mkdir()
+        (data_dir / f"metadata.db{suffix}").write_bytes(b"stale")
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", lambda *_a, **_k: None)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 1, result.output
+        assert "could not delete" in result.output
+        assert f"metadata.db{suffix}" in result.output
+        mock_is_cls.assert_not_called()
+
+    def test_index_artifact_paths_cover_what_serve_loads(self, tmp_path):
+        """The survivor check and the readers share one list of paths."""
+        from pipecat_context_hub.shared.config import StorageConfig
+
+        storage = StorageConfig(data_dir=tmp_path)
+        assert storage.index_artifact_paths == (
+            storage.sqlite_path,
+            storage.sqlite_path.with_name(storage.sqlite_path.name + "-wal"),
+            storage.sqlite_path.with_name(storage.sqlite_path.name + "-shm"),
+            storage.sqlite_path.with_name(storage.sqlite_path.name + "-journal"),
+            storage.chroma_path,
+            storage.deprecation_map_path,
+        )
+        assert storage.deprecation_map_path == tmp_path / "deprecation_map.json"
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
     @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
     @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
@@ -2172,15 +2590,9 @@ class TestRefreshFtsFaultInjection:
         tmp_path,
         monkeypatch,
     ):
-        """Round 11 Finding #2 (corrected to defense-in-depth): the pre-ingest
-        `delete_by_repo` failure branch must also set the
-        `repo:<slug>:cleanup_failed` marker, mirroring the sibling
-        `_delete_repo_index_data` failure paths. Not load-bearing for the
-        originally-reported "permanent same-SHA skip" scenario — that
-        `continue` already skips `ingested_repos.add()`, and the
-        SHA-bookkeeping loop already deletes this repo's stored `commit_sha`
-        on any failure path — but the marker should be set anyway for
-        consistency with the sibling pattern.
+        """A failed pre-ingest `delete_by_repo` leaves the repo's
+        `repo:<slug>:cleanup_failed` marker set (it is written ahead of the
+        delete), so the unchanged-skip shortcut can't trust a partial index.
         """
         target_repo = "daily-co/daily-python"
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
@@ -2204,6 +2616,117 @@ class TestRefreshFtsFaultInjection:
 
         assert result.exit_code == 0, result.output
         mock_store.set_metadata.assert_any_call(f"repo:{target_repo}:cleanup_failed", "1")
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_pre_ingest_flag_write_failure_leaves_repo_records_intact(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Write-ahead: if the repo's `cleanup_failed` flag can't be written,
+        its records are not deleted or re-ingested, and it is reported as
+        errored without crashing the refresh."""
+        target_repo = "daily-co/daily-python"
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        def _set_metadata(key, value):
+            if key == f"repo:{target_repo}:cleanup_failed":
+                raise RuntimeError("sqlite database is locked")
+
+        mock_store.set_metadata = MagicMock(side_effect=_set_metadata)
+        ingested: list[str] = []
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            ingested.extend(repos)
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.await_args_list]
+        assert target_repo not in deleted_repos
+        assert target_repo not in ingested
+        assert ingested  # the other repos still refresh
+        batch = mock_store.set_metadata_batch.call_args_list[-1].args[0]
+        assert int(batch["last_refresh_error_count"]) >= 1
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_pre_ingest_delete_runs_only_after_flag_is_written(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The old order (delete, then flag on failure) could leave a partial
+        delete behind an unflagged, unchanged commit marker. Every pre-ingest
+        delete must now find its repo's flag already written."""
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        meta: dict[str, str] = {}
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        mock_store.set_metadata = MagicMock(
+            side_effect=lambda key, value: meta.__setitem__(key, value)
+        )
+        mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
+        flagged_at_delete: dict[str, bool] = {}
+
+        async def _delete_by_repo(repo):
+            flagged_at_delete[repo] = f"repo:{repo}:cleanup_failed" in meta
+            raise RuntimeError("FTS delete_by_repo failed")
+
+        mock_store.delete_by_repo = AsyncMock(side_effect=_delete_by_repo)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        assert flagged_at_delete
+        assert all(flagged_at_delete.values()), flagged_at_delete
+        # The flag survives the failed delete, blocking the skip shortcut.
+        assert all(meta.get(f"repo:{r}:cleanup_failed") == "1" for r in flagged_at_delete)
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -2312,7 +2835,7 @@ class TestRefreshFtsFaultInjection:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
-    def test_docs_content_hash_clear_failure_does_not_crash_refresh(
+    def test_docs_hash_clear_failure_leaves_docs_records_intact(
         self,
         mock_si_cls,
         mock_ref_tainted,
@@ -2324,15 +2847,10 @@ class TestRefreshFtsFaultInjection:
         tmp_path,
         monkeypatch,
     ):
-        """Round 9 Finding #4 regression: round 8's own recovery call —
-        `index_store.delete_metadata("docs:content_hash")`, added inside the
-        `delete_by_content_type` failure handler to guarantee future
-        retries — is itself unprotected. If the SAME underlying storage
-        fault also breaks `delete_metadata` (e.g. a disk/lock issue
-        affecting the whole SQLite file), the exception must not propagate
-        unhandled and abort the whole refresh; it must be recorded in
-        `all_errors` and refresh must complete.
-        """
+        """Write-ahead: `docs:content_hash` is dropped before the docs records
+        are deleted. If dropping it fails, the records must not be touched
+        (they still match the marker), and docs are reported as errored
+        without crashing the refresh."""
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
             TestRefreshCommand()
         )
@@ -2342,10 +2860,6 @@ class TestRefreshFtsFaultInjection:
         mock_si_cls.return_value = mock_source
         mock_ref_tainted.return_value = False
 
-        mock_store.delete_by_content_type = AsyncMock(
-            side_effect=RuntimeError("FTS delete_by_content_type failed; indexes may have diverged")
-        )
-
         def _delete_metadata_side_effect(key):
             if key == "docs:content_hash":
                 raise RuntimeError("sqlite database is locked")
@@ -2353,21 +2867,68 @@ class TestRefreshFtsFaultInjection:
         mock_store.delete_metadata = MagicMock(side_effect=_delete_metadata_side_effect)
 
         monkeypatch.chdir(tmp_path)
-        result = CliRunner().invoke(main, ["refresh"])
+        result = CliRunner().invoke(main, ["refresh", "--force"])
 
-        # No uncaught exception propagated out of the CLI invocation, even
-        # though BOTH the primary delete and the stamp-clearing recovery
-        # call failed.
         assert result.exit_code == 0, result.output
         assert result.exception is None
+        mock_store.delete_by_content_type.assert_not_awaited()
         mock_crawler.ingest.assert_not_called()
-
         written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
         for batch_call in mock_store.set_metadata_batch.call_args_list:
             written.update(batch_call.args[0])
-        # Both failures are recorded — the error count reflects more than
-        # just the primary `delete_by_content_type` failure.
-        assert int(written["last_refresh_error_count"]) >= 2
+        assert int(written["last_refresh_error_count"]) >= 1
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_docs_records_never_deleted_while_hash_still_stamped(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The old order (delete docs records, then clear the hash) left a
+        window where any later failure or abort kept a hash vouching for
+        deleted records. The hash must already be gone when the delete runs."""
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        meta: dict[str, str] = {"docs:content_hash": "stamped"}
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        mock_store.set_metadata = MagicMock(
+            side_effect=lambda key, value: meta.__setitem__(key, value)
+        )
+        mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
+        hash_present_at_delete: list[bool] = []
+
+        async def _delete_by_content_type(content_type):
+            hash_present_at_delete.append("docs:content_hash" in meta)
+            raise RuntimeError("FTS delete_by_content_type failed")
+
+        mock_store.delete_by_content_type = AsyncMock(side_effect=_delete_by_content_type)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        assert hash_present_at_delete == [False]
+        assert "docs:content_hash" not in meta
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -5045,6 +5606,216 @@ class TestRefreshIncompatibleIndex:
         assert str(chroma_path) not in caplog.text
         assert str(tmp_path) not in caplog.text
 
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_failed_compaction_restore_exits_2(self, mock_is_cls, tmp_path, monkeypatch, caplog):
+        """Regression (vector.py:426): a restore the open could not complete
+        is a CompactionRestoreError; refresh caught only IncompatibleIndexFormatError
+        there, so it exited 1 with a traceback instead of 2."""
+        from pipecat_context_hub.services.index.errors import CompactionRestoreError
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        mock_is_cls.side_effect = CompactionRestoreError(
+            tmp_path / ".pipecat-context-hub" / "chroma"
+        )
+
+        monkeypatch.chdir(tmp_path)
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 2, result.output
+        assert "restoring its collection failed" in caplog.text
+        assert "refresh --force --reset-index" in caplog.text
+        assert str(tmp_path) not in caplog.text
+
+
+class TestRefreshLostVectorCollection:
+    """Regression (cli.py:105, cli.py:115, cli.py:123): refresh opened with
+    create=True, which recreated a lost ``latest`` empty, and only then did the
+    CLI compare counts and exit 2. The refused run had already written that
+    empty collection, so later reader opens (counting only the keyword half)
+    served with vector search silently empty. The store now refuses before
+    writing anything, and only ``--force`` may recreate it."""
+
+    @staticmethod
+    def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from pipecat_context_hub.shared.config import StorageConfig
+
+        data_dir = tmp_path / "hub"
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.setenv("PIPECAT_HUB_MIN_FREE_GB", "0")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.chdir(tmp_path)
+        return StorageConfig(data_dir=data_dir)
+
+    @patch(
+        "pipecat_context_hub.services.embedding.EmbeddingService",
+        side_effect=AssertionError("refresh went past the open"),
+    )
+    def test_refresh_without_force_exits_2_and_writes_nothing(
+        self, _mock_es, tmp_path, monkeypatch, caplog
+    ):
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+        from tests.unit.test_index_store import _collection_names, _lose_vector_half
+
+        storage = self._env(tmp_path, monkeypatch)
+        _lose_vector_half(storage, empty_latest=False)
+
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 2, result.output
+        assert "refresh --force" in caplog.text
+        assert "latest" not in _collection_names(storage)  # nothing recreated
+        # ... so readers still refuse, with the same remedy.
+        with pytest.raises(IndexUnavailableError, match="refresh --force"):
+            open_ready_index_store(storage)
+
+    def test_force_open_recreates_it(self, tmp_path, monkeypatch):
+        import logging
+
+        from pipecat_context_hub.cli import _open_index_store_or_exit
+        from tests.unit.test_index_store import _collection_names, _lose_vector_half
+
+        storage = self._env(tmp_path, monkeypatch)
+        _lose_vector_half(storage, empty_latest=False)
+        config = HubConfig()
+        assert config.storage.data_dir == storage.data_dir
+
+        with pytest.raises(SystemExit) as exc:
+            _open_index_store_or_exit(config, logging.getLogger("test"), rebuild=False)
+        assert exc.value.code == 2
+        store = _open_index_store_or_exit(config, logging.getLogger("test"), rebuild=True)
+        store.close()
+        assert _collection_names(storage) == ["latest"]
+
+    @patch(
+        "pipecat_context_hub.services.embedding.EmbeddingService",
+        side_effect=AssertionError("refresh went past the open"),
+    )
+    def test_force_refresh_refuses_a_lost_keyword_half(
+        self, _mock_es, tmp_path, monkeypatch, caplog
+    ):
+        """Regression (store.py:71): ``refresh --force`` with ``index.db`` lost
+        created an empty keyword half and carried every vector forward,
+        including those of retained repos it could no longer find."""
+        from tests.unit.test_index_store import TestLostKeywordHalf
+
+        storage = self._env(tmp_path, monkeypatch)
+        TestLostKeywordHalf._lose_keyword_half(storage, empty=False)
+
+        with caplog.at_level("ERROR", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 2, result.output
+        assert "refresh --force --reset-index" in caplog.text
+
+    def test_force_open_writes_no_metadata(self, tmp_path, monkeypatch):
+        """Regression (cli.py:133): the open helper itself deleted every skip
+        marker after a lost-vector rebuild. It now only opens; it reports the
+        empty vector half and refresh decides (``_distrust_skip_markers``)."""
+        import logging
+
+        from pipecat_context_hub.cli import _open_index_store_or_exit
+        from pipecat_context_hub.services.index.store import IndexStore
+        from tests.unit.test_index_store import _lose_vector_half
+
+        storage = self._env(tmp_path, monkeypatch)
+        _lose_vector_half(storage, empty_latest=False)
+        written = {"docs:content_hash": "abc", "repo:o/r:commit_sha": "deadbeef"}
+        store = IndexStore(storage, create=True, rebuild=True)  # write the metadata
+        for key, value in written.items():
+            store.set_metadata(key, value)
+        store.close()
+
+        store = _open_index_store_or_exit(HubConfig(), logging.getLogger("test"), rebuild=True)
+        try:
+            assert store.vector_empty
+            assert store.get_all_metadata() == written
+        finally:
+            store.close()
+
+    def test_distrust_skip_markers_flags_repos_and_drops_docs_hash(self, tmp_path):
+        """M2/M3: commit markers (how cleanup and the tainted purge find repos)
+        are kept for every repo, configured or not; each is flagged instead."""
+        from pipecat_context_hub.cli import _distrust_skip_markers
+        from pipecat_context_hub.services.index.store import IndexStore
+        from pipecat_context_hub.shared.config import StorageConfig
+
+        store = IndexStore(StorageConfig(data_dir=tmp_path / "hub"), create=True)
+        try:
+            before = {
+                "docs:content_hash": "abc",
+                "repo:o/r:commit_sha": "deadbeef",
+                "repo:gone/x:commit_sha": "cafe",
+                "framework_version": "latest",
+            }
+            for key, value in before.items():
+                store.set_metadata(key, value)
+            _distrust_skip_markers(store)
+            after = store.get_all_metadata()
+        finally:
+            store.close()
+        assert after == {
+            **{k: v for k, v in before.items() if k != "docs:content_hash"},
+            "repo:o/r:vector_empty": "1",
+            "repo:gone/x:vector_empty": "1",
+        }
+
+    def test_unusable_keyword_schema_exits_2(self, tmp_path, monkeypatch, caplog):
+        """Regression (cli.py:121): SQLite reports a schema the index cannot
+        use (a ``chunks`` table without ``content``) as OperationalError, which
+        the CLI re-raised as transient: traceback, exit 1, no reset remedy."""
+        import logging
+        import sqlite3
+
+        from pipecat_context_hub.cli import _open_index_store_or_exit
+
+        storage = self._env(tmp_path, monkeypatch)
+        storage.data_dir.mkdir(parents=True)
+        with sqlite3.connect(storage.sqlite_path) as conn:
+            conn.execute("CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, body TEXT)")
+            conn.execute("INSERT INTO chunks VALUES ('a', 'pipecat')")
+        conn.close()
+
+        with caplog.at_level("ERROR", logger="test"), pytest.raises(SystemExit) as exc:
+            _open_index_store_or_exit(HubConfig(), logging.getLogger("test"), rebuild=False)
+        assert exc.value.code == 2
+        assert "refresh --force --reset-index" in caplog.text
+        assert str(tmp_path) not in caplog.text
+
+    def test_corrupt_keyword_database_exits_2(self, tmp_path, monkeypatch, caplog):
+        """Regression (cli.py:109): a malformed index.db raised a bare
+        sqlite3.DatabaseError (traceback, exit 1) instead of exit 2 with the
+        reset remedy the readers give."""
+        import logging
+
+        from pipecat_context_hub.cli import _open_index_store_or_exit
+
+        storage = self._env(tmp_path, monkeypatch)
+        storage.data_dir.mkdir(parents=True)
+        storage.sqlite_path.write_bytes(b"not a database" * 512)
+
+        with caplog.at_level("ERROR", logger="test"), pytest.raises(SystemExit) as exc:
+            _open_index_store_or_exit(HubConfig(), logging.getLogger("test"), rebuild=False)
+        assert exc.value.code == 2
+        assert "refresh --force --reset-index" in caplog.text
+
+    @pytest.mark.parametrize(("args", "rebuild"), [([], False), (["--force"], True)])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    def test_refresh_passes_force_as_rebuild(
+        self, mock_is_cls, args, rebuild, tmp_path, monkeypatch
+    ):
+        from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+        self._env(tmp_path, monkeypatch)
+        mock_is_cls.side_effect = MissingVectorCollectionError(tmp_path / "hub" / "chroma")
+
+        result = CliRunner().invoke(main, ["refresh", *args])
+
+        assert result.exit_code == 2, result.output
+        assert mock_is_cls.call_args.kwargs["rebuild"] is rebuild
+
 
 class TestServeEmptyIndex:
     """Serve must fail fast on empty or unopenable indexes rather than hang.
@@ -5156,6 +5927,129 @@ class TestServeEmptyIndex:
 
         assert result.exit_code != 0
         mock_store.close.assert_called_once()
+
+
+class TestServeRefreshGate:
+    """`serve`'s index handle across a refresh (its gate is the reopening handle)."""
+
+    @staticmethod
+    def _ready_store() -> MagicMock:
+        store = MagicMock()
+        store.get_index_stats = MagicMock(
+            return_value={"counts_by_type": {"doc": 1}, "total": 1, "commit_shas": []}
+        )
+        return store
+
+    @contextlib.contextmanager
+    def _run_serve(
+        self, tmp_path: Path, monkeypatch, stores: list[MagicMock]
+    ) -> Iterator[tuple[Path, dict[str, Any]]]:
+        data_dir = tmp_path / "hub"
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.chdir(tmp_path)
+        captured: dict[str, Any] = {}
+        serving = threading.Event()
+        release = threading.Event()
+
+        def _fake_create_server(*args, **kwargs):
+            captured["args"], captured["kwargs"] = args, kwargs
+            return MagicMock()
+
+        def _fake_serve(*_args, **_kwargs) -> None:
+            serving.set()
+            release.wait(timeout=30)
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch("pipecat_context_hub.services.index.store.IndexStore", side_effect=stores)
+            )
+            stack.enter_context(patch("pipecat_context_hub.services.embedding.EmbeddingService"))
+            stack.enter_context(
+                patch("pipecat_context_hub.server.transport.serve_stdio", side_effect=_fake_serve)
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.server.main.create_server",
+                    side_effect=_fake_create_server,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "pipecat_context_hub.shared.reranker.probe_reranker",
+                    return_value=("m", None, "config_disabled"),
+                )
+            )
+            outcome: dict[str, Any] = {}
+
+            def _serve() -> None:
+                try:
+                    outcome["result"] = CliRunner().invoke(main, ["serve"])
+                finally:
+                    serving.set()  # also unblocks the wait below if serve died early
+
+            thread = threading.Thread(target=_serve, name="test-serve")
+            thread.start()
+            try:
+                assert serving.wait(timeout=30), "serve never reached serve_stdio"
+                assert "result" not in outcome, outcome["result"].output
+                # The gate is exercised while serve is still up: close() is terminal.
+                yield data_dir, captured
+            finally:
+                release.set()
+                thread.join(timeout=30)
+            assert outcome["result"].exit_code == 0, outcome["result"].output
+
+    @staticmethod
+    def _simulate_refresh(data_dir: Path) -> None:
+        import os
+
+        from pipecat_context_hub.shared.index_lock import REFRESH_LOCK, IndexLock, lock_path
+
+        os.utime(lock_path(data_dir, REFRESH_LOCK), ns=(1, 1))
+        with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+            pass
+
+    def test_reopen_after_a_refresh_reloads_the_deprecation_map(self, tmp_path, monkeypatch):
+        """Regression (cli.py:920): serve used to keep the startup deprecation
+        map after reopening a refreshed index, so check_deprecation paired a
+        rebuilt index with an old map until restart."""
+        from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+
+        map_path = tmp_path / "hub" / "deprecation_map.json"
+        DeprecationMap(pipecat_commit_sha="old").save(map_path)
+        stores = [self._ready_store(), self._ready_store()]
+        with self._run_serve(tmp_path, monkeypatch, stores) as (data_dir, captured):
+            retriever = captured["args"][0]
+            assert retriever.deprecation_map.pipecat_commit_sha == "old"
+            DeprecationMap(pipecat_commit_sha="new").save(map_path)
+            self._simulate_refresh(data_dir)
+            assert captured["kwargs"]["unavailable_reason"]() is None
+            assert retriever.deprecation_map.pipecat_commit_sha == "new"
+
+    def test_reopened_empty_index_answers_with_the_unready_message(self, tmp_path, monkeypatch):
+        """Regression (reopening.py:46): a reopen runs the startup readiness
+        checks, so an index a failed refresh left empty gets the documented
+        message instead of empty results."""
+        empty = MagicMock()
+        empty.get_index_stats = MagicMock(
+            return_value={"counts_by_type": {}, "total": 0, "commit_shas": []}
+        )
+        with self._run_serve(tmp_path, monkeypatch, [self._ready_store(), empty]) as (
+            data_dir,
+            captured,
+        ):
+            self._simulate_refresh(data_dir)
+            message = captured["kwargs"]["unavailable_reason"]()
+            assert message is not None and "is empty (0 records)" in message
+            empty.close.assert_called_once()
+
+    def test_create_server_gets_a_typed_handle(self, tmp_path, monkeypatch):
+        from pipecat_context_hub.services.index.reopening import ReopeningIndexStore
+
+        with self._run_serve(tmp_path, monkeypatch, [self._ready_store()]) as (_, captured):
+            handle = captured["args"][1]
+            assert isinstance(handle, ReopeningIndexStore)
+            assert captured["kwargs"]["unavailable_reason"] == handle.unavailable_reason
 
 
 class TestServeRerankerTelemetry:
@@ -5927,8 +6821,9 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
     """Round 10 Finding #3 (updated for the atomic-batch rewrite):
     `_delete_repo_index_data`'s bookkeeping `set_metadata_batch` call (run
     only after a successful `delete_by_repo`) must itself be guarded -- an
-    exception there should return `False` and record the `cleanup_failed`
-    marker, not propagate uncaught. The batch call replaced the previous
+    exception there should return `False`, with the `cleanup_failed` marker
+    (written ahead of the delete) left set, not propagate uncaught. The
+    batch call replaced the previous
     sequential `delete_metadata` calls, so a failure can no longer leave a
     partial set of keys cleared -- it's all-or-nothing.
     """
@@ -5992,29 +6887,63 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
             "indexed_framework_commits_ahead",
             "deprecation_map_commit_sha",
             f"repo:{_FRAMEWORK_REPO}:commit_sha",
+            f"repo:{_FRAMEWORK_REPO}:cleanup_failed",
+            f"repo:{_FRAMEWORK_REPO}:vector_empty",
         }
 
+    async def test_successful_cleanup_clears_reingest_flags(self, tmp_path):
+        """Regression (cli.py:538): a successful cleanup deleted only the
+        commit marker, orphaning the repo's re-ingest flags for good (cleanup
+        finds repos only through their commit marker)."""
+        from pipecat_context_hub.cli import _delete_repo_index_data
+        from pipecat_context_hub.services.index.store import IndexStore
+        from pipecat_context_hub.shared.config import StorageConfig
 
-class TestDeleteRepoIndexDataDeleteByRepoGuard:
-    """Round 11 Finding #3: the `delete_by_repo`-failure except block's own
-    `set_metadata("...:cleanup_failed", "1")` call must also be guarded --
-    mirroring the sibling bookkeeping-deletes except block above. A failure
-    in *both* `delete_by_repo` and the follow-up `set_metadata` must not
-    propagate; the function must still return `False`.
-    """
+        store = IndexStore(StorageConfig(data_dir=tmp_path / "hub"), create=True)
+        try:
+            for key in ("commit_sha", "cleanup_failed", "vector_empty"):
+                store.set_metadata(f"repo:o/r:{key}", "1")
+            store.set_metadata("repo:keep/me:vector_empty", "1")
+            assert await _delete_repo_index_data(store, "o/r", "repo:o/r:commit_sha")
+            assert store.get_all_metadata() == {"repo:keep/me:vector_empty": "1"}
+        finally:
+            store.close()
 
-    async def test_delete_by_repo_and_set_metadata_both_fail_returns_false(self):
+
+class TestDeleteRepoIndexDataWriteAhead:
+    """`_delete_repo_index_data` writes the repo's `cleanup_failed` flag
+    before deleting its records, and deletes nothing if that write fails."""
+
+    async def test_flag_write_failure_skips_delete_and_returns_false(self):
         from pipecat_context_hub.cli import _delete_repo_index_data
 
         store = MagicMock()
-        store.delete_by_repo = AsyncMock(side_effect=RuntimeError("delete_by_repo boom"))
-        store.set_metadata = MagicMock(side_effect=RuntimeError("set_metadata boom too"))
-        store.delete_metadata = MagicMock()
+        store.delete_by_repo = AsyncMock()
+        store.set_metadata = MagicMock(side_effect=RuntimeError("set_metadata boom"))
+        store.set_metadata_batch = MagicMock()
 
         result = await _delete_repo_index_data(
             store, "some-org/some-repo", "repo:some-org/some-repo:commit_sha"
         )
 
         assert result is False
-        store.set_metadata.assert_any_call("repo:some-org/some-repo:cleanup_failed", "1")
-        store.delete_metadata.assert_not_called()
+        store.delete_by_repo.assert_not_awaited()
+        store.set_metadata_batch.assert_not_called()
+
+    async def test_flag_is_written_before_records_are_deleted(self):
+        from pipecat_context_hub.cli import _delete_repo_index_data
+
+        meta: dict[str, str] = {"repo:o/r:commit_sha": "abc"}
+        store = MagicMock()
+        store.set_metadata = MagicMock(side_effect=lambda k, v: meta.__setitem__(k, v))
+        flagged_at_delete: list[bool] = []
+
+        async def _delete_by_repo(slug):
+            flagged_at_delete.append("repo:o/r:cleanup_failed" in meta)
+            raise RuntimeError("FTS delete_by_repo failed")
+
+        store.delete_by_repo = AsyncMock(side_effect=_delete_by_repo)
+
+        assert await _delete_repo_index_data(store, "o/r", "repo:o/r:commit_sha") is False
+        assert flagged_at_delete == [True]
+        assert meta == {"repo:o/r:commit_sha": "abc", "repo:o/r:cleanup_failed": "1"}
