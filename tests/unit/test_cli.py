@@ -829,14 +829,21 @@ class TestRefreshCommand:
         result = runner.invoke(main, ["refresh"])
 
         assert result.exit_code == 0
-        # repo:*:commit_sha should NOT have been stored for changed repos with errors
+        # repo:*:commit_sha should NOT have been stored as a clean marker for
+        # changed repos with errors
         set_calls = {call.args[0] for call in mock_store.set_metadata.call_args_list}
         for repo in _DEFAULT_REPOS:
             assert f"repo:{repo}:commit_sha" not in set_calls
-        # Failed repos should have their cached SHA deleted (P1)
-        delete_calls = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        # Failed repos keep a marker (cleanup finds them by it) but are
+        # flagged delete-pending, so the next refresh retries them (P1)
+        batched = {
+            key: value
+            for call in mock_store.set_metadata_batch.call_args_list
+            for key, value in call.args[0].items()
+        }
         for repo in _DEFAULT_REPOS:
-            assert f"repo:{repo}:commit_sha" in delete_calls
+            assert batched[f"repo:{repo}:commit_sha"] == "abc123"
+            assert batched[f"repo:{repo}:cleanup_failed"] == "1"
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -857,7 +864,7 @@ class TestRefreshCommand:
         tmp_path,
         monkeypatch,
     ):
-        """--force with ingest failure deletes cached SHA so next refresh retries."""
+        """--force with ingest failure flags the repo so next refresh retries."""
         mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
         mock_is_cls.return_value = mock_store
         mock_dc_cls.return_value = mock_crawler
@@ -875,17 +882,88 @@ class TestRefreshCommand:
         content = "# Page\nSource: https://example.com\nContent here"
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         meta = {"docs:content_hash": content_hash, **_sha_metadata("abc123")}
-        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        self._live_metadata(mock_store, meta)
 
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
         result = runner.invoke(main, ["refresh", "--force"])
 
         assert result.exit_code == 0
-        # Failed repos should have cached SHA deleted, not preserved
-        delete_calls = {call.args[0] for call in mock_store.delete_metadata.call_args_list}
+        # Failed repos keep their marker but are flagged, so the unchanged-skip
+        # shortcut cannot take them on the next plain refresh
         for repo in _DEFAULT_REPOS:
-            assert f"repo:{repo}:commit_sha" in delete_calls
+            assert meta[f"repo:{repo}:commit_sha"] == "abc123"
+            assert meta[f"repo:{repo}:cleanup_failed"] == "1"
+        mock_github.ingest.reset_mock()
+        result = runner.invoke(main, ["refresh"])
+        assert result.exit_code == 0
+        assert mock_github.ingest.call_count == _DEFAULT_REPO_COUNT
+
+    @pytest.mark.parametrize("failure", ["checkout", "delete", "ingest"])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_failed_repo_stays_discoverable_by_prune(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        failure,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Regression (cli.py:1794): a changed repo whose refresh failed lost
+        its commit marker while it could still hold records, so once it was
+        dropped from configuration no `--prune` could find it to purge them."""
+        extra = "extra-org/flaky-repo"
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_store.get_counts_by_repo = MagicMock(
+            return_value={**{r: 13 for r in _DEFAULT_REPOS}, extra: 7}
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+        if failure == "checkout":
+            mock_github.checkout_commit = MagicMock(
+                side_effect=lambda path, sha: (_ for _ in ()).throw(RuntimeError("checkout"))
+            )
+        elif failure == "delete":
+            mock_store.delete_by_repo = AsyncMock(side_effect=RuntimeError("delete"))
+        else:
+            mock_github.ingest = AsyncMock(
+                return_value=MagicMock(records_upserted=0, errors=["ingest"])
+            )
+        meta = {**_sha_metadata("abc123"), f"repo:{extra}:commit_sha": "old111"}
+        self._live_metadata(mock_store, meta)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PIPECAT_HUB_EXTRA_REPOS", extra)
+
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        # The records it may still hold describe the last indexed commit.
+        assert meta[f"repo:{extra}:commit_sha"] == "old111"
+        assert meta[f"repo:{extra}:cleanup_failed"] == "1"
+
+        # Dropped from configuration before a successful retry: --prune must
+        # still find it.
+        monkeypatch.delenv("PIPECAT_HUB_EXTRA_REPOS")
+        mock_store.delete_by_repo = AsyncMock(return_value=0)
+        result = CliRunner().invoke(main, ["refresh", "--prune"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_await(extra)
+        assert not [k for k in meta if k.startswith(f"repo:{extra}:")]
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")

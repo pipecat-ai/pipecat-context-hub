@@ -134,6 +134,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   `refresh` skipped that source. The marker is now invalidated before the
   delete; if that write fails, the records are left in place and the source is
   reported as errored.
+- **A repo whose refresh failed stays findable by `--prune`.** A changed repo
+  whose checkout, delete or ingest failed had its `repo:<slug>:commit_sha`
+  marker deleted so the next run would retry it, but it could still hold
+  records and the stale-repo cleanup finds repos only through that marker:
+  dropped from configuration before a successful retry, its records stayed
+  searchable for good. It now keeps the marker and is flagged `cleanup_failed`,
+  which is what forces the retry.
 
 ### Security
 - **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`

@@ -141,6 +141,8 @@ def _repo_slug_of_sha_key(key: str) -> str | None:
 def _repo_delete_pending_key(slug: str) -> str:
     """Write-ahead flag: a delete of ``slug``'s records has started and no
     clean re-ingest has followed it yet (it may have failed, or been aborted).
+    Also set on a repo whose refresh failed before its delete (checkout), so
+    it is retried while keeping the commit marker cleanup discovers it by.
 
     The on-disk name ``cleanup_failed`` predates the write-ahead use; it is
     kept so indexes written by earlier versions keep their flags.
@@ -1782,16 +1784,25 @@ def refresh(
             )
 
         # Store SHAs: unchanged repos (handles first-run) + successfully ingested repos.
-        # For failed repos: delete the cached SHA so the next non-force refresh
-        # retries them (P1: --force deletes records before ingest, so a failure
-        # leaves the repo empty; keeping the old SHA would skip it next time).
+        # A failed repo (checkout, delete or ingest error) must be retried by
+        # the next non-force refresh (P1: --force deletes records before
+        # ingest, so a failure can leave the repo empty), but it may still
+        # hold records, so it keeps a commit marker: the stale-repo cleanup
+        # and `--prune` find repos only through that key. The delete-pending
+        # flag, not the marker's absence, blocks the unchanged-skip shortcut.
         for repo_slug, sha in repo_shas.items():
             if repo_slug in frozen_sha_repos:
                 continue
+            sha_key = _repo_sha_key(repo_slug)
             if repo_slug not in changed_repos or repo_slug in ingested_repos:
-                index_store.set_metadata(_repo_sha_key(repo_slug), sha)
+                index_store.set_metadata(sha_key, sha)
             else:
-                index_store.delete_metadata(_repo_sha_key(repo_slug))
+                index_store.set_metadata_batch(
+                    {
+                        sha_key: index_store.get_metadata(sha_key) or sha,
+                        _repo_delete_pending_key(repo_slug): "1",
+                    }
+                )
 
         # ----- 3. Deprecation map -----
         # Built solely from pipecat's machine-readable registry
