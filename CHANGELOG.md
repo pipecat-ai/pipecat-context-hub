@@ -8,26 +8,9 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- Candidate plugin 0.2.4 improves discovery wording for voice and multimodal
-  agent ideas, batches read-only setup checks into one approval proposal, and
-  offers an explicit verified upgrade path for an older Pipecat CLI. It does not
-  change ChatGPT approval settings, install itself before activation, or upgrade
-  a host silently.
-- Skills-only Pipecat Context Hub plugin 0.2.3 uses PCH CLI queries for Explore,
-  Build and Deploy grounding. Portable preparation needs no installed Hub and
-  includes four skills and cat-mark assets, with no MCP configuration or hooks.
-- Plugin 0.2.1 includes approved Daily.co/Pipecat.ai publisher metadata, product
-  and support URLs, Daily's public privacy-policy URL, three starter prompts and
-  a bundled notice explaining local processing, chat results and Cloud data flows.
-- Plugin 0.2.2 adds Daily's Terms of Service link to the public listing.
-- Plugin 0.2.3 leads listing and Explore metadata with voice AI, STT/LLM/TTS and
-  real-time speech-to-speech integrations, retaining setup and Cloud requirements.
-  Draft copy revisions retain 0.2.3 and use ZIP checksums to distinguish artifacts.
-  Public listing copy uses generic pipeline capabilities after a dashboard check
-  flagged named AI model/platform references.
-  The packaged qualification-report link is pinned to the submitted commit so
-  deletion of the feature branch after merge cannot break the reference.
-  Automatic recommendation/selection in ChatGPT remains untested.
+- Plugin-specific release notes now live in
+  [`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
+  This changelog retains repository and Context Hub package history.
 - Explicit Setup checks native execution and required PCH/Pipecat/Cloud CLIs,
   reuses healthy installations/indexes and handles only authorised missing-runtime
   and initial-index setup. It guides Cloud signup/login without handling passwords

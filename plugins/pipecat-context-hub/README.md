@@ -228,7 +228,7 @@ can contain `.agents/plugins/marketplace.json` with:
 Use `codex plugin marketplace add /absolute/local-marketplace` and install
 `pipecat-context-hub@pipecat-hub-local`, using the installed CLI's supported flags.
 After updates, prepare a fresh copy, preserve the old source as a backup and
-reinstall through the supported host flow. Verify version 0.2.3, four skills,
+reinstall through the supported host flow. Verify version 0.2.4, four skills,
 cat-mark resources and absence of bundled MCP servers in the installed package.
 Standalone Hub/client registrations are unrelated and remain unchanged.
 
@@ -242,9 +242,11 @@ No evaluation report is included in the installed package.
 
 This is a skills-only release candidate for supported execution environments.
 A public submission ZIP excludes MCP configuration and hooks, so it needs no
-hosted PCH HTTPS endpoint. Version 0.2.3 includes the approved corporate publisher
-label, official product/support links, Daily's public privacy-policy and
-terms-of-service URLs and three starter prompts. The dashboard uses the selected
+hosted PCH HTTPS endpoint. The plugin's independent release history is in the
+[plugin changelog](CHANGELOG.md): version 0.2.3 is the published baseline and
+version 0.2.4 is the current unreleased candidate. The 0.2.3 baseline includes
+the approved corporate publisher label, official product/support links, Daily's
+public privacy-policy and terms-of-service URLs and three starter prompts. The dashboard uses the selected
 verified Developer identity for
 the public publisher name. The bundled [privacy notice](PRIVACY.md) explains local
 index/query processing, information returned to chat, downloads and Cloud uploads,

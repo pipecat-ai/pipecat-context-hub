@@ -211,6 +211,7 @@ def test_render_excludes_evaluation_and_unrelated_files(
     assert copied == {
         "plugin.json",
         "README.md",
+        "CHANGELOG.md",
         "PRIVACY.md",
         "LICENSE",
         "scripts/prepare_local.py",

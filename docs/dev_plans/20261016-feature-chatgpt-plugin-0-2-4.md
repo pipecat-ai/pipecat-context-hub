@@ -71,7 +71,11 @@ change host approval settings, or silently mutate installations.
 - `plugins/pipecat-context-hub/skills/explore/SKILL.md` — supported voice/multimodal discovery wording and host-boundary caveat.
 - `plugins/pipecat-context-hub/README.md` — user-facing setup, upgrade, discovery, and evaluation limits.
 - `docs/evaluations/pipecat-context-hub-plugin.md` — compact 0.2.4 evaluation matrix and baseline boundary.
-- `CHANGELOG.md` — concise candidate entry.
+- `plugins/pipecat-context-hub/CHANGELOG.md` — packaged plugin release history,
+  with 0.2.3 as the published baseline and 0.2.4 under `Unreleased`.
+- `plugins/pipecat-context-hub/scripts/prepare_local.py` — include the plugin
+  changelog in prepared submission copies.
+- `CHANGELOG.md` — repository-level pointer to the plugin changelog.
 - `tests/unit/test_chatgpt_plugin_setup.py` — contract assertions for metadata and safety wording.
 
 ### Boundaries
@@ -119,6 +123,10 @@ metadata, one bounded setup approval boundary, and an explicit manager-aware CLI
 upgrade proposal that never upgrades silently. Historic 0.2.3 acceptance is
 cross-linked without rewriting its chronology. Submission and publication remain
 separate follow-up actions.
+
+Plugin-specific release notes are packaged beside the plugin README. The root
+changelog remains the Context Hub repository/package history and points to that
+independent plugin changelog.
 
 ## Post-merge and submission workflow
 
