@@ -596,7 +596,7 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   `refresh` — until then queries say to run it; if the swap fails leaving no
   collection, that `refresh` exits 2 without deleting anything and the next
   `refresh` restores it; if that restore fails too, it exits 2 and says to
-  rebuild with `refresh --force --reset-index`). During writes the vector index re-checks the persisted HNSW graph
+  rebuild with `refresh --force --reset-index`). After each upsert batch the vector index re-checks the persisted HNSW graph
   and aborts with `corrupt persisted HNSW` if `link_lists.bin` outgrows its
   header-derived bound — the runaway-file corruption that once took ~325 GB
   of a disk. Recover with `refresh --force --reset-index`.

@@ -50,9 +50,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   `PIPECAT_HUB_MIN_FREE_GB`) before touching the index (with `--reset-index`,
   after deleting it, since the delete frees the space), takes an exclusive
   `refresh.lock` so two refreshes can't run on one data dir, and warns when a
-  `serve` (shared `serve.lock`) has the index open. Vector upserts re-run the
-  bounded HNSW size check after every write batch and abort on a runaway file
-  instead of growing until the disk is full. Includes an open-time
+  `serve` (shared `serve.lock`) has the index open. Vector upserts (and
+  compaction's copy) re-run the bounded HNSW size check after every batch and
+  abort on a runaway file instead of growing until the disk is full; a graph
+  Chroma persists with no later check (e.g. during a delete) is caught by the
+  open-time check before anything loads it. Includes an open-time
   oversized-graph check, extended with a structural walk of `link_lists.bin`: racing writers leave a graph of
   healthy size that SIGSEGVs or runs away on the next load, and the walk
   rejects it first. Spikes reproduced the corruption with concurrent

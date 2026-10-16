@@ -12,7 +12,8 @@ established; the open-time check only fires when an index is opened.
 ## Changes
 1. `HnswWriteGuard` (`services/index/hnsw_validation.py`): re-runs the bounded
    header-derived size check on segment dirs written since the guard was
-   created; `VectorIndex.upsert` calls it after each write. Old orphan
+   created; `VectorIndex.upsert` calls it after each batch, and `compact()`
+   after each staging-copy batch. Deletes do not call it. Old orphan
    segments are ignored so they can't block a rebuild.
 2. Disk preflight: `refresh` refuses below 5 GB free (`PIPECAT_HUB_MIN_FREE_GB`;
    `0` disables; an invalid, negative or non-finite value falls back to 5 GB).
@@ -196,6 +197,16 @@ control, so the pre-load walk is the real defence.
   `serve`). A real fix is `LockFileEx` via ctypes, untestable without a Windows
   host. Gaps, requirements and verification plan:
   `20261015-feature-windows-index-locking.md`.
+- The write guard checks only HNSW files already persisted when it runs.
+  Chroma persists the graph only when its sync threshold is crossed (verified
+  on 1.5.9): `client.close()` and reads do not persist, so a sub-threshold
+  tail stays in Chroma's log until a later write persists it, and a delete can
+  be that write. A persist triggered by a delete with no later upsert batch in
+  the same run is not checked by the guard; the open-time check
+  (`validate_persisted_hnsw`), which runs before every native load, is what
+  catches it. Not extended to deletes or to the end of refresh: it would need a
+  new store method and changes to every delete call site's error handling,
+  which catches `Exception` (quarantined, round 3 confirm pass).
 - Header-version strictness, orphan-segment mtime handling: not exercised; left
   as is.
 - A data dir given as a symlink is resolved for the lock path but used

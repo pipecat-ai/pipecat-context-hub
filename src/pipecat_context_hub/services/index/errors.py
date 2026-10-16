@@ -71,8 +71,8 @@ class CorruptHnswGraphError(IncompatibleIndexFormatError):
 
     Raised by the read-only check in ``hnsw_validation``: before the native
     client loads the graph (Chroma 1.5.x may otherwise SIGSEGV, or grow
-    ``link_lists.bin`` without bound), and after each write while ``refresh``
-    runs. The check does not repair the graph.
+    ``link_lists.bin`` without bound), and after each upsert or compaction
+    batch while ``refresh`` runs. The check does not repair the graph.
     """
 
 

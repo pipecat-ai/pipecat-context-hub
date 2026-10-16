@@ -242,6 +242,11 @@ class HnswWriteGuard:
     since the guard was created. Directories whose ``link_lists.bin`` was last
     written earlier (old orphan segments) are ignored: they are not this run's
     problem and must not block a rebuild.
+
+    It sees only what is persisted when it runs. Chroma persists the graph
+    when its sync threshold is crossed, not on ``close()``, so a persist that
+    happens with no later check (e.g. one a delete triggers) is left to the
+    open-time ``validate_persisted_hnsw``, which runs before every load.
     """
 
     # Filesystem mtime granularity slack, so a file written in the same tick
