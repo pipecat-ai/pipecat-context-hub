@@ -23,9 +23,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   the same way (refresh exclusion plus the open-time checks), and exit with the
   `refresh` hint on a missing or empty index instead of creating one. Readers
   never create the index (only `refresh` does): a vector collection that is lost (or
-  left empty) beside a populated keyword database, or a missing or incomplete keyword
-  database, is reported ("run `refresh --force`") rather than recreated empty beside the
-  populated other half, and a plain `refresh` that finds the vector collection lost or
+  left empty) beside a populated keyword database is reported ("run `refresh --force`")
+  rather than recreated empty beside the populated other half, and a keyword database
+  that is missing, incomplete or empty beside vector records is refused by readers and
+  by every `refresh`, `--force` included (exit 2, "run `refresh --force --reset-index`";
+  the vector collection is not touched): the keyword database is where `refresh` records
+  which repos it indexed, so carrying the vectors forward left those of a repo no
+  longer configured searchable but beyond the reach of cleanup and `--prune`. A plain
+  `refresh` that finds the vector collection lost or
   empty that way exits 2 with the same advice, without touching the vector collection, instead of
   skipping unchanged sources and leaving vector search empty. `refresh --force`
   recreates it, and a `refresh` that finds the vector collection empty stops trusting

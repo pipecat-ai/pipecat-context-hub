@@ -43,9 +43,15 @@ established; the open-time check only fires when an index is opened.
    queries). Readers never create the index: `create` defaults to False on
    `IndexStore`, `VectorIndex` and `FTSIndex` (only `refresh` passes True), so
    a never-built index raises `IndexNotBuiltError` ("run refresh"), and a
-   missing or incomplete keyword database `MissingKeywordIndexError` ("run
-   refresh --force"), instead of opening an empty one beside a populated other
-   half. `IndexStore` opens the keyword half first: when it has records, the
+   missing or incomplete keyword database `MissingKeywordIndexError` (the
+   `--reset-index` remedy), instead of opening an empty one beside a populated
+   other half. The reverse, a keyword half with no records beside vector
+   records, raises `LostKeywordIndexError` (the `--reset-index` remedy, exit 2)
+   on every `IndexStore` open, `rebuild` included, before any vector record is
+   written: the repo commit markers live in the keyword half, so a forced
+   refresh that carried the vectors forward left those of an unconfigured repo
+   beyond cleanup and `--prune`. A keyword half lost beside an empty or absent
+   vector half is still rebuilt by `refresh`. `IndexStore` opens the keyword half first: when it has records, the
    vector half may be created only with `rebuild=True` (`refresh --force`), and
    a missing database or `latest` (from `VectorIndex`) or an empty `latest`
    (from `IndexStore`) raises `MissingVectorCollectionError` ("run refresh
@@ -175,6 +181,12 @@ control, so the pre-load walk is the real defence.
   in its configuration; a retained repo absent from it (kept, not pruned) stays
   keyword-only. Documented in docs/README.md (re-add it for that run, or
   `--prune`); not fixed here.
+- The mirror case is refused rather than repaired: a keyword half with no
+  records beside vector records (`LostKeywordIndexError`) needs
+  `--reset-index`, even when it comes from a first `refresh` interrupted
+  between a batch's vector and keyword writes (indistinguishable from a lost
+  `index.db`). The refused open may leave an empty `index.db`; later opens
+  refuse it the same way.
 - chromadb format coupling: `hnsw_validation` parses hnswlib's private format.
   It fails closed only on verified chromadb releases (`VERIFIED_CHROMADB_RELEASES`,
   1.5); elsewhere header/structure mismatches warn and skip, and orphan segment

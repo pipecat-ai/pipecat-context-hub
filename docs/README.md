@@ -535,8 +535,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 - **`refresh` refuses to start: low disk, or another `refresh` running** —
   `refresh` first checks free space on the data-dir volume (default 5 GB;
   `PIPECAT_HUB_MIN_FREE_GB=0` disables, other non-negative numbers set the
-  threshold in GB, and an unparsable, negative, or non-finite value silently
-  falls back to the 5 GB default; with
+  threshold in GB, and an unparsable, negative, or non-finite value, or one
+  too large to convert to bytes (e.g. `1e300`), silently falls back to the
+  5 GB default; with
   `--reset-index` the check runs after the delete has freed the space.
   `PIPECAT_HUB_MIN_FREE_GB` is invocation-scoped like `PIPECAT_HUB_PRUNE`: set
   it in the environment, not `config.toml`, which is why it is not in the
@@ -569,11 +570,20 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
   they too refuse to start while a refresh runs, and on a missing or empty
   index they exit with the `refresh` hint instead of creating one. Readers
   never create the index: if its vector collection has gone missing or empty
-  beside a populated keyword database, or the keyword database is missing or
-  incomplete, queries say to run `refresh --force` rather than returning empty
-  results, and a plain `refresh` that finds the vector collection lost that way
-  exits **2** with the same advice, without touching it (it would otherwise
-  skip every unchanged source and leave vector search empty). A corrupt keyword
+  beside a populated keyword database, queries say to run `refresh --force`
+  rather than returning empty results, and a plain `refresh` that finds the
+  vector collection lost that way exits **2** with the same advice, without
+  touching it (it would otherwise skip every unchanged source and leave vector
+  search empty). The reverse, a keyword database missing, incomplete or empty
+  beside a vector collection that still has records, makes queries and every
+  `refresh` (`--force` included) exit **2** saying to run
+  `refresh --force --reset-index`, without touching the vector collection: the
+  keyword database is where `refresh` records which repos it indexed, so
+  without it the vectors of a repo no longer configured could never be
+  replaced or pruned. (A first `refresh` interrupted between writing a batch's
+  vectors and its keyword rows leaves the same state, and needs the same
+  reset.) A missing keyword database beside an empty or absent vector
+  collection is simply rebuilt by `refresh`. A corrupt keyword
   database (or one whose schema it cannot use) also makes `refresh` exit **2**,
   saying to run `refresh --force --reset-index`; a locked or busy one does not.
   `refresh --force` recreates the lost collection, and whenever `refresh` finds

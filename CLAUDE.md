@@ -61,8 +61,9 @@ Exit codes (`shared/exit_codes.py`): 0 success, 1 invalid input (also
 `refresh`'s low-disk refusal, and `--reset-index` when index files survive its delete), 2 index missing, empty, unreadable or incompatible
 (stderr says what to run; `refresh` also exits 2 when a fatal index error, such as
 a tripped HNSW write guard or a compaction swap that left no `latest`, stops it; when
-its open cannot restore an interrupted compaction, or finds the keyword database
-corrupt or with an unusable schema, saying to run `refresh --force --reset-index`; and,
+its open cannot restore an interrupted compaction, finds the keyword database
+corrupt or with an unusable schema, or, even with `--force`, finds it missing or empty
+beside vector records, saying to run `refresh --force --reset-index`; and,
 without `--force`, when the vector collection is missing or empty beside a populated
 keyword index: it leaves the vector half untouched and says to run `refresh --force`),
 75 a `refresh` is rewriting the index (stderr says to retry in 60-120 seconds;
@@ -160,7 +161,7 @@ src/pipecat_context_hub/
 │   ├── embedding.py          # EmbeddingService
 │   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
 │   ├── ingest/               # Docs crawler, GitHub ingester, Python AST, TS tree-sitter, taxonomy, version extraction, deprecation map
-│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, reopening (open_ready_index_store: the one reader open for serve + CLI; open_index_for_export: the same, taking the refresh hold itself, for the dashboard scripts; ReopeningIndexStore: serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard), chroma_schema (query_chroma_sqlite, the one raw read of Chroma's schema; chromadb_format_verified), errors (FatalIndexError subclasses incl. CompactionSwapError / CompactionRestoreError; InterruptedCompactionError, IndexNotBuiltError / MissingVectorCollectionError / MissingKeywordIndexError: readers never create the index, and IndexStore refuses a missing or empty vector half beside keyword records unless `refresh --force`; CorruptKeywordIndexError: an unreadable keyword database, exit 2 with the reset remedy)
+│   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, reopening (open_ready_index_store: the one reader open for serve + CLI; open_index_for_export: the same, taking the refresh hold itself, for the dashboard scripts; ReopeningIndexStore: serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard), chroma_schema (query_chroma_sqlite, the one raw read of Chroma's schema; chromadb_format_verified), errors (FatalIndexError subclasses incl. CompactionSwapError / CompactionRestoreError; InterruptedCompactionError, IndexNotBuiltError / MissingVectorCollectionError / MissingKeywordIndexError: readers never create the index, and IndexStore refuses a missing or empty vector half beside keyword records unless `refresh --force`; LostKeywordIndexError: IndexStore refuses a keyword half with no records beside vector records on every open, exit 2 with the reset remedy; CorruptKeywordIndexError: an unreadable keyword database, exit 2 with the reset remedy)
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/
     ├── main.py               # MCP server setup (_SERVER_VERSION here)
