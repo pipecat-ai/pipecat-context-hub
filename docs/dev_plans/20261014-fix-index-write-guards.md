@@ -193,6 +193,15 @@ control, so the pre-load walk is the real defence.
   which `refresh --force` rebuilds. Only a lost or emptied `index.db` reaches
   it. The refused open may leave an empty `index.db`; later opens refuse it the
   same way.
+- Accepted trade-off of the keyword-first write order: a `refresh` interrupted
+  after some, not all, of a batch's vector writes leaves every keyword row but
+  only some of the vectors. Readers accept it (both halves are non-empty), so
+  vector search can miss records keyword search finds until the next `refresh`
+  re-ingests them (no skip marker is written before a clean ingest). The
+  opposite order made the same interruption unrecoverable without
+  `--reset-index`. An interrupted first refresh already served a partial index
+  before this order existed (docs ingested, code not); the new part is only the
+  within-batch skew. Found by a one-off Codex review (high); not fixed here.
 - chromadb format coupling: `hnsw_validation` parses hnswlib's private format.
   It fails closed only on verified chromadb releases (`VERIFIED_CHROMADB_RELEASES`,
   1.5); elsewhere header/structure mismatches warn and skip, and orphan segment
