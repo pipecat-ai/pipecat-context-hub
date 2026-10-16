@@ -730,14 +730,16 @@ class TestServerInstructions:
         _assert_no_unsubstituted_placeholder('e.g. search_docs({"query": "TTS"})')
         _assert_no_unsubstituted_placeholder("a set like {a, b, c} or {ok}")
 
-    @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
+    @pytest.mark.parametrize("index_state", ["empty", "lost_vector", "incompatible"])
     def test_boot_failure_guidance_matches_index_recovery_paths(
         self, index_state, tmp_path, monkeypatch, caplog
     ):
         """Boot guidance must defer to the recovery emitted before MCP initialization.
 
-        Empty and incompatible indexes prescribe different commands on stderr,
-        but both exit before an MCP client can call ``get_hub_status``.
+        Empty, lost-vector and incompatible indexes prescribe different commands
+        on stderr, but all exit before an MCP client can call ``get_hub_status``.
+        Regression (main.py boot guidance): a lost vector collection beside keyword
+        records needs ``refresh --force``, which the guidance used to omit.
         """
         from click.testing import CliRunner
 
@@ -757,6 +759,16 @@ class TestServerInstructions:
             index_store = MagicMock(return_value=store)
             emitted_remediation = "pipecat-context-hub refresh"
             guided_remediation = "pipecat-context-hub refresh"
+        elif index_state == "lost_vector":
+            from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+            chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
+            index_store = MagicMock(side_effect=MissingVectorCollectionError(chroma_path))
+            emitted_remediation = "pipecat-context-hub refresh --force' to rebuild it"
+            guided_remediation = (
+                "keyword records prescribes pipecat-context-hub refresh --force "
+                "(plain refresh refuses it)"
+            )
         else:
             chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
             index_store = MagicMock(side_effect=IncompatibleIndexFormatError(chroma_path))

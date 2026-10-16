@@ -350,8 +350,11 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `get_hub_status` response and startup logs before suggesting a bug report.
     A non-zero boot exit happens before MCP initialization, so the instructions
     instead tell the agent to follow the remediation in startup stderr first
-    (`refresh` for an empty index or `refresh --force --reset-index` for an
-    unreadable/incompatible index), reconnect, and request `get_hub_status`
+    (`refresh` for an empty index or an interrupted compaction, `refresh --force`
+    for a lost vector collection beside keyword records — plain `refresh`
+    refuses that state — or `refresh --force --reset-index` for an
+    unreadable/incompatible index or a missing, empty or corrupt keyword
+    index), reconnect, and request `get_hub_status`
     only after initialization succeeds. This is
     advisory text for the connecting agent, not a code path triggered by an
     exception — it only reaches clients that speak MCP (`serve`). The

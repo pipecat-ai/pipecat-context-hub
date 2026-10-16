@@ -163,9 +163,12 @@ so the maintainers can diagnose from the trace alone.
 
 If the MCP connection fails at boot with a non-zero exit code, the failure \
 happened before MCP initialization, so ``get_hub_status`` is unavailable. \
-Follow the remediation in the startup stderr first, then reconnect. Empty \
-indexes prescribe ``pipecat-context-hub refresh``; unreadable or incompatible \
-indexes prescribe ``pipecat-context-hub refresh --force --reset-index``. Only \
+Follow the remediation in the startup stderr first, then reconnect. An empty \
+index (or an interrupted compaction) prescribes ``pipecat-context-hub refresh``; \
+a lost vector collection beside keyword records prescribes \
+``pipecat-context-hub refresh --force`` (plain ``refresh`` refuses it); \
+unreadable or incompatible indexes, and a missing, empty or corrupt keyword \
+index, prescribe ``pipecat-context-hub refresh --force --reset-index``. Only \
 request ``get_hub_status`` after successful initialization. If the prescribed \
 remediation does not resolve the boot failure, share the startup stderr with \
 the user and suggest they file a bug report at {BUG_REPORT_ISSUE_URL}.
