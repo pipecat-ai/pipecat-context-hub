@@ -113,6 +113,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   Windows, a running `serve` holds them open: stop it, then retry).
 
 ### Fixed
+- **`check_deprecation` no longer reports a missing or unreadable deprecation map
+  as "not deprecated".** `DeprecationMap.load` records `load_error` (`missing` or
+  `unreadable`); the tool then returns a null `status` and a note to run
+  `refresh` instead of `current`, and `serve` logs a startup warning naming the
+  map path. A map that loaded but is empty still answers `current`.
 - **Open-time index checks read what Chroma will open.** A writer killed
   mid-transaction leaves a hot rollback journal beside `chroma.sqlite3`; the
   format and HNSW checks read the database ignoring it, so they could validate

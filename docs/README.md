@@ -344,6 +344,10 @@ refresh, or an index built before this contract — it evaluates symbols at thei
 intrinsic registry status instead, rather than answering as though the index were
 the older release the floor names.
 
+If the deprecation map is missing or unreadable, `check_deprecation` returns a
+null `status` and a note to run `refresh` rather than answering `current` for
+every symbol, and `serve` logs a warning at startup.
+
 ### Compatibility
 
 `metadata_contract_version` is bumped only when the table's shape or a documented
