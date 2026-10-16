@@ -152,6 +152,26 @@ class TestDeprecationMapSerialization:
         assert loaded.entries == {}
         assert loaded.load_error == "unreadable"
 
+    @pytest.mark.parametrize(
+        "content",
+        ['{"entries": []}', '{"entries": {"X": "y"}}', "[]", "{}", '{"entries": null}'],
+    )
+    def test_load_structurally_invalid_file_is_unreadable(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        """Regression (deprecation_map.py:183): valid JSON in the wrong shape
+        loaded as an empty map with no error, so every symbol read "current"."""
+        path = tmp_path / "deprecation_map.json"
+        path.write_text(content, encoding="utf-8")
+        loaded = DeprecationMap.load(path)
+        assert loaded.entries == {}
+        assert loaded.load_error == "unreadable"
+
+    def test_load_explicit_empty_entries_is_not_an_error(self, tmp_path: Path) -> None:
+        path = tmp_path / "deprecation_map.json"
+        path.write_text('{"entries": {}}', encoding="utf-8")
+        assert DeprecationMap.load(path).load_error is None
+
     def test_load_valid_empty_map_is_not_an_error(self, tmp_path: Path) -> None:
         """A refresh against a pipecat without a registry saves an empty map; that
         is a real answer, not a load failure."""

@@ -126,7 +126,11 @@ class TestUnloadableMap:
 
     @pytest.mark.parametrize(
         ("content", "fragment"),
-        [(None, "is missing"), ("{not json", "could not be read")],
+        [
+            (None, "is missing"),
+            ("{not json", "could not be read"),
+            ('{"entries": []}', "could not be read"),
+        ],
     )
     def test_warns_instead_of_asserting_current(
         self, tmp_path: Path, content: str | None, fragment: str

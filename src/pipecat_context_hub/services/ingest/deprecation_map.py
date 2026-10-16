@@ -176,10 +176,18 @@ class DeprecationMap:
         """Load a deprecation map from a JSON file.
 
         Returns an empty map on failure, with ``load_error`` recording whether
-        the file was ``"missing"`` or ``"unreadable"``.
+        the file was ``"missing"`` or ``"unreadable"``. A file that parses but
+        is not the shape :meth:`to_dict` writes is ``"unreadable"`` too:
+        :meth:`from_dict` skips what it cannot use, which would pass a broken
+        map off as one with no deprecations.
         """
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            entries = data["entries"] if isinstance(data, dict) else None
+            if not isinstance(entries, dict) or not all(
+                isinstance(val, dict) for val in entries.values()
+            ):
+                raise ValueError("not a deprecation map")
             return cls.from_dict(data)
         except FileNotFoundError:
             logger.debug("Deprecation map not found at %s", path)
