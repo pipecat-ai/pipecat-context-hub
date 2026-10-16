@@ -15,6 +15,7 @@ from typing import Any
 from pipecat_context_hub.services.index.errors import (
     IndexNotBuiltError,
     LostKeywordIndexError,
+    MissingKeywordIndexError,
     MissingVectorCollectionError,
 )
 from pipecat_context_hub.services.index.fts import FTSIndex
@@ -76,7 +77,15 @@ class IndexStore:
         self._data_dir = config.data_dir
         # The keyword half first: whether it holds records decides whether the
         # vector half may be created.
-        self._fts = FTSIndex(config.sqlite_path, create=create)
+        try:
+            self._fts = FTSIndex(config.sqlite_path, create=create)
+        except MissingKeywordIndexError:
+            # A reader that finds no keyword database wants a reset only when
+            # the vector half holds records; with nothing indexed there, a
+            # plain `refresh` builds both halves.
+            if not self._vector_half_has_records(config):
+                raise IndexNotBuiltError(config.data_dir) from None
+            raise
         vector: VectorIndex | None = None
         try:
             indexed = self._fts.has_records()
@@ -106,6 +115,19 @@ class IndexStore:
             raise
         self._vector = vector
         logger.info("IndexStore initialized with data_dir=%s", config.data_dir)
+
+    @staticmethod
+    def _vector_half_has_records(config: StorageConfig) -> bool:
+        """Whether the vector half holds records, opened read-only. An absent
+        or empty one is ``False``; any other open failure propagates."""
+        try:
+            probe = VectorIndex(config.chroma_path)
+        except MissingVectorCollectionError:
+            return False
+        try:
+            return probe.count() > 0
+        finally:
+            probe.close()
 
     @property
     def data_dir(self) -> Path:
