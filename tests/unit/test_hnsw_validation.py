@@ -335,6 +335,28 @@ class TestCompact:
         segments = [d for d in chroma.iterdir() if d.is_dir()]
         assert len(segments) == 1, "orphaned segment dir of the old collection was not removed"
 
+    def test_compact_leaves_non_canonical_uuid_dirs_alone(self, tmp_path: Path) -> None:
+        """UUID() also accepts upper-case and hyphen-less spellings, which never
+        match a ``segments`` row; the orphan sweep must not treat them as
+        orphans (Chroma only writes the lowercase hyphenated form)."""
+        from tests.unit.test_index_store import _make_records
+
+        chroma = tmp_path / "chroma"
+        index = VectorIndex(chroma, create=True)
+        try:
+            index.upsert(_make_records(20))
+            upper = chroma / "ABCDEF01-2345-6789-ABCD-EF0123456789"
+            plain = chroma / "abcdef0123456789abcdef0123456780"
+            canonical_orphan = chroma / "abcdef01-2345-6789-abcd-ef0123456781"
+            for entry in (upper, plain, canonical_orphan):
+                entry.mkdir()
+            index.compact()
+        finally:
+            index.close()
+        assert upper.is_dir()
+        assert plain.is_dir()
+        assert not canonical_orphan.exists(), "a canonical-name orphan is still swept"
+
     def test_failed_copy_keeps_the_old_index(self, tmp_path: Path) -> None:
         from tests.unit.test_index_store import _make_records
 

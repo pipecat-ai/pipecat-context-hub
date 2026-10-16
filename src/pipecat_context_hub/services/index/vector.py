@@ -676,8 +676,14 @@ class VectorIndex:
             return
         for entry in self._chroma_path.iterdir():
             try:
-                UUID(entry.name)
+                canonical = str(UUID(entry.name))
             except ValueError:
+                continue
+            # Only the spelling Chroma itself writes (lowercase, hyphenated) is
+            # compared against the table; UUID() also accepts upper-case and
+            # hyphen-less names, which would otherwise never match a row and be
+            # deleted as "orphans".
+            if entry.name != canonical:
                 continue
             if entry.is_dir() and entry.name not in referenced:
                 shutil.rmtree(entry, ignore_errors=True)
