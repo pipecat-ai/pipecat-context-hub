@@ -2637,6 +2637,15 @@ class TestRefreshFtsFaultInjection:
         # Both failures are recorded — the error count reflects more than
         # just the primary `delete_by_content_type` failure.
         assert int(written["last_refresh_error_count"]) >= 2
+        # The stale hash still vouches for docs whose vectors were deleted, so
+        # the end-of-run batch must retry clearing it: otherwise the next plain
+        # refresh takes the "docs unchanged" shortcut and never restores them.
+        batch_deletes = [
+            key
+            for batch_call in mock_store.set_metadata_batch.call_args_list
+            for key in batch_call.kwargs.get("delete_keys", ())
+        ]
+        assert "docs:content_hash" in batch_deletes
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")

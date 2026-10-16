@@ -1309,9 +1309,11 @@ def refresh(
     # deleted because --prune/PIPECAT_HUB_PRUNE wasn't set). Read later by
     # the summary pass.
     unpruned_repo_count = 0
+    # Set when the stale docs hash could not be cleared mid-run.
+    docs_hash_clear_pending = False
 
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, unpruned_repo_count
+        nonlocal total_upserted, all_errors, unpruned_repo_count, docs_hash_clear_pending
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -1374,6 +1376,9 @@ def refresh(
                         meta_msg = f"Failed to clear stale docs:content_hash stamp: {meta_exc}"
                         all_errors.append(meta_msg)
                         logger.warning(meta_msg)
+                        # Retried in the end-of-run metadata batch, which
+                        # raises rather than swallowing a failure.
+                        docs_hash_clear_pending = True
                     source_status[docs_key] = {
                         "status": "error",
                         "sha": _MISSING_SENTINEL,
@@ -1904,7 +1909,7 @@ def refresh(
             "last_refresh_records_upserted": str(total_upserted),
             "last_refresh_error_count": str(len(all_errors)),
         }
-        metadata_to_delete: list[str] = []
+        metadata_to_delete: list[str] = [_DOCS_HASH_KEY] if docs_hash_clear_pending else []
 
         stats = index_store.get_index_stats()
         metadata_to_set["content_type_counts"] = json.dumps(stats["counts_by_type"])
