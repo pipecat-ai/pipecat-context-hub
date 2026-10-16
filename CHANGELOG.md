@@ -112,17 +112,24 @@ This project uses [Semantic Versioning](https://semver.org/).
   completes an incomplete one and rebuilds its full-text table from the stored
   records in one transaction, so a failed rebuild is retried by the next `refresh`.
 - **`refresh --reset-index` exits 1 instead of rebuilding when an index file
-  survives the delete** (the keyword database, the vector directory, or the
-  deprecation map, which would otherwise be served beside the rebuilt index; on
+  survives the delete** (the keyword database or its WAL/shared-memory/journal
+  file, the vector directory, or the deprecation map, which would otherwise be
+  served beside the rebuilt index; on
   Windows, a running `serve` holds them open: stop it, then retry).
 
 ### Fixed
+- **A reader that finds no keyword database no longer prescribes a reset when
+  nothing is indexed.** With the vector half empty or absent too, it reports an
+  empty index ("run `refresh`"); the reset remedy stays for a keyword database
+  lost beside populated vectors. `tests/unit/test_index_state_matrix.py` pins
+  every keyword-half x vector-half state against every open mode.
 - **`check_deprecation` no longer reports a missing or unreadable deprecation map
   as "not deprecated".** `DeprecationMap.load` records `load_error` (`missing` or
   `unreadable`); the tool then returns a null `status` and a note to run
   `refresh` instead of `current`, and `serve` logs a startup warning naming the
   map path. A file that parses but is not a deprecation map (e.g.
-  `{"entries": []}`) counts as unreadable. A map that loaded but is empty still
+  `{"entries": []}`, or an entry `to_dict` could not have written such as
+  `{"Pipeline": {}}`) counts as unreadable. A map that loaded but is empty still
   answers `current`.
 - **Open-time index checks read what Chroma will open.** A writer killed
   mid-transaction leaves a hot rollback journal beside `chroma.sqlite3`; the

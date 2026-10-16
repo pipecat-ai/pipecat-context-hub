@@ -158,6 +158,22 @@ fill: one native persist can write the whole file before Python regains
 control, so the pre-load walk is the real defence.
 
 ## Not done / open
+- Review follow-ups deliberately left out of this branch (minor, found by the
+  last gauntlet pass; none can lose data or break a documented exit code):
+  - `tests/unit/test_hnsw_validation.py` and `tests/integration/test_report_hint_e2e.py`
+    import `_make_records`/`_make_record` from `tests/unit/test_index_store.py`; move
+    them into a shared helper module (like `tests/_ingest_helpers.py`).
+  - `AGENTS.md` does not describe `refresh.lock`, exit 75, or `--reset-index`'s exit 1
+    when index files survive (CLAUDE.md and `docs/README.md` do).
+  - The deprecation-map builders copy registry fields without a type check, so a
+    registry record with a null field would make `refresh` publish a map that the
+    strict `DeprecationMap.load` then rejects (and the next `refresh` rebuilds the
+    same file). The current registry has strings everywhere (449 records checked);
+    add a builder-to-strict-load test and coerce or skip such records.
+  - Unverified: whether Chroma has written `header.bin` and `link_lists.bin` before
+    `upsert()` returns (the per-batch `HnswWriteGuard` would otherwise see a
+    half-written pair). 7,141 validations against a live writer in the spike were all
+    healthy, so no failing case is known.
 - Compaction runs only on `--force`. A plain refresh that replaces records (new
   docs content, a changed repo commit, a pipecat release) deletes then re-adds
   them, and Chroma only marks deleted vectors dead, so the graph outgrows the live
