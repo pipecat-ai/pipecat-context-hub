@@ -130,7 +130,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   map path. A file that parses but is not a deprecation map (e.g.
   `{"entries": []}`, or an entry `to_dict` could not have written such as
   `{"Pipeline": {}}`) counts as unreadable. A map that loaded but is empty still
-  answers `current`.
+  answers `current`. The writer enforces the same rule: the registry builders skip
+  (and log) a record with a null or non-string field, and `save` refuses an entry
+  `load` would reject, so `refresh` can no longer publish a map its own reader
+  calls unreadable (it keeps the previous map instead).
 - **Open-time index checks read what Chroma will open.** A writer killed
   mid-transaction leaves a hot rollback journal beside `chroma.sqlite3`; the
   format and HNSW checks read the database ignoring it, so they could validate
