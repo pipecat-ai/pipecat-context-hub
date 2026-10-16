@@ -472,6 +472,33 @@ class TestReopeningIndexStore:
         self._store(tmp_path, opener).close()
         opener.assert_not_called()
 
+    def test_close_is_terminal_a_later_call_does_not_reopen(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.services.index.reopening import CLOSED_MESSAGE
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        real = MagicMock()
+        opener = MagicMock(return_value=real)
+        store = self._store(tmp_path / "hub", opener)
+        store.open_now()
+        store.close()
+        real.close.assert_called_once()
+        assert store.unavailable_reason() == CLOSED_MESSAGE
+        with pytest.raises(IndexUnavailableError):
+            store.get_all_metadata()
+        store.close()  # idempotent (watchdog path, then the outer finally)
+        opener.assert_called_once()
+        real.close.assert_called_once()
+
+    def test_close_before_first_open_stays_closed(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        opener = MagicMock()
+        store = self._store(tmp_path / "hub", opener)
+        store.close()
+        with pytest.raises(IndexUnavailableError):
+            store.open_now()
+        opener.assert_not_called()
+
 
 def test_refresh_generation_changes_on_every_refresh_start(tmp_path: Path) -> None:
     """A refresh that begins and ends between two reader calls must still be noticed."""

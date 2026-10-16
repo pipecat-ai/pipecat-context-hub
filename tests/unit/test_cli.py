@@ -6,6 +6,7 @@ import contextlib
 import os
 import re
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
@@ -5842,10 +5843,16 @@ class TestServeRefreshGate:
         monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
         monkeypatch.chdir(tmp_path)
         captured: dict[str, Any] = {}
+        serving = threading.Event()
+        release = threading.Event()
 
         def _fake_create_server(*args, **kwargs):
             captured["args"], captured["kwargs"] = args, kwargs
             return MagicMock()
+
+        def _fake_serve(*_args, **_kwargs) -> None:
+            serving.set()
+            release.wait(timeout=30)
 
         with contextlib.ExitStack() as stack:
             stack.enter_context(
@@ -5853,7 +5860,7 @@ class TestServeRefreshGate:
             )
             stack.enter_context(patch("pipecat_context_hub.services.embedding.EmbeddingService"))
             stack.enter_context(
-                patch("pipecat_context_hub.server.transport.serve_stdio", return_value=None)
+                patch("pipecat_context_hub.server.transport.serve_stdio", side_effect=_fake_serve)
             )
             stack.enter_context(
                 patch(
@@ -5867,10 +5874,25 @@ class TestServeRefreshGate:
                     return_value=("m", None, "config_disabled"),
                 )
             )
-            result = CliRunner().invoke(main, ["serve"])
-            assert result.exit_code == 0, result.output
-            # The gate keeps working after serve returns, with the patches live.
-            yield data_dir, captured
+            outcome: dict[str, Any] = {}
+
+            def _serve() -> None:
+                try:
+                    outcome["result"] = CliRunner().invoke(main, ["serve"])
+                finally:
+                    serving.set()  # also unblocks the wait below if serve died early
+
+            thread = threading.Thread(target=_serve, name="test-serve")
+            thread.start()
+            try:
+                assert serving.wait(timeout=30), "serve never reached serve_stdio"
+                assert "result" not in outcome, outcome["result"].output
+                # The gate is exercised while serve is still up: close() is terminal.
+                yield data_dir, captured
+            finally:
+                release.set()
+                thread.join(timeout=30)
+            assert outcome["result"].exit_code == 0, outcome["result"].output
 
     @staticmethod
     def _simulate_refresh(data_dir: Path) -> None:

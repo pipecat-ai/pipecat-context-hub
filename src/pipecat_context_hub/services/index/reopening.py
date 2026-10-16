@@ -42,6 +42,7 @@ REOPEN_PENDING_MESSAGE = (
     "The Pipecat context index was just rebuilt by a `refresh`, and the server is "
     "switching to it once a call still using the old one finishes. Retry in a few seconds."
 )
+CLOSED_MESSAGE = "The Pipecat context hub is shutting down and its index is closed."
 
 
 def open_ready_index_store(storage: StorageConfig) -> IndexStore:
@@ -135,6 +136,7 @@ class ReopeningIndexStore:
         self._data_dir = data_dir
         self._opener = opener
         self._handle: _Handle | None = None
+        self._closed = False
         self._open_listeners: list[Callable[[], None]] = []
         self._lock = threading.RLock()
 
@@ -199,8 +201,13 @@ class ReopeningIndexStore:
             return store.get_all_metadata()
 
     def close(self) -> None:
-        """Close the current store now (shutdown), even if a call is using it."""
+        """Close the current store now (shutdown), even if a call is using it.
+
+        Terminal: a call arriving afterwards gets ``CLOSED_MESSAGE`` rather
+        than reopening an index nobody will close again.
+        """
         with self._lock:
+            self._closed = True
             handle, self._handle = self._handle, None
             if handle is not None and not handle.closed:
                 handle.retired = True
@@ -219,6 +226,8 @@ class ReopeningIndexStore:
 
     def _acquire(self) -> _Handle:
         with self._lock:
+            if self._closed:
+                raise IndexUnavailableError(CLOSED_MESSAGE)
             handle = self._handle
             if (
                 handle is not None
