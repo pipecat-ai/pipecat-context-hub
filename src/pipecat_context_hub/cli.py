@@ -175,7 +175,7 @@ def _distrust_skip_markers(index_store: IndexStore) -> None:
 # index plus repo clones are ~2 GB; a runaway HNSW file once consumed ~325 GB
 # and left the machine with 4 GB free, so refuse early with room to spare.
 _MIN_FREE_GB_DEFAULT = 5.0
-_MIN_FREE_GB_ENV = "PIPECAT_HUB_MIN_FREE_GB"
+_MIN_FREE_GB_ENV = env_loading.MIN_FREE_GB_ENV_VAR
 
 
 def _min_free_bytes(env: dict[str, str] | None = None) -> int:
