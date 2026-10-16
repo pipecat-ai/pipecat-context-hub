@@ -180,7 +180,13 @@ class StorageConfig(BaseModel):
         ``refresh --reset-index`` refuses to rebuild while any of them
         survives its delete: a survivor would be served beside the new index.
         """
-        return (self.sqlite_path, self.chroma_path, self.deprecation_map_path)
+        # The keyword database's SQLite sidecars count too: a surviving WAL or
+        # journal would be recovered into the rebuilt database.
+        sidecars = tuple(
+            self.sqlite_path.with_name(self.sqlite_path.name + suffix)
+            for suffix in ("-wal", "-shm", "-journal")
+        )
+        return (self.sqlite_path, *sidecars, self.chroma_path, self.deprecation_map_path)
 
 
 class RerankerConfig(BaseModel):

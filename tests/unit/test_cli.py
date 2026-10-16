@@ -2148,6 +2148,30 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         assert "deprecation_map.json" in result.output
         mock_is_cls.assert_not_called()
 
+    @pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    def test_reset_index_refuses_to_rebuild_over_a_surviving_sqlite_sidecar(
+        self, mock_gh_cls, mock_is_cls, tmp_path, monkeypatch, suffix
+    ):
+        """Regression (config.py:183): a partial delete that removed the keyword
+        database but left its WAL, shared-memory or journal file passed the
+        survivor check, and SQLite then recovered stale pages into (or refused)
+        the rebuilt database."""
+        data_dir = tmp_path / "data-home"
+        data_dir.mkdir()
+        (data_dir / f"metadata.db{suffix}").write_bytes(b"stale")
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(data_dir))
+        monkeypatch.setattr("pipecat_context_hub.cli.shutil.rmtree", lambda *_a, **_k: None)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(main, ["refresh", "--reset-index"])
+
+        assert result.exit_code == 1, result.output
+        assert "could not delete" in result.output
+        assert f"metadata.db{suffix}" in result.output
+        mock_is_cls.assert_not_called()
+
     def test_index_artifact_paths_cover_what_serve_loads(self, tmp_path):
         """The survivor check and the readers share one list of paths."""
         from pipecat_context_hub.shared.config import StorageConfig
@@ -2155,6 +2179,9 @@ class TestResetIndexGlobalConfigInteraction(TestRefreshCommand):
         storage = StorageConfig(data_dir=tmp_path)
         assert storage.index_artifact_paths == (
             storage.sqlite_path,
+            storage.sqlite_path.with_name(storage.sqlite_path.name + "-wal"),
+            storage.sqlite_path.with_name(storage.sqlite_path.name + "-shm"),
+            storage.sqlite_path.with_name(storage.sqlite_path.name + "-journal"),
             storage.chroma_path,
             storage.deprecation_map_path,
         )
