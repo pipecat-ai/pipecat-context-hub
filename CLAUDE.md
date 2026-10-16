@@ -17,7 +17,7 @@ uv run pytest tests/ -v                             # full test suite
 uv run ruff check src/ tests/                       # lint
 uv run mypy src/ tests/                             # type check
 uv run pipecat-context-hub refresh                  # incremental rebuild
-uv run pipecat-context-hub refresh --force          # full re-ingest
+uv run pipecat-context-hub refresh --force          # full re-ingest + compacts the vector graph; prefer it after a pipecat upgrade
 uv run pipecat-context-hub refresh --force --reset-index  # recover unhealthy local Chroma state
 uv run pipecat-context-hub refresh --framework-version v0.0.96  # index framework at a specific tag
 uv run pipecat-context-hub refresh --framework-version head     # ...or at its default branch (default: latest release tag)

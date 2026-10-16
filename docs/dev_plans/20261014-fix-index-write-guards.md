@@ -158,6 +158,13 @@ fill: one native persist can write the whole file before Python regains
 control, so the pre-load walk is the real defence.
 
 ## Not done / open
+- Compaction runs only on `--force`. A plain refresh that replaces records (new
+  docs content, a changed repo commit, a pipecat release) deletes then re-adds
+  them, and Chroma only marks deleted vectors dead, so the graph outgrows the live
+  corpus until the next `--force` (about 11% on the real 45k-record index; a
+  throwaway-dir spike showed deletes add dead elements, upserts of existing ids do
+  not). Documented: prefer `refresh --force` after a pipecat upgrade. Compacting
+  after plain refreshes that delete is not built.
 - An index read already in progress when a refresh starts finishes on the
   handle it holds (the shared `refresh.lock` hold covers the open, not the read).
   Decided: `serve` must not block a refresh for the duration of reads. Reads that

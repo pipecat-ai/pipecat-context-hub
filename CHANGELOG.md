@@ -103,6 +103,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   as upserts. A backup left beside the rebuilt collection (its drop failed) is never
   loaded, so its graph is not checked and cannot block opening the index; the next
   compaction drops it.
+  Prefer `refresh --force` after a pipecat upgrade: a plain refresh replaces the
+  framework repo's records and leaves them as dead graph elements (docs now say so).
 - **`serve` and the one-shot CLI open the index the same way.** Both go through
   one open-and-check, so an empty, unreadable, or incompatible index gets the same
   message from either (the empty-index text no longer mentions `serve`).

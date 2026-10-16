@@ -248,6 +248,13 @@ re-resolves on every refresh — a plain incremental `refresh` picks up a new
 release without `--force`. Prereleases are skipped unless the repo has nothing
 else.
 
+After a pipecat upgrade, though, prefer `refresh --force`. A new release replaces
+the framework repo's records, and Chroma only marks deleted vectors dead: the
+persisted graph keeps them and never reuses their slots, so each plain refresh
+that replaces records leaves the graph larger than the live corpus. Only a
+`--force` refresh compacts it (it re-ingests every source, so it is slower).
+Skipping it is safe: queries stay correct and only the graph file is oversized.
+
 That default keeps the framework aligned with the rest of the index: the docs
 site publishes from a release-time promotion, and the example repos depend on
 released wheels. A default-branch framework checkout would be the only source
