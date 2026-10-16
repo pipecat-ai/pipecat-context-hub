@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -1040,9 +1041,11 @@ class TestIndexStoreReaderCreatesNothing:
         from pipecat_context_hub.services.index.errors import MissingKeywordIndexError
 
         config = StorageConfig(data_dir=tmp_path / "hub-data")
-        IndexStore(config, create=True).close()
+        store = IndexStore(config, create=True)
+        asyncio.run(store.upsert(_make_records(2)))  # vectors present: a reset is needed
+        store.close()
         config.sqlite_path.unlink()
-        with pytest.raises(MissingKeywordIndexError, match="refresh --force"):
+        with pytest.raises(MissingKeywordIndexError, match="--reset-index"):
             IndexStore(config, create=False)
         assert not config.sqlite_path.exists()
         with pytest.raises(MissingKeywordIndexError):
