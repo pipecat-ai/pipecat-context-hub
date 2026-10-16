@@ -119,3 +119,18 @@ metadata, one bounded setup approval boundary, and an explicit manager-aware CLI
 upgrade proposal that never upgrades silently. Historic 0.2.3 acceptance is
 cross-linked without rewriting its chronology. Submission and publication remain
 separate follow-up actions.
+
+## Post-merge and submission workflow
+
+- Merge this candidate branch into `main` with a regular merge; do not squash the
+  focused implementation and documentation commits.
+- From the merged `main`, create one immutable 0.2.4 package and record its
+  checksum before submitting it for review.
+- Once that 0.2.4 artifact is submitted, freeze it. Do not replace it with
+  same-version ZIPs while review is active unless OpenAI explicitly permits that
+  workflow.
+- Keep later employee traces and user feedback in the evaluation evidence. Start
+  a new branch from `main`, such as
+  `feature/chatgpt-plugin-0.2.4-followups`, for one consolidated follow-up.
+- If the feedback arrives after 0.2.4 submission, prefer a 0.2.5 candidate unless
+  OpenAI explicitly authorises a 0.2.4 replacement.
