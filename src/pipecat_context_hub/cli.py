@@ -189,19 +189,20 @@ _MIN_FREE_GB_ENV = env_loading.MIN_FREE_GB_ENV_VAR
 
 def _min_free_bytes(env: dict[str, str] | None = None) -> int:
     """Required free bytes for `refresh`; ``PIPECAT_HUB_MIN_FREE_GB=0`` disables."""
+    default = int(_MIN_FREE_GB_DEFAULT * 1024**3)
     raw = (os.environ if env is None else env).get(_MIN_FREE_GB_ENV)
     if raw is None or not raw.strip():
-        return int(_MIN_FREE_GB_DEFAULT * 1024**3)
+        return default
     try:
         gb = float(raw)
     except ValueError:
-        return int(_MIN_FREE_GB_DEFAULT * 1024**3)
+        return default
     if not math.isfinite(gb) or gb < 0:
-        return int(_MIN_FREE_GB_DEFAULT * 1024**3)
+        return default
     try:
         return int(gb * 1024**3)
     except OverflowError:  # e.g. 1e300 GB overflows to inf
-        return int(_MIN_FREE_GB_DEFAULT * 1024**3)
+        return default
 
 
 def _require_free_disk(data_dir: Path, *, min_free: int | None = None) -> None:
