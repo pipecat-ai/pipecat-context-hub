@@ -2441,15 +2441,9 @@ class TestRefreshFtsFaultInjection:
         tmp_path,
         monkeypatch,
     ):
-        """Round 11 Finding #2 (corrected to defense-in-depth): the pre-ingest
-        `delete_by_repo` failure branch must also set the
-        `repo:<slug>:cleanup_failed` marker, mirroring the sibling
-        `_delete_repo_index_data` failure paths. Not load-bearing for the
-        originally-reported "permanent same-SHA skip" scenario — that
-        `continue` already skips `ingested_repos.add()`, and the
-        SHA-bookkeeping loop already deletes this repo's stored `commit_sha`
-        on any failure path — but the marker should be set anyway for
-        consistency with the sibling pattern.
+        """A failed pre-ingest `delete_by_repo` leaves the repo's
+        `repo:<slug>:cleanup_failed` marker set (it is written ahead of the
+        delete), so the unchanged-skip shortcut can't trust a partial index.
         """
         target_repo = "daily-co/daily-python"
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
@@ -2473,6 +2467,117 @@ class TestRefreshFtsFaultInjection:
 
         assert result.exit_code == 0, result.output
         mock_store.set_metadata.assert_any_call(f"repo:{target_repo}:cleanup_failed", "1")
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_pre_ingest_flag_write_failure_leaves_repo_records_intact(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Write-ahead: if the repo's `cleanup_failed` flag can't be written,
+        its records are not deleted or re-ingested, and it is reported as
+        errored without crashing the refresh."""
+        target_repo = "daily-co/daily-python"
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        def _set_metadata(key, value):
+            if key == f"repo:{target_repo}:cleanup_failed":
+                raise RuntimeError("sqlite database is locked")
+
+        mock_store.set_metadata = MagicMock(side_effect=_set_metadata)
+        ingested: list[str] = []
+
+        def _ingest_side_effect(*, repos, **_kwargs):
+            ingested.extend(repos)
+            return MagicMock(records_upserted=20, errors=[])
+
+        mock_github.ingest = AsyncMock(side_effect=_ingest_side_effect)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.await_args_list]
+        assert target_repo not in deleted_repos
+        assert target_repo not in ingested
+        assert ingested  # the other repos still refresh
+        batch = mock_store.set_metadata_batch.call_args_list[-1].args[0]
+        assert int(batch["last_refresh_error_count"]) >= 1
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_pre_ingest_delete_runs_only_after_flag_is_written(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The old order (delete, then flag on failure) could leave a partial
+        delete behind an unflagged, unchanged commit marker. Every pre-ingest
+        delete must now find its repo's flag already written."""
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        meta: dict[str, str] = {}
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        mock_store.set_metadata = MagicMock(
+            side_effect=lambda key, value: meta.__setitem__(key, value)
+        )
+        mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
+        flagged_at_delete: dict[str, bool] = {}
+
+        async def _delete_by_repo(repo):
+            flagged_at_delete[repo] = f"repo:{repo}:cleanup_failed" in meta
+            raise RuntimeError("FTS delete_by_repo failed")
+
+        mock_store.delete_by_repo = AsyncMock(side_effect=_delete_by_repo)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        assert flagged_at_delete
+        assert all(flagged_at_delete.values()), flagged_at_delete
+        # The flag survives the failed delete, blocking the skip shortcut.
+        assert all(meta.get(f"repo:{r}:cleanup_failed") == "1" for r in flagged_at_delete)
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -2581,7 +2686,7 @@ class TestRefreshFtsFaultInjection:
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
-    def test_docs_content_hash_clear_failure_does_not_crash_refresh(
+    def test_docs_hash_clear_failure_leaves_docs_records_intact(
         self,
         mock_si_cls,
         mock_ref_tainted,
@@ -2593,15 +2698,10 @@ class TestRefreshFtsFaultInjection:
         tmp_path,
         monkeypatch,
     ):
-        """Round 9 Finding #4 regression: round 8's own recovery call —
-        `index_store.delete_metadata("docs:content_hash")`, added inside the
-        `delete_by_content_type` failure handler to guarantee future
-        retries — is itself unprotected. If the SAME underlying storage
-        fault also breaks `delete_metadata` (e.g. a disk/lock issue
-        affecting the whole SQLite file), the exception must not propagate
-        unhandled and abort the whole refresh; it must be recorded in
-        `all_errors` and refresh must complete.
-        """
+        """Write-ahead: `docs:content_hash` is dropped before the docs records
+        are deleted. If dropping it fails, the records must not be touched
+        (they still match the marker), and docs are reported as errored
+        without crashing the refresh."""
         mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
             TestRefreshCommand()
         )
@@ -2611,10 +2711,6 @@ class TestRefreshFtsFaultInjection:
         mock_si_cls.return_value = mock_source
         mock_ref_tainted.return_value = False
 
-        mock_store.delete_by_content_type = AsyncMock(
-            side_effect=RuntimeError("FTS delete_by_content_type failed; indexes may have diverged")
-        )
-
         def _delete_metadata_side_effect(key):
             if key == "docs:content_hash":
                 raise RuntimeError("sqlite database is locked")
@@ -2622,30 +2718,68 @@ class TestRefreshFtsFaultInjection:
         mock_store.delete_metadata = MagicMock(side_effect=_delete_metadata_side_effect)
 
         monkeypatch.chdir(tmp_path)
-        result = CliRunner().invoke(main, ["refresh"])
+        result = CliRunner().invoke(main, ["refresh", "--force"])
 
-        # No uncaught exception propagated out of the CLI invocation, even
-        # though BOTH the primary delete and the stamp-clearing recovery
-        # call failed.
         assert result.exit_code == 0, result.output
         assert result.exception is None
+        mock_store.delete_by_content_type.assert_not_awaited()
         mock_crawler.ingest.assert_not_called()
-
         written = {call.args[0]: call.args[1] for call in mock_store.set_metadata.call_args_list}
         for batch_call in mock_store.set_metadata_batch.call_args_list:
             written.update(batch_call.args[0])
-        # Both failures are recorded — the error count reflects more than
-        # just the primary `delete_by_content_type` failure.
-        assert int(written["last_refresh_error_count"]) >= 2
-        # The stale hash still vouches for docs whose vectors were deleted, so
-        # the end-of-run batch must retry clearing it: otherwise the next plain
-        # refresh takes the "docs unchanged" shortcut and never restores them.
-        batch_deletes = [
-            key
-            for batch_call in mock_store.set_metadata_batch.call_args_list
-            for key in batch_call.kwargs.get("delete_keys", ())
-        ]
-        assert "docs:content_hash" in batch_deletes
+        assert int(written["last_refresh_error_count"]) >= 1
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_docs_records_never_deleted_while_hash_still_stamped(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        tmp_path,
+        monkeypatch,
+    ):
+        """The old order (delete docs records, then clear the hash) left a
+        window where any later failure or abort kept a hash vouching for
+        deleted records. The hash must already be gone when the delete runs."""
+        mock_store, mock_crawler, mock_github, mock_source = TestRefreshCommand._make_mocks(
+            TestRefreshCommand()
+        )
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        meta: dict[str, str] = {"docs:content_hash": "stamped"}
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: meta.get(key))
+        mock_store.set_metadata = MagicMock(
+            side_effect=lambda key, value: meta.__setitem__(key, value)
+        )
+        mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
+        hash_present_at_delete: list[bool] = []
+
+        async def _delete_by_content_type(content_type):
+            hash_present_at_delete.append("docs:content_hash" in meta)
+            raise RuntimeError("FTS delete_by_content_type failed")
+
+        mock_store.delete_by_content_type = AsyncMock(side_effect=_delete_by_content_type)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh", "--force"])
+
+        assert result.exit_code == 0, result.output
+        assert hash_present_at_delete == [False]
+        assert "docs:content_hash" not in meta
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -6496,8 +6630,9 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
     """Round 10 Finding #3 (updated for the atomic-batch rewrite):
     `_delete_repo_index_data`'s bookkeeping `set_metadata_batch` call (run
     only after a successful `delete_by_repo`) must itself be guarded -- an
-    exception there should return `False` and record the `cleanup_failed`
-    marker, not propagate uncaught. The batch call replaced the previous
+    exception there should return `False`, with the `cleanup_failed` marker
+    (written ahead of the delete) left set, not propagate uncaught. The
+    batch call replaced the previous
     sequential `delete_metadata` calls, so a failure can no longer leave a
     partial set of keys cleared -- it's all-or-nothing.
     """
@@ -6584,26 +6719,40 @@ class TestDeleteRepoIndexDataBookkeepingGuard:
             store.close()
 
 
-class TestDeleteRepoIndexDataDeleteByRepoGuard:
-    """Round 11 Finding #3: the `delete_by_repo`-failure except block's own
-    `set_metadata("...:cleanup_failed", "1")` call must also be guarded --
-    mirroring the sibling bookkeeping-deletes except block above. A failure
-    in *both* `delete_by_repo` and the follow-up `set_metadata` must not
-    propagate; the function must still return `False`.
-    """
+class TestDeleteRepoIndexDataWriteAhead:
+    """`_delete_repo_index_data` writes the repo's `cleanup_failed` flag
+    before deleting its records, and deletes nothing if that write fails."""
 
-    async def test_delete_by_repo_and_set_metadata_both_fail_returns_false(self):
+    async def test_flag_write_failure_skips_delete_and_returns_false(self):
         from pipecat_context_hub.cli import _delete_repo_index_data
 
         store = MagicMock()
-        store.delete_by_repo = AsyncMock(side_effect=RuntimeError("delete_by_repo boom"))
-        store.set_metadata = MagicMock(side_effect=RuntimeError("set_metadata boom too"))
-        store.delete_metadata = MagicMock()
+        store.delete_by_repo = AsyncMock()
+        store.set_metadata = MagicMock(side_effect=RuntimeError("set_metadata boom"))
+        store.set_metadata_batch = MagicMock()
 
         result = await _delete_repo_index_data(
             store, "some-org/some-repo", "repo:some-org/some-repo:commit_sha"
         )
 
         assert result is False
-        store.set_metadata.assert_any_call("repo:some-org/some-repo:cleanup_failed", "1")
-        store.delete_metadata.assert_not_called()
+        store.delete_by_repo.assert_not_awaited()
+        store.set_metadata_batch.assert_not_called()
+
+    async def test_flag_is_written_before_records_are_deleted(self):
+        from pipecat_context_hub.cli import _delete_repo_index_data
+
+        meta: dict[str, str] = {"repo:o/r:commit_sha": "abc"}
+        store = MagicMock()
+        store.set_metadata = MagicMock(side_effect=lambda k, v: meta.__setitem__(k, v))
+        flagged_at_delete: list[bool] = []
+
+        async def _delete_by_repo(slug):
+            flagged_at_delete.append("repo:o/r:cleanup_failed" in meta)
+            raise RuntimeError("FTS delete_by_repo failed")
+
+        store.delete_by_repo = AsyncMock(side_effect=_delete_by_repo)
+
+        assert await _delete_repo_index_data(store, "o/r", "repo:o/r:commit_sha") is False
+        assert flagged_at_delete == [True]
+        assert meta == {"repo:o/r:commit_sha": "abc", "repo:o/r:cleanup_failed": "1"}

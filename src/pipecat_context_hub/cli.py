@@ -520,10 +520,16 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     summary rather than only a log line. The framework provenance keys and the
     repo commit marker are cleared in one atomic batch (a batch call can't
     leave partial state, so there is no ordering concern between them).
+
+    Write-ahead: the repo's ``cleanup_failed`` flag is set *before* the
+    records are touched and cleared only with the commit marker, so a partial
+    delete (vector side gone, FTS rows left) can never sit behind an
+    unchanged-skip marker. If the flag cannot be written, nothing is deleted.
     """
     from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
     try:
+        index_store.set_metadata(_repo_cleanup_failed_key(slug), "1")
         await index_store.delete_by_repo(slug)
     except Exception:
         _module_logger.exception(
@@ -531,17 +537,6 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             "records may persist until a future refresh retries the cleanup",
             slug,
         )
-        # Flag the failure so a later refresh's unchanged-skip shortcut can't
-        # trust `indexed_records > 0` alone: that count is FTS-side, and a
-        # partial delete (vector delete succeeds, FTS delete raises) can
-        # leave stale FTS rows behind that would otherwise make the vector
-        # store's now-empty state for this repo look healthy indefinitely.
-        # Cleared once the repo is fully re-ingested (see the refresh loop's
-        # success path).
-        try:
-            index_store.set_metadata(_repo_cleanup_failed_key(slug), "1")
-        except Exception:
-            _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
     try:
         # No framework records left for the pin or provenance to describe.
@@ -561,10 +556,6 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             "future refresh retries the cleanup",
             slug,
         )
-        try:
-            index_store.set_metadata(_repo_cleanup_failed_key(slug), "1")
-        except Exception:
-            _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
     return True
 
@@ -1309,11 +1300,9 @@ def refresh(
     # deleted because --prune/PIPECAT_HUB_PRUNE wasn't set). Read later by
     # the summary pass.
     unpruned_repo_count = 0
-    # Set when the stale docs hash could not be cleared mid-run.
-    docs_hash_clear_pending = False
 
     async def _run_refresh() -> None:
-        nonlocal total_upserted, all_errors, unpruned_repo_count, docs_hash_clear_pending
+        nonlocal total_upserted, all_errors, unpruned_repo_count
 
         # Snapshot per-repo chunk counts before any changes.
         pre_counts = index_store.get_counts_by_repo()
@@ -1345,40 +1334,15 @@ def refresh(
                     "updated": _MISSING_SENTINEL,
                 }
             else:
+                # Write-ahead: drop the skip marker BEFORE touching the docs
+                # records, so no failure or interruption after this point can
+                # leave `docs:content_hash` vouching for records that are gone.
+                # If the marker cannot be dropped, leave the records intact.
                 try:
+                    index_store.delete_metadata(_DOCS_HASH_KEY)
                     await index_store.delete_by_content_type("doc")
                 except Exception as exc:
-                    # IndexStore.delete_by_content_type can now raise on an
-                    # FTS-layer failure (round-5 gauntlet fix). Record it the
-                    # same way every other ingest-step failure in this
-                    # function is recorded, rather than letting it crash the
-                    # whole refresh.
                     all_errors.append(f"Failed to delete stale docs records: {exc}")
-                    # Vector-side delete already ran before the FTS side
-                    # raised, so docs records have diverged from whatever
-                    # `docs:content_hash` still describes. Clear the stamp so
-                    # a future refresh — forced or not — can never take the
-                    # "docs unchanged, skip" shortcut on this stale hash; it
-                    # will retry the delete+ingest instead.
-                    #
-                    # This call is itself best-effort: if the same underlying
-                    # storage fault that broke `delete_by_content_type` also
-                    # breaks `delete_metadata` (e.g. a disk/lock issue
-                    # affecting the whole SQLite file), don't let it propagate
-                    # unhandled and abort the whole refresh — that would
-                    # reproduce exactly the permanent-skip bug this clear is
-                    # meant to close, just one layer deeper. Log and record
-                    # the failure in `all_errors`, then fall through to the
-                    # same "error" status as the primary failure.
-                    try:
-                        index_store.delete_metadata(_DOCS_HASH_KEY)
-                    except Exception as meta_exc:
-                        meta_msg = f"Failed to clear stale docs:content_hash stamp: {meta_exc}"
-                        all_errors.append(meta_msg)
-                        logger.warning(meta_msg)
-                        # Retried in the end-of-run metadata batch, which
-                        # raises rather than swallowing a failure.
-                        docs_hash_clear_pending = True
                     source_status[docs_key] = {
                         "status": "error",
                         "sha": _MISSING_SENTINEL,
@@ -1577,8 +1541,9 @@ def refresh(
             # thought to run `--force`. So the shortcut requires both halves:
             # the SHA is unchanged *and* records for it actually exist.
             indexed_records = pre_counts.get(repo_slug, 0)
-            # A prior cleanup failure for this repo (`_delete_repo_index_data`
-            # raising), or a vector half that opened empty
+            # A delete of this repo's records that never completed with a
+            # clean re-ingest (the flag is written ahead of every delete), or
+            # a vector half that opened empty
             # (`_distrust_skip_markers`), leaves FTS rows behind even though
             # the vector store may be empty for it — `indexed_records` alone
             # can't tell those apart from a healthy repo. Don't take the
@@ -1657,24 +1622,19 @@ def refresh(
                 continue
 
             try:
+                # Write-ahead, as in `_delete_repo_index_data`: flag the repo
+                # before deleting its records, so an abort anywhere between
+                # here and the SHA bookkeeping below (which runs only at the
+                # end of the loop) can't leave the unchanged-skip shortcut
+                # trusting a partial index. The flag is cleared on a clean
+                # re-ingest; if it can't be written, the records are left
+                # intact.
+                index_store.set_metadata(_repo_cleanup_failed_key(repo_slug), "1")
                 await index_store.delete_by_repo(repo_slug)
             except Exception as exc:
                 msg = f"Failed to delete stale records for {repo_slug}: {exc}"
                 all_errors.append(msg)
                 logger.error(msg)
-                # Defense-in-depth / consistency with the sibling
-                # `_delete_repo_index_data` failure paths, which set this
-                # marker on any delete failure. Not load-bearing here: this
-                # `continue` skips `ingested_repos.add()` below, and the
-                # SHA-bookkeeping loop further down already deletes this
-                # repo's stored commit_sha on any failure path (forcing a
-                # retry next non-force refresh) independent of this marker.
-                try:
-                    index_store.set_metadata(_repo_cleanup_failed_key(repo_slug), "1")
-                except Exception:
-                    logger.exception(
-                        "Also failed to record cleanup_failed marker for %s", repo_slug
-                    )
                 source_status[repo_slug] = {
                     "status": "error",
                     "sha": commit_sha[:8],
@@ -1909,7 +1869,7 @@ def refresh(
             "last_refresh_records_upserted": str(total_upserted),
             "last_refresh_error_count": str(len(all_errors)),
         }
-        metadata_to_delete: list[str] = [_DOCS_HASH_KEY] if docs_hash_clear_pending else []
+        metadata_to_delete: list[str] = []
 
         stats = index_store.get_index_stats()
         metadata_to_set["content_type_counts"] = json.dumps(stats["counts_by_type"])
