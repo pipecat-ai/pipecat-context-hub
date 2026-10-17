@@ -1,6 +1,6 @@
 # Repo catalog, `repos` command and corpus hints
 
-**Branch:** `feature/repo-catalog` | **Review Gates:** full | **Component:** config | **Status:** Planned (design grilled 2026-10-16; `/review-plan` runs `20261016T231344` and `20261017T004623` after the first sign-off; the contradictions they found were grilled 2026-10-17; findings routed)
+**Branch:** `feature/repo-catalog` | **Review Gates:** full | **Component:** config | **Status:** Planned (design grilled 2026-10-16; `/review-plan` runs `20261016T231344`, `20261017T004623` and `20261017T025658` after the first sign-off; the contradictions the first two found were grilled 2026-10-17; findings routed)
 
 ## Problem
 
@@ -49,8 +49,8 @@ or to add it. Evidence gathered on 2026-10-16:
 
 Ten decisions, each recommended once and answered by the maintainer. Where the answer changed the
 recommendation, the change is stated. Decisions 8-10, and the edits to 2, 3, 4, 6 and 7, come from
-the first `/review-plan`. Two later passes (runs `20261016T231344`, 34 findings, and `20261017T004623`,
-38 findings, none Critical in either) added the writer/provenance seams, the case-fold and `--group`
+the first `/review-plan`. Three later passes (runs `20261016T231344`, 34 findings, `20261017T004623`,
+38 findings, and `20261017T025658`, 31 findings, none Critical in any) added the writer/provenance seams, the case-fold and `--group`
 rules, the hint plumbing order and the test gaps; those edits are folded into decisions 2-4 and 6-10,
 the phases and the test plan, not listed separately. Three contradictions were grilled and resolved
 (2026-10-17): the Windows writer mirrors the reader (decision 8); taint is a command-time and
@@ -80,13 +80,14 @@ manual audit (decisions 2, 6).
    loader also enforces static cross-group invariants, all casefolded: slugs unique across groups,
    aliases unique across groups, no default (`SourceConfig.repos`) repo in the catalog, `kind` in
    `{vendor, topic}`, `parseable` a bool, `verified` an ISO date. Tainted repos
-   (`PIPECAT_HUB_TAINTED_REPOS`) are per-user runtime policy and are **not** a loader concern: `repos
-   add` and `--group` refuse them at command time, and hints skip them like `parseable = false`.
+   (`PIPECAT_HUB_TAINTED_REPOS`) are per-user runtime policy and are **not** a loader concern: a positional `repos add <tainted
+   slug>` is refused at command time, `--group` skips tainted members (decision 7), and hints skip
+   them like `parseable = false`.
    `verified` is the date of the last *manual* audit: a maintainer bumps it with
    `just catalog-regen --bump-verified` after reviewing a clean health report. The weekly job is
-   report-only and never edits the file. A catalog that fails to load disables hints and
-   `catalog_groups_not_indexed` (no `corpus_hint`, an empty list) and logs once; it never fails a
-   tool call. The
+   report-only and never edits the file. `load_catalog()` returns `Catalog | None`: a catalog that fails to
+   load returns `None` (cached, logged once at the first load, never raised), which disables hints
+   and `catalog_groups_not_indexed` (no `corpus_hint`, an empty list) and never fails a tool call. The
    only default-overriding flag is `parseable = false` (the repo clones but yields no chunks, so hints
    skip it); personal repos carry `maintainer`. Community repos are grouped by **topic**, not
    by person (a person's name is not what a user types in a question). `.env.example` and the docs
@@ -118,12 +119,12 @@ manual audit (decisions 2, 6).
 4. **Placement: a shared function beside `annotate_response`, not a new parameter on it.**
    `annotate_response(result_json, index_store)` receives no query or tool name and a test
    (`test_no_parsed_shortcut_parameter`) pins its signature. The hint is split into a compute step and an attach step in a new
-   `shared/corpus_hint.py`: `corpus_hint(index_store, *, tool, args, configured_repos) -> dict | None`
+   `shared/corpus_hint.py`: `corpus_hint(index_store, *, tool, args, configured_repos, tainted_repos) -> dict | None`
    (`args` is the raw tool arguments; the per-tool text extraction lives in the one table in that
    module, so the front doors do not duplicate it) and `attach_corpus_hint(result_json, hint)`. Both
    front doors (`server/main.py`, `cli_query.py`) compute the hint, call `annotate_response`, then
    attach, in the same commit. The catalog comes from `load_catalog()` (`functools.cache`, with
-   `cache_clear()` as the test seam). On the MCP door both annotations run in the one
+   `cache_clear()` as the test seam; a failure is a cached `None`, so it logs once). On the MCP door both annotations run in the one
    existing `asyncio.to_thread` hop (metadata reads take the generation lock); the catalog loads once
    per process and counts are read per call. Cache counts per index generation (via
    `ReopeningIndexStore.add_open_listener`) only if the Phase 4 smoke run shows the cost matters. On
@@ -131,23 +132,27 @@ manual audit (decisions 2, 6).
    `annotate_response` (`cli_query.py`), and its presence is passed in, so suppression happens before
    stderr is written; the attach step still runs after `annotate_response`, as on the MCP door, so the
    two doors produce the same JSON. It adds a top-level `corpus_hint` object `{matched_groups,
-   repos_not_indexed, repos_configured_no_records, add_command, report_issue_url}`, **absent** (the key
-   is missing, not null) when it does not apply. A group repo that is configured but has no records
-   (failed clone) goes in `repos_configured_no_records` and the hint tells the user to run `refresh`;
-   `add_command` covers only repos that are not configured. When present, the CLI's existing
+   repos_not_indexed, repos_configured_no_records, add_command, refresh_command, report_issue_url}`,
+   **absent** (the key is missing, not null) when it does not apply. `add_command` covers only repos
+   that are neither configured nor tainted, and is omitted when there are none; a group repo that is
+   configured but has no records (failed clone) goes in `repos_configured_no_records`, and
+   `refresh_command` (`pipecat-context-hub refresh`) is present only when that list is non-empty;
+   `report_issue_url` is `RETRIEVAL_QUALITY_ISSUE_URL`. When present, the CLI's existing
    `_maybe_warn_poor_results` stderr hint is suppressed (one hint, not two) and `_SERVER_INSTRUCTIONS`
    points at the field. A parity test mirrors `TestBothFrontDoors`. `get_hub_status` (never annotated)
    gains `indexed_repos`, `configured_no_records` and `catalog_groups_not_indexed`.
    `configured_no_records` needs the configured repo list, so `handle_get_hub_status` and
-   `create_server` gain a `configured_repos` provider, wired from `serve` and `cli_query._dispatch`
-   (`_QueryRuntime` gains a `configured_repos` field, set from `config.source.effective_repos` in
-   `_query_runtime`). It reflects the config **at process start**, not a later `repos add`.
+   `create_server` gain `configured_repos` and `tainted_repos` providers, wired from `serve` and
+   `cli_query._dispatch` (`_QueryRuntime` gains both fields, set from
+   `config.sources.effective_repos` and `config.sources.tainted_repos` in `_query_runtime`;
+   `effective_repos` already strips tainted slugs, which is why the tainted list is a separate input).
+   Both reflect the config **at process start**, not a later `repos add`.
 5. **`repos add` does not run `refresh`.** It edits `config.toml`, prints
    `pipecat-context-hub refresh`, and notes that a running `serve` reopens the rebuilt index itself.
 6. **Health check: existence first.** `scripts/check_repo_catalog.py` runs locally and in a new
-   weekly `catalog-health.yml` using the job's `GITHUB_TOKEN` (the unauthenticated limit of 60
-   requests/hour is too low for the whole catalog). It uses `httpx` (already the project's outbound client) with
-   `follow_redirects=False`, not `gh`, which follows redirects and would hide a 301. It fails on **inaccessible** (a 404 with the job
+   weekly `catalog-health.yml` using the job's `GITHUB_TOKEN` (shared runner IPs make the unauthenticated limit unreliable
+   even though the catalog is under 60 entries). It uses `httpx` (already the project's outbound client) with
+   `follow_redirects=False`, so a 301 is observable (the script does not rely on how `gh` treats redirects). It fails on **inaccessible** (a 404 with the job
    token: missing or private, indistinguishable, and the catalog is public-only so both fail),
    **archived**, or **renamed** (a 301, or a `full_name` differing from the slug case-insensitively,
    reporting the new name). Any other outcome (403/429 rate limit, 5xx, timeout, network error) is
@@ -167,7 +172,9 @@ manual audit (decisions 2, 6).
    - Catalog slugs add freely; any other slug needs `--unlisted` and is syntax-checked. Visibility is
      unknowable offline: a private `--unlisted` slug fails at the next `refresh` as a per-source clone
      error. Checks run in a fixed order: (1) default/tainted refusal, (2) slug syntax and catalog
-     membership, (3) the shadow check below, (4) the no-op. "Already configured" means present in
+     membership (a well-formed slug that is not in the catalog without `--unlisted` exits 1 and says
+     to pass `--unlisted`; `--unlisted` on a catalog slug exits 1 and says to drop it, so the catalog
+     spelling stays authoritative), (3) the shadow check below, (4) the no-op. "Already configured" means present in
      `config.toml` (casefolded), never "effective through another layer": adding a slug already in
      `config.toml` is a no-op (exit 0) that prints `Already in config.toml` and the `refresh` reminder;
      a successful add prints `Added <slug>` and the reminder.
@@ -177,7 +184,8 @@ manual audit (decisions 2, 6).
      shadowing `.env` also exits 1 without `--config-only`. Contract: after a successful add **without** `--config-only`, `repos
      list` shows the repo effective; with it, `config.toml` changes and `repos list` says the repo is
      shadowed by that layer. The layer comes from decision 9. `repos list` prints the cwd whose `.env`
-     it consulted, because a `serve` launched from another directory reads a different `.env`.
+     it consulted, because a `serve` launched from another directory reads a different `.env`, and
+     tags each slug `default`, `catalog` or `unlisted`.
    - Default and tainted repos cannot be added or removed through `repos` (tainted is read from
      `PIPECAT_HUB_TAINTED_REPOS` at command time).
    - `repos remove <slug>` of a slug not in `config.toml` follows the same order: if a shadowing layer
@@ -190,31 +198,44 @@ manual audit (decisions 2, 6).
    - `--group <name>` (on `add` and `remove`; mutually exclusive with a positional slug and with
      `--unlisted`) acts on the catalog group's `parseable`, non-tainted repos: `add` skips repos
      already in `config.toml` and prints the `parseable = false` and tainted ones it skipped;
-     `remove` removes only the group's repos present in `config.toml`. When nothing changes it exits 0
-     and prints `Nothing to add` / `Nothing to remove`. The shadow refusal and `--config-only` apply
+     `remove` removes only the group's repos present in `config.toml`. When nothing changes (including
+     a group whose members are all tainted or `parseable = false`) it exits 0 and prints `Nothing to
+     add` / `Nothing to remove` plus the skipped list. The shadow refusal and `--config-only` apply
      as for a single slug; an unknown group is exit 1 listing the valid groups.
    - `repos add` is offline; a bad slug surfaces as a per-source clone error at the next `refresh`.
 
 8. **`tomlkit` writer contract** (grilled 2026-10-17). The writer resolves the path with
    `resolve_global_config_path()` (honours `PIPECAT_HUB_CONFIG_FILE`); for a symlink it writes the temp
-   file in the target's directory and renames over the resolved target, so the link survives. It first
-   applies every predicate `load_global_config` applies to the file (non-regular, foreign-owned,
+   file in the target's directory and renames over the resolved target, so the link survives. Trust
+   is checked once, in `env_loading`, on the same open file descriptor that is then read (the
+   reader's TOCTOU-free design): a new public `read_trusted_config(path) -> str | None` opens the
+   file, applies every predicate `load_global_config` applies (non-regular, foreign-owned,
    world-writable, a foreign-owned or world-writable-without-sticky containing directory, a
-   foreign-owned symlink hop), via the public trust predicates, so it cannot write a file the reader
-   would ignore; creates a new file
+   foreign-owned symlink hop), and returns the text (`None` for a missing file) or raises
+   `ConfigNotTrusted(reason)`. The trust helpers stay private; the writer never reimplements them, so
+   it cannot write a file the reader would ignore. The writer creates a new file
    0600 and its directory 0700, and preserves an existing file's mode. It edits only the top-level
    `PIPECAT_HUB_EXTRA_REPOS` key and writes a native array of strings; a CSV-string value is read and
    rewritten as an array. A non-array, non-string existing value is refused (exit 1) rather than
-   overwritten. Before the rename it re-parses the temp file through a new pure
-   `parse_global_config(path) -> dict[str, object]` (the raw TOML values; `load_global_config` coerces
-   them and keeps its warnings) and aborts, leaving the original untouched, if the
+   overwritten, and so is an existing file that is not valid TOML or not trusted (exit 1, the file
+   untouched, the message names the reason; `load_global_config` keeps ignoring such a file with a
+   warning). Before the rename it re-parses the temp file through a new
+   `parse_global_config(path) -> dict[str, object]` (`read_trusted_config` plus `tomllib.loads`; the
+   raw values, raising on untrusted or invalid TOML) and aborts, leaving the original untouched, if the
    list differs from the intended one. `load_global_config` cannot do this job: it takes no path and
-   only sets `os.environ` keys that are absent. `parse_global_config` is extracted in Phase 2(b) and
-   `load_global_config` becomes a wrapper over it. Modules: `shared/config_writer.py` (the writer, using
-   `env_loading`'s trust predicates made public), `cli_repos.py` with `register_repos_commands(main)`
-   (the `cli_install.py` pattern). The read-modify-write holds an advisory lock on a sibling
-   `config.toml.lock` (the `shared/index_lock.py` pattern; Phase 2(c) checks how that primitive behaves
-   on Windows and records it) so two concurrent `repos` invocations cannot drop one edit. On Windows
+   only sets `os.environ` keys that are absent **or blank**. `read_trusted_config` and
+   `parse_global_config` are extracted in Phase 2(b) and `load_global_config` becomes a wrapper that
+   catches the raises, warns, coerces and merges. Modules: `shared/config_writer.py` (the writer, using `read_trusted_config`), `cli_repos.py` with `register_repos_commands(main)`
+   (the `cli_install.py` pattern). The read-modify-write holds an exclusive advisory lock on `config.toml.lock`, a sibling of the
+   **resolved target** (so two invocations via different symlink paths take the same lock). Contention:
+   `IndexLock.acquire` is non-blocking, so the writer retries a bounded number of times
+   (`attempts`/`delay`, a few seconds in all) and then exits 1 saying another `repos` command is
+   running. Fail-open (the lock cannot be created or used: unwritable directory, symlinked lock file,
+   foreign-owned file, ENOLCK/EOPNOTSUPP, Windows) proceeds unlocked with a stderr warning; the atomic
+   rename still prevents a torn file, and only the lost-update window remains, accepted for a
+   single-user CLI. `IndexLock` takes a data directory and a name, so Phase 2(c) reuses it as
+   `IndexLock(config_dir, ...)` only if its lock-file naming and trust checks suit a config
+   directory, and otherwise writes a small flock helper with the same fail-open rules. On Windows
    the writer **mirrors the reader** (grilled 2026-10-17): the regular-file check only, no 0600/0700
    guarantee, a round-trip test on Windows CI, the POSIX-only tests skipped there.
 9. **Layer provenance** (grilled 2026-10-17). `load_env_layers` first snapshots the non-blank
@@ -223,9 +244,11 @@ manual audit (decisions 2, 6).
    keys they actually set, mirroring each loader's *own* rule, which differ today: `load_cwd_dotenv`
    uses presence (`key not in os.environ`, so a blank real env var hides a `.env` value), while
    `load_global_config` treats a blank as absent. So a blank real env var plus a non-blank `.env` plus
-   `config.toml` resolves to `config.toml`, and `repos add` does not refuse. A loader sets only keys
-   still absent or blank, so the three key sets are disjoint and the merged map is their union (no
-   overwrite rule is needed). `load_env_layers` exposes the map; `main()` stores it in `ctx.obj["env_provenance"]` for the `repos` subcommand, and the
+   `config.toml` resolves to `config.toml`, and `repos add` does not refuse. Each loader sets only keys
+   still absent or blank, but a blank counts as set by `load_cwd_dotenv` (it writes the empty value
+   because the key was absent) and is then set again by `load_global_config`, so the key sets can
+   overlap. The merge is `{**env, **dotenv, **global_config}`: the loader that ran last, and so
+   determined the final `os.environ` value, wins. `load_env_layers` exposes the map; `main()` stores it in `ctx.obj["env_provenance"]` for the `repos` subcommand, and the
    return value is optional so the dashboard and smoke scripts are untouched. `repos` never re-reads a
    layer to decide which one is in force (the writer's verification parse in decision 8 is a separate
    concern). This is the first Phase 2 task after the pure parse extraction (the loaders merge into
@@ -248,7 +271,10 @@ that is added is cloned and indexed, and the index feeds later answers, so a pro
 not be able to add one: same posture as the PR #121 restriction of cwd `.env` to `PIPECAT_HUB_*`
 keys); and design-first verification (the PR #139 lesson): each phase states its contract and checks
 the whole state space. The contract here is *`repos add X` then `repos list` shows X, `effective_repos`
-contains X, and `repos remove X` undoes it*, over every precedence-layer combination.
+contains X, and `repos remove X` undoes it*, over every precedence-layer combination, with one
+qualification: a successful add **with** `--config-only` under a shadowing layer puts X in
+`config.toml` but not in `effective_repos`, and `repos list` names the shadowing layer. Each row of
+the `repos` test table states which outcome it expects.
 
 ### Facts resolved during the interview
 
@@ -265,45 +291,53 @@ contains X, and `repos remove X` undoes it*, over every precedence-layer combina
 |---|---|---|---|
 | `repos` (one-shot CLI) | env layers via the provenance map, `config.toml`, the catalog data file | `config.toml` and its lock file only | on demand |
 | `refresh` (one-shot) | the effective repo list from all layers | the index | user-run, after an add |
-| `serve` (long-lived) | the index (reopened after a refresh), the catalog, `configured_repos` (read at startup) | nothing | per tool call |
-| one-shot query CLI | the index, the catalog, `configured_repos` (for `status`) | nothing | per invocation |
+| `serve` (long-lived) | the index (reopened after a refresh), the catalog, `configured_repos` and `tainted_repos` (read at startup) | nothing | per tool call |
+| one-shot query CLI | the index, the catalog, `configured_repos` and `tainted_repos` (for the hint and `status`) | nothing | per invocation |
 | `catalog-health.yml` (weekly) | the catalog, the GitHub API | a report only | weekly |
 
-The hint reads **indexed** state from the index and group membership from the catalog, never the
-config, so a stale `serve` still hints correctly after a `refresh`. The catalog loader is
+The hint reads **indexed** state from the index, group membership from the catalog, and
+**configured/tainted** state from the config as read at process start. A stale `serve` therefore hints
+correctly after a `refresh`, but a repo added with `repos add` after startup is mis-sorted into
+`add_command` (not yet configured) if its clone failed, until `serve` restarts. The catalog loader is
 `shared/repo_catalog.py` and imports nothing from `cli`, `server` or `services`.
 
 ## Phases
 
 1. **Catalog, generator, offline checks.** Schema and loader (`shared/repo_catalog.py`, including the
    cross-group invariants of decision 2); a `just catalog-regen` recipe with `--bump-verified` (the equality test's failure
-   message names it, and it is the entry point for fixing any health-check finding; a test checks the
-   recipe exists, in the `test_audit_sync.py` style); initial data
-   from the 2026-10-16 audit: every non-default public slug in `.env.example` (the generator emits the default block from `SourceConfig.repos`; the equality test pins the count, so no number is hardcoded here); the `.env.example` generator (a delimited
-   generated block; header prose and non-repo settings come from a checked-in template, the default
-   list from `SourceConfig.repos`) and a generated catalog section in `docs/configuration.md`,
+   message names it, and it is the entry point for fixing any health-check finding; tests check that the
+   recipe exists (the `test_audit_sync.py` style), that `--bump-verified` rewrites `verified` only,
+   that plain regen leaves it, and that regen is idempotent); initial data
+   from the 2026-10-16 audit: every non-default public slug in `.env.example` (the generator emits the default block from `SourceConfig.repos`; the equality test pins the count, so no number is hardcoded here); the renderers in `shared/repo_catalog_render.py` (imports `shared/config` for
+   `SourceConfig.repos`; the equality test imports it, since tests import package modules only;
+   `just catalog-regen` runs it as a module) that rewrite a delimited generated block inside the
+   checked-in `.env.example` (header prose and non-repo settings stay hand-written outside the markers)
+   and a generated catalog section in `docs/configuration.md`,
    separate from the env-var table that `TestConfigTomlExampleParity` pins. The equality test, the
    regenerated `.env.example` and the docs section land in **one commit**. Offline schema/uniqueness
-   tests; wheel-contents test for the data file.
+   tests; wheel-contents test for the data file; the catalog test module joins the Windows file list in
+   `.github/workflows/ci.yml` in this commit.
 2. **`repos list|add|remove`.** In order: (a) add `tomlkit` to `pyproject.toml` and `uv.lock` as the
    first commit (so `pip-audit` and the SBOM see it before code imports it) and prove it resolves
    alongside `pipecat-ai[cli]` (`pipecat-ai` is not in `uv.lock`, so `uv lock` proves nothing): in a
    scratch venv, from the branch with `tomlkit` already in `pyproject.toml`, run
    `uv pip install --dry-run . "pipecat-ai[cli]"` (this includes the hub's own pins) and record the
-   resolved versions in the PR; (b) in one commit: extract the pure `parse_global_config(path)` and make
-   `load_global_config` wrap it, add the provenance map of decision 9 (loaders return it, `main()`
+   resolved versions in the PR; (b) in one commit: extract `read_trusted_config(path)` and `parse_global_config(path)` (decision 8) and make
+   `load_global_config` wrap them, add the provenance map of decision 9 (loaders return it, `main()`
    stores it in `ctx.obj["env_provenance"]`, plus the `env` snapshot), and update the test that patches both loaders with
    None-returning lambdas (`tests/unit/test_config.py`, `test_load_env_layers_calls_both_loaders_in_order`);
-   (c) the writer, decision 8, verifying through `parse_global_config`, with the new writer and `repos`
-   test modules added to the explicit file list of the Windows job in `.github/workflows/ci.yml`; (d) the commands (`cli_repos.py`)
-   with the guard rails and `--group` semantics of decision 7, `EXIT_INVALID_INPUT = 1` added to
+   (c) the writer, decision 8, verifying through `parse_global_config`, with the writer test module added
+   to the explicit file list of the Windows job in `.github/workflows/ci.yml` (the file must exist in
+   the same commit, or pytest exits 4); (d) the commands (`cli_repos.py`)
+   with the guard rails, `--group` semantics and `repos list` tags of decision 7, the `repos` test module added to the Windows list in this commit, `EXIT_INVALID_INPUT = 1` added to
    `shared/exit_codes.py` with `cli_query._EXIT_BAD_INPUT` migrated to it in the same commit
    (including the import at `tests/unit/test_cli_query.py:16`), docs in
    `docs/configuration.md`, and the `repos --help` bridge test.
 3. **`get_hub_status` reports indexed repos**: `indexed_repos`, `configured_no_records`,
    `catalog_groups_not_indexed` (decision 10). In order: (a) `get_counts_by_repo` on the `ServingIndex`
    protocol and the `ReopeningIndexStore` delegate; (b) `shared/corpus_hint.py` with `indexed_repos` and
-   `groups_not_indexed` (Phase 4 adds `corpus_hint` and `attach_corpus_hint` to the same module); (c) the `configured_repos` provider threaded
+   `groups_not_indexed` (Phase 4 adds `corpus_hint` and `attach_corpus_hint` to the same module), its
+   test module joining the Windows list in this commit; (c) the `configured_repos` and `tainted_repos` providers threaded
    through `handle_get_hub_status`, `create_server` and `cli_query._dispatch` in **one commit**, with a
    both-front-doors parity test.
 4. **Corpus hints**: `corpus_hint`/`attach_corpus_hint` and both front-door call sites in one commit, stderr-hint
@@ -311,9 +345,12 @@ config, so a stale `serve` still hints correctly after a `refresh`. The catalog 
    frozen real queries, a smoke-test item.
 5. **Catalog health and curation scripts** plus the weekly `catalog-health.yml`.
 6. **Dogfood migration**, in this order. The repo-root `.env` sets `PIPECAT_HUB_EXTRA_REPOS`, so every
-   add needs `--config-only`. (i) Catalog slugs: `repos add --config-only <slug>`, or
-   `--group <name> --config-only` per group. (ii) The slugs that are not in the catalog (about 10 today; confirm by running `repos list` first):
-   `repos add --config-only --unlisted <slug>`. (iii) Three slugs in the `.env` are `SourceConfig.repos`
+   add needs `--config-only`. (i) Catalog slugs: `repos add --config-only <slug>` per slug (not `--group`, which skips
+   `parseable = false` repos such as the two iOS demos the `.env` holds). (ii) The slugs that are not in
+   the catalog (11 today; three are private: `nvidia-sgmaker`, `pipecat-krisp`, `hosted-smart-turn`,
+   which clone with the maintainer's own credentials): derive them by diffing the `.env` list against
+   the catalog, then `repos add --config-only --unlisted <slug>`; `repos list` afterwards must tag
+   exactly those `unlisted`. (iii) Three slugs in the `.env` are `SourceConfig.repos`
    defaults (verified 2026-10-17); `repos` refuses them by design, so skip them and record the refusals. (iv) Target:
    `config.toml` holds the `.env` list minus the defaults (44 slugs today) and `effective_repos` is the
    defaults plus that list; confirm both counts rather than "the 47-repo list". Then delete the `.env`
@@ -327,12 +364,16 @@ config, so a stale `serve` still hints correctly after a `refresh`. The catalog 
 - Catalog: schema, unique slugs, a `private`/`archived`/`status` key is a schema error (visibility
   itself is only caught by the health check), static cross-group invariants (alias collision, a slug
   in two groups, a default repo, bad `kind`/`parseable`/`verified`), a tainted slug in the environment
-  does **not** break loading, a catalog that fails to load disables hints without failing a tool call,
+  does **not** break loading, a catalog that fails to load returns `None` and logs once across repeated calls, which disables
+  hints without failing a tool call, leaves `catalog_groups_not_indexed == []` on both doors and still
+  lets the CLI print its stderr hint;
   generated `.env.example` block and docs section equal the checked-in files, wheel contains the
   catalog, the `just catalog-regen` recipe exists.
 - Classifier (offline, injected responses): ok, 404, archived, 301, a real rename (`full_name` differs
   beyond case, new name reported), case-only name difference; inconclusive for 403/429/5xx/timeout/
-  network error (never labelled inaccessible); the 90-day advisory boundary; the script's aggregate
+  network error (never labelled inaccessible); the 90-day advisory boundary; `GITHUB_TOKEN` sent as an
+  `Authorization` header when set and omitted when not; a test that `catalog-health.yml` invokes the
+  script (the `test_audit_sync.py` pattern); the frozen stale fixtures are the real 2026-10-16 slugs; the script's aggregate
   verdict and exit code over a mixed injected result set (ok with an old `verified` date exits 0;
   stale exits nonzero; inconclusive-only exits nonzero in its own section); `follow_redirects=False`
   asserted by routing a 301 through `httpx.MockTransport`; `curate_repo_catalog.py` leaves the catalog
@@ -340,14 +381,17 @@ config, so a stale `serve` still hints correctly after a `refresh`. The catalog 
 - Provenance: per-key map for each layer, including a key set only in the real environment (layer
   `env`), a blank higher-layer value treated as absent (mirror `TestBlankHigherLayerValueDoesNotShadow`),
   plus the row blank real env var + non-blank `.env` + `config.toml` (provenance `config.toml`, no
-  refusal). The `ctx.obj["env_provenance"]` carrier: through `main()` both loaders run once per `repos`
+  refusal), and the overlap row (a key set blank by `.env` and then by `config.toml`: the merged layer
+  is `config.toml`). The `ctx.obj["env_provenance"]` carrier: through `main()` both loaders run once per `repos`
   invocation, and a pre-set provenance map alone drives the shadow decision (no layer is re-read).
 - Writer: round trip through `parse_global_config` and `load_global_config` for no file, empty file,
   comments preserved, other keys byte-identical, CSV value, non-array/non-string value refused,
   symlinked config, `PIPECAT_HUB_CONFIG_FILE`, non-regular, world-writable and foreign-owned refusal,
   mode kept or created 0600, directory created 0700, and a failed re-parse leaving the original
-  untouched, the containing-directory and symlink-hop refusals, and two concurrent writers not losing an
-  edit. POSIX-only cases are skipped on Windows, where a round-trip test asserts the mirror-the-reader
+  untouched, the containing-directory and symlink-hop refusals, an existing file that is not valid
+  TOML refused with the file untouched, lock contention (retries, then exit 1) and lock fail-open
+  (warns, still writes atomically), and two concurrent writers not losing an edit (POSIX-only).
+  POSIX-only cases are skipped on Windows, where a round-trip test asserts the mirror-the-reader
   contract.
 - `repos` table: layers (env var / cwd `.env` / blank `.env` / `config.toml` only / none) x (add /
   remove / list / add `--config-only`), asserting `SourceConfig.effective_repos`, the shadow refusal
@@ -356,21 +400,30 @@ config, so a stale `serve` still hints correctly after a `refresh`. The catalog 
   without `--config-only` exits 1, not 0), `remove` of an unconfigured slug in three rows (no other
   layer: exit 0; shadowing layer without `--config-only`: exit 1; with it: exit 0, names the layer),
   a table test for inputs that trigger two checks at once (default repo under a shadowing env,
-  malformed `--unlisted` slug under a shadowing env), a case-variant add (no-op) and remove, golden
+  malformed `--unlisted` slug under a shadowing env), a case-variant add (no-op) and remove, a well-formed non-catalog slug without `--unlisted` (exit 1),
+  `--unlisted` on a catalog slug (exit 1), `repos list` tags (`default`/`catalog`/`unlisted`), golden
   stdout for add/no-op/remove including the `refresh` reminder, `--group` (partial membership,
-  `parseable = false` and tainted skipped and reported, unknown group, nothing to change, mutual
+  `parseable = false` and tainted skipped and reported, an all-tainted group (exit 0, `Nothing to
+  add`), unknown group, nothing to change, mutual
   exclusion with a slug and `--unlisted`, shadow with and without `--config-only`), refusals use
-  `EXIT_INVALID_INPUT` (mirror `test_refresh_in_progress_exit_code_is_shared`), and a cross-cwd case.
+  `EXIT_INVALID_INPUT` (mirror `test_refresh_in_progress_exit_code_is_shared`), a cross-cwd case, each
+  row stating whether `effective_repos` contains the slug afterwards, and `repos add` making no network
+  call.
 - Indexed state for `get_hub_status`: indexed, `configured_no_records`, not configured; case-variant
   slugs match; the synthetic `docs.pipecat.ai` key is dropped; `catalog_groups_not_indexed` for fully, partly and `parseable = false`-only groups;
   `get_counts_by_repo` raising yields no hint and no crash (mirror `test_store_errors_never_break_the_response`);
   the count read through `ReopeningIndexStore`, including after a reopen (a stale `serve` hints
   correctly after a `refresh`).
-- Hints: frozen real queries (a vendor question with the repo unindexed must hint, the same with it
+- Hints: frozen real queries, the four 2026-10-17 unindexed-vendor queries and the AWS Nova Sonic
+  query, copied verbatim into the test file and reused for the new numbered smoke item (a vendor question with the repo unindexed must hint, the same with it
   indexed must not); a 0.95-confidence response still hints; alias negatives ("laws" must not match
   "aws"); `TTS + nvidia` and `TTS & nvidia`; an uppercase alias; `parseable = false` and tainted
-  entries skipped; a configured-but-empty repo lands in `repos_configured_no_records`; the
-  `corpus_hint` key is absent (not null) when it does not apply; `get_code_snippet` hints from
+  entries skipped (a tainted catalog repo appears in neither `repos_not_indexed` nor `add_command`, on
+  both doors); a configured-but-empty repo lands in `repos_configured_no_records`; the
+  `corpus_hint` key is absent (not null) when it does not apply; a golden `corpus_hint` object per
+  door (`add_command` lists only unconfigured, untainted repos and is omitted when none; `refresh_command` appears
+  only with a configured-but-empty repo; `report_issue_url` equals `RETRIEVAL_QUALITY_ISSUE_URL`);
+  `configured_repos` reflects process start (a later `repos add` does not change a running hint); `get_code_snippet` hints from
   `symbol`/`intent` and not from `path` alone; a partially indexed group lists only the missing repos
   in `repos_not_indexed`; multi-group queries give catalog-ordered `matched_groups`; the hint coexists
   with the staleness footer; non-search tools never hint; both front doors give the same
@@ -380,9 +433,14 @@ config, so a stale `serve` still hints correctly after a `refresh`. The catalog 
 - Mutation checks: for each of these, revert it and confirm its test fails: the shadow refusal, the
   default/tainted refusal, the check order (default/tainted before shadow before no-op), the writer's
   failed-re-parse abort, the alias word boundary, the
-  `parseable = false` skip, the casefold in slug matching, and the CLI stderr-hint suppression.
-- Real data: run against a copy of `~/.pipecat-context-hub` and the maintainer's real `config.toml`.
-- `repos --help` and `repos add --help` through the Typer bridge match the direct CLI.
+  `parseable = false` skip, the tainted skip in the hint, the catalog-load-failure fallback, the
+  `--unlisted` rules, the casefold in slug matching, and the CLI stderr-hint suppression.
+- Real data: run against a copy of `~/.pipecat-context-hub` and the maintainer's real `config.toml`;
+  expected observations: `repos list` shows the effective list with every slug tagged, the catalog
+  loads, and `status` reports `catalog_groups_not_indexed` consistent with the index.
+- `repos --help` and `repos add --help` through the Typer bridge match the direct CLI, and a
+  functional `pipecat context-hub repos list` plus `repos add --config-only` run through the bridge
+  (guards a `ctx.obj["env_provenance"]` gap only on that door).
 - Live MCP smoke at PR creation (AGENTS.md pre-merge checklist), with a new numbered item.
 
 ## Already done (merged in PR #143, before this plan)
@@ -419,8 +477,10 @@ config, so a stale `serve` still hints correctly after a `refresh`. The catalog 
 
 ### Review Waivers
 
-None. All 38 findings of the first `/review-plan`, all 34 of run `20261016T231344` and all 38 of run
-`20261017T004623` were routed into the plan above, with the recommended resolution taken for each
+None. All 38 findings of the first `/review-plan`, all 34 of run `20261016T231344`, all 38 of run
+`20261017T004623` and all 31 of run `20261017T025658` (taken with the recommended resolution, no
+grill: lock contention retries then exits 1 and fails open with a warning; `read_trusted_config` owns
+open-and-trust; `--unlisted` on a catalog slug exits 1) were routed into the plan above, with the recommended resolution taken for each
 ("fix all"); the three contradictions that were real decisions were grilled and accepted as recommended
 (Windows writer mirrors the reader; taint is not a loader invariant; `verified` is the manual-audit
 date). The health-check recommendation was overridden by the maintainer (see decision 6).
