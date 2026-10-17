@@ -229,21 +229,32 @@ class TestResolveGlobalConfigPath:
         dashboard scripts, scripts/smoke_check_removals.py) imports this
         module at the top level, so a crash here would take all of them
         down before argv is even parsed."""
-        import importlib
+        import importlib.util
         import pathlib
+        import sys
 
-        original_home = pathlib.Path.home
+        # Execute the module source into a FRESH, unregistered module object
+        # rather than `importlib.reload(env_loading)`: a reload rebinds
+        # `ConfigNotTrusted` (and every other class) in the shared module, while
+        # `config_writer` / `cli_repos` keep the class they imported, so their
+        # `except ConfigNotTrusted` clauses stop matching for every later test.
+        registered = sys.modules[env_loading.__name__]
+        exc_class = env_loading.ConfigNotTrusted
+        spec = importlib.util.spec_from_file_location(
+            "_env_loading_no_home_copy", env_loading.__file__
+        )
+        assert spec is not None and spec.loader is not None
+        fresh = importlib.util.module_from_spec(spec)
 
         def _raise_no_home(*args, **kwargs):
             raise RuntimeError("Could not determine home directory.")
 
         monkeypatch.setattr(pathlib.Path, "home", _raise_no_home)
-        try:
-            reloaded = importlib.reload(env_loading)
-            assert reloaded.DEFAULT_CONFIG_PATH is None
-        finally:
-            monkeypatch.setattr(pathlib.Path, "home", original_home)
-            importlib.reload(env_loading)  # restore real DEFAULT_CONFIG_PATH for later tests
+        spec.loader.exec_module(fresh)
+        assert fresh.DEFAULT_CONFIG_PATH is None
+        # The shared module is untouched, so its classes keep their identity.
+        assert sys.modules[env_loading.__name__] is registered
+        assert env_loading.ConfigNotTrusted is exc_class
 
 
 class TestLoadGlobalConfigBasics:
@@ -1996,6 +2007,53 @@ class TestParseGlobalConfig:
             env_loading.parse_global_config(path)
 
 
+class TestSharedListRule:
+    """`config_list_value` is exactly the loader's coercion plus the CSV split."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("a/b, c/d,,", ["a/b", "c/d"]),
+            (["a/b", " c/d "], ["a/b", "c/d"]),
+            ([1, 2], ["1", "2"]),
+            (5, ["5"]),
+            ([], []),
+            (["a/b", 2], None),
+            (["a,b"], None),
+            ({"a": 1}, None),
+        ],
+    )
+    def test_matches_the_loader(self, value, expected, tmp_path, monkeypatch):
+        assert env_loading.config_list_value("PIPECAT_HUB_EXTRA_REPOS", value) == expected
+        # ...and the loader itself, end to end.
+        import tomlkit
+
+        path = tmp_path / "config.toml"
+        path.write_text(tomlkit.dumps({"PIPECAT_HUB_EXTRA_REPOS": value}))
+        path.chmod(0o600)
+        monkeypatch.setattr(env_loading, "resolve_global_config_path", lambda: path)
+        monkeypatch.delenv("PIPECAT_HUB_EXTRA_REPOS", raising=False)
+        env_loading.load_global_config()
+        raw = os.environ.get("PIPECAT_HUB_EXTRA_REPOS")
+        if expected is None:
+            assert raw is None
+        else:
+            assert env_loading.split_csv(raw or "") == expected
+
+
+class TestSpecificRefusalReason:
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
+    def test_reason_names_the_predicate(self, tmp_path: Path):
+        path = tmp_path / "cfg" / "config.toml"
+        path.parent.mkdir()
+        path.write_text("")
+        path.chmod(0o666)
+        with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
+            env_loading.read_trusted_config(path)
+        assert "world-writable" in excinfo.value.reason
+        assert excinfo.value.logged
+
+
 class TestConfigNotTrusted:
     def test_carries_reason(self):
         exc = env_loading.ConfigNotTrusted("because")
@@ -2059,11 +2117,13 @@ class TestReaderAndSeamAgree:
         monkeypatch.setattr(env_loading, "resolve_global_config_path", lambda: path)
         monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
         outcome = _seam_outcome(path)
+        caplog.clear()  # count only the loader's own warnings
         with caplog.at_level("WARNING"):
             applied = env_loading.load_global_config()
-        warned = any(r.levelname == "WARNING" for r in caplog.records)
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        warned = bool(warnings)
         if outcome in ("refused", "invalid"):
-            assert warned
+            assert len(warnings) == 1, [r.getMessage() for r in warnings]  # once, not twice
             assert applied == {}
             assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
         elif outcome == "missing":
@@ -2105,7 +2165,7 @@ class TestEnvProvenance:
         env: str | None = None,
         dotenv: str | None = None,
         toml: str | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, env_loading.ProvenanceLayer]:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         monkeypatch.chdir(project_dir)

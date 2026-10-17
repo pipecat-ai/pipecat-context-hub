@@ -1,14 +1,13 @@
 """Tests for ``shared/config_writer.py`` (dev plan PR1 Phase 2c).
 
 One test id per clause of the parent plan's ``[PR1]`` Writer test-plan bullet.
-Env-loading names are reached through the module at call time (another test
-reloads ``env_loading``); the writer's own ``ConfigNotTrusted`` is used for
-``pytest.raises`` because that is the class its seam raises.
+``ConfigNotTrusted`` has one import path, ``env_loading``.
 """
 
 from __future__ import annotations
 
 import os
+import stat
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -221,8 +220,8 @@ class TestAtomicReplace:
 class TestRefusals:
     @pytest.mark.parametrize(
         "value",
-        ["5", "true", "{ a = 1 }", "[1, 2]", '["a/b", 2]', "[[1]]"],
-        ids=["int", "bool", "table", "int-array", "mixed-array", "nested-array"],
+        ["5", "true", "{ a = 1 }", "2026-01-01", '["a/b", 2]', "[[1]]", '["a/b,c/d"]'],
+        ids=["int", "bool", "table", "date", "mixed-array", "nested-array", "comma-element"],
     )
     def test_non_array_non_string_value_refused(self, value, tmp_path, monkeypatch):
         original = f"PIPECAT_HUB_EXTRA_REPOS = {value}\n"
@@ -344,10 +343,228 @@ class TestRefusals:
             siblings = sorted(os.listdir(path.parent))
         except (OSError, ValueError):
             siblings = []
-        with pytest.raises(config_writer.ConfigNotTrusted):
+        with pytest.raises(env_loading.ConfigNotTrusted):
             update_extra_repos(add=["a/b"])
         assert snapshot() == before
         try:
             assert sorted(os.listdir(path.parent)) == siblings
         except (OSError, ValueError):
             pass
+
+
+class TestReaderRuleParity:
+    """The writer reads and verifies the list by the loader's own rule
+    (``env_loading.config_list_value``), so reader, writer and ``repos list``
+    agree on every value."""
+
+    def test_scalar_array_the_loader_reads_is_editable(self, tmp_path, monkeypatch):
+        """``load_global_config`` reads ``[1, 2]`` as ``"1,2"``; the writer agrees
+        instead of refusing it (it used to say "must be an array of strings")."""
+        path = _config(tmp_path, monkeypatch, "PIPECAT_HUB_EXTRA_REPOS = [1, 2]\n")
+        monkeypatch.delenv(EXTRA_REPOS_KEY, raising=False)
+        env_loading.load_global_config()
+        assert os.environ[EXTRA_REPOS_KEY] == "1,2"
+        result = update_extra_repos(add=["a/b"])
+        assert result.before == ["1", "2"]
+        _assert_round_trip(path, ["1", "2", "a/b"], monkeypatch)
+
+    def test_csv_entries_are_split_and_stripped_like_the_reader(self, tmp_path, monkeypatch):
+        path = _config(tmp_path, monkeypatch, 'PIPECAT_HUB_EXTRA_REPOS = " a/b ,, c/d "\n')
+        assert update_extra_repos(add=["e/f"]).before == ["a/b", "c/d"]
+        _assert_round_trip(path, ["a/b", "c/d", "e/f"], monkeypatch)
+
+    @pytest.mark.parametrize("slug", ["a/b,c/d", " a/b", "a/b\n", "noslash", "a/.."])
+    def test_a_slug_that_cannot_round_trip_is_refused(self, slug, tmp_path, monkeypatch):
+        """A comma would split on read-back; the writer refuses before touching anything."""
+        original = 'PIPECAT_HUB_EXTRA_REPOS = ["x/y"]\n'
+        path = _config(tmp_path, monkeypatch, original)
+        with pytest.raises(ConfigWriteRefused):
+            update_extra_repos(add=[slug])
+        assert path.read_text() == original
+        assert _stray_files(path.parent) == []
+
+    def test_reparse_is_checked_through_the_reader_rule(self, tmp_path, monkeypatch):
+        """A re-parsed list the loader would read differently (a comma inside an
+        element) aborts, even though the raw TOML value is "a list of strings"."""
+        original = 'PIPECAT_HUB_EXTRA_REPOS = ["a/b"]\n'
+        path = _config(tmp_path, monkeypatch, original)
+        real_parse = env_loading.parse_global_config
+
+        def comma_parse(p: Path) -> dict[str, object]:
+            data = dict(real_parse(p))
+            data[EXTRA_REPOS_KEY] = ["a/b,c/d"]
+            return data
+
+        monkeypatch.setattr(config_writer, "parse_global_config", comma_parse)
+        with pytest.raises(ConfigWriteRefused):
+            update_extra_repos(add=["c/d"])
+        assert path.read_text() == original
+
+    def test_nan_in_another_key_does_not_block_the_edit(self, tmp_path, monkeypatch):
+        """NaN != NaN: a plain ``==`` re-parse check refused every edit of such a file."""
+        original = 'PIPECAT_HUB_WARMUP = nan\nPIPECAT_HUB_EXTRA_REPOS = ["a/b"]\n'
+        path = _config(tmp_path, monkeypatch, original)
+        result = update_extra_repos(add=["c/d"])
+        assert result.changed
+        assert "PIPECAT_HUB_WARMUP = nan" in path.read_text()
+        assert env_loading.parse_global_config(path)[EXTRA_REPOS_KEY] == ["a/b", "c/d"]
+
+
+class TestWriteErrors:
+    @_posix_only
+    def test_unwritable_directory_raises_oserror_and_leaves_no_file(self, tmp_path, monkeypatch):
+        """The write phase's ``OSError`` propagates (``cli_repos`` maps it to exit 1)."""
+        if os.getuid() == 0:
+            pytest.skip("root bypasses directory permission bits")
+        original = 'PIPECAT_HUB_EXTRA_REPOS = ["a/b"]\n'
+        path = _config(tmp_path, monkeypatch, original)
+        path.parent.chmod(0o500)
+        try:
+            with pytest.raises(OSError):
+                update_extra_repos(add=["c/d"])
+            assert path.read_text() == original
+        finally:
+            path.parent.chmod(0o700)
+        assert _stray_files(path.parent) == []
+
+
+# ---------------------------------------------------------------------------
+# A config.toml that does not exist yet: the writer must not create a file the
+# reader would refuse (the reader's seam runs no path check for a missing file).
+# ---------------------------------------------------------------------------
+
+
+def _foreign_symlinks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every symlink ``lstat`` reports is owned by another (non-root) user."""
+    real_lstat = os.lstat
+    foreign = os.getuid() + 12345
+
+    class _Foreign:
+        def __init__(self, st: os.stat_result) -> None:
+            self._st = st
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._st, name)
+
+        st_uid = foreign
+
+    def _lstat(p: Any, *a: Any, **kw: Any) -> Any:
+        st = real_lstat(p, *a, **kw)
+        return _Foreign(st) if stat.S_ISLNK(st.st_mode) else st
+
+    monkeypatch.setattr(os, "lstat", _lstat)
+
+
+def _foreign_dir(monkeypatch: pytest.MonkeyPatch, directory: Path) -> None:
+    """``os.stat(directory)`` reports another (non-root) owner."""
+    real_stat = os.stat
+    foreign = os.getuid() + 12345
+    marker = str(directory)
+
+    class _Foreign:
+        def __init__(self, st: os.stat_result) -> None:
+            self._st = st
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._st, name)
+
+        st_uid = foreign
+
+    def _stat(p: Any, *a: Any, **kw: Any) -> Any:
+        st = real_stat(p, *a, **kw)
+        return _Foreign(st) if str(p) == marker else st
+
+    monkeypatch.setattr(os, "stat", _stat)
+
+
+def _dir(path: Path, mode: int = 0o700) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(mode)
+    return path
+
+
+def _link(link: Path, target: Path) -> Path:
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    return link
+
+
+def _tree(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+@_posix_only
+class TestNewFileTrust:
+    """State space for a config path with no file yet. Accepted rows end with a
+    file the reader reads; refused rows raise ``ConfigNotTrusted`` and create
+    nothing (no directory, no file, no temp file)."""
+
+    # -- accepted ---------------------------------------------------------
+    def test_missing_file_and_missing_directories(self, tmp_path, monkeypatch):
+        path = _use(monkeypatch, _dir(tmp_path / "home") / "a" / "b" / "config.toml")
+        update_extra_repos(add=["a/b"])
+        assert env_loading.read_trusted_config(path) is not None
+
+    def test_dangling_link_owned_by_self_into_a_trusted_dir(self, tmp_path, monkeypatch):
+        real_dir = _dir(tmp_path / "dotfiles")
+        link = _link(_dir(tmp_path / "cfg") / "config.toml", real_dir / "sub" / "config.toml")
+        _use(monkeypatch, link)
+        update_extra_repos(add=["a/b"])
+        assert link.is_symlink()
+        assert (real_dir / "sub" / "config.toml").is_file()
+        assert env_loading.parse_global_config(link)[EXTRA_REPOS_KEY] == ["a/b"]
+
+    def test_missing_file_in_a_sticky_world_writable_dir(self, tmp_path, monkeypatch):
+        sticky = _dir(tmp_path / "tmpish", 0o777 | stat.S_ISVTX)
+        path = _use(monkeypatch, sticky / "config.toml")
+        update_extra_repos(add=["a/b"])
+        assert env_loading.read_trusted_config(path) is not None
+
+    # -- refused ----------------------------------------------------------
+    def _refused(self, root: Path) -> None:
+        before = _tree(root)
+        with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
+            update_extra_repos(add=["a/b"])
+        assert excinfo.value.reason  # names the predicate that refused, not a generic text
+        assert _tree(root) == before
+
+    def test_dangling_link_owned_by_another_user_in_a_sticky_dir(self, tmp_path, monkeypatch):
+        """The reproduced attack: a planted dangling link in a 1777 directory
+        made the writer create the victim directory and file at its target."""
+        sticky = _dir(tmp_path / "shared", 0o777 | stat.S_ISVTX)
+        victim = _dir(tmp_path / "victim")
+        link = _link(sticky / "config.toml", victim / "made" / "config.toml")
+        _use(monkeypatch, link)
+        _foreign_symlinks(monkeypatch)
+        self._refused(tmp_path)
+        assert "symlink owned by uid" in env_loading_reason(link)
+
+    def test_dangling_link_into_a_world_writable_non_sticky_dir(self, tmp_path, monkeypatch):
+        loose = _dir(tmp_path / "loose", 0o777)
+        link = _link(_dir(tmp_path / "cfg") / "config.toml", loose / "config.toml")
+        _use(monkeypatch, link)
+        self._refused(tmp_path)
+
+    def test_missing_file_in_a_world_writable_non_sticky_dir(self, tmp_path, monkeypatch):
+        _use(monkeypatch, _dir(tmp_path / "loose", 0o777) / "config.toml")
+        self._refused(tmp_path)
+
+    def test_missing_dirs_under_a_world_writable_non_sticky_ancestor(self, tmp_path, monkeypatch):
+        _use(monkeypatch, _dir(tmp_path / "loose", 0o777) / "x" / "y" / "config.toml")
+        self._refused(tmp_path)
+
+    def test_dangling_link_into_a_foreign_owned_dir(self, tmp_path, monkeypatch):
+        other = _dir(tmp_path / "other-user")
+        link = _link(_dir(tmp_path / "cfg") / "config.toml", other / "new" / "config.toml")
+        _use(monkeypatch, link)
+        _foreign_dir(monkeypatch, other)
+        self._refused(tmp_path)
+
+
+def env_loading_reason(path: Path) -> str:
+    """The reason ``check_config_write_target`` gives for ``path``."""
+    with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
+        env_loading.check_config_write_target(path)
+    return excinfo.value.reason

@@ -28,7 +28,12 @@ logger = logging.getLogger(__name__)
 CATALOG_RESOURCE = "data/repo_catalog.toml"
 VALID_KINDS = frozenset({"vendor", "topic"})
 
-_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+# The one repo-slug grammar: `owner/repo`, each part starting with a letter or
+# digit, then letters, digits, `.`, `_` or `-`. It is the grammar the ingester
+# accepts (`github_ingest.clone_or_fetch`), so a slug the catalog, `repos` or
+# the writer accepts can always be cloned; it also excludes `.`/`..` segments
+# and (via `fullmatch`) a trailing newline.
+REPO_SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 _GROUP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _TOP_KEYS = frozenset({"verified", "groups"})
 _GROUP_KEYS = frozenset({"kind", "description", "aliases", "repos"})
@@ -63,6 +68,29 @@ class CatalogGroup:
 class Catalog:
     verified: date
     groups: tuple[CatalogGroup, ...]
+
+    def find_repo(self, slug: str) -> CatalogRepo | None:
+        """The catalog entry for ``slug`` (casefolded match), or ``None``."""
+        folded = slug.casefold()
+        for group in self.groups:
+            for repo in group.repos:
+                if repo.slug.casefold() == folded:
+                    return repo
+        return None
+
+    def find_group(self, name: str) -> CatalogGroup | None:
+        """The group called ``name`` (casefolded match), or ``None``."""
+        folded = name.casefold()
+        return next((g for g in self.groups if g.name.casefold() == folded), None)
+
+    def slugs(self) -> frozenset[str]:
+        """Every catalog slug, casefolded."""
+        return frozenset(r.slug.casefold() for g in self.groups for r in g.repos)
+
+
+def is_valid_repo_slug(slug: str) -> bool:
+    """True when ``slug`` is a well-formed ``owner/repo`` (:data:`REPO_SLUG_RE`)."""
+    return REPO_SLUG_RE.fullmatch(slug) is not None
 
 
 def default_repos() -> list[str]:
@@ -107,7 +135,7 @@ def _parse_repo(where: str, raw: object) -> CatalogRepo:
         raise CatalogError(f"{where}: each repo must be a table")
     _check_keys(where, raw, _REPO_KEYS)
     slug = _expect_str(where, raw, "slug", required=True)
-    if not _SLUG_RE.match(slug):
+    if not is_valid_repo_slug(slug):
         raise CatalogError(f"{where}: malformed slug {slug!r} (expected org/repo)")
     return CatalogRepo(
         slug=slug,
