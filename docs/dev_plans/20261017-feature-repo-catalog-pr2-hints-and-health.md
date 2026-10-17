@@ -24,8 +24,9 @@ and the parent disagree, stop and hand back.
 **Phase order and gating.** The order is 3a, 3b, 3c, 4, 5, 4b. Run
 `/skein:conduct <this plan> --autonomous --max-phases 5` so it walks 3a to 5 and hands back.
 Then rebase this branch onto `feature/repo-catalog-pr1` once PR 1's Phase 2d commit exists, or onto `main`
-after PR 1 merges. Log the rebase in the parent's Handoff log. Then run `/skein:conduct <this plan> --resume`
-for Phase 4b, and the gauntlet auto-chains after it.
+after PR 1 merges. Log the rebase in the parent's Handoff log. Then run
+`/skein:conduct <this plan> --resume --run-ci-parity --ci-cmd '<AGENTS.md gate>'` for Phase 4b (conduct does not
+persist the parity flags across `--resume`), and the gauntlet auto-chains after it.
 
 Facts a phase worker needs and cannot cheaply rediscover:
 
@@ -52,9 +53,9 @@ Facts a phase worker needs and cannot cheaply rediscover:
   it by path (`importlib.util.spec_from_file_location`, as `tests/unit/test_probe_mcp_2x.py` does).
 - The Windows CI job lists test files by name. A new test module that touches no index store joins the list
   in the commit that creates it. Index-store and Chroma tests stay off it: `ci.yml`'s Windows step and
-  `docs/README.md` say the persisted index is POSIX-only and fails closed on Windows. So tests in
-  Windows-listed modules (`test_corpus_hint.py`, `test_hub_status.py`, `test_cli.py`) use fakes or
-  `FTSIndex`, never `IndexStore`.
+  `docs/README.md` say the persisted index is POSIX-only and fails closed on Windows. So tests this plan
+  adds to Windows-listed modules (`test_corpus_hint.py`, `test_hub_status.py`, `test_cli.py`) use fakes or
+  `FTSIndex`, never `IndexStore`. Existing tests in those modules are not audited here.
 - Never `git add -A`; stage explicit paths.
 
 **Frozen real queries (2026-10-17).** One CLI loop, `search-examples` and `search-docs` with `--limit 3`,
@@ -162,8 +163,10 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
 - A status test with one indexed, one configured-no-records and one unconfigured catalog repo asserts all
   three fields on both doors. A case-variant test (configured `Owner/Repo`, index key `owner/repo`) asserts
   the slug is in `indexed_repos` and absent from `configured_no_records`.
-- The catalog-load-failure status half lives here: with `load_catalog` returning `None`,
-  `catalog_groups_not_indexed == []` on both doors.
+- The catalog-load-failure status half lives here: patch PR 1's `_read_catalog_text` (in
+  `shared/repo_catalog.py`) to return a broken catalog, so `load_catalog()` returns its cached `None`;
+  call `load_catalog.cache_clear()` before and after each case. Then `catalog_groups_not_indexed == []`
+  on both doors.
 
 ### Phase 4: corpus hints
 
@@ -180,8 +183,9 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
   attaches, all inside the existing single `asyncio.to_thread` hop. `check_deprecation` and
   `get_hub_status` route through it unchanged (no hint for non-search tools).
 - The per-tool text table in `corpus_hint.py` is a third list of tool names. A drift-guard test in
-  `test_corpus_hint.py`: every table key is a registered tool name, and every registered tool whose input
-  model has a `query`, `symbol` or `intent` field appears in the table.
+  `test_corpus_hint.py`: the table keys are a subset of the registered tool names and are exactly the four
+  Requirement 2 tools (`search_docs`, `search_examples`, `search_api`, `get_code_snippet`). Pin the set;
+  do not derive it from input-model fields (`CheckDeprecationInput` also has `symbol`).
 - `test_staleness.py` runs here: it pins the `annotate_response` signature
   (`test_no_parsed_shortcut_parameter`) and holds `TestBothFrontDoors`, which the hint mirrors.
 - Output shape, `add_command` format (parent contract C1: `pipecat-context-hub repos add --config-only
@@ -204,8 +208,8 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
     still prints; existing `MagicMock`-store golden tests stay unchanged.
   - `test_server.py` (the line-864 pattern): `_SERVER_INSTRUCTIONS` pins `corpus_hint`, `--unlisted` and
     the draft-not-file wording; `retrieval-quality.yml` carries the optional *Candidate repos* field.
-- The catalog-load-failure half lives here: with `load_catalog` returning `None` (seam:
-  `load_catalog.cache_clear()` plus a patched loader) there is no `corpus_hint` key on either door, and the
+- The catalog-load-failure half lives here: with `load_catalog` returning `None` (seam: patch
+  `_read_catalog_text` to return a broken catalog, with `load_catalog.cache_clear()` between cases) there is no `corpus_hint` key on either door, and the
   CLI stderr hint is still printed.
 - Frozen queries: the four strings in Context, copied verbatim into `test_corpus_hint.py`. For each, assert
   against a fake fixture index (exposing `get_counts_by_repo` only, so the module stays Windows-eligible)
@@ -295,7 +299,8 @@ exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.
 
 - Fixture index: a real on-disk `IndexStore` (`create=True`, no model needed), filled with records built
   like `_make_record(repo=<slug>)` in `tests/unit/test_index_store.py`. Copy that pattern; do not import
-  the private helper. Use a fixture catalog through the loader seam PR 1's `repos` tests use.
+  the private helper. Use a fixture catalog by patching `_read_catalog_text` (PR 1's seam), with `load_catalog.cache_clear()`
+  between cases.
 - With a temp `config.toml`-only layout (no env var, no `.env`): `repos add <catalog slug>` then a new
   `_query_runtime` puts the slug in `configured_repos`. A tainted slug yields neither field.
 - Group-level expectations. In a two-repo group with one repo added, `repos_not_indexed` lists the other
@@ -305,15 +310,15 @@ exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.
   `; `, strips the leading `pipecat-context-hub`, and invokes each part on the real `repos` command, exit 0.
   The test states this layer in a comment. Afterwards it asserts the written `config.toml` slug set equals
   the `repos_not_indexed` slugs of the matched groups (read back through `load_global_config`), and that a
-  recomputed hint has no `add_command`.
+  recomputed hint has no `add_command`. Each case uses a fresh temp layout, so an earlier `repos add` case
+  cannot leak slugs into this equality.
 - A second case sets `PIPECAT_HUB_EXTRA_REPOS` in a cwd `.env`. The `--config-only` form exits 0; plain
   `repos add` exits 1 (parent Decision 7). That proves `--config-only` is accepted under a shadowing layer. After it, the slugs are in `config.toml`
   but not in `effective_repos`.
 - `test_repos_hint_seam.py` does **not** join the Windows file list: it opens a real `IndexStore`, which
   fails closed on Windows (the POSIX-only platform contract in `ci.yml` and `docs/README.md`). Guard the
   module with `pytest.mark.skipif(os.name != "posix")` so a local Windows run skips rather than fails. This
-  phase leaves `ci.yml` unchanged. (Parent ownership table lists this module on the Windows list; this plan
-  departs from it, see the Findings note.)
+  phase leaves `ci.yml` unchanged (the parent's ownership table agrees).
 - Mutation check: change the C1 `add_command` to drop `--config-only`; the shadowing-`.env` case must fail.
 
 **Closing steps (not a phase; before opening the PR).** Run the offline smoke
@@ -337,7 +342,3 @@ Put the result and the mutation-check results in the PR description. Restore the
 ### Review Waivers
 
 _(none yet; this plan has not been through `/review-plan`)_
-
-Parent drift: the parent's file-ownership table puts `test_repos_hint_seam.py` on the Windows file list.
-It cannot run there (real `IndexStore`), so Phase 4b keeps it off the list. The parent needs the same
-correction; until then this plan wins on that line.
