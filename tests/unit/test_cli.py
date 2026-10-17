@@ -4797,6 +4797,62 @@ class TestPruneSafety(TestRefreshCommand):
         mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
         assert f"repo:{self._REMOVED_REPO}:commit_sha" in _batched_delete_keys(mock_store)
 
+    @pytest.mark.parametrize("prune", [False, True])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_case_variant_of_a_configured_repo_is_stale_by_exact_spelling(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        prune,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Cleanup membership is by exact spelling, not ``slug_key``: records
+        under a case variant of a configured repo were ingested under that
+        spelling and are never refreshed, so they are stale like any
+        unconfigured repo (warn, or delete with --prune). Harmonising the
+        membership to ``slug_key`` would count them as configured forever."""
+        configured = "daily-co/daily-python"
+        variant = "DAILY-CO/daily-python"
+        assert configured in HubConfig().sources.effective_repos
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        counts = mock_store.get_counts_by_repo.return_value
+        mock_store.get_counts_by_repo = MagicMock(return_value={**counts, variant: 5})
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = {**self._meta_with_removed_repo(), f"repo:{variant}:commit_sha": "fed789"}
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh", *(["--prune"] if prune else [])])
+
+        assert result.exit_code == 0, result.output
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert configured not in deleted_repos
+        if prune:
+            assert variant in deleted_repos
+        else:
+            assert variant not in deleted_repos
+            assert variant in caplog.text
+
     @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "Yes", "YES"])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
