@@ -953,8 +953,8 @@ class TestCatalogFailedToLoad:
 
 def _bad_config(hub: Hub, kind: str) -> None:
     """Arrange a config.toml the writer/reader refuses, by error type."""
-    if kind == "write-refused":  # ConfigWriteRefused: a non-array, non-string value
-        hub.write_config(f"{KEY} = 5\n")
+    if kind == "write-refused":  # ConfigWriteRefused: a value the loader also ignores
+        hub.write_config(f"{KEY} = {{ a = 1 }}\n")
     elif kind == "invalid-toml":  # TOMLDecodeError
         hub.write_config("this is = = not toml\n")
     elif kind == "not-trusted":  # ConfigNotTrusted
@@ -1011,7 +1011,7 @@ class TestErrorMapping:
         assert "ignoring" in problem[0]
         assert "config.toml" in problem[0]
         assert {
-            "write-refused": "not an array of strings",
+            "write-refused": "a value the loader ignores",
             "invalid-toml": "not valid TOML",
             "not-trusted": "not trusted",
         }[kind] in problem[0]
@@ -1105,3 +1105,201 @@ class TestRegistration:
         parsed = tomllib.loads(hub.config.read_text())
         assert parsed[KEY] == [ALPHA_ONE, UNLISTED]
         assert env_loading.parse_global_config(hub.config)[KEY] == [ALPHA_ONE, UNLISTED]
+
+
+# ---------------------------------------------------------------------------
+# Error boundary: no repos command ends in a traceback
+# ---------------------------------------------------------------------------
+
+
+def _clean_exit(result: Result) -> None:
+    """Exited through ``SystemExit`` (or normally), never an uncaught exception."""
+    assert result.exception is None or isinstance(result.exception, SystemExit), result.exception
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.usefixtures("no_network")
+class TestErrorBoundary:
+    """{list, add, remove} x {cwd removed, config dir unwritable, config unreadable}:
+    exit 0 or EXIT_INVALID_INPUT with a home-redacted message, never a traceback."""
+
+    @_posix_only
+    @pytest.mark.parametrize(
+        "args",
+        [("add", ALPHA_ONE), ("remove", ALPHA_ONE), ("add", "--group", "beta")],
+        ids=["add", "remove", "add-group"],
+    )
+    def test_unwritable_config_dir_is_a_clean_exit_1(self, hub: Hub, args: tuple[str, ...]):
+        if os.getuid() == 0:
+            pytest.skip("root bypasses directory permission bits")
+        if args[0] == "remove":
+            hub.config_list(ALPHA_ONE)
+        else:
+            hub.write_config("")
+        before = hub.snapshot()
+        hub.cfg_dir.chmod(0o500)
+        try:
+            result = hub.run(*args)
+        finally:
+            hub.cfg_dir.chmod(0o700)
+        _clean_exit(result)
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "config.toml was not changed" in result.output
+        assert str(Path.home()) not in result.output
+        assert hub.snapshot() == before
+
+    def test_an_oserror_from_the_rename_is_a_clean_exit_1(
+        self, hub: Hub, monkeypatch: pytest.MonkeyPatch
+    ):
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise PermissionError(13, "Permission denied", str(Path.home() / "secret"))
+
+        monkeypatch.setattr(os, "replace", boom)
+        result = hub.run("add", ALPHA_ONE)
+        _clean_exit(result)
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert str(Path.home()) not in result.output
+        assert hub.snapshot() is None
+
+    @_posix_only
+    @pytest.mark.parametrize("verb", ["list", "add", "remove"])
+    def test_unreadable_config_is_clean(self, hub: Hub, verb: str):
+        if os.getuid() == 0:
+            pytest.skip("root bypasses file permission bits")
+        hub.config_list(ALPHA_ONE)
+        hub.config.chmod(0o000)
+        try:
+            result = hub.run(verb) if verb == "list" else hub.run(verb, BETA_ONE)
+        finally:
+            hub.config.chmod(0o600)
+        _clean_exit(result)
+        assert result.exit_code == (0 if verb == "list" else EXIT_INVALID_INPUT)
+
+    @_posix_only
+    @pytest.mark.parametrize("verb", ["list", "add", "remove"])
+    def test_a_removed_cwd_is_clean(self, hub: Hub, tmp_path: Path, verb: str):
+        gone = tmp_path / "gone"
+        gone.mkdir()
+        os.chdir(gone)
+        gone.rmdir()
+        result = hub.run(verb) if verb == "list" else hub.run(verb, ALPHA_ONE)
+        _clean_exit(result)
+        assert result.exit_code == 0, result.output
+        if verb == "list":
+            assert "Consulted .env in cwd: none" in result.stdout
+            assert _tags(result.stdout)[default_repos()[0]] == "default"
+
+    def test_any_oserror_in_list_is_a_clean_exit_1(self, hub: Hub, monkeypatch: pytest.MonkeyPatch):
+        """The command-level floor: an OSError from anywhere in the body."""
+        from pipecat_context_hub import cli_repos
+
+        def boom() -> Any:
+            raise OSError(5, "I/O error", str(Path.home() / "x"))
+
+        monkeypatch.setattr(cli_repos, "_configured_in_toml", boom)
+        result = hub.run("list")
+        _clean_exit(result)
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert str(Path.home()) not in result.output
+
+    def test_a_missing_provenance_map_fails_loudly(self, hub: Hub):
+        """``main()`` always sets it; without it the shadow check must not fail open."""
+        from pipecat_context_hub.cli_repos import repos_group
+
+        result = CliRunner().invoke(repos_group, ["add", ALPHA_ONE], obj={"config": HubConfig()})
+        assert isinstance(result.exception, RuntimeError)
+        assert "env_provenance" in str(result.exception)
+        assert hub.snapshot() is None
+
+
+@pytest.mark.usefixtures("no_network")
+class TestGroupWithNothingActionable:
+    @pytest.mark.parametrize("verb", ["add", "remove"])
+    def test_does_not_read_config_toml(self, hub: Hub, verb: str):
+        """gamma has only ``parseable = false`` members: nothing to write, so a
+        broken config.toml is not consulted and the run exits 0."""
+        hub.write_config("this is = = not toml\n")
+        before = hub.snapshot()
+        result = hub.run(verb, "--group", "gamma")
+        assert result.exit_code == 0, result.output
+        assert ("Nothing to add" if verb == "add" else "Nothing to remove") in result.output
+        assert "Skipped (parseable = false): acme/gamma-ios" in result.output
+        assert hub.snapshot() == before
+
+
+@pytest.mark.usefixtures("no_network")
+class TestReaderRuleInList:
+    """``repos list`` reads config.toml by the loader's own rule."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("[1, 2]", ["1", "2"]), ('"a/b, c/d"', ["a/b", "c/d"])],
+        ids=["scalar-array", "csv"],
+    )
+    def test_hidden_section_shows_what_the_loader_reads(
+        self, hub: Hub, value: str, expected: list[str]
+    ):
+        hub.write_config(f"{KEY} = {value}\n")
+        hub.env(**{KEY: BETA_ONE})  # shadow, so the config.toml entries are listed as hidden
+        result = hub.run("list")
+        assert result.exit_code == 0, result.output
+        assert "config.toml:" not in result.stdout  # not reported as ignored
+        hidden = result.stdout.split("hidden by", 1)[1]
+        for slug in expected:
+            assert f"  {slug}  [" in hidden
+
+
+@pytest.mark.usefixtures("no_network")
+class TestSlugGrammar:
+    @pytest.mark.parametrize("bad", ["owner/repo\n", "owner/.dot", "owner/-x"])
+    def test_cli_uses_the_shared_strict_grammar(self, hub: Hub, bad: str):
+        result = hub.run("add", "--unlisted", bad)
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "not a valid repo slug" in result.output
+        assert hub.snapshot() is None
+
+
+@pytest.mark.usefixtures("no_network")
+class TestShadowAwareReminders:
+    @pytest.mark.parametrize("layer", list(SHADOWED))
+    def test_add_under_a_shadow_does_not_promise_indexing(self, hub: Hub, layer: str):
+        _arrange(hub, layer)
+        result = hub.run("add", "--config-only", ALPHA_ONE)
+        assert result.exit_code == 0, result.output
+        assert "to index it" not in result.output
+        assert "Not in effect" in result.output
+        assert f"layer `{SHADOWED[layer]}`" in result.output
+
+    @pytest.mark.parametrize("layer", list(SHADOWED))
+    def test_remove_under_a_shadow_warns_against_prune(self, hub: Hub, layer: str):
+        _arrange(hub, layer)
+        hub.run("add", "--config-only", ALPHA_ONE)
+        result = hub.run("remove", "--config-only", ALPHA_ONE)
+        assert result.exit_code == 0, result.output
+        assert "Run `pipecat-context-hub refresh --prune`" not in result.output
+        assert "Do not run `refresh --prune`" in result.output
+
+    @pytest.mark.parametrize("layer", list(SHADOWED))
+    def test_group_remove_under_a_shadow_warns_against_prune(self, hub: Hub, layer: str):
+        _arrange(hub, layer)
+        hub.run("add", "--config-only", "--group", "beta")
+        result = hub.run("remove", "--config-only", "--group", "beta")
+        assert result.exit_code == 0, result.output
+        assert "Do not run `refresh --prune`" in result.output
+
+    def test_unshadowed_reminders_are_unchanged(self, hub: Hub):
+        assert "to index it" in hub.run("add", ALPHA_ONE).output
+        assert "refresh --prune` to drop" in hub.run("remove", ALPHA_ONE).output
+
+
+class TestListGroups:
+    def test_groups_flag_names_every_group(self, hub: Hub):
+        result = hub.run("list", "--groups")
+        assert result.exit_code == 0, result.output
+        for name in ("alpha", "beta", "gamma", "delta"):
+            assert f"  {name}  [" in result.stdout
+
+    def test_unknown_group_points_at_the_listing(self, hub: Hub):
+        result = hub.run("add", "--group", "nope")
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "repos list --groups" in result.output

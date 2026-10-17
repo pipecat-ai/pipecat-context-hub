@@ -16,6 +16,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from pipecat_context_hub.shared.config import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.repo_catalog import (
     Catalog,
     CatalogGroup,
@@ -31,7 +32,7 @@ DOCS_BEGIN = (
 )
 DOCS_END = "<!-- END GENERATED: repo catalog -->"
 
-_ENV_KEY = "PIPECAT_HUB_EXTRA_REPOS"
+_ENV_KEY = EXTRA_REPOS_ENV
 _RULE = "# " + "-" * 74
 _VERIFIED_LINE_RE = re.compile(r"^(verified[ \t]*=[ \t]*)\d{4}-\d{2}-\d{2}([ \t]*(?:#.*)?)$", re.M)
 
@@ -170,22 +171,28 @@ def main(argv: list[str] | None = None) -> int:
     env_path = root / ".env.example"
     docs_path = root / "docs" / "configuration.md"
 
-    catalog_text = catalog_path.read_text(encoding="utf-8")
+    original_catalog = catalog_path.read_text(encoding="utf-8")
+    catalog_text = original_catalog
     if args.bump_verified:
         catalog_text = bump_verified(catalog_text, date.today())
-        if not args.check:
-            catalog_path.write_text(catalog_text, encoding="utf-8")
     catalog = parse_catalog(catalog_text)
 
+    # Render everything before writing anything, so a failing render (say, a
+    # missing marker) leaves every file, the catalog included, as it was.
+    outputs: list[tuple[Path, str]] = []
+    if catalog_text != original_catalog:
+        outputs.append((catalog_path, catalog_text))
     stale = False
     for path, render in ((env_path, render_env_example), (docs_path, render_docs)):
         current = path.read_text(encoding="utf-8")
         updated = render(current, catalog)
         if updated != current:
             stale = True
-            if not args.check:
-                path.write_text(updated, encoding="utf-8")
-                print(f"updated {path.relative_to(root)}")
+            outputs.append((path, updated))
+    if not args.check:
+        for path, text in outputs:
+            path.write_text(text, encoding="utf-8")
+            print(f"updated {path.relative_to(root)}")
     if args.check and stale:
         print("generated catalog sections are out of date; run `just catalog-regen`")
         return 1

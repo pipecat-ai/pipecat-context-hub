@@ -22,8 +22,10 @@ import pytest
 from pipecat_context_hub.shared import repo_catalog, repo_catalog_render
 from pipecat_context_hub.shared.config import SourceConfig
 from pipecat_context_hub.shared.repo_catalog import (
+    REPO_SLUG_RE,
     Catalog,
     CatalogError,
+    is_valid_repo_slug,
     load_catalog,
     parse_catalog,
 )
@@ -216,6 +218,61 @@ class TestParseCatalog:
 # --------------------------------------------------------------------------
 # load_catalog: cached None on failure, logs once, tainted env does not break
 # --------------------------------------------------------------------------
+
+
+class TestSlugGrammar:
+    """One owner/repo grammar for the catalog parser, ``repos`` and the writer.
+
+    It is the ingester's grammar, so every slug accepted here can be cloned.
+    """
+
+    @pytest.mark.parametrize(
+        "slug", ["a/b", "NVIDIA-AI-Blueprints/nemotron-voice-agent", "aaronsu11/Dum-E", "x/a.b_c-d"]
+    )
+    def test_accepts(self, slug: str) -> None:
+        assert is_valid_repo_slug(slug)
+
+    @pytest.mark.parametrize(
+        "slug",
+        ["noslash", "a/b/c", "a/", "/b", "a b/c", "./b", "a/..", "-a/b", "a/.b", "_a/b", "a/b\n"],
+    )
+    def test_rejects(self, slug: str) -> None:
+        assert not is_valid_repo_slug(slug)
+
+    @pytest.mark.parametrize("slug", ["-lead/repo", "owner/.dot", "owner/b\n"])
+    def test_catalog_parser_uses_the_same_grammar(self, slug: str) -> None:
+        """Before the grammars were unified the catalog accepted these, so a
+        catalog slug could be impossible to ``repos add``."""
+        with pytest.raises(CatalogError):
+            parse_catalog(_with(_VALID, 'slug = "widgets/one"', f'slug = "{slug}"'))
+
+    def test_every_shipped_slug_passes(self, shipped_catalog: Catalog) -> None:
+        for group in shipped_catalog.groups:
+            for repo in group.repos:
+                assert is_valid_repo_slug(repo.slug), repo.slug
+
+    def test_ingester_uses_the_same_pattern(self) -> None:
+        from pipecat_context_hub.services.ingest import github_ingest
+
+        assert github_ingest._REPO_SLUG_RE is REPO_SLUG_RE
+
+
+class TestCatalogLookups:
+    def test_find_repo_is_casefolded_and_returns_the_catalog_spelling(
+        self, shipped_catalog: Catalog
+    ) -> None:
+        repo = shipped_catalog.find_repo("AARONSU11/dum-e")
+        assert repo is not None and repo.slug == "aaronsu11/Dum-E"
+        assert shipped_catalog.find_repo("nobody/nothing") is None
+
+    def test_find_group_is_casefolded(self, shipped_catalog: Catalog) -> None:
+        group = shipped_catalog.find_group("AWS")
+        assert group is not None and group.name == "aws"
+        assert shipped_catalog.find_group("nope") is None
+
+    def test_slugs_is_every_slug_casefolded(self, shipped_catalog: Catalog) -> None:
+        expected = {r.slug.casefold() for g in shipped_catalog.groups for r in g.repos}
+        assert shipped_catalog.slugs() == expected
 
 
 class TestLoadCatalog:
@@ -641,6 +698,19 @@ class TestMainCheck:
         # a plain run regenerates it
         assert repo_catalog_render.main([]) == 0
         assert repo_catalog_render.main(["--check"]) == 0
+
+    def test_bump_verified_writes_nothing_when_a_render_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The catalog is not bumped on disk before the renders succeed."""
+        root = self._stage(tmp_path, monkeypatch, "no markers here\n")
+        catalog_file = root / "src" / "pipecat_context_hub" / "data" / "repo_catalog.toml"
+        before = catalog_file.read_text(encoding="utf-8")
+        docs_before = (root / "docs" / "configuration.md").read_text(encoding="utf-8")
+        with pytest.raises(SpliceError):
+            repo_catalog_render.main(["--bump-verified"])
+        assert catalog_file.read_text(encoding="utf-8") == before
+        assert (root / "docs" / "configuration.md").read_text(encoding="utf-8") == docs_before
 
 
 # --------------------------------------------------------------------------

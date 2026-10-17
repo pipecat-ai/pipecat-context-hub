@@ -29,6 +29,7 @@ from pipecat_context_hub.services.ingest.ingest_filters import (
 )
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.interfaces import FatalIndexError
+from pipecat_context_hub.shared.repo_catalog import REPO_SLUG_RE
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
@@ -108,7 +109,7 @@ _BOUNDARY_RE = re.compile(
 )
 
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-_REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+_REPO_SLUG_RE = REPO_SLUG_RE  # the one shared owner/repo grammar
 # Tag names this tool accepts as operator input and can hand back to git
 # (e.g. "v0.0.96", "0.0.96"). It also bounds `latest` candidacy, since a
 # selected tag is re-resolved through this same validation — see

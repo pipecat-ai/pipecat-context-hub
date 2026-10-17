@@ -14,37 +14,49 @@ applies checks 3 to 5.
 
 ``shared/config_writer`` (hence ``tomlkit``) is imported inside the add/remove
 bodies only, so ``import pipecat_context_hub.cli`` never loads it.
+
+Error boundary: every command exits ``EXIT_INVALID_INPUT`` with a
+home-redacted message on a writer refusal, an untrusted config or an
+``OSError``; none ends in a traceback.
 """
 
 from __future__ import annotations
 
-import re
+import functools
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn, TypeVar
 
 import click
 
-from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.config import EXTRA_REPOS_ENV, HubConfig
 from pipecat_context_hub.shared.env_loading import (
+    LAYER_ENV,
+    SHADOWING_LAYERS,
     ConfigNotTrusted,
+    config_list_value,
     parse_global_config,
     resolve_global_config_path,
 )
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
-from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
-
-_KEY = "PIPECAT_HUB_EXTRA_REPOS"
-_SHADOWING_LAYERS = frozenset({"env", ".env"})
-_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$")
-
-_REFRESH_REMINDER = "Run `pipecat-context-hub refresh` to index it. A running `serve` reopens the rebuilt index itself."
-_REMOVE_REMINDER = (
-    "Run `pipecat-context-hub refresh --prune` to drop its indexed data. "
-    "A running `serve` reopens the rebuilt index itself."
+from pipecat_context_hub.shared.repo_catalog import (
+    Catalog,
+    CatalogGroup,
+    is_valid_repo_slug,
+    load_catalog,
 )
+
+_KEY = EXTRA_REPOS_ENV
+
+_RUNNING_SERVE = "A running `serve` reopens the rebuilt index itself."
+_REFRESH_REMINDER = f"Run `pipecat-context-hub refresh` to index it. {_RUNNING_SERVE}"
+_REMOVE_REMINDER = (
+    f"Run `pipecat-context-hub refresh --prune` to drop its indexed data. {_RUNNING_SERVE}"
+)
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 def _fail(message: str) -> NoReturn:
@@ -52,16 +64,37 @@ def _fail(message: str) -> NoReturn:
     raise SystemExit(EXIT_INVALID_INPUT)
 
 
+def _os_error_boundary(func: _F) -> _F:
+    """Turn an ``OSError`` escaping a command into a clean exit 1 (redacted)."""
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(*args, **kwargs)
+        except OSError as exc:
+            _fail(redact_home_in_text(str(exc)))
+
+    return wrapper  # type: ignore[return-value]
+
+
 def _layer_phrase(layer: str) -> str:
-    where = "the real environment" if layer == "env" else "the `.env` in the current directory"
+    where = "the real environment" if layer == LAYER_ENV else "the `.env` in the current directory"
     return f"layer `{layer}` ({where})"
 
 
 def _shadowing_layer(ctx: click.Context) -> str | None:
-    """The higher layer holding ``PIPECAT_HUB_EXTRA_REPOS``, from the provenance map only."""
-    provenance = (ctx.obj or {}).get("env_provenance") or {}
-    layer = provenance.get(_KEY)
-    return layer if layer in _SHADOWING_LAYERS else None
+    """The higher layer holding ``PIPECAT_HUB_EXTRA_REPOS``, from the provenance map only.
+
+    ``main()`` always sets ``ctx.obj["env_provenance"]``; a missing map is a
+    wiring bug and fails loudly rather than reading as "not shadowed".
+    """
+    obj = ctx.obj if isinstance(ctx.obj, dict) else {}
+    if "env_provenance" not in obj:
+        raise RuntimeError(
+            "repos: ctx.obj['env_provenance'] is missing; the command must run under main()"
+        )
+    layer = obj["env_provenance"].get(_KEY)
+    return layer if layer in SHADOWING_LAYERS else None
 
 
 def _config(ctx: click.Context) -> HubConfig:
@@ -79,16 +112,6 @@ def _catalog_or_fail() -> Catalog:
     return catalog
 
 
-def _catalog_slug(catalog: Catalog, slug: str) -> str | None:
-    """The catalog's spelling of ``slug`` (casefolded match), or ``None``."""
-    folded = slug.casefold()
-    for group in catalog.groups:
-        for repo in group.repos:
-            if repo.slug.casefold() == folded:
-                return repo.slug
-    return None
-
-
 def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str:
     """Checks 1 and 2 for a positional slug; returns the slug to act on."""
     config = _config(ctx)
@@ -99,12 +122,11 @@ def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str
     if folded in {s.casefold() for s in config.sources.tainted_repos}:
         _fail(f"{slug} is tainted (PIPECAT_HUB_TAINTED_REPOS) and is never indexed.")
     # 2. syntax and catalog membership
-    parts = slug.split("/")
-    if not _SLUG_RE.match(slug) or any(p in {".", ".."} for p in parts):
+    if not is_valid_repo_slug(slug):
         _fail(f"{slug!r} is not a valid repo slug; expected owner/repo.")
     catalog = _catalog_or_fail()
-    listed = _catalog_slug(catalog, slug)
-    if listed is None:
+    entry = catalog.find_repo(slug)
+    if entry is None:
         if not unlisted:
             _fail(
                 f"{slug} is not in the repo catalog. Pass --unlisted to add a repo "
@@ -112,20 +134,26 @@ def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str
             )
         return slug
     if unlisted:
-        _fail(f"{listed} is in the repo catalog; drop --unlisted (the catalog spelling is used).")
-    return listed
+        _fail(
+            f"{entry.slug} is in the repo catalog; drop --unlisted (the catalog spelling is used)."
+        )
+    return entry.slug
 
 
 def _resolve_group(catalog: Catalog, name: str) -> CatalogGroup:
-    for group in catalog.groups:
-        if group.name.casefold() == name.casefold():
-            return group
-    valid = ", ".join(g.name for g in catalog.groups)
-    _fail(f"unknown group {name!r}. Valid groups: {valid}")
+    group = catalog.find_group(name)
+    if group is None:
+        valid = ", ".join(g.name for g in catalog.groups)
+        _fail(f"unknown group {name!r}. Valid groups: {valid} (see `repos list --groups`).")
+    return group
 
 
 def _apply(*, add: Sequence[str] = (), remove: Sequence[str] = ()) -> tuple[list[str], bool]:
-    """Run the writer; returns ``(before, changed)``. Maps writer refusals to exit 1."""
+    """Run the writer; returns ``(before, changed)``. Maps every writer failure to exit 1.
+
+    The writer wraps invalid TOML into ``ConfigWriteRefused``, so its raise set
+    is ``ConfigWriteRefused``, ``ConfigNotTrusted`` and ``OSError``.
+    """
     from pipecat_context_hub.shared import config_writer
 
     try:
@@ -134,8 +162,8 @@ def _apply(*, add: Sequence[str] = (), remove: Sequence[str] = ()) -> tuple[list
         _fail(f"config.toml was not changed: {exc.reason}")
     except ConfigNotTrusted as exc:
         _fail(f"config.toml was not changed: it is not trusted ({exc.reason}).")
-    except tomllib.TOMLDecodeError as exc:
-        _fail(f"config.toml was not changed: not valid TOML ({redact_home_in_text(str(exc))}).")
+    except OSError as exc:
+        _fail(f"config.toml was not changed: {redact_home_in_text(str(exc))}")
     return result.before, result.changed
 
 
@@ -144,6 +172,25 @@ def _shadow_note(layer: str | None) -> str:
         return ""
     return (
         f" (not in effect: {_layer_phrase(layer)} overrides {_KEY}, so this only edits config.toml)"
+    )
+
+
+def _after_write(layer: str | None, *, adding: bool) -> str:
+    """The reminder after a write, accurate when a higher layer shadows config.toml."""
+    if layer is None:
+        return _REFRESH_REMINDER if adding else _REMOVE_REMINDER
+    phrase = _layer_phrase(layer)
+    if adding:
+        return (
+            f"Not in effect while {phrase} sets {_KEY}: a `refresh` run with that layer in "
+            "force will not index it. Run `pipecat-context-hub refresh` where that layer "
+            f"does not set the key. {_RUNNING_SERVE}"
+        )
+    return (
+        f"Not in effect while {phrase} sets {_KEY}: a `refresh` run with that layer in "
+        "force still indexes that layer's list. Do not run `refresh --prune` with that layer "
+        "in force: it deletes the indexed data of every repo config.toml lists that the "
+        f"layer hides. {_RUNNING_SERVE}"
     )
 
 
@@ -189,10 +236,10 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
     layer = _refuse_if_shadowed(ctx, config_only)
     note = _shadow_note(layer)
 
-    if adding:
-        before, changed = _apply(add=members)
-    else:
-        before, changed = _apply(remove=members)
+    before: list[str] = []
+    changed = False
+    if members:  # nothing actionable: no need to read (or validate) config.toml
+        before, changed = _apply(add=members) if adding else _apply(remove=members)
     present = {s.casefold(): s for s in before}
 
     if adding:
@@ -213,9 +260,7 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
     for line in skipped:
         click.echo(line)
     if changed:
-        click.echo(_REFRESH_REMINDER if adding else _REMOVE_REMINDER)
-        if note:
-            click.echo(f"Note{note}", err=True)
+        click.echo(_after_write(layer, adding=adding))
 
 
 def _run_positional(
@@ -230,7 +275,6 @@ def _run_positional(
             click.echo(f"Already in config.toml: {target}" + note)
             return
         click.echo(f"Added {target}")
-        click.echo(_REFRESH_REMINDER)
     else:
         before, changed = _apply(remove=[target])
         if not changed:
@@ -238,9 +282,7 @@ def _run_positional(
             return
         stored = next((s for s in before if s.casefold() == target.casefold()), target)
         click.echo(f"Removed {stored}")
-        click.echo(_REMOVE_REMINDER)
-    if note:
-        click.echo(f"Note{note}", err=True)
+    click.echo(_after_write(layer, adding=adding))
 
 
 _SLUG_ARG = click.argument("slug", required=False)
@@ -248,7 +290,10 @@ _GROUP_OPT = click.option(
     "--group",
     "group",
     metavar="NAME",
-    help="Act on every parseable, non-tainted repo of this catalog group.",
+    help=(
+        "Act on every parseable, non-tainted repo of this catalog group "
+        "(`repos list --groups` names them)."
+    ),
 )
 _CONFIG_ONLY_OPT = click.option(
     "--config-only",
@@ -277,6 +322,7 @@ def repos_group() -> None:
 )
 @_CONFIG_ONLY_OPT
 @click.pass_context
+@_os_error_boundary
 def add_command(
     ctx: click.Context, slug: str | None, group: str | None, unlisted: bool, config_only: bool
 ) -> None:
@@ -299,6 +345,7 @@ def add_command(
 )
 @_CONFIG_ONLY_OPT
 @click.pass_context
+@_os_error_boundary
 def remove_command(
     ctx: click.Context, slug: str | None, group: str | None, unlisted: bool, config_only: bool
 ) -> None:
@@ -322,29 +369,44 @@ def _configured_in_toml() -> tuple[list[str], str | None]:
         return [], f"ignoring {redact_home(path)}: not trusted ({exc.reason})"
     except tomllib.TOMLDecodeError as exc:
         return [], f"ignoring {redact_home(path)}: not valid TOML ({redact_home_in_text(str(exc))})"
-    value = data.get(_KEY)
-    if value is None:
+    if _KEY not in data:
         return [], None
-    if isinstance(value, str):
-        return [p.strip() for p in value.split(",") if p.strip()], None
-    if isinstance(value, list) and all(isinstance(v, str) for v in value):
-        return [v.strip() for v in value if v.strip()], None
-    return [], f"ignoring {_KEY} in {redact_home(path)}: not an array of strings"
+    configured = config_list_value(_KEY, data[_KEY])  # the loader's own rule
+    if configured is None:
+        return [], f"ignoring {_KEY} in {redact_home(path)}: a value the loader ignores"
+    return configured, None
+
+
+def _cwd_line() -> str:
+    try:
+        return f"Consulted .env in cwd: {Path.cwd()}"
+    except (OSError, RuntimeError):
+        # Same guard as `load_cwd_dotenv`: no cwd means no cwd `.env` was read.
+        return "Consulted .env in cwd: none (the working directory is unavailable)"
+
+
+def _print_groups(catalog: Catalog | None) -> None:
+    if catalog is None:
+        click.echo("Catalog groups: unavailable (the repo catalog failed to load).")
+        return
+    click.echo("Catalog groups (for `repos add --group NAME`):")
+    for group in catalog.groups:
+        click.echo(f"  {group.name}  [{group.kind}]  {group.description}")
 
 
 @repos_group.command("list")
+@click.option(
+    "--groups", "show_groups", is_flag=True, help="Also list the catalog groups for --group."
+)
 @click.pass_context
-def list_command(ctx: click.Context) -> None:
+@_os_error_boundary
+def list_command(ctx: click.Context, show_groups: bool) -> None:
     """Show the effective repos, tagged default, catalog or unlisted."""
     config = _config(ctx)
     effective = config.sources.effective_repos
     defaults = {s.casefold() for s in config.sources.repos}
     catalog = load_catalog()
-    listed = (
-        {r.slug.casefold() for g in catalog.groups for r in g.repos}
-        if catalog is not None
-        else set()
-    )
+    listed = catalog.slugs() if catalog is not None else frozenset()
 
     def tag(slug: str) -> str:
         folded = slug.casefold()
@@ -352,7 +414,7 @@ def list_command(ctx: click.Context) -> None:
             return "default"
         return "catalog" if folded in listed else "unlisted"
 
-    click.echo(f"Consulted .env in cwd: {Path.cwd()}")
+    click.echo(_cwd_line())
     click.echo(f"Effective repos ({len(effective)}):")
     for slug in effective:
         click.echo(f"  {slug}  [{tag(slug)}]")
@@ -369,6 +431,8 @@ def list_command(ctx: click.Context) -> None:
             click.echo(f"In config.toml but hidden by {_layer_phrase(layer)}:")
             for slug in hidden:
                 click.echo(f"  {slug}  [{tag(slug)}]")
+    if show_groups:
+        _print_groups(catalog)
 
 
 def register_repos_commands(group: click.Group) -> None:
