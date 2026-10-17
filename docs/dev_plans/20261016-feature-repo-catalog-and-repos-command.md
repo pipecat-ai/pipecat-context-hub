@@ -91,10 +91,13 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    `just catalog-regen --bump-verified` after reviewing a clean health report. The weekly job is
    report-only and never edits the file. `load_catalog()` returns `Catalog | None`: a catalog that fails to
    load returns `None` (cached, logged once at the first load, never raised), which disables hints
-   and `catalog_groups_not_indexed` (no `corpus_hint`, an empty list) and never fails a tool call. The
+   and `catalog_groups_not_indexed` (no `corpus_hint`, an empty list) and never fails a tool call. `repos`
+   does not ignore a `None` catalog: it cannot validate a slug, so it refuses to change anything (decision 7). The
    only default-overriding flag is `parseable = false` (the repo clones but yields no chunks, so hints
    skip it); personal repos carry `maintainer`. Community repos are grouped by **topic**, not
-   by person (a person's name is not what a user types in a question). `.env.example` and the docs
+   by person (a person's name is not what a user types in a question). Phase 1 requires **one catalog group per
+   vendor**, with no catch-all "other providers" group. AWS, Tavus, Murf and Supermemory each get their own. PR 2's
+   frozen-query expectations rely on it: the AWS and Tavus queries hint, the Murf and Supermemory queries do not. `.env.example` and the docs
    table are **generated** from the catalog; a test fails when they differ.
 3. **Hint trigger: deterministic and independent of confidence.** Fire when a group alias appears in
    the query text (word boundary, case-insensitive, matched against the whole text including every
@@ -197,17 +200,25 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    - `repos list` shows the effective list and the consulted cwd (a `serve` launched from another
      directory reads a different `.env`), tags each slug `default`, `catalog` or `unlisted`, and names
      the shadowing layer for any repo that `config.toml` holds but a higher layer hides.
+   - **Catalog failed to load** (`load_catalog()` returns `None`). Positional `add`/`remove` and `--group`
+     exit 1, naming the catalog load failure, with the file untouched. `repos list` still prints the effective
+     list and tags every non-default slug `unlisted`. It warns once, relying on `load_catalog`'s own log-once;
+     `cli_repos` emits no second warning.
    - `repos add` is offline. Visibility is unknowable offline, so a bad or private `--unlisted` slug
      surfaces as a per-source clone error at the next `refresh`.
 8. **`tomlkit` writer contract** (grilled 2026-10-17).
-   - **Path.** `resolve_global_config_path()` (honours `PIPECAT_HUB_CONFIG_FILE`). For a symlink the
+   - **Path.** `resolve_global_config_path()` (honours `PIPECAT_HUB_CONFIG_FILE`). If it returns `None` (no home, or a
+     blank `PIPECAT_HUB_CONFIG_FILE`), the writer refuses with `ConfigWriteRefused`. For a symlink the
      temp file is written in the target's directory and renamed over the resolved target, so the link
      survives.
    - **Trust, checked once, in `env_loading`.** A new public `read_trusted_config(path) -> str | None`
      opens the file, applies every predicate `load_global_config` applies on the same open descriptor
      (non-regular, foreign-owned, world-writable, a foreign-owned or world-writable-without-sticky
      containing directory, a foreign-owned symlink hop), and returns the text (`None` for a missing
-     file) or raises `ConfigNotTrusted(reason)`. The trust helpers stay private and the writer never
+     file) or raises `ConfigNotTrusted(reason)`. Seam outcomes: a missing file gives `None`.
+     Every trust predicate and every open, read or decode failure (EACCES, an embedded NUL) raises
+     `ConfigNotTrusted`. Invalid TOML raises `tomllib.TOMLDecodeError` from `parse_global_config`, unwrapped; the writer
+     wraps it into `ConfigWriteRefused`. The seam takes a path, so an unresolvable path stays outside it. The trust helpers stay private and the writer never
      reimplements them, so it cannot write a file the reader would ignore. A new
      `parse_global_config(path) -> dict[str, object]` is `read_trusted_config` plus `tomllib.loads`
      (raw values; raises on untrusted or invalid TOML). `load_global_config` becomes a wrapper that
@@ -217,9 +228,12 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    - **Edit.** Only the top-level `PIPECAT_HUB_EXTRA_REPOS` key, as a native array of strings; a
      CSV-string value is read and rewritten as an array. Comments and other keys are preserved. A new
      file is created 0600 in a 0700 directory; an existing file's mode is kept.
-   - **Refusals** (exit 1, file untouched, message names the reason): a non-array, non-string existing
-     value; an existing file that is not valid TOML; an untrusted file. (`load_global_config` keeps
-     ignoring such a file with a warning.)
+   - **Refusals** (`repos add`/`remove` exit 1, file untouched, message names the reason): a non-array,
+     non-string existing value; an existing file that is not valid TOML; an untrusted file; no resolvable config path.
+     The writer raises `ConfigWriteRefused` (it wraps `TOMLDecodeError`); `ConfigNotTrusted` propagates unchanged.
+     `cli_repos` maps all three errors to exit 1. `load_global_config` keeps ignoring such a file with a warning.
+     `repos list` is read-only: on a bad `config.toml` it prints the effective list, names the ignored file and
+     the reason, and exits 0.
    - **Verification.** Before the rename the writer re-parses the temp file through
      `parse_global_config` and aborts, leaving the original untouched, if the list differs from the
      intended one.
@@ -233,7 +247,7 @@ recommendation, the change is stated. Review history and grilled outcomes are in
 9. **Layer provenance** (grilled 2026-10-17). `repos` must say which layer is in force, and the
    loaders merge into `os.environ` first-writer-wins and record no source today.
    - **Contract.** `load_env_layers` returns `dict[str, str]`, key to layer (`env`, `.env`,
-     `config.toml`); `main()` stores it in `ctx.obj["env_provenance"]` for the `repos` subcommand. The
+     `config.toml`); `main()` always overwrites `ctx.obj["env_provenance"]` with it (no `setdefault`) for the `repos` subcommand. The
      return value is optional, so the dashboard and smoke scripts are untouched. `repos` never re-reads
      a layer to decide which one is in force.
    - **Construction.** First snapshot the non-blank `PIPECAT_HUB_*` keys already in `os.environ` as
@@ -396,7 +410,10 @@ cleanly.
    hard-stops when the completed count reaches `N`; it has no range or skip semantics, so it caps count only.
 2. When it hands back, rebase `feature/repo-catalog-pr2` onto `feature/repo-catalog-pr1` once PR 1's Phase 2d
    commit exists (or onto `main` after PR 1 merges). Log it in the Handoff log table.
-3. Run `/skein:conduct <PR 2 plan> --resume` for Phase 4b, then the gauntlet auto-chain.
+3. Run `/skein:conduct <PR 2 plan> --resume --run-ci-parity --ci-cmd '<gate>'` for Phase 4b, then the gauntlet
+   auto-chain. `<gate>` is the AGENTS.md gate from the runbook. conduct's `SKILL.md` (0.10.0) lists both flags
+   in one flat argument-hint beside `--resume` and gives no per-flag restriction. It does not persist them in
+   state, so a legacy `--resume` run needs them again to get the CI-parity gate.
 
 Verified in `SKILL.md`: `--resume` refreshes `state.resume_base_sha` to the current `HEAD`, and each
 completed phase's `commit_sha` is immutable. So the rebase leaves those stored `commit_sha` values stale,
@@ -425,7 +442,10 @@ and both child plans in the same commit.
   `config.toml` directly. PR 1 guarantees that after `repos add X` (without `--config-only` under a
   shadowing layer) a new process's `effective_repos` contains X. PR 2's Phase 4b tests exactly this.
 - **C3: catalog API.** `load_catalog() -> Catalog | None` and the group/repo fields of parent Decision 2,
-  as implemented by PR 1's Phase 1. PR 2 does not change the schema; if it needs a field, stop, amend
+  as implemented by PR 1's Phase 1. PR 1 also names the test seams: pure `parse_catalog(text) -> Catalog`
+  (raises `CatalogError`) and module-level `_read_catalog_text() -> str`. `load_catalog` is `functools.cache`
+  around try/except over both; tests call `load_catalog.cache_clear()`. PR 2's tests patch `_read_catalog_text`.
+  PR 2 does not change the schema; if it needs a field, stop, amend
   PR 1's Phase 1 on its branch, and rebase PR 2.
 
 ### File ownership and expected conflicts
@@ -437,7 +457,8 @@ and both child plans in the same commit.
 | `cli_query.py` | `_EXIT_BAD_INPUT` to `EXIT_INVALID_INPUT` (import and constant) | `_QueryRuntime`, hint call sites | different regions; PR 2 rebases onto PR 1 |
 | `tests/unit/test_cli_query.py` | Phase 2d rewrites its line-16 `_EXIT_BAD_INPUT` import | Phases 3c and 4 extend the same module | keep both sides on rebase |
 | `cli.py` | `register_repos_commands`, `ctx.obj` provenance | provider wiring in `serve` | PR 2 rebases |
-| `.github/workflows/ci.yml` (Windows file list) | catalog, writer, repos test modules | `test_corpus_hint.py`, `test_repos_hint_seam.py`, `test_check_repo_catalog.py` | PR 2 rebases and keeps both |
+| `.github/workflows/ci.yml` (Windows file list) | catalog, writer, repos test modules | `test_corpus_hint.py`, `test_check_repo_catalog.py` (`test_repos_hint_seam.py` is not listed: it opens a real `IndexStore`, which fails closed on Windows, and carries a POSIX `skipif`) | PR 2 rebases and keeps both |
+| `docs/smoke-test.md` | Phase 2d adds a numbered live-smoke item (11) | Phase 4 adds another numbered after the highest existing item (expect 12) | keep both; renumber on rebase |
 | `docs/configuration.md`, `AGENTS.md` layout, changelog, `justfile` | both edit | both edit | `/update-docs` per PR; PR 2 rebases |
 | `pyproject.toml`, `uv.lock` | `tomlkit` | none | none |
 
@@ -488,8 +509,9 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   does **not** break loading, a catalog that fails to load returns `None` and logs once across repeated calls (PR 1 asserts only this
   loader contract; the consequences are **[PR2]** assertions: hints are disabled without failing a tool
   call, `catalog_groups_not_indexed == []` on both doors, and the CLI still prints its stderr hint);
-  generated `.env.example` block and docs section equal the checked-in files, wheel contains the
-  catalog, the `just catalog-regen` recipe exists.
+  generated `.env.example` block and docs section equal the checked-in files, the `importlib.resources` catalog path
+  is a file, one group per vendor (no catch-all group), the `just catalog-regen` recipe exists. Wheel inclusion is
+  proven by Phase 1's validation command only, not by a pytest: an editable install resolves to the source tree.
 - **[PR2]** Classifier (offline, injected responses): ok, 404, archived, 301, a real rename (`full_name` differs
   beyond case, new name reported), case-only name difference; inconclusive for 403/429/5xx/timeout/
   network error (never labelled inaccessible); the 90-day advisory boundary; `GITHUB_TOKEN` sent as an
@@ -504,13 +526,15 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   plus the row blank real env var + non-blank `.env` + `config.toml` (provenance `config.toml`, no
   refusal), and the overlap row (a key set blank by `.env` and then by `config.toml`: the merged layer
   is `config.toml`). The `ctx.obj["env_provenance"]` carrier: through `main()` both loaders run once per `repos`
-  invocation, and a pre-set provenance map alone drives the shadow decision (no layer is re-read).
+  invocation. A second test patches `env_loading.load_env_layers` to return a controlled map and asserts neither
+  loader is called: that map alone drives the shadow decision (no layer is re-read).
 - **[PR1]** Writer: round trip through `parse_global_config` and `load_global_config` for no file, empty file,
   comments preserved, other keys byte-identical, CSV value, non-array/non-string value refused,
   symlinked config, `PIPECAT_HUB_CONFIG_FILE`, non-regular, world-writable and foreign-owned refusal,
   mode kept or created 0600, directory created 0700, and a failed re-parse leaving the original
   untouched, the containing-directory and symlink-hop refusals, an existing file that is not valid
-  TOML refused with the file untouched, and an untrusted file refused. POSIX-only cases are skipped on Windows, where a round-trip test asserts the mirror-the-reader
+  TOML refused with the file untouched, an untrusted file refused, and no resolvable config path refused. Each ConfigNotTrusted predicate is also run through
+  the reader and the writer (one shared case tuple). POSIX-only cases are skipped on Windows, where a round-trip test asserts the mirror-the-reader
   contract.
 - **[PR1]** `repos` table: layers (env var / cwd `.env` / blank `.env` / `config.toml` only / none) x (add /
   remove / list / add `--config-only`), asserting `SourceConfig.effective_repos`, the shadow refusal
@@ -527,7 +551,9 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   exclusion with a slug and `--unlisted`, shadow with and without `--config-only`), refusals use
   `EXIT_INVALID_INPUT` (mirror `test_refresh_in_progress_exit_code_is_shared`), a cross-cwd case, each
   row stating whether `effective_repos` contains the slug afterwards, and `repos add` making no network
-  call.
+  call. Also: `load_catalog()` returning `None` (positional `add`/`remove` and `--group` exit 1, file untouched;
+  `repos list` tags non-default slugs `unlisted` and logs one warning), and `repos list` on a bad `config.toml`
+  (untrusted, invalid TOML, no resolvable path: prints the effective list, exits 0).
 - **[PR2]** Indexed state for `get_hub_status`: indexed, `configured_no_records`, not configured; case-variant
   slugs match; the synthetic `docs.pipecat.ai` key is dropped; `catalog_groups_not_indexed` for fully, partly and `parseable = false`-only groups;
   `get_counts_by_repo` raising yields no hint and no crash (mirror `test_store_errors_never_break_the_response`);
