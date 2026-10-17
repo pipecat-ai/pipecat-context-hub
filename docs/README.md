@@ -230,8 +230,8 @@ read-only contract. Keys, compatibility rules and a copy-paste example:
 | `PIPECAT_HUB_PARENT_WATCH_INTERVAL` | `2.0` | Hidden tuning knob (primarily for tests): poll interval (seconds) for the parent-death watchdog. Floored at `0.1s` when non-zero. Set to `0` to disable the watchdog. |
 | `PIPECAT_HUB_WARMUP` | `1` | Pre-warm embedding + cross-encoder at `serve` boot so the first MCP query doesn't pay the cold-start cost on supported POSIX hosts. Set to `0` to skip (faster boot, slower first query). |
 
-See [`.env.example`](../.env.example) for curated repo bundles you can copy
-into your `.env`, and [`config.toml.example`](../config.toml.example) for the
+See [`.env.example`](../.env.example) for curated repo bundles (by topic and by
+vendor: NVIDIA, Google, AWS, other providers) you can copy into your `.env`, and [`config.toml.example`](../config.toml.example) for the
 machine-global equivalent described in
 [Config precedence](configuration.md). Reranker model choices:
 [Cross-Encoder Reranking](reranking.md).
@@ -250,7 +250,7 @@ The default index includes:
 - **Daily Python SDK** — `daily-co/daily-python` (`.pyi` stubs + RST type definitions)
 - **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `pipecat-client-react-native-transports`, `pipecat-ui`, `pipecat-prebuilt` (tree-sitter-indexed)
 
-CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `docs.pipecat.ai` pages (`/api-reference/cli/*`); the `pipecat-ai/pipecat-cli` repo itself is opt-in (it adds only CLI-internal source). Add more repos via `PIPECAT_HUB_EXTRA_REPOS` (full `org/repo` slugs, e.g. `pipecat-ai/pipecat-cli`, `pipecat-ai/pipecat-mcp-server`, `pipecat-ai/pipecat-flows-editor`, `pipecat-ai/pipecat-krisp`). Only Python, TypeScript, and RST are parsed — Swift/Kotlin/C++ client SDKs (iOS, Android, cxx, esp32) clone but yield zero source/API chunks (only a few README/config fallback chunks), so they don't surface in `search_api` / `get_code_snippet`.
+CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `docs.pipecat.ai` pages (`/api-reference/cli/*`); the `pipecat-ai/pipecat-cli` repo is archived (the CLI now ships inside `pipecat-ai/pipecat`, which is indexed). Add more repos via `PIPECAT_HUB_EXTRA_REPOS` (full `org/repo` slugs, e.g. `pipecat-ai/pipecat-mcp-server`, `pipecat-ai/pipecat-flows-editor`). Only Python, TypeScript, and RST are parsed — Swift/Kotlin/C++ client SDKs (iOS, Android, cxx, esp32) clone but yield zero source/API chunks (only a few README/config fallback chunks), so they don't surface in `search_api` / `get_code_snippet`.
 
 ## Security
 
