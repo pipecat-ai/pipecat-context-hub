@@ -235,6 +235,50 @@ class TestParseCatalog:
 # --------------------------------------------------------------------------
 
 
+class TestCatalogTextIsRenderSafe:
+    """``parse_catalog`` enforces what the renderers and ``repos list`` assume:
+    every string prints on one line, a table cell holds no ``|``, and no string
+    can carry a generated-block marker into the next splice."""
+
+    _FIELDS = {
+        "note": ('note = "demo"', 'note = "{v}"'),
+        "description": ('description = "Acme voice"', 'description = "{v}"'),
+        "alias": ('aliases = ["acme"]', 'aliases = ["{v}"]'),
+    }
+
+    @pytest.mark.parametrize("field", ["note", "description", "alias"])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "Acme\\nPIPECAT_HUB_DATA_DIR=/tmp/evil",
+            "a\\tb",
+            "a\\rb",
+            "a\\u007fb",
+            "a\\u0001b",
+            "x BEGIN GENERATED y",
+            "x END GENERATED y",
+        ],
+    )
+    def test_unsafe_text_is_rejected(self, field: str, bad: str) -> None:
+        old, template = self._FIELDS[field]
+        with pytest.raises(CatalogError, match="groups.acme"):
+            parse_catalog(_with(_VALID, old, template.format(v=bad)))
+
+    def test_pipe_in_table_cell_description_is_rejected(self) -> None:
+        text = _with(_VALID, 'description = "Acme voice"', 'description = "Acme | voice"')
+        with pytest.raises(CatalogError, match="'description'"):
+            parse_catalog(text)
+
+    def test_renderer_markers_use_the_rejected_words(self) -> None:
+        for marker in (ENV_BEGIN, DOCS_BEGIN):
+            assert repo_catalog.GENERATED_BEGIN in marker
+        for marker in (ENV_END, DOCS_END):
+            assert repo_catalog.GENERATED_END in marker
+
+    def test_shipped_catalog_is_render_safe(self, shipped_catalog: Catalog) -> None:
+        assert shipped_catalog.groups  # parse_catalog ran every check
+
+
 class TestSlugGrammar:
     """One owner/repo grammar for the catalog parser, ``repos`` and the writer.
 
@@ -371,6 +415,22 @@ class TestLoadCatalog:
         monkeypatch.setattr(repo_catalog, "_read_catalog_text", boom)
         load_catalog.cache_clear()
         assert load_catalog() is None
+
+    def test_failure_warning_redacts_the_home_directory(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        home = str(Path.home())
+
+        def boom() -> str:
+            raise OSError(f"[Errno 2] No such file: '{home}/site-packages/repo_catalog.toml'")
+
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", boom)
+        load_catalog.cache_clear()
+        with caplog.at_level(logging.WARNING, logger="pipecat_context_hub"):
+            assert load_catalog() is None
+        message = "\n".join(r.getMessage() for r in caplog.records)
+        assert "repo_catalog.toml" in message
+        assert home not in message
 
     def test_schema_violation_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         bad = _with(_VALID, 'kind = "vendor"\n', 'kind = "vendor"\nprivate = true\n')

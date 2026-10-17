@@ -22,6 +22,7 @@ from datetime import date
 from importlib import resources
 
 from pipecat_context_hub.shared.config import SourceConfig
+from pipecat_context_hub.shared.paths import redact_home_in_text
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,13 @@ _REPO_KEYS = frozenset({"slug", "note", "parseable", "maintainer"})
 # Visibility is unknowable offline; the health check owns it. The schema simply
 # has no such fields, and names them in the error so the reason is obvious.
 _FORBIDDEN_KEYS = frozenset({"private", "archived", "status"})
+
+# The generated-block marker words. `repo_catalog_render` builds every marker
+# from these, so a catalog string containing one could break the next splice.
+GENERATED_BEGIN = "BEGIN GENERATED"
+GENERATED_END = "END GENERATED"
+# Free text rendered into a markdown table cell (`render_docs_block`).
+_TABLE_CELL_FIELDS = frozenset({"description"})
 
 
 class CatalogError(ValueError):
@@ -96,6 +104,26 @@ def _check_keys(where: str, table: dict[str, object], allowed: frozenset[str]) -
             raise CatalogError(f"{where}: unknown key {key!r}")
 
 
+def _check_text(where: str, key: str, value: str) -> None:
+    """Enforce what the renderers and ``repos list`` assume of every catalog string.
+
+    Each string is printed on one line: as a comment in ``.env.example`` (a
+    newline would start a bare, uncommented assignment line a user copies into
+    ``.env``), in a ``docs/configuration.md`` table row, and on ``repos list
+    --groups`` stdout. So no control character (C0, which includes newline, tab
+    and carriage return, and DEL); no ``|`` in a table-cell field; and no
+    generated-block marker word anywhere, which would break the next splice.
+    """
+    for ch in value:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            raise CatalogError(f"{where}: {key!r} contains a control character ({ch!r})")
+    if key in _TABLE_CELL_FIELDS and "|" in value:
+        raise CatalogError(f"{where}: {key!r} contains '|', which breaks the docs table row")
+    for marker in (GENERATED_BEGIN, GENERATED_END):
+        if marker in value:
+            raise CatalogError(f"{where}: {key!r} contains the generated-block marker {marker!r}")
+
+
 def _expect_str(where: str, table: dict[str, object], key: str, *, required: bool) -> str:
     if key not in table:
         if required:
@@ -104,6 +132,7 @@ def _expect_str(where: str, table: dict[str, object], key: str, *, required: boo
     value = table[key]
     if not isinstance(value, str) or not value.strip():
         raise CatalogError(f"{where}: {key!r} must be a non-empty string")
+    _check_text(where, key, value)
     return value
 
 
@@ -149,6 +178,8 @@ def _parse_group(name: str, raw: object) -> CatalogGroup:
         or not all(isinstance(a, str) and a.strip() for a in aliases_raw)
     ):
         raise CatalogError(f"{where}: 'aliases' must be a non-empty list of non-empty strings")
+    for alias in aliases_raw:
+        _check_text(where, "aliases", alias)
     repos_raw = raw.get("repos")
     if not isinstance(repos_raw, list) or not repos_raw:
         raise CatalogError(f"{where}: needs at least one [[repos]] entry")
@@ -213,5 +244,8 @@ def load_catalog() -> Catalog | None:
     try:
         return parse_catalog(_read_catalog_text())
     except Exception as exc:  # never raise: a bad catalog must not fail a tool call
-        logger.warning("repo catalog failed to load; catalog features disabled: %s", exc)
+        logger.warning(
+            "repo catalog failed to load; catalog features disabled: %s",
+            redact_home_in_text(str(exc)),  # an I/O error names the resource's absolute path
+        )
         return None

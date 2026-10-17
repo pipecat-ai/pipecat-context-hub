@@ -18,17 +18,20 @@ from pathlib import Path
 
 from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.repo_catalog import (
+    GENERATED_BEGIN,
+    GENERATED_END,
     Catalog,
     CatalogGroup,
     parse_catalog,
 )
 
-ENV_BEGIN = "# >>> BEGIN GENERATED: repo catalog (edit data/repo_catalog.toml, run `just catalog-regen`) >>>"
-ENV_END = "# <<< END GENERATED: repo catalog <<<"
-DOCS_BEGIN = (
-    "<!-- BEGIN GENERATED: repo catalog (edit data/repo_catalog.toml, run `just catalog-regen`) -->"
-)
-DOCS_END = "<!-- END GENERATED: repo catalog -->"
+# Built from the catalog's marker words, which `parse_catalog` refuses in any
+# catalog string, so rendered catalog text can never contain a marker.
+_REGEN_HINT = "repo catalog (edit data/repo_catalog.toml, run `just catalog-regen`)"
+ENV_BEGIN = f"# >>> {GENERATED_BEGIN}: {_REGEN_HINT} >>>"
+ENV_END = f"# <<< {GENERATED_END}: repo catalog <<<"
+DOCS_BEGIN = f"<!-- {GENERATED_BEGIN}: {_REGEN_HINT} -->"
+DOCS_END = f"<!-- {GENERATED_END}: repo catalog -->"
 
 _RULE = "# " + "-" * 74
 _VERIFIED_LINE_RE = re.compile(r"^(verified[ \t]*=[ \t]*)\d{4}-\d{2}-\d{2}([ \t]*(?:#.*)?)$", re.M)
