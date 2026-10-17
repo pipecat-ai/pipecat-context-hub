@@ -65,7 +65,7 @@ aliases = ["voice ui kit", "voice-ui-kit"]
 [groups.flows]
 kind = "topic"
 description = "Conversation flows and structured dialogues"
-aliases = ["flows", "pipecat flows"]
+aliases = ["pipecat flows"]
 
   [[groups.flows.repos]]
   slug = "pipecat-ai/pipecat-flows-editor"
@@ -74,7 +74,7 @@ aliases = ["flows", "pipecat flows"]
 [groups.dev-tools]
 kind = "topic"
 description = "Cloud, CLI and developer tools"
-aliases = ["whisker", "tail", "skills"]
+aliases = ["whisker"]
 
   [[groups.dev-tools.repos]]
   slug = "pipecat-ai/tail"
@@ -88,7 +88,7 @@ aliases = ["whisker", "tail", "skills"]
 [groups.audio-and-benchmarks]
 kind = "topic"
 description = "Audio, turn detection and benchmarks"
-aliases = ["smart turn", "turn detection", "benchmark"]
+aliases = ["smart turn", "turn detection"]
 
   [[groups.audio-and-benchmarks.repos]]
   slug = "pipecat-ai/smart-turn"
@@ -102,7 +102,7 @@ aliases = ["smart turn", "turn detection", "benchmark"]
 [groups.example-apps]
 kind = "topic"
 description = "Example apps and demos"
-aliases = ["demo", "hackathon", "webinar"]
+aliases = ["hackathon", "webinar"]
 
   [[groups.example-apps.repos]]
   slug = "pipecat-ai/peekaboo"
