@@ -84,7 +84,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 
 `pipecat-context-hub repos` (also `pipecat context-hub repos`) edits only the
 `PIPECAT_HUB_EXTRA_REPOS` key of `~/.config/pipecat-context-hub/config.toml`,
-preserving comments and other keys. It works offline; run
+preserving comments (including those on and between array entries), other keys
+and CRLF line endings; a removed entry's own trailing comment goes with it, and
+a comma-separated string value is rewritten as an array. It works offline; run
 `pipecat-context-hub refresh` afterwards to index (or `refresh --prune` to drop
 data after a remove). Under a shadowing layer (rule 3, with `--config-only`) the
 reminder says the change is not in effect there, and warns against

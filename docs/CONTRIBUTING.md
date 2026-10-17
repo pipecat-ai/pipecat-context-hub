@@ -73,7 +73,7 @@ Retrieval:
     `pipecat-ai/pipecat-ui`, `pipecat-ai/pipecat-prebuilt`
   - Tree-sitter-extracted: interfaces, classes, types, functions, enums, const exports
     with individual method chunks and full signatures
-- Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var
+- Additional repos via `PIPECAT_HUB_EXTRA_REPOS` (env var, `.env`, or `config.toml`, which `repos add` edits)
   - Adjacent pipecat-ai repos that parse cleanly but are opt-in (use the full
     `org/repo` slug in `PIPECAT_HUB_EXTRA_REPOS`):
     `pipecat-ai/pipecat-mcp-server` (Python), `pipecat-ai/pipecat-flows-editor` (TS)
@@ -89,8 +89,14 @@ Retrieval:
   - Repos with `src/` layouts are Python AST-indexed for `search_api`
   - Repos with `.pyi` stubs at root are also AST-indexed
   - Repos with `package.json`/`tsconfig.json` are tree-sitter-indexed
-  - See `.env.example` for curated repo bundles, grouped by topic and by vendor
-    (NVIDIA, Google, AWS, other providers)
+  - Users add extra repos with `pipecat-context-hub repos add <owner/repo>` (or
+    `--group NAME`), which edits `config.toml`; setting the env var or a `.env`
+    still works
+  - The curated bundles (by topic and by vendor: NVIDIA, Google, AWS, other
+    providers) live in `src/pipecat_context_hub/data/repo_catalog.toml`. The
+    `.env.example` block and the `docs/configuration.md` section are generated
+    from it: edit the catalog, then run `just catalog-regen` (a test fails on
+    drift). Do not hand-edit the generated blocks
 
 ## Project Structure
 

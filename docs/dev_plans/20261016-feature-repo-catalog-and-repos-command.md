@@ -1,6 +1,6 @@
 # Repo catalog, `repos` command and corpus hints
 
-**Branch:** `feature/repo-catalog` | **Review Gates:** full | **Component:** config | **Status:** Planned (design grilled 2026-10-16; independently reviewed by `/review-plan`, see Findings)
+**Branch:** `feature/repo-catalog` | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs, PR 1 implemented)
 
 **Delivery:** two PRs, each from its own conduct-format plan (see *Delivery*): PR 1 =
 [`20261017-feature-repo-catalog-pr1-catalog-and-repos.md`](20261017-feature-repo-catalog-pr1-catalog-and-repos.md),
@@ -495,7 +495,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
 
 | Item | Value |
 |---|---|
-| PR 1 plan signed off (`/review-plan` or waive) | |
+| PR 1 plan signed off (`/review-plan` or waive) | 2026-10-17, `/review-plan` (marker in the PR 1 plan) |
 | PR 2 plan signed off | |
 | PR 1 worktree started / conduct state file | |
 | PR 1 Phase 1 `commit_sha` (PR 2 branches from here) | |
@@ -627,7 +627,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
 
 Conduct tracks phase progress in each child plan's own `## Progress`. This list tracks the PRs.
 
-- [ ] Child plans signed off
+- [ ] Child plans signed off (PR 1: 2026-10-17; PR 2: pending)
 - [ ] PR 1 merged (catalog, generator, `repos`)
 - [ ] PR 2 merged (indexed-repo status, hints, health check)
 - [ ] Phase 6: dogfood migration

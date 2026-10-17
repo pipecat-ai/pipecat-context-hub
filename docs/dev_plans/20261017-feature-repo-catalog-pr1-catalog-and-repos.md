@@ -1,6 +1,6 @@
 # Repo catalog PR 1: catalog, generator and the `repos` command
 
-**Branch:** `feature/repo-catalog-pr1` | **Review Gates:** full | **Component:** config | **Status:** Planned (derived from the reviewed parent plan; needs its own `/review-plan` sign-off before `/conduct`)
+**Branch:** `feature/repo-catalog-pr1` | **Review Gates:** full | **Component:** config | **Status:** In progress (signed off by `/review-plan` 2026-10-17; Phases 1, 2a-2d implemented)
 
 ## Objective
 
@@ -265,7 +265,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
   consulted-cwd line at runtime (via `Path`), and uid/mode rows skip when `os.name != "posix"`.
   `test_cli_query.py` and `test_plugin.py` are not Windows-listed and stay so.
 
-<!-- reviewed: 2026-10-17 @ 88af6c3e0054de59ee837720caae74dc86674f2f -->
+<!-- reviewed: 2026-10-17 @ 571c03ea70d3eb78eb1f7e4a2b3e1e8ec29c936b -->
 
 ## Progress
 
@@ -279,4 +279,4 @@ Facts a phase worker needs and cannot cheaply rediscover:
 
 ### Review Waivers
 
-_(none yet; this plan has not been through `/review-plan`)_
+_(none: signed off by `/review-plan` on 2026-10-17, see the marker above)_
