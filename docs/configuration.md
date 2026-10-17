@@ -79,3 +79,29 @@ works everywhere `Path.home()` resolves.
 ## Adding repos
 
 CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `docs.pipecat.ai` pages (`/api-reference/cli/*`); the `pipecat-ai/pipecat-cli` repo is archived (the CLI now ships inside `pipecat-ai/pipecat`, which is indexed). Add more repos via `PIPECAT_HUB_EXTRA_REPOS` (full `org/repo` slugs, e.g. `pipecat-ai/pipecat-mcp-server`, `pipecat-ai/pipecat-flows-editor`). Only Python, TypeScript, and RST are parsed — Swift/Kotlin/C++ client SDKs (iOS, Android, cxx, esp32) clone but yield zero source/API chunks (only a few README/config fallback chunks), so they don't surface in `search_api` / `get_code_snippet`.
+
+## Repo catalog
+
+Curated public repos you can add beyond the defaults, via `PIPECAT_HUB_EXTRA_REPOS`. This section is generated from `src/pipecat_context_hub/data/repo_catalog.toml` (run `just catalog-regen`); a test fails if it drifts from the catalog or from `.env.example`.
+
+<!-- BEGIN GENERATED: repo catalog (edit data/repo_catalog.toml, run `just catalog-regen`) -->
+Last audited 2026-10-16. Public repos only. A repo marked *no source chunks* clones but yields nothing to search (Swift/Kotlin/C++ are not parsed).
+
+| Group | Kind | Description | Repos |
+|-------|------|-------------|-------|
+| `client-sdks` | topic | Client SDKs and transports for web, mobile and native | `pipecat-ai/pipecat-client-ios` *(no source chunks)*<br>`pipecat-ai/pipecat-client-ios-daily` *(no source chunks)*<br>`pipecat-ai/pipecat-client-ios-small-webrtc` *(no source chunks)*<br>`pipecat-ai/pipecat-client-android` *(no source chunks)*<br>`pipecat-ai/pipecat-client-android-transports` *(no source chunks)*<br>`pipecat-ai/pipecat-client-cxx` *(no source chunks)*<br>`pipecat-ai/pipecat-esp32` *(no source chunks)*<br>`pipecat-ai/pipecat-client-ios-gemini-live-websocket-demo` *(no source chunks)*<br>`pipecat-ai/pipecat-client-ios-openai-realtime-webrtc-demo` *(no source chunks)* |
+| `voice-ui-kit` | topic | Legacy Voice UI Kit (npm package, superseded by the default pipecat-ai/pipecat-ui) | `pipecat-ai/voice-ui-kit` |
+| `flows` | topic | Conversation flows and structured dialogues | `pipecat-ai/pipecat-flows-editor` |
+| `dev-tools` | topic | Cloud, CLI and developer tools | `pipecat-ai/tail`<br>`pipecat-ai/whisker`<br>`pipecat-ai/skills` |
+| `audio-and-benchmarks` | topic | Audio, turn detection and benchmarks | `pipecat-ai/smart-turn`<br>`pipecat-ai/stt-benchmark`<br>`pipecat-ai/gb-benchmarks` |
+| `example-apps` | topic | Example apps and demos | `pipecat-ai/peekaboo`<br>`pipecat-ai/pipecat-mcp-server`<br>`pipecat-ai/pipecat-music-player`<br>`pipecat-ai/yc-voice-agents-hackathon`<br>`pipecat-ai/pipecat-deepgram-webinar-demo` |
+| `gradient-bang` | topic | Gradient Bang ecosystem | `pipecat-ai/gradient-bang`<br>`pipecat-ai/gb-context-viewer` |
+| `nvidia` | vendor | NVIDIA Nemotron speech and voice agents | `NVIDIA-AI-Blueprints/nemotron-voice-agent`<br>`pipecat-ai/nemotron-january-2026`<br>`pipecat-ai/nemotron-voicechat-dgx-spark`<br>`pipecat-ai/nemo3-battleships` |
+| `google` | vendor | Google Gemini Live | `pipecat-ai/gemini-live-web-starter`<br>`askjohngeorge/askjg-demo-gemini-pcc`<br>`daily-co/pcc-gemini-screen-voice-ui-kit` |
+| `aws` | vendor | AWS Bedrock, SageMaker and Nova Sonic | `aws-samples/build-intelligent-ai-voice-agents-with-pipecat-and-amazon-bedrock`<br>`pipecat-ai/aws-workshops`<br>`pipecat-ai/aws-deepgram-workshop`<br>`deepgram/rxconnect-deepgram-pipecat-sagemaker-demo`<br>`chadbailey59/aws-telephony-bot`<br>`aws-solutions-library-samples/guidance-for-voice-agents-on-aws`<br>`aws-samples/sample-voice-agent-on-aws` |
+| `tavus` | vendor | Tavus avatars | `aws-samples/sample-voice-ai-tavus-avatar-demo` |
+| `murf` | vendor | Murf text-to-speech | `murf-ai/pipecat-murf-tts` |
+| `supermemory` | vendor | Supermemory long-term memory | `supermemoryai/pipecat-memory` |
+| `lip-sync-characters` | topic | Visemes and multi-character pipelines (personal projects, may be rewritten or archived without notice) | `jptaylor/pipecat-visemes`<br>`jptaylor/pipecat-one-pipeline-two-characters` |
+| `community-projects` | topic | Community voice-bot projects (personal projects, may be rewritten or archived without notice) | `chadbailey59/caracal`<br>`chadbailey59/agent-voice-bot`<br>`finchvox/finchvox`<br>`aaronsu11/Dum-E` |
+<!-- END GENERATED: repo catalog -->
