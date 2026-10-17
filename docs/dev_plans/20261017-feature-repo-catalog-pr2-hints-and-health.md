@@ -338,7 +338,7 @@ Put the result and the mutation-check results in the PR description. Restore the
 - [x] Phase 3b: `indexed_repos` and `groups_not_indexed`
 - [x] Phase 3c: config values and `get_hub_status`
 - [x] Phase 4: corpus hints
-- [ ] Phase 5: catalog health and curation scripts
+- [x] Phase 5: catalog health and curation scripts
 - [ ] Phase 4b: seam test against the real `repos` command
 
 ## Findings
@@ -363,3 +363,11 @@ _(none yet; this plan has not been through `/review-plan`)_
   - The tainted-only `catalog_groups_not_indexed` check is covered on the MCP door only; the CLI door shares the predicate but has no test.
   - Broad catalog aliases (`google`, `gemini`, `turn detection`, `ios`, `android`) make core-topic questions hint while any repo in the group is unindexed (known Decision 3 cost).
 - **Phase 4 mutation checks (run by the conductor):** alias boundary, `parseable = false` skip, tainted skip, CLI stderr suppression, `--config-only`, the `; ` join and unreadable-count `None` were each killed by the named test. Two mutants survived as equivalent: dropping `- tainted` from `configured` (redundant: `missing_repos` already drops tainted repos) and replacing the catalog-`None` `return None` with `pass` (the blanket `except` returns `None` anyway).
+- **Phase 5 (open, Important, needs a decision):** the reviewer recalls (unverified against a live rename) that GitHub answers a renamed or transferred repo with a 301 whose `Location` and body `url` are `https://api.github.com/repositories/{id}`, not `/repos/owner/new-name`. If so, `_name_from_api_url` returns `None`, so the weekly run reports `renamed` (and exits 1) without the new name, which Decision 6 says to report. The synthetic 301 fixture uses the `/repos/owner/new` shape, so no test can catch this; the plan has the same assumption. Fix if confirmed: on an `/repositories/{id}` target, make one more non-following GET and read `full_name` from the 200 body. Verify on the first weekly run or against a real renamed repo before relying on the new-name field.
+- **Phase 5 (open, Minor):**
+  - A 200 whose body is not a JSON object or lacks `full_name` is classified `ok` (a captive-portal HTML 200 gives a false all-clear); `test_non_json_200_does_not_crash` pins that. Prefer `inconclusive`.
+  - `check_repo_catalog.main` returns 1 (stale) for a catalog-load failure, and argparse errors exit 2 (inconclusive); the load message goes to stderr only, so the workflow's empty-report guard skips the tracking issue. Use a distinct exit code and a stdout line.
+  - `curate_repo_catalog.discover_vendors` does not guard a malformed search response (`resp.json()` ValueError, non-dict body, `repository: null`); `repo_stats` handles most of it. It also returns `EXIT_NO_TOKEN` for catalog-load failures, and ignores the git-tree `truncated: true` flag.
+  - `test_scripts_have_no_permission_bit_dependence` only asserts `is_file()`.
+  - The workflow grants `issues: write` job-wide (matches `smoke-drift.yml`). In-phase: actions are SHA-pinned (security-review finding), each token is scoped to its step, and checkout uses `persist-credentials: false`.
+- **Phase 5 (note):** the packaged catalog is `src/pipecat_context_hub/data/repo_catalog.toml`, not `data/repo_catalog.toml` as phase 4's text says. Phase 4's frozen-query tests read the shipped catalog; both phases are consistent with the real path. Phase 5 ran test-writer after implementer (sequential, interface coupling: the scripts are new and the plan names behaviours, not function names).
