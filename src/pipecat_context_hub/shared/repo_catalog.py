@@ -17,6 +17,7 @@ import functools
 import logging
 import re
 import tomllib
+import unicodedata
 from dataclasses import dataclass
 from datetime import date
 from importlib import resources
@@ -46,6 +47,12 @@ GENERATED_BEGIN = "BEGIN GENERATED"
 GENERATED_END = "END GENERATED"
 # Free text rendered into a markdown table cell (`render_docs_block`).
 _TABLE_CELL_FIELDS = frozenset({"description"})
+# Unicode categories no catalog string may hold: Cc (C0, DEL and C1 controls,
+# including NEL), Cf (format: bidi overrides, zero-width characters, BOM), Zl
+# and Zp (U+2028 / U+2029). Each can either start a new line under some
+# consumer (`str.splitlines`, which `load_cwd_dotenv` uses; a terminal) or hide
+# text from a reviewer.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 
 class CatalogError(ValueError):
@@ -107,16 +114,23 @@ def _check_keys(where: str, table: dict[str, object], allowed: frozenset[str]) -
 def _check_text(where: str, key: str, value: str) -> None:
     """Enforce what the renderers and ``repos list`` assume of every catalog string.
 
-    Each string is printed on one line: as a comment in ``.env.example`` (a
-    newline would start a bare, uncommented assignment line a user copies into
+    Each string is printed on one line: as a comment in ``.env.example`` (a line
+    break would start a bare, uncommented assignment line a user copies into
     ``.env``), in a ``docs/configuration.md`` table row, and on ``repos list
-    --groups`` stdout. So no control character (C0, which includes newline, tab
-    and carriage return, and DEL); no ``|`` in a table-cell field; and no
-    generated-block marker word anywhere, which would break the next splice.
+    --groups`` stdout. So no character that any consumer treats as a line break
+    (``value.splitlines() == [value]``: newline, carriage return, NEL, U+2028,
+    U+2029, the C0 separators) and no character in :data:`_UNSAFE_CATEGORIES`
+    (controls, bidi and zero-width format characters, which can also hide
+    text); no ``|`` in a table-cell field; and no generated-block marker word
+    anywhere, which would break the next splice.
     """
+    if value.splitlines() != [value]:
+        raise CatalogError(f"{where}: {key!r} contains a line break")
     for ch in value:
-        if ord(ch) < 0x20 or ord(ch) == 0x7F:
-            raise CatalogError(f"{where}: {key!r} contains a control character ({ch!r})")
+        if unicodedata.category(ch) in _UNSAFE_CATEGORIES:
+            raise CatalogError(
+                f"{where}: {key!r} contains a control or invisible character (U+{ord(ch):04X})"
+            )
     if key in _TABLE_CELL_FIELDS and "|" in value:
         raise CatalogError(f"{where}: {key!r} contains '|', which breaks the docs table row")
     for marker in (GENERATED_BEGIN, GENERATED_END):

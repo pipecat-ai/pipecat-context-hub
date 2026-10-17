@@ -255,6 +255,7 @@ class TestCatalogTextIsRenderSafe:
             "a\\rb",
             "a\\u007fb",
             "a\\u0001b",
+            "a\\u009bb",  # C1 CSI
             "x BEGIN GENERATED y",
             "x END GENERATED y",
         ],
@@ -277,6 +278,55 @@ class TestCatalogTextIsRenderSafe:
 
     def test_shipped_catalog_is_render_safe(self, shipped_catalog: Catalog) -> None:
         assert shipped_catalog.groups  # parse_catalog ran every check
+
+    # Line/paragraph separators and NEL (`str.splitlines` breaks on them), a
+    # bidi override, a zero-width space and a BOM (Cf: they hide text).
+    _INVISIBLE = [" ", " ", "\u0085", "‮", "\u200b", "﻿"]
+
+    @pytest.mark.parametrize("field", ["note", "description", "alias"])
+    @pytest.mark.parametrize("char", _INVISIBLE)
+    def test_line_separator_and_invisible_chars_rejected(self, field: str, char: str) -> None:
+        old, template = self._FIELDS[field]
+        bad = f"Good stuff\\u{ord(char):04x}PIPECAT_HUB_DATA_DIR=/tmp/pwned"
+        with pytest.raises(CatalogError, match="groups.acme"):
+            parse_catalog(_with(_VALID, old, template.format(v=bad)))
+
+    @pytest.mark.parametrize("field", ["note", "description", "alias"])
+    @pytest.mark.parametrize("char", _INVISIBLE + ["\n", "\r", "\x1c", "\x0b"])
+    def test_rendered_env_block_sets_no_key(
+        self, field: str, char: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The property the validator exists for: whatever reaches the rendered
+        ``.env.example`` block, copied verbatim to a ``.env``, sets no key. Either
+        ``parse_catalog`` refuses the string or its rendering is inert."""
+        from pipecat_context_hub.shared.env_loading import load_cwd_dotenv
+
+        old, template = self._FIELDS[field]
+        payloads = {
+            "PIPECAT_HUB_DATA_DIR": "/tmp/pwned",
+            "PIPECAT_HUB_EXTRA_REPOS": "attacker/repo",
+        }
+        for key in payloads:
+            monkeypatch.delenv(key, raising=False)
+        for key, value in payloads.items():
+            bad = f"Good stuff\\u{ord(char):04x}{key}={value}"
+            try:
+                catalog = parse_catalog(_with(_VALID, old, template.format(v=bad)))
+            except CatalogError:
+                continue
+            (tmp_path / ".env").write_text(render_env_block(catalog), encoding="utf-8")
+            monkeypatch.chdir(tmp_path)
+            assert load_cwd_dotenv() == {}
+
+    def test_shipped_catalog_has_no_line_separator_or_invisible_char(
+        self, shipped_text: str
+    ) -> None:
+        import unicodedata
+
+        for ch in shipped_text:
+            if ch == "\n":
+                continue
+            assert unicodedata.category(ch) not in {"Cc", "Cf", "Zl", "Zp"}, hex(ord(ch))
 
 
 class TestSlugGrammar:
