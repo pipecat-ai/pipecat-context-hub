@@ -2,6 +2,13 @@
 
 **Branch:** `feature/repo-catalog` | **Review Gates:** full | **Component:** config | **Status:** Planned (design grilled 2026-10-16; independently reviewed by `/review-plan`, see Findings)
 
+**Delivery:** two PRs, each from its own conduct-format plan (see *Delivery*): PR 1 =
+[`20261017-feature-repo-catalog-pr1-catalog-and-repos.md`](20261017-feature-repo-catalog-pr1-catalog-and-repos.md),
+PR 2 = [`20261017-feature-repo-catalog-pr2-hints-and-health.md`](20261017-feature-repo-catalog-pr2-hints-and-health.md).
+This file is the **design of record** (problem, decisions, contracts, test plan). It is not run through
+`/conduct`: it has no `## Implementation Checklist` with `### Phase N:` headings, which is what
+`/conduct` parses.
+
 ## Problem
 
 A developer who asks a vendor-specific question ("how do I use NVIDIA Nemotron speech with Pipecat?")
@@ -130,7 +137,7 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    - **Output.** A top-level `corpus_hint` object `{matched_groups, repos_not_indexed,
      repos_configured_no_records, add_command, refresh_command, report_issue_url}`, **absent** (the key
      is missing, not null) when it does not apply. `add_command` covers only repos that are neither
-     configured nor tainted and is omitted when there are none. A group repo that is configured but has
+     configured nor tainted and is omitted when there are none; its exact format is frozen in *Delivery*, contract C1. A group repo that is configured but has
      no records (failed clone) goes in `repos_configured_no_records`, and `refresh_command`
      (`pipecat-context-hub refresh`) is present only when that list is non-empty. `report_issue_url` is
      `RETRIEVAL_QUALITY_ISSUE_URL`. `_SERVER_INSTRUCTIONS` points at the field. A parity test mirrors
@@ -287,50 +294,146 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
 `add_command` (not yet configured) if its clone failed, until `serve` restarts. The catalog loader is
 `shared/repo_catalog.py` and imports nothing from `cli`, `server` or `services`.
 
-## Phases
+## Phases (index)
 
-1. **Catalog, generator, offline checks.** Schema and loader (`shared/repo_catalog.py`, including the
-   cross-group invariants of decision 2); a `just catalog-regen` recipe with `--bump-verified` (the equality test's failure
-   message names it, and it is the entry point for fixing any health-check finding; tests check that the
-   recipe exists (the `test_audit_sync.py` style), that `--bump-verified` rewrites `verified` only,
-   that plain regen leaves it, and that regen is idempotent); initial data
-   from the 2026-10-16 audit: every non-default public slug in `.env.example` (the generator emits the default block from `SourceConfig.repos`; the equality test pins the count, so no number is hardcoded here); the renderers in `shared/repo_catalog_render.py` (imports `shared/config` for
-   `SourceConfig.repos`; the equality test imports it, since tests import package modules only;
-   `just catalog-regen` runs it as a module) that rewrite a delimited generated block inside the
-   checked-in `.env.example` (header prose and non-repo settings stay hand-written outside the markers)
-   and a generated catalog section in `docs/configuration.md`,
-   separate from the env-var table that `TestConfigTomlExampleParity` pins. The equality test, the
-   regenerated `.env.example` and the docs section land in **one commit**. Offline schema/uniqueness
-   tests; wheel-contents test for the data file; the catalog test module joins the Windows file list in
-   `.github/workflows/ci.yml` in this commit.
-2. **`repos list|add|remove`.** In order: (a) add `tomlkit` to `pyproject.toml` and `uv.lock` as the
-   first commit (so `pip-audit` and the SBOM see it before code imports it) and prove it resolves
-   alongside `pipecat-ai[cli]` (`pipecat-ai` is not in `uv.lock`, so `uv lock` proves nothing): in a
-   scratch venv, from the branch with `tomlkit` already in `pyproject.toml`, run
-   `uv pip install --dry-run . "pipecat-ai[cli]"` (this includes the hub's own pins) and record the
-   resolved versions in the PR; (b) in one commit: extract `read_trusted_config(path)` and `parse_global_config(path)` (decision 8) and make
-   `load_global_config` wrap them, add the provenance map of decision 9 (loaders return it, `main()`
-   stores it in `ctx.obj["env_provenance"]`, plus the `env` snapshot), and update the test that patches both loaders with
-   None-returning lambdas (`tests/unit/test_config.py`, `test_load_env_layers_calls_both_loaders_in_order`);
-   (c) the writer, decision 8, verifying through `parse_global_config`, with the writer test module added
-   to the explicit file list of the Windows job in `.github/workflows/ci.yml` (the file must exist in
-   the same commit, or pytest exits 4); (d) the commands (`cli_repos.py`)
-   with the guard rails, `--group` semantics and `repos list` tags of decision 7, the `repos` test module added to the Windows list in this commit, `EXIT_INVALID_INPUT = 1` added to
-   `shared/exit_codes.py` with `cli_query._EXIT_BAD_INPUT` migrated to it in the same commit
-   (including the import at `tests/unit/test_cli_query.py:16`), docs in
-   `docs/configuration.md`, and the `repos --help` bridge test.
-3. **`get_hub_status` reports indexed repos**: `indexed_repos`, `configured_no_records`,
-   `catalog_groups_not_indexed` (decision 10). In order: (a) `get_counts_by_repo` on the `ServingIndex`
-   protocol and the `ReopeningIndexStore` delegate; (b) `shared/corpus_hint.py` with `indexed_repos` and
-   `groups_not_indexed` (Phase 4 adds `corpus_hint` and `attach_corpus_hint` to the same module), its
-   test module joining the Windows list in this commit; (c) the `configured_repos` and `tainted_repos` providers threaded
-   through `handle_get_hub_status`, `create_server` and `cli_query._dispatch` in **one commit**, with a
-   both-front-doors parity test.
-4. **Corpus hints**: `corpus_hint`/`attach_corpus_hint` and both front-door call sites in one commit, stderr-hint
-   suppression (CLI: compute before the warning, attach after `annotate_response`, as in decision 4), the server-instructions text, the *Candidate repos* field in `retrieval-quality.yml`,
-   frozen real queries, a smoke-test item.
-5. **Catalog health and curation scripts** plus the weekly `catalog-health.yml`.
-6. **Dogfood migration**, in this order. The repo-root `.env` sets `PIPECAT_HUB_EXTRA_REPOS`, so every
+The phase text lives in the two child plans, so there is one copy to keep in step. Phase 6 (dogfood) is
+in *Delivery* below because it needs both PRs.
+
+| Phase | Where | PR |
+|---|---|---|
+| 1 Catalog, loader, renderers, generated sections | PR 1 plan, Phase 1 | PR 1 |
+| 2 `repos list|add|remove` (2a `tomlkit`, 2b `env_loading` seam and provenance, 2c writer, 2d commands) | PR 1 plan, Phases 2a to 2d | PR 1 |
+| 3 `get_hub_status` indexed repos (3a protocol, 3b predicates, 3c providers) | PR 2 plan, Phases 3a to 3c | PR 2 |
+| 4 Corpus hints, plus 4b seam test against the real `repos` | PR 2 plan, Phases 4 and 4b | PR 2 |
+| 5 Catalog health and curation scripts, weekly workflow | PR 2 plan, Phase 5 | PR 2 |
+| 6 Dogfood migration | Delivery below | after both |
+| (deferred) `search_repo_catalog` + `repos search` | Non-goals | none |
+
+## Delivery
+
+This section is the cold-start brief. A session that has lost its context reads this, then the child
+plan for its worktree, then the parent decisions that plan names.
+
+### Why two PRs, and the order
+
+`repos` (PR 1) merges before hints (PR 2). The hint's `add_command` points users at `repos add`; if hints
+reached `main` first, a release cut between the merges would ship a hint naming a command that does not
+exist. In this order every state on `main` is coherent. PR 2 depends only on PR 1's catalog loader
+(Phase 1) and, for the seam test, on the real `repos` command.
+
+### Topology: separate top-level sessions, not nested subagents
+
+Do **not** have this session spawn two `Agent` subagents that each run `/conduct`, `review-gauntlet` and
+`/update-docs`. Those skills spawn their own subagents (conduct: implementer and test-writer; the
+gauntlet: its `deep-review` lens fan-out, which runs "at its own top level" and forbids nesting). Under an
+`Agent` subagent they would sit two or three levels deep and the lens fan-out would not be top-level.
+`fan-out`'s own doctrine says the safe shape is a subprocess boundary: `fan-out -> (subprocess) -> conduct`.
+So each worktree gets its **own top-level `claude` session**, started by the maintainer in a terminal (or by
+a `claude -p` background process, which is unverified here: conduct hands back between phases unless
+`--autonomous`, so check conduct's `SKILL.md` before relying on headless).
+
+This session is the **monitor**: it creates the worktrees, reads each worktree's state files read-only,
+helps resolve cross-PR questions, does the PR 2 rebase and the dogfood. It does not edit files in a
+worktree while that worktree's conduct is running (conduct's rogue-commit check hard-stops on foreign
+commits).
+
+`/conduct` cannot run on this parent plan, and has no phase-range option (`--max-phases N` only caps a
+count), which is why there are two child plans.
+
+### Sign-off before any conduct run
+
+Each child plan was derived from this reviewed parent but is itself unreviewed text, and a fresh
+`/conduct` run hard-stops on a missing or stale review marker. Run `/skein:review-plan <child>` on each
+(or `waive`, with the reason "derived from the signed-off parent; phase text only"). That is a
+maintainer decision, not something a worker does.
+
+### Branches and worktrees
+
+| Name | Branch | Created from | Worktree dir |
+|---|---|---|---|
+| planning / monitor | `feature/repo-catalog` (this branch; holds only plan commits) | `main` | this checkout |
+| PR 1 | `feature/repo-catalog-pr1` | `feature/repo-catalog` tip | `../pipecat-code-mcp-pr1` |
+| PR 2 | `feature/repo-catalog-pr2` | PR 1's **Phase 1 commit** (`commit_sha` in `.conduct/state-*.json`) | `../pipecat-code-mcp-pr2` |
+
+```
+git worktree add ../pipecat-code-mcp-pr1 -b feature/repo-catalog-pr1 feature/repo-catalog
+# later, once PR 1 reports Phase 1 complete:
+git worktree add ../pipecat-code-mcp-pr2 -b feature/repo-catalog-pr2 <PR1 phase-1 commit_sha>
+```
+
+Each worktree needs its own `uv sync` (own `.venv`). The gitignored `.env` is not in a worktree, which is
+what you want. Sibling worktrees resolve distinct conduct state files (`git rev-parse --show-toplevel`).
+Never run `refresh` against the real `~/.pipecat-context-hub` from a worktree; real-data runs happen
+after both PRs merge, against a copy.
+
+No squash merges (maintainer rule): PR 2's branch shares PR 1's early commits and the plan commits as
+ancestors, so after PR 1 merges (`gh pr merge --merge`), `git rebase main` on PR 2 drops the duplicates
+cleanly.
+
+### Runbook per worktree (the same sequence in each)
+
+1. Start a top-level session in the worktree: `cd ../pipecat-code-mcp-pr1 && claude`.
+2. `/skein:conduct docs/dev_plans/<child plan>` (flags worth setting: `--run-ci-parity` with `--ci-cmd`
+   set to the AGENTS.md gate, `uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/
+   && uv run mypy src/ tests/ && uv run pytest tests/ -q`; confirm the flag semantics in conduct's
+   `SKILL.md` first). Conduct commits at each phase boundary and, because the plan says
+   `Review Gates: full`, invokes `review-gauntlet` after the last phase.
+3. After the gauntlet converges: `/update-docs` (nothing chains it; it also reconciles
+   `docs/dev_plans/README.md` and the changelog).
+4. `/code-review xhigh --fix` is human-typed only (the harness blocks Claude from invoking it). The
+   standing preference is to run it before the gauntlet, but the gate auto-chains, so the practical order
+   is: type it after the gauntlet converges, then re-run the full suite. A deviation to confirm per run.
+5. Push the branch, open the PR (no attribution lines), run the AGENTS.md pre-merge live smoke items
+   that apply to that PR, update the PR description with `gh pr edit`, merge with
+   `gh pr merge --merge --delete-branch` only after the maintainer says so.
+
+If a session is interrupted: `/skein:conduct <child plan> --resume`; the gauntlet resumes from its
+`.gauntlet/` ledger (`--last-decision`). Never restart either from scratch. State lives at
+`<worktree>/.conduct/state-<plan-id>.json`; this session can read it with `jq` and must not write it.
+
+### Frozen contracts between the PRs
+
+These are the only two seams. Both PRs are written against them; change one only by editing this section
+and both child plans in the same commit.
+
+- **C1: `add_command`.** In PR 2's hint, `add_command` is a string made of one command per matched group
+  that has at least one repo that is neither configured nor tainted: `pipecat-context-hub repos add --group
+  <group-name>`, joined with `; `. `--group` skips repos already in `config.toml`, tainted repos and
+  `parseable = false` repos, so the command is always accepted and never adds more than the hint listed.
+  Catalog slugs go through plain `repos add`; the `--unlisted` form appears only in the agent-assist
+  text. (This format is chosen here, not earlier; the review of this section may revisit it.)
+- **C2: configured state.** PR 2 reads configured and tainted repos only through
+  `config.sources.effective_repos` and `config.sources.tainted_repos` at process start. It never reads
+  `config.toml` directly. PR 1 guarantees that after `repos add X` (without `--config-only` under a
+  shadowing layer) a new process's `effective_repos` contains X. PR 2's Phase 4b tests exactly this.
+- **C3: catalog API.** `load_catalog() -> Catalog | None` and the group/repo fields of parent Decision 2,
+  as implemented by PR 1's Phase 1. PR 2 does not change the schema; if it needs a field, stop, amend
+  PR 1's Phase 1 on its branch, and rebase PR 2.
+
+### File ownership and expected conflicts
+
+| File | PR 1 | PR 2 | Resolution |
+|---|---|---|---|
+| `shared/env_loading.py`, `shared/config_writer.py`, `cli_repos.py`, `shared/repo_catalog*.py`, `data/repo_catalog.toml` | owns | reads only | none |
+| `shared/corpus_hint.py`, `server/tools/get_hub_status.py`, `shared/interfaces.py`, `services/index/reopening.py`, `scripts/*catalog*`, `catalog-health.yml`, `retrieval-quality.yml` | none | owns | none |
+| `cli_query.py` | `_EXIT_BAD_INPUT` to `EXIT_INVALID_INPUT` (import and constant) | `_QueryRuntime`, hint call sites | different regions; PR 2 rebases onto PR 1 |
+| `cli.py` | `register_repos_commands`, `ctx.obj` provenance | provider wiring in `serve` | PR 2 rebases |
+| `.github/workflows/ci.yml` (Windows file list) | catalog, writer, repos test modules | `corpus_hint` test module | PR 2 rebases and keeps both |
+| `docs/configuration.md`, `AGENTS.md` layout, changelog, `justfile` | both edit | both edit | `/update-docs` per PR; PR 2 rebases |
+| `pyproject.toml`, `uv.lock` | `tomlkit` | none | none |
+
+### Integration (small, and inside PR 2)
+
+There is no separate integration branch. When PR 2 is rebased onto `main` (PR 1 merged), the integration
+checks are: the Phase 4b seam test (offline, deterministic); the shadow-layer rows of the `repos` table
+still passing against merged code; the pre-merge live smoke at PR 2's creation (its numbered
+`docs/smoke-test.md` item); one gauntlet pass over the merged diff, scoped to the seams in this
+section. Findings from those that belong to PR 1 code are fixed as follow-up commits on PR 2, never by
+reopening PR 1.
+
+### After both PRs merge: Phase 6, dogfood migration
+
+Done by the maintainer in the main checkout, in this order. The repo-root `.env` sets `PIPECAT_HUB_EXTRA_REPOS`, so every
    add needs `--config-only`. (i) Catalog slugs: `repos add --config-only <slug>` per slug (not `--group`, which skips
    `parseable = false` repos such as the two iOS demos the `.env` holds). (ii) The slugs that are not in
    the catalog (11 today; three are private: `nvidia-sgmaker`, `pipecat-krisp`, `hosted-smart-turn`,
@@ -342,9 +445,25 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
    defaults plus that list; confirm both counts rather than "the 47-repo list". Then delete the `.env`
    line, run `repos list`, then `refresh`. `.env.backup` exists. Record anything awkward.
 
+### Handoff log (fill in as work proceeds; this is what survives a cleared context)
+
+| Item | Value |
+|---|---|
+| PR 1 plan signed off (`/review-plan` or waive) | |
+| PR 2 plan signed off | |
+| PR 1 worktree started / conduct state file | |
+| PR 1 Phase 1 `commit_sha` (PR 2 branches from here) | |
+| PR 2 worktree started / conduct state file | |
+| PR 1 gauntlet converged / `/update-docs` done / PR number | |
+| PR 1 merged (merge commit) | |
+| PR 2 rebased onto `main` | |
+| PR 2 gauntlet converged / `/update-docs` done / PR number | |
+| PR 2 merged (merge commit) | |
+| Dogfood migration done | |
+
 ## Test plan
 
-- Catalog: schema, unique slugs, a `private`/`archived`/`status` key is a schema error (visibility
+- **[PR1]** Catalog: schema, unique slugs, a `private`/`archived`/`status` key is a schema error (visibility
   itself is only caught by the health check), static cross-group invariants (alias collision, a slug
   in two groups, a default repo, bad `kind`/`parseable`/`verified`), a tainted slug in the environment
   does **not** break loading, a catalog that fails to load returns `None` and logs once across repeated calls, which disables
@@ -352,7 +471,7 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
   lets the CLI print its stderr hint;
   generated `.env.example` block and docs section equal the checked-in files, wheel contains the
   catalog, the `just catalog-regen` recipe exists.
-- Classifier (offline, injected responses): ok, 404, archived, 301, a real rename (`full_name` differs
+- **[PR2]** Classifier (offline, injected responses): ok, 404, archived, 301, a real rename (`full_name` differs
   beyond case, new name reported), case-only name difference; inconclusive for 403/429/5xx/timeout/
   network error (never labelled inaccessible); the 90-day advisory boundary; `GITHUB_TOKEN` sent as an
   `Authorization` header when set and omitted when not; a test that `catalog-health.yml` invokes the
@@ -361,20 +480,20 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
   stale exits nonzero; inconclusive-only exits nonzero in its own section); `follow_redirects=False`
   asserted by routing a 301 through `httpx.MockTransport`; `curate_repo_catalog.py` leaves the catalog
   byte-identical.
-- Provenance: per-key map for each layer, including a key set only in the real environment (layer
+- **[PR1]** Provenance: per-key map for each layer, including a key set only in the real environment (layer
   `env`), a blank higher-layer value treated as absent (mirror `TestBlankHigherLayerValueDoesNotShadow`),
   plus the row blank real env var + non-blank `.env` + `config.toml` (provenance `config.toml`, no
   refusal), and the overlap row (a key set blank by `.env` and then by `config.toml`: the merged layer
   is `config.toml`). The `ctx.obj["env_provenance"]` carrier: through `main()` both loaders run once per `repos`
   invocation, and a pre-set provenance map alone drives the shadow decision (no layer is re-read).
-- Writer: round trip through `parse_global_config` and `load_global_config` for no file, empty file,
+- **[PR1]** Writer: round trip through `parse_global_config` and `load_global_config` for no file, empty file,
   comments preserved, other keys byte-identical, CSV value, non-array/non-string value refused,
   symlinked config, `PIPECAT_HUB_CONFIG_FILE`, non-regular, world-writable and foreign-owned refusal,
   mode kept or created 0600, directory created 0700, and a failed re-parse leaving the original
   untouched, the containing-directory and symlink-hop refusals, an existing file that is not valid
   TOML refused with the file untouched, and an untrusted file refused. POSIX-only cases are skipped on Windows, where a round-trip test asserts the mirror-the-reader
   contract.
-- `repos` table: layers (env var / cwd `.env` / blank `.env` / `config.toml` only / none) x (add /
+- **[PR1]** `repos` table: layers (env var / cwd `.env` / blank `.env` / `config.toml` only / none) x (add /
   remove / list / add `--config-only`), asserting `SourceConfig.effective_repos`, the shadow refusal
   (exit 1), and a golden `repos list` per layer including the consulted cwd; the `--unlisted` syntax
   check, default and tainted refusal, idempotent add, a slug present only in a shadowing `.env` (add
@@ -390,12 +509,12 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
   `EXIT_INVALID_INPUT` (mirror `test_refresh_in_progress_exit_code_is_shared`), a cross-cwd case, each
   row stating whether `effective_repos` contains the slug afterwards, and `repos add` making no network
   call.
-- Indexed state for `get_hub_status`: indexed, `configured_no_records`, not configured; case-variant
+- **[PR2]** Indexed state for `get_hub_status`: indexed, `configured_no_records`, not configured; case-variant
   slugs match; the synthetic `docs.pipecat.ai` key is dropped; `catalog_groups_not_indexed` for fully, partly and `parseable = false`-only groups;
   `get_counts_by_repo` raising yields no hint and no crash (mirror `test_store_errors_never_break_the_response`);
   the count read through `ReopeningIndexStore`, including after a reopen (a stale `serve` hints
   correctly after a `refresh`).
-- Hints: frozen real queries, the four 2026-10-17 unindexed-vendor queries and the AWS Nova Sonic
+- **[PR2]** Hints: frozen real queries, the four 2026-10-17 unindexed-vendor queries and the AWS Nova Sonic
   query, copied verbatim into the test file and reused for the new numbered smoke item (a vendor question with the repo unindexed must hint, the same with it
   indexed must not); a 0.95-confidence response still hints; alias negatives ("laws" must not match
   "aws"); `TTS + nvidia` and `TTS & nvidia`; an uppercase alias; `parseable = false` and tainted
@@ -411,18 +530,20 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
   `corpus_hint`; the CLI stderr hint is suppressed when `corpus_hint` is present (the hint is computed
   before `_maybe_warn_poor_results` runs); `_SERVER_INSTRUCTIONS` pins the `corpus_hint`, `--unlisted` and draft-not-file wording (the
   `tests/unit/test_server.py` pattern) and `retrieval-quality.yml` carries the *Candidate repos* field.
-- Mutation checks: for each of these, revert it and confirm its test fails: the shadow refusal, the
-  default/tainted refusal, the check order (default/tainted before shadow before no-op), the writer's
-  failed-re-parse abort, the alias word boundary, the
-  `parseable = false` skip, the tainted skip in the hint, the catalog-load-failure fallback, the
-  `--unlisted` rules, the casefold in slug matching, and the CLI stderr-hint suppression.
-- Real data: run against a copy of `~/.pipecat-context-hub` and the maintainer's real `config.toml`;
+- **[PR1]** Mutation checks: for each of these, revert it and confirm its test fails: the shadow refusal,
+  the default/tainted refusal, the check order (default/tainted before shadow before no-op), the writer's
+  failed-re-parse abort, the `--unlisted` rules, the casefold in the `repos add` no-op, and the
+  provenance overlap merge.
+- **[PR2]** Mutation checks: the alias word boundary, the `parseable = false` skip, the tainted skip in
+  the hint, the catalog-load-failure fallback, the casefold in `indexed_repos`, the CLI stderr-hint
+  suppression, and the `add_command` format (contract C1).
+- **[after both]** Real data: run against a copy of `~/.pipecat-context-hub` and the maintainer's real `config.toml`;
   expected observations: `repos list` shows the effective list with every slug tagged, the catalog
   loads, and `status` reports `catalog_groups_not_indexed` consistent with the index.
-- `repos --help` and `repos add --help` through the Typer bridge match the direct CLI, and a
+- **[PR1]** `repos --help` and `repos add --help` through the Typer bridge match the direct CLI, and a
   functional `pipecat context-hub repos list` plus `repos add --config-only` run through the bridge
   (guards a `ctx.obj["env_provenance"]` gap only on that door).
-- Live MCP smoke at PR creation (AGENTS.md pre-merge checklist), with a new numbered item.
+- **[PR1] and [PR2]** Live MCP smoke at each PR's creation (AGENTS.md pre-merge checklist), each with its own numbered item: PR 1 covers `repos`, PR 2 covers the hint on the live index. The end-to-end scenario (`repos add`, `refresh`, hint disappears) is run once after PR 2 merges.
 
 ## Already done (merged in PR #143, before this plan)
 
@@ -446,11 +567,11 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
 
 ## Progress
 
-- [ ] Phase 1: catalog, generator, offline checks
-- [ ] Phase 2: `repos list|add|remove`
-- [ ] Phase 3: `get_hub_status` indexed repos
-- [ ] Phase 4: corpus hints
-- [ ] Phase 5: catalog health and curation scripts
+Conduct tracks phase progress in each child plan's own `## Progress`. This list tracks the PRs.
+
+- [ ] Child plans signed off
+- [ ] PR 1 merged (catalog, generator, `repos`)
+- [ ] PR 2 merged (indexed-repo status, hints, health check)
 - [ ] Phase 6: dogfood migration
 
 ## Findings
