@@ -65,6 +65,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   holds them open: stop it, then retry.
 
 ### Fixed
+- **Search ranking no longer changes with `limit`.** Each backend was asked for
+  exactly `limit` candidates, so `search_api("PipecatClientProvider",
+  chunk_type="function")` lost its definition to files that merely mention the name
+  at `limit` 15 or less (the default is 10) and found it at 20 or more. Both
+  backends now return a fixed pool of 50 (the largest `limit` a tool accepts) and
+  `limit` only truncates the ranking. `tests/unit/test_retrieval.py::TestCandidatePool`
+  pins it.
 - **A reader with no keyword database no longer prescribes a reset when nothing is
   indexed**; it says "run `refresh`". The reset remedy stays for a keyword database
   lost beside populated vectors. `tests/unit/test_index_state_matrix.py` pins every

@@ -45,6 +45,7 @@ from pipecat_context_hub.shared.types import (
     GetCodeSnippetInput,
     GetDocInput,
     GetExampleInput,
+    IndexQuery,
     IndexResult,
     SearchDocsInput,
     SearchExamplesInput,
@@ -1573,3 +1574,81 @@ class TestMultiConceptSearch:
         assert ids.count("shared-1") == 1
         assert "idle-1" in ids
         assert "gem-1" in ids
+
+
+class TestCandidatePool:
+    """The candidate pool fed to RRF must not shrink with the caller's ``limit``.
+
+    Frozen from a live failure: ``search_api("PipecatClientProvider",
+    chunk_type="function")`` returned the definition at limit>=20 and dropped it
+    at limit<=15, because each backend was asked for exactly ``limit`` hits and
+    files that merely mention the name filled the small pool.
+    """
+
+    CORPUS = 60
+
+    @staticmethod
+    def _reader(queries: list[IndexQuery]) -> Any:
+        corpus = TestCandidatePool.CORPUS
+        vector_order = [f"c{i}" for i in range(corpus)]
+        keyword_order = [f"c{(i * 7) % corpus}" for i in range(corpus)]
+
+        def results(order: list[str], match_type: Literal["vector", "keyword"], n: int):
+            return [
+                _make_result(
+                    cid,
+                    score=1.0 - rank / corpus,
+                    match_type=match_type,
+                    content=f"content {cid}",
+                    path=f"docs/{cid}.md",
+                )
+                for rank, cid in enumerate(order[:n])
+            ]
+
+        class Reader:
+            async def vector_search(self, query: IndexQuery) -> list[IndexResult]:
+                queries.append(query)
+                return results(vector_order, "vector", query.limit)
+
+            async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
+                queries.append(query)
+                return results(keyword_order, "keyword", query.limit)
+
+        return Reader()
+
+    @pytest.mark.parametrize("limit", [1, 5, 10, 20, 50])
+    async def test_backends_get_the_full_pool_whatever_the_limit(self, limit):
+        queries: list[IndexQuery] = []
+        retriever = HybridRetriever(self._reader(queries))
+
+        output = await retriever.search_docs(SearchDocsInput(query="needle", limit=limit))
+
+        assert len(output.hits) == limit
+        assert queries and all(q.limit == 50 for q in queries)
+
+    async def test_ranking_is_prefix_stable_across_limits(self):
+        """A smaller ``limit`` only truncates the ranking a larger one returns."""
+        ranked: dict[int, list[str]] = {}
+        for limit in (5, 10, 20, 50):
+            retriever = HybridRetriever(self._reader([]))
+            output = await retriever.search_docs(SearchDocsInput(query="needle", limit=limit))
+            ranked[limit] = [hit.doc_id for hit in output.hits]
+
+        for limit in (5, 10, 20):
+            assert ranked[limit] == ranked[50][:limit]
+
+    async def test_multi_concept_batched_read_gets_the_full_pool(self):
+        class BatchedReader:
+            def __init__(self) -> None:
+                self.limits: list[int] = []
+
+            async def hybrid_search_many(self, queries: list[IndexQuery]):
+                self.limits.extend(q.limit for q in queries)
+                return [([_make_result(f"{q.query_text}-id")], []) for q in queries]
+
+        reader = BatchedReader()
+        retriever = HybridRetriever(reader)  # type: ignore[arg-type]
+        output = await retriever.search_docs(SearchDocsInput(query="TTS + STT", limit=4))
+
+        assert reader.limits == [50, 50]
+        assert len(output.hits) == 2
