@@ -211,11 +211,19 @@ systems only. Windows intentionally fails these operations closed because the
 descriptor-relative no-reparse filesystem contract is unavailable; Windows CI
 covers package and path-safety checks.
 
-Before merging any PR that touches retrieval, tool handlers, index backends,
-or types, reconnect the MCP server and run these queries against the live
-local index. Unit tests mock the retrieval layer and cannot catch page
-assembly, filter semantics, schema issues, or stale tool metadata that only
-surface against real indexed data.
+For any PR that touches retrieval, tool handlers, index backends, or types,
+run the offline smoke (`uv run pytest tests/smoke/ -v`) and these queries against
+the live local index **when you open the PR**, not only before merging, so a
+regression surfaces while the change is still fresh. Run them again before
+merging if the diff changed since. Unit tests mock the retrieval layer and
+cannot catch page assembly, filter semantics, schema issues, or stale tool
+metadata that only surface against real indexed data.
+
+The MCP client launches the *installed* tool, not the working tree. Install the
+branch first (`uv tool install --force .`), then reconnect (`/mcp`) and confirm
+the new code is running before trusting a result; restore the released tool
+afterwards. The one-shot CLI (`uv run pipecat-context-hub search-api ...`) runs
+the working tree directly and shares the handlers, so it is a quicker check.
 
 **When a live failure is found in the field, freeze it twice:** a unit
 regression test (with the real input text frozen into the test) *and* the

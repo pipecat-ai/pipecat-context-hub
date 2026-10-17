@@ -6,6 +6,12 @@
 
 <!-- Commands run, coverage added, manual verification performed. -->
 
+<!--
+If the PR touches retrieval, tool handlers, index backends or types: run the
+offline smoke (`uv run pytest tests/smoke/ -v`) and the live MCP checklist in
+`docs/smoke-test.md` now, at PR creation, and record the result here.
+-->
+
 ## Not run
 
 <!--
