@@ -9,8 +9,10 @@ from urllib.parse import urlparse
 import pytest
 
 from pipecat_context_hub.shared.paths import (
+    LookupMismatch,
     is_inside,
     is_reparse_link,
+    lookup_target,
     redact_home_in_text,
     resolution_chain,
 )
@@ -199,3 +201,33 @@ class TestRedactHomeInText:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         text = "Nothing home-related here."
         assert redact_home_in_text(text) == text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX lookup semantics")
+class TestLookupTarget:
+    """``lookup_target`` is the kernel's lookup, not ``realpath``: a ``..`` after
+    a component that is not an existing directory, at any hop, is refused."""
+
+    @pytest.mark.parametrize("nope", ["missing", "file"])
+    def test_dotdot_inside_a_link_target(self, nope: str, tmp_path: Path):
+        (tmp_path / "real").mkdir()
+        if nope == "file":
+            (tmp_path / "nope").write_text("")
+        (tmp_path / "link").symlink_to("nope/../real")
+        with pytest.raises(LookupMismatch, match=r"\.\."):
+            lookup_target(tmp_path / "link" / "config.toml")
+
+    def test_literal_dotdot_after_a_missing_component(self, tmp_path: Path):
+        with pytest.raises(LookupMismatch):
+            lookup_target(tmp_path / "nope" / ".." / "config.toml")
+
+    def test_agrees_with_realpath_where_the_kernel_lookup_works(self, tmp_path: Path):
+        (tmp_path / "a" / "sub").mkdir(parents=True)
+        (tmp_path / "hop").symlink_to(tmp_path / "a")
+        path = tmp_path / "hop" / "sub" / ".." / "new" / "config.toml"
+        assert str(lookup_target(path)) == os.path.realpath(path)
+
+    def test_hop_bound(self, tmp_path: Path):
+        (tmp_path / "loop").symlink_to("loop")
+        with pytest.raises(LookupMismatch):
+            lookup_target(tmp_path / "loop")

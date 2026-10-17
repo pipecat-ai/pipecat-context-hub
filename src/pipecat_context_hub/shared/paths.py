@@ -17,10 +17,11 @@ Lives in ``shared/`` (not ``cli.py``) because ``cli.py`` imports ``cli_query``;
 importing the helper back from ``cli.py`` would be a cycle. ``shared/`` peers
 import neither CLI module, so the layer stays leaf-level.
 
-:func:`same_dir`, :func:`is_inside` and :func:`resolution_chain` are the
-general filesystem-identity primitives shared by every deletion and trust guard
-in this project (``env_loading``'s ``config_collides_with_dir()`` /
-``_config_parent_refusal()`` and ``cli.py``'s ``_refuse_unsafe_data_dir()``).
+:func:`same_dir`, :func:`is_inside`, :func:`resolution_chain` and
+:func:`lookup_target` are the general filesystem-identity primitives shared by
+every deletion, trust and write guard in this project (``env_loading``'s
+``config_collides_with_dir()`` / ``_config_parent_refusal()``, ``cli.py``'s
+``_refuse_unsafe_data_dir()``, and ``config_writer``'s write target).
 They live here rather than in ``env_loading`` because they are path predicates,
 not env-var/config-file loading.
 """
@@ -31,7 +32,7 @@ import os
 import stat as stat_module
 from collections import deque
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 # Upper bound on symlink hops followed by :func:`resolution_chain`. Chosen to
 # sit above any legitimate layout (the kernel's own ELOOP limit is typically
@@ -135,27 +136,53 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
     at the right point in the walk, which is what makes the result agree with
     ``os.path.realpath`` on the endpoint.
     """
+    return _walk(path, max_hops).visited
+
+
+class _Walk(NamedTuple):
+    visited: list[Path]
+    endpoint: Path | None
+    problem: str | None
+
+
+def _walk(path: Path, max_hops: int) -> _Walk:
+    """The one hop-by-hop walk behind :func:`resolution_chain` and :func:`lookup_target`.
+
+    ``visited`` is every location stood on (root-first, deduplicated);
+    ``endpoint`` is where the walk ends (``None`` when it stopped on the hop
+    bound); ``problem`` names the first step at which the kernel's lookup of
+    the same path would fail where this walk carries on (a ``..`` after a
+    component that is not an existing directory, the hop bound, an unreadable
+    link). :func:`resolution_chain` ignores ``problem`` (best-effort by
+    contract); :func:`lookup_target` refuses on it.
+    """
     try:
         raw = Path(path)
         absolute = raw if raw.is_absolute() else Path(os.getcwd()) / raw
     except (OSError, ValueError):
         # `os.getcwd()` raises when the working directory has been unlinked.
-        return []
+        return _Walk([], None, "the working directory cannot be resolved")
     parts = absolute.parts
     if not parts:
-        return []
+        return _Walk([], None, "the path is empty")
 
     resolved = Path(parts[0])
     pending = deque(parts[1:])
     visited: list[Path] = []
     seen: set[str] = set()
     hops = 0
+    problem: str | None = None
 
     while pending:
         name = pending.popleft()
         if not name or name == os.curdir:
             continue
         if name == os.pardir:
+            # The kernel looks `..` up *inside* `resolved`, so the lookup fails
+            # (ENOENT / ENOTDIR) unless `resolved` is an existing directory;
+            # popping lexically here is what `os.path.realpath` does instead.
+            if problem is None and not resolved.is_dir():
+                problem = f"a `..` follows {resolved}, which is not an existing directory"
             resolved = resolved.parent
             continue
 
@@ -176,10 +203,11 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
 
         hops += 1
         if hops > max_hops:
-            break
+            return _Walk(visited, None, problem or f"more than {max_hops} symlink hops")
         try:
             target = Path(os.readlink(current))
         except (OSError, ValueError, NotImplementedError):
+            problem = problem or f"the symlink {current} cannot be read"
             resolved = current
             continue
         if target.is_absolute():
@@ -204,7 +232,35 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
             # is `resolved` — deliberately left untouched.
             pending.extendleft(reversed(target.parts))
 
-    return visited
+    return _Walk(visited, resolved, problem)
+
+
+class LookupMismatch(ValueError):
+    """:func:`lookup_target` cannot prove where the kernel's lookup of a path lands."""
+
+
+def lookup_target(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> Path:
+    """The location ``open(path)`` resolves to, derived hop by hop as the kernel walks it.
+
+    For a writer that must create or replace exactly the file a later
+    ``open(path)`` reads. ``os.path.realpath`` is not that: it pops a ``..``
+    lexically when the component before it is missing or not a directory
+    (``nope/..``), at any hop, including inside a symlink's target, while the
+    kernel fails the same lookup with ENOENT / ENOTDIR. This walks the path
+    exactly as :func:`resolution_chain` does and raises :class:`LookupMismatch`
+    at any such ``..`` (and on the hop bound or an unreadable link).
+    Components that do not exist yet are fine, so long as no ``..`` follows
+    one: a creator makes them, and the kernel then walks the same names.
+
+    POSIX semantics. Windows normalizes ``..`` lexically before the lookup,
+    exactly as ``realpath`` does, so there it returns ``realpath(path)``.
+    """
+    if os.name != "posix":
+        return Path(os.path.realpath(path))
+    walk = _walk(path, max_hops)
+    if walk.problem is not None or walk.endpoint is None:
+        raise LookupMismatch(walk.problem or "the path cannot be walked")
+    return walk.endpoint
 
 
 def same_dir(path: Path, other_stat: os.stat_result) -> bool:

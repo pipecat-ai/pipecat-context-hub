@@ -729,6 +729,72 @@ class TestWriterTargetsTheFileTheReaderOpens:
         assert env_loading.parse_global_config(path)[EXTRA_REPOS_ENV] == ["a/b"]
         assert (home / "config.toml").is_file()
 
+    # A `..` inside a SYMLINK TARGET, not in the literal path: `realpath`
+    # collapses `nope/..` the same way, so only a walk that follows the
+    # kernel's lookup hop by hop sees it. `nope` missing (ENOENT) or a regular
+    # file (ENOTDIR); "replace" rows have a file where `realpath` lands, which
+    # must stay untouched (the reader cannot see it, so it is not the config).
+    @pytest.mark.parametrize("existing", ["create", "replace"])
+    @pytest.mark.parametrize("nope", ["missing", "file"])
+    @pytest.mark.parametrize("link_kind", ["dir-link", "file-link"])
+    def test_dotdot_inside_a_link_target_is_refused(
+        self, link_kind, nope, existing, tmp_path, monkeypatch
+    ):
+        home = _dir(tmp_path / "home")
+        real = _dir(home / "real")
+        if nope == "file":
+            (home / "nope").write_text("")
+        if link_kind == "dir-link":
+            path = _link(home / "cfgdir", Path("nope/../real")) / "config.toml"
+        else:
+            path = _link(home / "config.toml", Path("nope/../real/config.toml"))
+        if existing == "replace":
+            (real / "config.toml").write_text('OTHER = "kept"\n')
+            (real / "config.toml").chmod(0o600)
+        _use(monkeypatch, path)
+        before = {
+            p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file() and not p.is_symlink()
+        }
+        tree = _tree(tmp_path)
+        with pytest.raises(ConfigWriteRefused, match=r"\.\."):
+            update_extra_repos(add=["a/b"])
+        assert _tree(tmp_path) == tree
+        assert {p: p.read_bytes() for p in before} == before
+
+    def _accepted(self, path: Path, expected_file: Path, existing: str) -> None:
+        if existing == "replace":
+            expected_file.write_text('OTHER = "kept"\n')
+            expected_file.chmod(0o600)
+        update_extra_repos(add=["a/b"])
+        assert env_loading.parse_global_config(path)[EXTRA_REPOS_ENV] == ["a/b"]
+        assert tomllib.loads(expected_file.read_text())[EXTRA_REPOS_ENV] == ["a/b"]
+        if existing == "replace":
+            assert tomllib.loads(expected_file.read_text())["OTHER"] == "kept"
+
+    @pytest.mark.parametrize("existing", ["create", "replace"])
+    def test_symlinked_home_is_written_through(self, existing, tmp_path, monkeypatch):
+        real = _dir(tmp_path / "dotfiles" / "hub")
+        path = _link(_dir(tmp_path / "home") / "hub", real) / "config.toml"
+        self._accepted(_use(monkeypatch, path), real / "config.toml", existing)
+
+    @pytest.mark.parametrize("existing", ["create", "replace"])
+    def test_var_private_var_style_link_chain(self, existing, tmp_path, monkeypatch):
+        """macOS `/var -> private/var`: a relative dir link, reached through an
+        absolute one, with a legitimate `..` after an existing directory."""
+        root = _dir(tmp_path / "root")
+        cfg = _dir(root / "private" / "var" / "cfg")
+        _dir(root / "private" / "var" / "sub")
+        _link(root / "var", Path("private/var"))
+        alias = _link(tmp_path / "alias", root / "var")
+        path = alias / "sub" / ".." / "cfg" / "config.toml"
+        self._accepted(_use(monkeypatch, path), cfg / "config.toml", existing)
+
+    @pytest.mark.parametrize("existing", ["create", "replace"])
+    def test_relative_path(self, existing, tmp_path, monkeypatch):
+        cfg = _dir(tmp_path / "work" / "cfg")
+        monkeypatch.chdir(tmp_path / "work")
+        self._accepted(_use(monkeypatch, Path("cfg/config.toml")), cfg / "config.toml", existing)
+
 
 def env_loading_reason(path: Path) -> str:
     """The reason ``check_config_write_target`` gives for ``path``."""

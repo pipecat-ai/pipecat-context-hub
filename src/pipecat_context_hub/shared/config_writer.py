@@ -3,7 +3,10 @@
 The writer never reimplements a trust check: the existing file is read through
 ``env_loading.read_trusted_config``; a file that does not exist yet is vetted by
 ``env_loading.check_config_write_target`` (the reader's own path-level
-predicates) before anything is created; and the result is re-parsed through
+predicates) before anything is created; the file written is the one the
+reader's ``open(path)`` opens, because its location comes from
+``paths.lookup_target`` (the kernel's hop-by-hop walk, not ``realpath``); and
+the result is re-parsed through
 ``env_loading.parse_global_config`` and the reader's list rule
 (``env_loading.config_list_value``) before the rename. So it cannot create or
 replace a file the reader would ignore, nor write a list the reader would read
@@ -45,7 +48,7 @@ from pipecat_context_hub.shared.env_loading import (
     read_trusted_config,
     resolve_global_config_path,
 )
-from pipecat_context_hub.shared.paths import redact_home_in_text
+from pipecat_context_hub.shared.paths import LookupMismatch, lookup_target, redact_home_in_text
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
 
 __all__ = [
@@ -168,31 +171,6 @@ def _same_newlines(original: str | None, rendered: str) -> str:
     return rendered
 
 
-def _dotdot_refusal(path: Path) -> str | None:
-    """A reason when ``path`` has a ``..`` the kernel and ``realpath`` would resolve differently.
-
-    ``os.path.realpath`` collapses ``nope/..`` lexically when ``nope`` does not
-    exist (or is not a directory), while the kernel's lookup of the same path
-    fails; the writer would then create a file the reader never opens. A
-    ``..`` is only resolved alike when everything before it is an existing
-    directory. POSIX only: Windows normalizes ``..`` lexically before the
-    lookup, exactly as ``realpath`` does.
-    """
-    if os.name != "posix":
-        return None
-    absolute = path if path.is_absolute() else Path.cwd() / path
-    prefix = Path(absolute.anchor)
-    for part in absolute.parts[1:]:
-        if part == ".." and not prefix.is_dir():
-            return (
-                f"{redact_home_in_text(str(path))}: a `..` follows {redact_home_in_text(str(prefix))}, "
-                "which is not an existing directory, so the file written would not be the "
-                "one the loader reads"
-            )
-        prefix = prefix / part
-    return None
-
-
 def _ensure_dir(directory: Path) -> None:
     """Create missing directories 0700 (existing ones are left alone).
 
@@ -240,9 +218,17 @@ def update_extra_repos(*, add: Iterable[str] = (), remove: Iterable[str] = ()) -
         if not is_valid_repo_slug(slug):
             raise ConfigWriteRefused(f"{slug!r} is not a valid owner/repo slug")
 
-    dotdot = _dotdot_refusal(path)
-    if dotdot is not None:
-        raise ConfigWriteRefused(dotdot)
+    # The file written is the file the reader's open(path) opens: the target
+    # comes from the kernel's hop-by-hop walk, never from `realpath`, which
+    # collapses `nope/..` lexically (also inside a symlink's target) where the
+    # kernel's lookup fails. A symlink keeps working: the target is its end.
+    try:
+        target = lookup_target(path)
+    except LookupMismatch as exc:
+        raise ConfigWriteRefused(
+            f"{redact_home_in_text(str(path))}: {redact_home_in_text(str(exc))}, so the "
+            "file written would not be the one the loader reads"
+        ) from exc
 
     text = read_trusted_config(path)  # ConfigNotTrusted propagates
     if text is None:
@@ -265,8 +251,6 @@ def update_extra_repos(*, add: Iterable[str] = (), remove: Iterable[str] = ()) -
     _edit_in_place(doc, after, remove_list)
     payload = _same_newlines(text, tomlkit.dumps(doc)).encode("utf-8")
 
-    # A symlink keeps working: write beside, and replace, the resolved target.
-    target = Path(os.path.realpath(path))
     existing_mode: int | None = None
     if text is not None:
         with contextlib.suppress(OSError):
