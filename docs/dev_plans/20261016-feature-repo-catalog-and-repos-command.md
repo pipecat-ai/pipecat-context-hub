@@ -113,7 +113,7 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    - **Agent-assist scope (maintainer addition):** the hint and the server instructions tell the
      agent that if it finds a relevant repo on GitHub that is not in the catalog it should *suggest*
      `pipecat-context-hub repos add <slug> --unlisted` to the **user** (catalog repos use plain
-     `repos add <slug>`; `add_command` in the hint is always the `pipecat-context-hub` form, which the
+     `repos add <slug>`; `add_command` in the hint is always the `pipecat-context-hub ... --config-only --group` form (contract C1), which the
      `pipecat context-hub` front door mirrors) (it writes the user's `config.toml`, never the shared catalog), and
      offer to draft a retrieval-quality issue listing candidate repos. An optional *Candidate
      repos* field is added to `.github/ISSUE_TEMPLATE/retrieval-quality.yml`. The agent drafts; the
@@ -137,7 +137,7 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    - **Output.** A top-level `corpus_hint` object `{matched_groups, repos_not_indexed,
      repos_configured_no_records, add_command, refresh_command, report_issue_url}`, **absent** (the key
      is missing, not null) when it does not apply. `add_command` covers only repos that are neither
-     configured nor tainted and is omitted when there are none; its exact format is frozen in *Delivery*, contract C1. A group repo that is configured but has
+     configured nor tainted and is omitted when there are none; its exact format (`repos add --config-only --group <group>` per matched group, joined with `; `) is frozen in *Delivery*, contract C1. A group repo that is configured but has
      no records (failed clone) goes in `repos_configured_no_records`, and `refresh_command`
      (`pipecat-context-hub refresh`) is present only when that list is non-empty. `report_issue_url` is
      `RETRIEVAL_QUALITY_ISSUE_URL`. `_SERVER_INSTRUCTIONS` points at the field. A parity test mirrors
@@ -297,15 +297,17 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
 ## Phases (index)
 
 The phase text lives in the two child plans, so there is one copy to keep in step. Phase 6 (dogfood) is
-in *Delivery* below because it needs both PRs.
+in *Delivery* below because it needs both PRs. PR 2 runs in the order 3a, 3b, 3c, 4, 5, 4b: 4b is last because
+it needs PR 1's real `repos` command (see the PR 2 gating procedure in *Delivery*).
 
 | Phase | Where | PR |
 |---|---|---|
 | 1 Catalog, loader, renderers, generated sections | PR 1 plan, Phase 1 | PR 1 |
 | 2 `repos list|add|remove` (2a `tomlkit`, 2b `env_loading` seam and provenance, 2c writer, 2d commands) | PR 1 plan, Phases 2a to 2d | PR 1 |
 | 3 `get_hub_status` indexed repos (3a protocol, 3b predicates, 3c providers) | PR 2 plan, Phases 3a to 3c | PR 2 |
-| 4 Corpus hints, plus 4b seam test against the real `repos` | PR 2 plan, Phases 4 and 4b | PR 2 |
+| 4 Corpus hints | PR 2 plan, Phase 4 | PR 2 |
 | 5 Catalog health and curation scripts, weekly workflow | PR 2 plan, Phase 5 | PR 2 |
+| 4b Seam test against the real `repos` (runs last in PR 2, after the rebase onto PR 1) | PR 2 plan, Phase 4b | PR 2 |
 | 6 Dogfood migration | Delivery below | after both |
 | (deferred) `search_repo_catalog` + `repos search` | Non-goals | none |
 
@@ -387,6 +389,20 @@ cleanly.
    that apply to that PR, update the PR description with `gh pr edit`, merge with
    `gh pr merge --merge --delete-branch` only after the maintainer says so.
 
+**PR 2 gating (Phase 4b needs PR 1's real `repos`).** PR 2 runs 3a, 3b, 3c, 4, 5, then 4b last.
+
+1. Run `/skein:conduct <PR 2 plan> --autonomous --max-phases 5` so it walks Phases 3a to 5 and stops. conduct's
+   `SKILL.md` (0.10.0) defines `--max-phases N` as a cap on total phases walked in autonomous mode and
+   hard-stops when the completed count reaches `N`; it has no range or skip semantics, so it caps count only.
+2. When it hands back, rebase `feature/repo-catalog-pr2` onto `feature/repo-catalog-pr1` once PR 1's Phase 2d
+   commit exists (or onto `main` after PR 1 merges). Log it in the Handoff log table.
+3. Run `/skein:conduct <PR 2 plan> --resume` for Phase 4b, then the gauntlet auto-chain.
+
+Verified in `SKILL.md`: `--resume` refreshes `state.resume_base_sha` to the current `HEAD`, and each
+completed phase's `commit_sha` is immutable. So the rebase leaves those stored `commit_sha` values stale,
+and the rogue-commit check uses the refreshed `resume_base_sha` instead. Not verified: whether conduct
+reads the stale `commit_sha` values anywhere else after a rebase; check the first `--resume` hand-back.
+
 If a session is interrupted: `/skein:conduct <child plan> --resume`; the gauntlet resumes from its
 `.gauntlet/` ledger (`--last-decision`). Never restart either from scratch. State lives at
 `<worktree>/.conduct/state-<plan-id>.json`; this session can read it with `jq` and must not write it.
@@ -397,10 +413,12 @@ These are the only two seams. Both PRs are written against them; change one only
 and both child plans in the same commit.
 
 - **C1: `add_command`.** In PR 2's hint, `add_command` is a string made of one command per matched group
-  that has at least one repo that is neither configured nor tainted: `pipecat-context-hub repos add --group
-  <group-name>`, joined with `; `. `--group` skips repos already in `config.toml`, tainted repos and
+  that has at least one repo that is neither configured nor tainted: `pipecat-context-hub repos add
+  --config-only --group <group-name>`, joined with `; `. Plain `repos add` is refused when a real env var or
+  cwd `.env` sets `PIPECAT_HUB_EXTRA_REPOS` (Decision 7 check 3), and the hint must work for that user,
+  the maintainer's own `.env`. `--group` skips repos already in `config.toml`, tainted repos and
   `parseable = false` repos, so the command is always accepted and never adds more than the hint listed.
-  Catalog slugs go through plain `repos add`; the `--unlisted` form appears only in the agent-assist
+  Catalog slugs use `--group`, never `--unlisted`; the `--unlisted` form appears only in the agent-assist
   text. (This format is chosen here, not earlier; the review of this section may revisit it.)
 - **C2: configured state.** PR 2 reads configured and tainted repos only through
   `config.sources.effective_repos` and `config.sources.tainted_repos` at process start. It never reads
@@ -417,8 +435,9 @@ and both child plans in the same commit.
 | `shared/env_loading.py`, `shared/config_writer.py`, `cli_repos.py`, `shared/repo_catalog*.py`, `data/repo_catalog.toml` | owns | reads only | none |
 | `shared/corpus_hint.py`, `server/tools/get_hub_status.py`, `shared/interfaces.py`, `services/index/reopening.py`, `scripts/*catalog*`, `catalog-health.yml`, `retrieval-quality.yml` | none | owns | none |
 | `cli_query.py` | `_EXIT_BAD_INPUT` to `EXIT_INVALID_INPUT` (import and constant) | `_QueryRuntime`, hint call sites | different regions; PR 2 rebases onto PR 1 |
+| `tests/unit/test_cli_query.py` | Phase 2d rewrites its line-16 `_EXIT_BAD_INPUT` import | Phases 3c and 4 extend the same module | keep both sides on rebase |
 | `cli.py` | `register_repos_commands`, `ctx.obj` provenance | provider wiring in `serve` | PR 2 rebases |
-| `.github/workflows/ci.yml` (Windows file list) | catalog, writer, repos test modules | `corpus_hint` test module | PR 2 rebases and keeps both |
+| `.github/workflows/ci.yml` (Windows file list) | catalog, writer, repos test modules | `test_corpus_hint.py`, `test_repos_hint_seam.py`, `test_check_repo_catalog.py` | PR 2 rebases and keeps both |
 | `docs/configuration.md`, `AGENTS.md` layout, changelog, `justfile` | both edit | both edit | `/update-docs` per PR; PR 2 rebases |
 | `pyproject.toml`, `uv.lock` | `tomlkit` | none | none |
 
@@ -434,7 +453,7 @@ reopening PR 1.
 ### After both PRs merge: Phase 6, dogfood migration
 
 Done by the maintainer in the main checkout, in this order. The repo-root `.env` sets `PIPECAT_HUB_EXTRA_REPOS`, so every
-   add needs `--config-only`. (i) Catalog slugs: `repos add --config-only <slug>` per slug (not `--group`, which skips
+   add needs `--config-only` (the hint's `add_command` carries it for the same reason, contract C1). (i) Catalog slugs: `repos add --config-only <slug>` per slug (not `--group`, which skips
    `parseable = false` repos such as the two iOS demos the `.env` holds). (ii) The slugs that are not in
    the catalog (11 today; three are private: `nvidia-sgmaker`, `pipecat-krisp`, `hosted-smart-turn`,
    which clone with the maintainer's own credentials): derive them by diffing the `.env` list against
@@ -456,7 +475,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
 | PR 2 worktree started / conduct state file | |
 | PR 1 gauntlet converged / `/update-docs` done / PR number | |
 | PR 1 merged (merge commit) | |
-| PR 2 rebased onto `main` | |
+| PR 2 rebased onto PR 1 (before Phase 4b) / onto `main` | |
 | PR 2 gauntlet converged / `/update-docs` done / PR number | |
 | PR 2 merged (merge commit) | |
 | Dogfood migration done | |
@@ -466,9 +485,9 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
 - **[PR1]** Catalog: schema, unique slugs, a `private`/`archived`/`status` key is a schema error (visibility
   itself is only caught by the health check), static cross-group invariants (alias collision, a slug
   in two groups, a default repo, bad `kind`/`parseable`/`verified`), a tainted slug in the environment
-  does **not** break loading, a catalog that fails to load returns `None` and logs once across repeated calls, which disables
-  hints without failing a tool call, leaves `catalog_groups_not_indexed == []` on both doors and still
-  lets the CLI print its stderr hint;
+  does **not** break loading, a catalog that fails to load returns `None` and logs once across repeated calls (PR 1 asserts only this
+  loader contract; the consequences are **[PR2]** assertions: hints are disabled without failing a tool
+  call, `catalog_groups_not_indexed == []` on both doors, and the CLI still prints its stderr hint);
   generated `.env.example` block and docs section equal the checked-in files, wheel contains the
   catalog, the `just catalog-regen` recipe exists.
 - **[PR2]** Classifier (offline, injected responses): ok, 404, archived, 301, a real rename (`full_name` differs
@@ -513,7 +532,9 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   slugs match; the synthetic `docs.pipecat.ai` key is dropped; `catalog_groups_not_indexed` for fully, partly and `parseable = false`-only groups;
   `get_counts_by_repo` raising yields no hint and no crash (mirror `test_store_errors_never_break_the_response`);
   the count read through `ReopeningIndexStore`, including after a reopen (a stale `serve` hints
-  correctly after a `refresh`).
+  correctly after a `refresh`). `indexed_repos` returns `None` on an unreadable count,
+  `groups_not_indexed(catalog, None)` returns `[]`, and `corpus_hint` returns `None` (no false hint), per
+  Decision 10.
 - **[PR2]** Hints: frozen real queries, the four 2026-10-17 unindexed-vendor queries and the AWS Nova Sonic
   query, copied verbatim into the test file and reused for the new numbered smoke item (a vendor question with the repo unindexed must hint, the same with it
   indexed must not); a 0.95-confidence response still hints; alias negatives ("laws" must not match
@@ -521,7 +542,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   entries skipped (a tainted catalog repo appears in neither `repos_not_indexed` nor `add_command`, on
   both doors); a configured-but-empty repo lands in `repos_configured_no_records`; the
   `corpus_hint` key is absent (not null) when it does not apply; a golden `corpus_hint` object per
-  door (`add_command` lists only unconfigured, untainted repos and is omitted when none; `refresh_command` appears
+  door (`add_command` is one `pipecat-context-hub repos add --config-only --group <group>` per matched group with an unconfigured, untainted repo, joined with `; `, and is omitted when none; `refresh_command` appears
   only with a configured-but-empty repo; `report_issue_url` equals `RETRIEVAL_QUALITY_ISSUE_URL`);
   `configured_repos` reflects process start (a later `repos add` does not change a running hint); `get_code_snippet` hints from
   `symbol`/`intent` and not from `path` alone; a partially indexed group lists only the missing repos
@@ -536,7 +557,9 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   provenance overlap merge.
 - **[PR2]** Mutation checks: the alias word boundary, the `parseable = false` skip, the tainted skip in
   the hint, the catalog-load-failure fallback, the casefold in `indexed_repos`, the CLI stderr-hint
-  suppression, and the `add_command` format (contract C1).
+  suppression, and the `add_command` format (contract C1, including `--config-only`).
+- **Mutation-check assignment:** each [PR1] and [PR2] mutation check above is assigned to a phase in the
+  child plans; see PR 1 and PR 2 plans for the per-phase list.
 - **[after both]** Real data: run against a copy of `~/.pipecat-context-hub` and the maintainer's real `config.toml`;
   expected observations: `repos list` shows the effective list with every slug tagged, the catalog
   loads, and `status` reports `catalog_groups_not_indexed` consistent with the index.
