@@ -101,7 +101,7 @@ _INVOCATION_SCOPED_KEYS = frozenset(
 )
 
 # The documented settings registry — every key in `config.toml.example` and
-# docs/README.md's Environment Variables table. Pinned against both by
+# docs/configuration.md's Environment Variables table. Pinned against both by
 # `tests/unit/test_config.py::TestConfigTomlExampleParity`, so this set cannot
 # silently drift from the documented one.
 #

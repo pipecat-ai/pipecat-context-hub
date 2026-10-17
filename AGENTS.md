@@ -93,8 +93,8 @@ point — `cli.py:main()`, the dashboard scripts, `scripts/smoke_check_removals.
 `load_cwd_dotenv()` then `load_global_config()`) before constructing config, so
 they all resolve identically. Don't hand-replicate the two calls in a new entry
 point — a source-parity test (`tests/unit/test_config.py`) fails if you do. Full precedence
-details and the Windows lookup path: `docs/README.md`'s "Config precedence"
-subsection under Environment Variables.
+details and the Windows lookup path: `docs/configuration.md`'s "Config precedence"
+section (the variable table sits just above it).
 
 ## MCP Tools — Multi-Concept Queries
 

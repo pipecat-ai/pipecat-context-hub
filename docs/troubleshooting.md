@@ -34,7 +34,7 @@ Part of the [Pipecat Context Hub README](README.md).
   `--reset-index` the check runs after the delete has freed the space.
   `PIPECAT_HUB_MIN_FREE_GB` is invocation-scoped like `PIPECAT_HUB_PRUNE`: set
   it in the environment, not `config.toml`, which is why it is not in the
-  Environment Variables table; below it, `refresh` exits **1**) and
+  Environment Variables table in `configuration.md`; below it, `refresh` exits **1**) and
   takes an exclusive `refresh.lock` (a sibling file of the data dir,
   `<dirname>.refresh.lock`, e.g. `~/.pipecat-context-hub.refresh.lock`, so `--reset-index` can't delete
   it), so two refreshes can't interleave writes to the same Chroma HNSW files.
@@ -166,7 +166,7 @@ server's stderr entirely, set `PIPECAT_HUB_DEBUG_PROBE=1` in the client's
 `env` block: `serve` appends the same evidence to
 `~/.cache/pipecat-context-hub/serve-debug.log` on each boot. This is a
 troubleshooting fallback, not a setting — it is deliberately absent from
-`config.toml.example` and the Environment Variables table, and is ignored when
+`config.toml.example` and the `configuration.md` Environment Variables table, and is ignored when
 set in `config.toml` (a machine-global file must never persistently enable a
 disk-writing probe). Unset it once you've read the file.
 

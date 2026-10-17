@@ -441,11 +441,11 @@ class TestHubConfig:
 
 
 class TestConfigTomlExampleParity:
-    """Parity: config.toml.example's key set must match docs/README.md's
+    """Parity: config.toml.example's key set must match docs/configuration.md's
     Environment Variables table, the same way test_every_click_command_is_bridged
     (tests/unit/test_plugin.py) catches an unbridged CLI command.
 
-    docs/README.md's Environment Variables table, not .env.example, is the
+    docs/configuration.md's Environment Variables table, not .env.example, is the
     parity partner (see dev plan Architecture Decisions) — .env.example is a
     curated subset of repo bundles, not the full var registry.
     """
@@ -454,34 +454,36 @@ class TestConfigTomlExampleParity:
         example_text = (_REPO_ROOT / "config.toml.example").read_text(encoding="utf-8")
         return set(_PIPECAT_HUB_VAR_RE.findall(example_text))
 
-    def _readme_keys(self) -> set[str]:
-        readme_text = (_REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-        section = extract_section(readme_text, "Environment Variables")
+    def _docs_keys(self) -> set[str]:
+        docs_text = (_REPO_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+        section = extract_section(docs_text, "Environment Variables")
         assert section is not None, (
-            "docs/README.md has no 'Environment Variables' heading — "
+            "docs/configuration.md has no 'Environment Variables' heading — "
             "extract_section() found nothing to scope the parity check to."
         )
         return set(_PIPECAT_HUB_VAR_RE.findall(section))
 
-    def test_config_toml_example_matches_readme_env_var_table(self):
+    def test_config_toml_example_matches_docs_env_var_table(self):
         example_keys = self._example_keys()
-        readme_keys = self._readme_keys()
+        docs_keys = self._docs_keys()
 
         # Neither extraction may vacuously pass by finding nothing — a format
         # change (e.g. renaming the heading, or de-indenting the example's
         # `# KEY = value` lines out of match) must fail loudly, not silently
         # collapse both sides to the empty set and report "equal".
         assert example_keys, "config.toml.example: no PIPECAT_HUB_* keys found"
-        assert readme_keys, "README Environment Variables section: no PIPECAT_HUB_* keys found"
+        assert docs_keys, (
+            "docs/configuration.md Environment Variables section: no PIPECAT_HUB_* keys found"
+        )
 
-        if example_keys != readme_keys:
-            only_in_example = example_keys - readme_keys
-            only_in_readme = readme_keys - example_keys
+        if example_keys != docs_keys:
+            only_in_example = example_keys - docs_keys
+            only_in_docs = docs_keys - example_keys
             raise AssertionError(
-                "config.toml.example and docs/README.md's Environment Variables "
+                "config.toml.example and docs/configuration.md's Environment Variables "
                 "table have drifted apart.\n"
                 f"Only in config.toml.example: {sorted(only_in_example)}\n"
-                f"Only in README table: {sorted(only_in_readme)}"
+                f"Only in docs table: {sorted(only_in_docs)}"
             )
 
         # PIPECAT_HUB_PRUNE and the rest of _INVOCATION_SCOPED_KEYS are
@@ -495,9 +497,9 @@ class TestConfigTomlExampleParity:
             "PIPECAT_HUB_STABILITY_OUTPUT",
             "PIPECAT_HUB_MIN_FREE_GB",
         }
-        assert internal_vars.isdisjoint(example_keys | readme_keys), (
+        assert internal_vars.isdisjoint(example_keys | docs_keys), (
             "An invocation-scoped key leaked into config.toml.example or the "
-            "README's Environment Variables table."
+            "docs/configuration.md Environment Variables table."
         )
 
         # Drift alarm: this test's independent copy of the invocation-scoped
@@ -519,7 +521,7 @@ class TestConfigTomlExampleParity:
     def test_every_env_var_the_code_reads_is_in_the_registry(self):
         """Code-anchored leg of the parity chain (round-2 finding #6).
 
-        `config.toml.example` <-> README <-> `_KNOWN_KEYS` pins three
+        `config.toml.example` <-> docs/configuration.md <-> `_KNOWN_KEYS` pins three
         *documentation* copies of the registry to each other, but nothing
         pinned any of them to the code that actually reads these vars. A new
         `PIPECAT_HUB_*` setting added to `shared/config.py` without a doc
@@ -547,7 +549,7 @@ class TestConfigTomlExampleParity:
         unregistered = {k: v for k, v in found.items() if k not in allowed}
         assert not unregistered, (
             "These PIPECAT_HUB_* vars are read (or named) in src/ but appear in "
-            "neither the documented registry (config.toml.example + docs/README.md + "
+            "neither the documented registry (config.toml.example + docs/configuration.md + "
             "_KNOWN_KEYS) nor _INVOCATION_SCOPED_KEYS. Document them, or add them to "
             f"_INVOCATION_SCOPED_KEYS if they are not machine config:\n{unregistered}"
         )
