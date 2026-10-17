@@ -15,10 +15,10 @@ from unittest.mock import patch
 import pytest
 
 from pipecat_context_hub.shared import env_loading
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.config import (
     _DATA_DIR_ENV,
     _DEFAULT_RERANKER_MODEL,
-    EXTRA_REPOS_ENV,
     _RERANKER_MODEL_ENV,
     _TAINTED_REFS_ENV,
     _TAINTED_REPOS_ENV,

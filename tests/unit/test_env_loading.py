@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from pipecat_context_hub.shared import env_loading
+from pipecat_context_hub.shared import env_keys, env_loading
 from pipecat_context_hub.shared.config import HubConfig, StorageConfig
 from pipecat_context_hub.shared.env_loading import (
     _INVOCATION_SCOPED_KEYS,
@@ -2038,7 +2038,7 @@ class TestSharedListRule:
         if expected is None:
             assert raw is None
         else:
-            assert env_loading.split_csv(raw or "") == expected
+            assert env_keys.split_csv(raw or "") == expected
 
 
 class TestSpecificRefusalReason:

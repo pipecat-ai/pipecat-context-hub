@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -675,13 +676,13 @@ class TestNewFileTrust:
         _racing_mkdir(monkeypatch, appeared)
         _foreign_dir(monkeypatch, appeared)
         temps: list[str] = []
-        real_mkstemp = config_writer.tempfile.mkstemp
+        real_mkstemp = tempfile.mkstemp
 
         def spy(*a: Any, **kw: Any) -> Any:
             temps.append(str(kw.get("dir")))
             return real_mkstemp(*a, **kw)
 
-        monkeypatch.setattr(config_writer.tempfile, "mkstemp", spy)
+        monkeypatch.setattr(tempfile, "mkstemp", spy)
         with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
             update_extra_repos(add=["a/b"])
         assert "owned by uid" in excinfo.value.reason
