@@ -118,6 +118,7 @@ jobs:
           tests/unit/test_env_loading.py
           tests/unit/test_config.py
           tests/unit/test_repo_catalog.py
+          tests/unit/test_config_writer.py
 
   security:
     name: Security
