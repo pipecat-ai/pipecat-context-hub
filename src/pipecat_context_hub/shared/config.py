@@ -13,7 +13,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
-from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, split_csv
+from pipecat_context_hub.shared.env_keys import (
+    EXTRA_REPOS_ENV,
+    TAINTED_REFS_ENV,
+    TAINTED_REPOS_ENV,
+    split_csv,
+    taint_key,
+)
 from pipecat_context_hub.shared.versioning import DEFAULT_FRAMEWORK_PIN
 
 logger = logging.getLogger(__name__)
@@ -22,12 +28,8 @@ logger = logging.getLogger(__name__)
 # once, in the dependency-free `shared/env_keys.py`, so this model never imports
 # the env loader.
 
-# Environment variable for skipping entire tainted repos (comma-separated).
-_TAINTED_REPOS_ENV = "PIPECAT_HUB_TAINTED_REPOS"
-
-# Environment variable for skipping specific tainted refs.
-# Format: org/repo@ref,org/repo@other-ref
-_TAINTED_REFS_ENV = "PIPECAT_HUB_TAINTED_REFS"
+# `TAINTED_REPOS_ENV` / `TAINTED_REFS_ENV` (the taint keys) and `taint_key`
+# (the taint-matching fold) live in `shared/env_keys.py` too.
 
 # Environment variable for enabling cross-encoder reranking.
 _RERANKER_ENABLED_ENV = "PIPECAT_HUB_RERANKER_ENABLED"
@@ -499,20 +501,20 @@ class SourceConfig(BaseModel):
         case-insensitive, so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.
         Every consumer of ``tainted_repos`` (``effective_repos``, refresh's
         cleanup, ``repos``) decides through this method."""
-        folded = slug.casefold()
-        return any(t.casefold() == folded for t in self.tainted_repos)
+        folded = taint_key(slug)
+        return any(taint_key(t) == folded for t in self.tainted_repos)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def tainted_repos(self) -> list[str]:
         """Repos explicitly blocked from refresh by local policy."""
-        return _dedupe_preserve_order(split_csv(os.environ.get(_TAINTED_REPOS_ENV, "")))
+        return _dedupe_preserve_order(split_csv(os.environ.get(TAINTED_REPOS_ENV, "")))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def tainted_refs_by_repo(self) -> dict[str, list[str]]:
         """Mapping of repo slug to tainted upstream refs to skip."""
-        return _parse_tainted_refs(os.environ.get(_TAINTED_REFS_ENV, ""))
+        return _parse_tainted_refs(os.environ.get(TAINTED_REFS_ENV, ""))
 
 
 class HubConfig(BaseModel):

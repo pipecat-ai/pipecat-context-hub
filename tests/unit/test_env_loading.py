@@ -1238,6 +1238,33 @@ class TestShadowedExclusionWarningNamesEntries:
         assert "NOT in effect" not in caplog.text
         assert "still covered" in caplog.text
 
+    @pytest.mark.parametrize(
+        ("key", "configured", "active", "lost"),
+        [
+            # Taint matching is casefolded (SourceConfig.is_tainted): a case-only
+            # difference still excludes the repo, so nothing is lost.
+            ("PIPECAT_HUB_TAINTED_REPOS", '"Foo/Bar"', "foo/bar", None),
+            ("PIPECAT_HUB_TAINTED_REPOS", '["Foo/Bar", "Org/Gone"]', "foo/bar", "Org/Gone"),
+            # Ref matching stays exact, so the case-only difference is lost.
+            ("PIPECAT_HUB_TAINTED_REFS", '"Foo/Bar@v1"', "foo/bar@v1", "Foo/Bar@v1"),
+        ],
+    )
+    def test_shadow_warning_uses_each_settings_matching_rule(
+        self, key, configured, active, lost, tmp_path: Path, monkeypatch, caplog
+    ):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"{key} = {configured}\n")
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv(key, active)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert key in caplog.text
+        if lost is None:
+            assert "NOT in effect" not in caplog.text
+            assert "still covered" in caplog.text
+        else:
+            assert f"NOT in effect for this run: {lost}\n" in caplog.text + "\n"
+
     def test_unparseable_shadowed_exclusion_list_warns_generically(
         self, tmp_path: Path, monkeypatch, caplog
     ):

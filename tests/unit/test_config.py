@@ -15,13 +15,11 @@ from unittest.mock import patch
 import pytest
 
 from pipecat_context_hub.shared import env_loading
-from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, TAINTED_REFS_ENV, TAINTED_REPOS_ENV
 from pipecat_context_hub.shared.config import (
     _DATA_DIR_ENV,
     _DEFAULT_RERANKER_MODEL,
     _RERANKER_MODEL_ENV,
-    _TAINTED_REFS_ENV,
-    _TAINTED_REPOS_ENV,
     ChunkingConfig,
     EmbeddingConfig,
     HubConfig,
@@ -328,7 +326,7 @@ class TestSourceConfig:
             os.environ,
             {
                 EXTRA_REPOS_ENV: "org/repo-a",
-                _TAINTED_REPOS_ENV: "pipecat-ai/pipecat,org/repo-a",
+                TAINTED_REPOS_ENV: "pipecat-ai/pipecat,org/repo-a",
             },
         ):
             s = SourceConfig()
@@ -341,7 +339,7 @@ class TestSourceConfig:
         with patch.dict(
             os.environ,
             {
-                _TAINTED_REFS_ENV: "pipecat-ai/pipecat@v0.0.9,pipecat-ai/pipecat@deadbeef,broken-entry"
+                TAINTED_REFS_ENV: "pipecat-ai/pipecat@v0.0.9,pipecat-ai/pipecat@deadbeef,broken-entry"
             },
         ):
             s = SourceConfig()

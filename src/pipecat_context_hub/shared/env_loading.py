@@ -23,7 +23,13 @@ import tomllib
 from pathlib import Path
 from typing import Final, Literal
 
-from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, split_csv
+from pipecat_context_hub.shared.env_keys import (
+    EXTRA_REPOS_ENV,
+    TAINTED_REFS_ENV,
+    TAINTED_REPOS_ENV,
+    split_csv,
+    taint_key,
+)
 from pipecat_context_hub.shared.paths import (
     is_inside,
     redact_home,
@@ -130,8 +136,8 @@ _KNOWN_KEYS = frozenset(
         "PIPECAT_HUB_RERANKER_ENABLED",
         "PIPECAT_HUB_RERANKER_MODEL",
         "PIPECAT_HUB_STALE_AFTER_DAYS",
-        "PIPECAT_HUB_TAINTED_REFS",
-        "PIPECAT_HUB_TAINTED_REPOS",
+        TAINTED_REFS_ENV,
+        TAINTED_REPOS_ENV,
         "PIPECAT_HUB_WARMUP",
     }
 )
@@ -141,7 +147,7 @@ _KNOWN_KEYS = frozenset(
 # that is shadowed by a real env var or cwd `.env` is worth saying out loud —
 # an operator who deliberately excluded a repo machine-globally should learn
 # that this invocation is not honouring that list.
-_EXCLUSION_KEYS = frozenset({"PIPECAT_HUB_TAINTED_REPOS", "PIPECAT_HUB_TAINTED_REFS"})
+_EXCLUSION_KEYS = frozenset({TAINTED_REPOS_ENV, TAINTED_REFS_ENV})
 
 # Scalar TOML value types accepted as-is (coerced via str()) or as elements
 # of a homogeneous array.
@@ -863,12 +869,19 @@ def _config_fd_refusal(fd: int, config_path: Path) -> str | None:
     return None
 
 
-def _shadowed_exclusion_entries(config_value: object, active_value: str) -> list[str] | None:
+def _shadowed_exclusion_entries(
+    key: str, config_value: object, active_value: str
+) -> list[str] | None:
     """Entries in a config.toml exclusion list that the winning layer drops.
 
-    Best-effort and lenient: this runs on a value that was never coerced (it
-    lost precedence before validation), so a shape the loader wouldn't accept
-    yields ``None`` rather than an error.
+    Both sides are read by the reader's own rules: the config.toml value by
+    :func:`config_list_value` (so a shape the loader wouldn't accept yields
+    ``None`` rather than an error; this runs on a value that lost precedence
+    before validation), the winning value by :func:`split_csv`. Entries
+    compare by the setting's own matching rule: casefolded (:func:`taint_key`,
+    as ``SourceConfig.is_tainted`` matches) for ``PIPECAT_HUB_TAINTED_REPOS``,
+    exact for ``PIPECAT_HUB_TAINTED_REFS``, so an entry the winning list still
+    honours under another spelling is not reported lost.
 
     ``None`` (unreadable shape — nothing can be said about what survived) is
     distinct from ``[]`` (read fine, and the winning layer's list covers every
@@ -876,14 +889,19 @@ def _shadowed_exclusion_entries(config_value: object, active_value: str) -> list
     list made the caller warn that machine-global exclusions were "NOT in
     effect" in the superset case, where they demonstrably all are.
     """
-    if isinstance(config_value, str):
-        configured = [part.strip() for part in config_value.split(",")]
-    elif isinstance(config_value, list) and all(isinstance(v, str) for v in config_value):
-        configured = [str(v).strip() for v in config_value]
-    else:
+    # Lenient only about strings: a scalar or array the loader would stringify
+    # (an int, say) is not an exclusion list anyone wrote on purpose.
+    is_strings = isinstance(config_value, list) and all(isinstance(v, str) for v in config_value)
+    configured = (
+        config_list_value(key, config_value)
+        if isinstance(config_value, str) or is_strings
+        else None
+    )
+    if configured is None:
         return None
-    active = {part.strip() for part in active_value.split(",")}
-    return sorted({entry for entry in configured if entry and entry not in active})
+    fold = taint_key if key == TAINTED_REPOS_ENV else (lambda entry: entry)
+    active = {fold(entry) for entry in split_csv(active_value)}
+    return sorted({entry for entry in configured if fold(entry) not in active})
 
 
 def _is_homogeneous_scalar_array(value: list[object]) -> bool:
@@ -1086,7 +1104,7 @@ def load_global_config() -> dict[str, str]:
             # so a shadowed taint list means a deliberate machine-global
             # exclusion is silently not in effect this run. Say so.
             if key in _EXCLUSION_KEYS:
-                lost = _shadowed_exclusion_entries(value, os.environ[key])
+                lost = _shadowed_exclusion_entries(key, value, os.environ[key])
                 if lost:
                     # Name the entries, not just the key: "your taint list is
                     # shadowed" is not actionable, "these repos are no longer
