@@ -19,7 +19,8 @@ and the parent disagree, stop and hand back.
 
 **Start condition.** This branch is created from PR 1's Phase 1 commit, so `shared/repo_catalog.py` and
 `load_catalog()` exist. Phases 3a to 5 need only that commit. Phase 4b also needs PR 1's Phase 2d commit
-(`cli_repos.py`), so it runs last. Do not start this plan before the Phase 1 commit exists.
+(`cli_repos.py`), so it runs last. Do not start this plan before the Phase 1 commit exists. Before Phase 3a,
+run `uv run mypy src/ tests/` on the Phase 1 commit; if it fails, hand back to PR 1 instead of fixing it here.
 
 **Phase order and gating.** The order is 3a, 3b, 3c, 4, 5, 4b. Run
 `/skein:conduct <this plan> --autonomous --max-phases 5` so it walks 3a to 5 and hands back.
@@ -206,7 +207,8 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
     suppressed when a hint exists. With an unreadable count (a store that raises, a fake lacking the method,
     a `MagicMock()` store) a vendor query has no `corpus_hint` key on both doors and the CLI stderr hint
     still prints; existing `MagicMock`-store golden tests stay unchanged.
-  - `test_server.py` (the line-864 pattern): `_SERVER_INSTRUCTIONS` pins `corpus_hint`, `--unlisted` and
+  - `test_server.py` (the existing `_SERVER_INSTRUCTIONS` pin tests near lines 613-644, and the
+    issue-template check near line 864): `_SERVER_INSTRUCTIONS` pins `corpus_hint`, `--unlisted` and
     the draft-not-file wording; `retrieval-quality.yml` carries the optional *Candidate repos* field.
 - The catalog-load-failure half lives here: with `load_catalog` returning `None` (seam: patch
   `_read_catalog_text` to return a broken catalog, with `load_catalog.cache_clear()` before and after each case) there is no `corpus_hint` key on either door, and the
@@ -218,7 +220,9 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
   query record the matched group, its aliases and its parseable members; then fix the table below and the
   smoke-test expectations from that data, and record any changed verdict in the PR description.
 - A new numbered item in `docs/smoke-test.md` reuses the four queries. PR 1 Phase 2d also adds an item
-  there, so number this one after the highest existing item on rebase (53 and 54 are PR 1's, expect 55).
+  there, so put this one in the same list as PR 1's items and number it after that list's highest item on
+  rebase (docs/smoke-test.md has two numbered lists: the main list and "CLI query smoke"; PR 1's items are 53
+  and 54 in the main list, so expect 55).
 - Expected outcomes for the four frozen queries (provenance: the maintainer's live index, 2026-10-17).
   **Provisional** until the catalog read above; the verdicts hold only under the stated catalog condition:
 
@@ -326,7 +330,7 @@ exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.
 (`/mcp`). Run the new numbered `docs/smoke-test.md` item for one unindexed and one indexed vendor query.
 Put the result and the mutation-check results in the PR description. Restore the released tool afterwards.
 
-<!-- reviewed: YYYY-MM-DD @ <hash> -->
+<!-- reviewed: 2026-10-17 @ 0e2551faa66e61d53a9c85b85da3d79aff70843f -->
 
 ## Progress
 
