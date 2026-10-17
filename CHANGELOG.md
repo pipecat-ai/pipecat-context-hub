@@ -8,6 +8,24 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`repos list|add|remove`** (also `pipecat context-hub repos ...`) manages
+  `PIPECAT_HUB_EXTRA_REPOS` in `~/.config/pipecat-context-hub/config.toml`,
+  offline, keeping comments and other keys and writing atomically. `add`
+  takes a catalog slug, `--unlisted owner/repo`, or `--group NAME`;
+  `--config-only` edits the file even when a real env var or the cwd `.env`
+  overrides the key (the command names that layer). `repos list` shows the
+  effective repos tagged `default` / `catalog` / `unlisted`, the cwd whose
+  `.env` was consulted, and repos `config.toml` holds but a higher layer hides;
+  `--groups` lists the catalog groups. Refusals exit 1 with the file untouched.
+  The writer reads through the loader's trust checks and never creates a file
+  the loader would ignore. Run `refresh` afterwards to index.
+- **Repo catalog** (`src/pipecat_context_hub/data/repo_catalog.toml`): curated
+  public repos grouped by vendor or topic. It generates the extras block in
+  `.env.example` and the "Repo catalog" section of `docs/configuration.md`
+  (`just catalog-regen`; `--check` fails on drift, `--bump-verified` records a
+  manual audit); a test fails when they differ.
+- New runtime dependency: `tomlkit` (comment-preserving TOML edits), loaded
+  only by `repos add` / `repos remove`.
 - Plugin-specific release notes live in
   [`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
   This changelog retains repository and Context Hub package history.

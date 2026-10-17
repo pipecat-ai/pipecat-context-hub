@@ -23,6 +23,9 @@ uv run pipecat-context-hub refresh --framework-version v0.0.96  # index framewor
 uv run pipecat-context-hub refresh --framework-version head     # ...or at its default branch (default: latest release tag)
 uv run pipecat-context-hub serve                    # start MCP server (`start` is an alias)
 uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
+uv run pipecat-context-hub repos list [--groups]    # effective repos (default/catalog/unlisted) and the catalog groups
+uv run pipecat-context-hub repos add <slug>         # edit EXTRA_REPOS in config.toml (--unlisted, --group NAME, --config-only); also `remove`
+just catalog-regen                                  # regenerate .env.example / docs from data/repo_catalog.toml (--check, --bump-verified)
 ```
 
 Installed alongside `pipecat-ai[cli]`, every command is also reachable as
@@ -141,11 +144,16 @@ src/pipecat_context_hub/
 ├── cli.py                    # CLI entry point (serve + refresh)
 ├── cli_query.py              # One-shot query subcommands (the MCP tools as shell commands)
 ├── cli_install.py            # `install` — register the MCP server with a coding agent
+├── cli_repos.py              # `repos list|add|remove` — edit PIPECAT_HUB_EXTRA_REPOS in config.toml (check order, shadow refusal)
+├── data/repo_catalog.toml    # curated public repos by vendor/topic; source for generated .env.example / docs sections
 ├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat context-hub`
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
-│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence
+│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule)
+│   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
+│   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants), REPO_SLUG_RE / is_valid_repo_slug (the one owner/repo grammar)
+│   ├── repo_catalog_render.py # pure renderers + splice for the generated catalog sections; `python -m` entry behind `just catalog-regen`
 │   ├── interfaces.py         # IndexWriter/Reader, ServingIndex, Retriever, Ingester; FatalIndexError (ingesters re-raise: stops refresh), IndexUnavailableError (message for the caller)
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision

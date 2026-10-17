@@ -86,10 +86,14 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 `PIPECAT_HUB_EXTRA_REPOS` key of `~/.config/pipecat-context-hub/config.toml`,
 preserving comments and other keys. It works offline; run
 `pipecat-context-hub refresh` afterwards to index (or `refresh --prune` to drop
-data after a remove).
+data after a remove). Under a shadowing layer (rule 3, with `--config-only`) the
+reminder says the change is not in effect there, and warns against
+`refresh --prune` with that layer in force: it would delete the indexed data of
+every repo `config.toml` lists that the layer hides.
 
 ```bash
 pipecat-context-hub repos list                       # effective repos, tagged default / catalog / unlisted
+pipecat-context-hub repos list --groups              # ...plus the catalog group names for --group
 pipecat-context-hub repos add pipecat-ai/tail        # a catalog repo
 pipecat-context-hub repos add --group nvidia         # every parseable, non-tainted repo of a catalog group
 pipecat-context-hub repos add owner/repo --unlisted  # a well-formed repo that is not in the catalog
@@ -99,12 +103,12 @@ pipecat-context-hub repos remove pipecat-ai/tail     # also --group NAME, --unli
 Rules, applied in this order to a positional slug (the first that applies decides; exit code 1 on refusal):
 
 1. A default repo, or one in `PIPECAT_HUB_TAINTED_REPOS`, is refused.
-2. A malformed slug is refused; a slug outside the catalog needs `--unlisted`; a catalog slug with `--unlisted` is refused (the catalog spelling is used).
+2. A malformed slug is refused (`owner/repo`, each part starting with a letter or digit, then letters, digits, `.`, `_`, `-`: the grammar `refresh` clones); a slug outside the catalog needs `--unlisted`; a catalog slug with `--unlisted` is refused (the catalog spelling is used).
 3. If `PIPECAT_HUB_EXTRA_REPOS` is set by a real environment variable or the cwd `.env`, that layer outranks `config.toml`, so the change would have no effect and is refused, naming the layer. `--config-only` edits `config.toml` anyway (it is then in the file but not in the effective list, and `repos list` names the shadowing layer).
 4. Adding a slug already in `config.toml`, or removing one that is not, exits 0 (`Already in config.toml` / `Not in config.toml`). Slugs compare case-insensitively.
 5. Otherwise the file is written atomically (`Added <slug>` / `Removed <slug>`).
 
-`--group` (mutually exclusive with a slug and `--unlisted`) skips tainted and `parseable = false` members and reports them; it applies rules 3 to 5. An unknown group lists the valid ones. If the catalog fails to load, `add`/`remove` refuse and change nothing; `repos list` still works and tags every non-default repo `unlisted`. An untrusted, invalid or non-array `config.toml` makes `add`/`remove` exit 1 with the file untouched; `repos list` prints the effective list, names the ignored file and exits 0. `repos list` also prints the cwd whose `.env` was consulted, since a `serve` launched from another directory reads a different one.
+`--group` (mutually exclusive with a slug and `--unlisted`) skips tainted and `parseable = false` members and reports them; it applies rules 3 to 5 (a group with nothing left to act on does not read `config.toml`). An unknown group lists the valid ones. If the catalog fails to load, `add`/`remove` refuse and change nothing; `repos list` still works and tags every non-default repo `unlisted`. An untrusted, invalid or non-array `config.toml` makes `add`/`remove` exit 1 with the file untouched, and so does a filesystem error while writing it; `repos list` prints the effective list, names the ignored file and exits 0. `add` never creates a new `config.toml` the loader would then ignore (for example through a symlink planted by another account, or in a world-writable directory). `repos list` also prints the cwd whose `.env` was consulted, since a `serve` launched from another directory reads a different one.
 
 ## Repo catalog
 
