@@ -7,7 +7,11 @@ predicates) before anything is created; and the result is re-parsed through
 ``env_loading.parse_global_config`` and the reader's list rule
 (``env_loading.config_list_value``) before the rename. So it cannot create or
 replace a file the reader would ignore, nor write a list the reader would read
-differently. The module never exits; callers map the errors
+differently. Comments and layout survive an edit: an existing array of strings
+is edited in place (an untouched element keeps its trailing comment, own-line
+comments inside the array stay, a removed element's trailing comment goes with
+it), and a file with CRLF line endings stays CRLF. A CSV string, a non-string
+array or an absent key becomes a fresh array. The module never exits; callers map the errors
 (``ConfigWriteRefused``, ``env_loading.ConfigNotTrusted``, and ``OSError`` from
 the write itself) to exit codes.
 
@@ -21,6 +25,7 @@ import contextlib
 import logging
 import math
 import os
+import re
 import tempfile
 import tomllib
 from collections.abc import Iterable
@@ -29,8 +34,10 @@ from pathlib import Path
 
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
+from tomlkit.items import Array
+from tomlkit.toml_document import TOMLDocument
 
-from pipecat_context_hub.shared.config import EXTRA_REPOS_ENV
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.env_loading import (
     check_config_write_target,
     config_list_value,
@@ -39,10 +46,9 @@ from pipecat_context_hub.shared.env_loading import (
     resolve_global_config_path,
 )
 from pipecat_context_hub.shared.paths import redact_home_in_text
-from pipecat_context_hub.shared.repo_catalog import is_valid_repo_slug
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
 
 __all__ = [
-    "EXTRA_REPOS_KEY",
     "ConfigWriteRefused",
     "ExtraReposUpdate",
     "update_extra_repos",
@@ -50,7 +56,7 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
-EXTRA_REPOS_KEY = EXTRA_REPOS_ENV
+_BARE_LF_RE = re.compile(r"(?<!\r)\n")
 
 
 class ConfigWriteRefused(Exception):
@@ -84,18 +90,18 @@ def _current_list(data: dict[str, object]) -> list[str]:
     nested array, an element with a comma, a table, a date): the writer cannot
     know what such a value is meant to hold.
     """
-    if EXTRA_REPOS_KEY not in data:
+    if EXTRA_REPOS_ENV not in data:
         return []
-    value = data[EXTRA_REPOS_KEY]
+    value = data[EXTRA_REPOS_ENV]
     if not isinstance(value, (str, list)):
         raise ConfigWriteRefused(
-            f"{EXTRA_REPOS_KEY} must be an array of strings or a CSV string, "
+            f"{EXTRA_REPOS_ENV} must be an array of strings or a CSV string, "
             f"not {type(value).__name__}"
         )
-    current = config_list_value(EXTRA_REPOS_KEY, value)
+    current = config_list_value(EXTRA_REPOS_ENV, value)
     if current is None:
         raise ConfigWriteRefused(
-            f"{EXTRA_REPOS_KEY} holds an array the loader ignores (mixed or nested "
+            f"{EXTRA_REPOS_ENV} holds an array the loader ignores (mixed or nested "
             "elements, or an element containing a comma); fix it by hand"
         )
     return current
@@ -127,8 +133,74 @@ def _compute(current: list[str], add: Iterable[str], remove: Iterable[str]) -> l
     return result
 
 
+def _edit_in_place(doc: TOMLDocument, after: list[str], remove: Iterable[str]) -> None:
+    """Set ``PIPECAT_HUB_EXTRA_REPOS`` to ``after``, editing an existing array in place.
+
+    ``after`` is ``_compute``'s result: the current list minus ``remove``, then
+    the added slugs. An existing array of strings is edited in place (so its
+    comments and layout survive): elements matching ``remove`` (by the
+    reader's rule: stripped, casefolded) are deleted, the new slugs appended.
+    Anything else (absent key, CSV string, a non-string array the loader
+    stringifies) is replaced by a fresh array. The caller's re-parse check is
+    what proves the result reads back as ``after``.
+    """
+    existing = doc.get(EXTRA_REPOS_ENV)
+    if isinstance(existing, Array) and all(isinstance(v, str) for v in existing):
+        drop = {s.casefold() for s in remove}
+        for index in reversed(range(len(existing))):
+            if str(existing[index]).strip().casefold() in drop:
+                del existing[index]
+        kept = {str(v).strip().casefold() for v in existing}
+        for slug in after:
+            if slug.casefold() not in kept:
+                existing.append(slug)
+                kept.add(slug.casefold())
+        return
+    arr = tomlkit.array()
+    arr.extend(after)
+    doc[EXTRA_REPOS_ENV] = arr
+
+
+def _same_newlines(original: str | None, rendered: str) -> str:
+    """Keep a CRLF file CRLF: tomlkit writes a newly added line with a bare LF."""
+    if original and "\r\n" in original and original.count("\n") == original.count("\r\n"):
+        return _BARE_LF_RE.sub("\r\n", rendered)
+    return rendered
+
+
+def _dotdot_refusal(path: Path) -> str | None:
+    """A reason when ``path`` has a ``..`` the kernel and ``realpath`` would resolve differently.
+
+    ``os.path.realpath`` collapses ``nope/..`` lexically when ``nope`` does not
+    exist (or is not a directory), while the kernel's lookup of the same path
+    fails; the writer would then create a file the reader never opens. A
+    ``..`` is only resolved alike when everything before it is an existing
+    directory. POSIX only: Windows normalizes ``..`` lexically before the
+    lookup, exactly as ``realpath`` does.
+    """
+    if os.name != "posix":
+        return None
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    prefix = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        if part == ".." and not prefix.is_dir():
+            return (
+                f"{redact_home_in_text(str(path))}: a `..` follows {redact_home_in_text(str(prefix))}, "
+                "which is not an existing directory, so the file written would not be the "
+                "one the loader reads"
+            )
+        prefix = prefix / part
+    return None
+
+
 def _ensure_dir(directory: Path) -> None:
-    """Create missing directories 0700 (existing ones are left alone)."""
+    """Create missing directories 0700 (existing ones are left alone).
+
+    A directory that appears concurrently (``FileExistsError``) is not trusted
+    here: the caller re-runs the reader's path predicates
+    (``check_config_write_target``) once every directory exists, before any
+    file is created inside them.
+    """
     missing: list[Path] = []
     cur = directory
     while not cur.exists():
@@ -168,6 +240,10 @@ def update_extra_repos(*, add: Iterable[str] = (), remove: Iterable[str] = ()) -
         if not is_valid_repo_slug(slug):
             raise ConfigWriteRefused(f"{slug!r} is not a valid owner/repo slug")
 
+    dotdot = _dotdot_refusal(path)
+    if dotdot is not None:
+        raise ConfigWriteRefused(dotdot)
+
     text = read_trusted_config(path)  # ConfigNotTrusted propagates
     if text is None:
         original: dict[str, object] = {}
@@ -186,10 +262,8 @@ def update_extra_repos(*, add: Iterable[str] = (), remove: Iterable[str] = ()) -
     if after == before:
         return ExtraReposUpdate(before, after, False, path)
 
-    arr = tomlkit.array()
-    arr.extend(after)
-    doc[EXTRA_REPOS_KEY] = arr
-    payload = tomlkit.dumps(doc).encode("utf-8")
+    _edit_in_place(doc, after, remove_list)
+    payload = _same_newlines(text, tomlkit.dumps(doc)).encode("utf-8")
 
     # A symlink keeps working: write beside, and replace, the resolved target.
     target = Path(os.path.realpath(path))
@@ -203,6 +277,11 @@ def update_extra_repos(*, add: Iterable[str] = (), remove: Iterable[str] = ()) -
         # untrusted directory on the chain). ConfigNotTrusted propagates.
         check_config_write_target(path)
     _ensure_dir(target.parent)
+    if text is None:
+        # Again, now that every directory exists: one that appeared between the
+        # check above and mkdir (FileExistsError) may be another account's.
+        # Refuse before creating even the temp file inside it.
+        check_config_write_target(path)
 
     fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
     tmp = Path(tmp_name)
@@ -220,10 +299,10 @@ def update_extra_repos(*, add: Iterable[str] = (), remove: Iterable[str] = ()) -
             raise ConfigWriteRefused(
                 f"re-parse of the edited config failed: {redact_home_in_text(str(exc))}"
             ) from exc
-        expected_rest = {k: v for k, v in original.items() if k != EXTRA_REPOS_KEY}
-        got_rest = {k: v for k, v in reparsed.items() if k != EXTRA_REPOS_KEY}
+        expected_rest = {k: v for k, v in original.items() if k != EXTRA_REPOS_ENV}
+        got_rest = {k: v for k, v in reparsed.items() if k != EXTRA_REPOS_ENV}
         # The list is checked as the reader will read it, not as raw TOML.
-        got_list = config_list_value(EXTRA_REPOS_KEY, reparsed.get(EXTRA_REPOS_KEY, []))
+        got_list = config_list_value(EXTRA_REPOS_ENV, reparsed.get(EXTRA_REPOS_ENV, []))
         if got_list != after or not _same(got_rest, expected_rest):
             raise ConfigWriteRefused("re-parse of the edited config differs from the intended edit")
 

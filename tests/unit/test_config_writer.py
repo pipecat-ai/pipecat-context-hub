@@ -16,10 +16,10 @@ import pytest
 
 from pipecat_context_hub.shared import config_writer, env_loading
 from pipecat_context_hub.shared.config_writer import (
-    EXTRA_REPOS_KEY,
     ConfigWriteRefused,
     update_extra_repos,
 )
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from tests.unit._config_trust_cases import TRUST_REFUSAL_CASES
 
 _posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
@@ -50,10 +50,10 @@ def _stray_files(directory: Path) -> list[str]:
 
 def _assert_round_trip(path: Path, expected: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
     """Both the raw parse and the real loader see exactly ``expected``."""
-    assert env_loading.parse_global_config(path)[EXTRA_REPOS_KEY] == expected
-    monkeypatch.delenv(EXTRA_REPOS_KEY, raising=False)
+    assert env_loading.parse_global_config(path)[EXTRA_REPOS_ENV] == expected
+    monkeypatch.delenv(EXTRA_REPOS_ENV, raising=False)
     env_loading.load_global_config()
-    assert os.environ[EXTRA_REPOS_KEY] == ",".join(expected)
+    assert os.environ[EXTRA_REPOS_ENV] == ",".join(expected)
 
 
 _RICH = (
@@ -92,8 +92,8 @@ class TestRoundTrip:
     def test_other_keys_byte_identical(self, tmp_path, monkeypatch):
         path = _config(tmp_path, monkeypatch, _RICH)
         update_extra_repos(add=["c/d"])
-        old = [ln for ln in _RICH.splitlines() if EXTRA_REPOS_KEY not in ln]
-        new = [ln for ln in path.read_text().splitlines() if EXTRA_REPOS_KEY not in ln]
+        old = [ln for ln in _RICH.splitlines() if EXTRA_REPOS_ENV not in ln]
+        new = [ln for ln in path.read_text().splitlines() if EXTRA_REPOS_ENV not in ln]
         assert new == old
 
     def test_other_keys_unchanged_when_key_absent(self, tmp_path, monkeypatch):
@@ -108,7 +108,7 @@ class TestRoundTrip:
         result = update_extra_repos(add=["e/f"])
         assert result.before == ["a/b", "c/d"]
         data = tomllib.loads(path.read_text())
-        assert data[EXTRA_REPOS_KEY] == ["a/b", "c/d", "e/f"]  # a native array now
+        assert data[EXTRA_REPOS_ENV] == ["a/b", "c/d", "e/f"]  # a native array now
         _assert_round_trip(path, ["a/b", "c/d", "e/f"], monkeypatch)
 
     def test_remove(self, tmp_path, monkeypatch):
@@ -135,7 +135,7 @@ class TestRoundTrip:
         _use(monkeypatch, link)
         update_extra_repos(add=["c/d"])
         assert link.is_symlink()
-        assert tomllib.loads(real.read_text())[EXTRA_REPOS_KEY] == ["a/b", "c/d"]
+        assert tomllib.loads(real.read_text())[EXTRA_REPOS_ENV] == ["a/b", "c/d"]
         _assert_round_trip(link, ["a/b", "c/d"], monkeypatch)
 
     def test_config_file_env_var_selects_the_path(self, tmp_path, monkeypatch):
@@ -143,7 +143,7 @@ class TestRoundTrip:
         target = _config(tmp_path, monkeypatch, "")
         update_extra_repos(add=["a/b"])
         assert not decoy.exists()
-        assert tomllib.loads(target.read_text())[EXTRA_REPOS_KEY] == ["a/b"]
+        assert tomllib.loads(target.read_text())[EXTRA_REPOS_ENV] == ["a/b"]
 
     def test_windows_runnable_round_trip(self, tmp_path, monkeypatch):
         """No skip marker: runs on Windows CI, the mirror-the-reader contract."""
@@ -267,7 +267,7 @@ class TestRefusals:
         def lying_parse(p: Path) -> dict[str, object]:
             seen.append(p)
             data = dict(real_parse(p))
-            data[EXTRA_REPOS_KEY] = ["not", "what", "was", "intended"]
+            data[EXTRA_REPOS_ENV] = ["not", "what", "was", "intended"]
             return data
 
         monkeypatch.setattr(config_writer, "parse_global_config", lying_parse)
@@ -352,6 +352,74 @@ class TestRefusals:
             pass
 
 
+_COMMENTED = (
+    "# top\n"
+    "PIPECAT_HUB_EXTRA_REPOS = [\n"
+    '  "a/b",  # keep a\n'
+    "  # own line\n"
+    '  "c/d", # keep c\n'
+    "]\n"
+    "PIPECAT_HUB_STALE_AFTER_DAYS = 3\n"
+)
+
+
+class TestArrayEditedInPlace:
+    """An existing array of strings is edited in place: element comments,
+    own-line comments, the multiline layout and CRLF line endings survive."""
+
+    def test_add_keeps_element_and_own_line_comments(self, tmp_path, monkeypatch):
+        path = _config(tmp_path, monkeypatch, _COMMENTED)
+        update_extra_repos(add=["e/f"])
+        text = path.read_text()
+        for comment in ("# keep a", "# own line", "# keep c", "# top"):
+            assert comment in text
+        _assert_round_trip(path, ["a/b", "c/d", "e/f"], monkeypatch)
+
+    def test_add_keeps_the_array_multiline(self, tmp_path, monkeypatch):
+        path = _config(tmp_path, monkeypatch, _COMMENTED)
+        update_extra_repos(add=["e/f"])
+        lines = path.read_text().splitlines()
+        start = lines.index("PIPECAT_HUB_EXTRA_REPOS = [")
+        end = lines.index("]", start)
+        body = [ln.strip() for ln in lines[start + 1 : end]]
+        assert body == ['"a/b",  # keep a', "# own line", '"c/d", # keep c', '"e/f",']
+
+    def test_remove_of_a_commented_entry_drops_only_that_entry(self, tmp_path, monkeypatch):
+        path = _config(tmp_path, monkeypatch, _COMMENTED)
+        update_extra_repos(remove=["C/D"])  # casefolded like every other match
+        text = path.read_text()
+        assert "# keep c" not in text  # the removed element's own comment goes with it
+        assert "# keep a" in text and "# own line" in text
+        _assert_round_trip(path, ["a/b"], monkeypatch)
+
+    def test_add_to_an_array_with_a_trailing_comment(self, tmp_path, monkeypatch):
+        path = _config(tmp_path, monkeypatch, 'PIPECAT_HUB_EXTRA_REPOS = ["a/b"]  # mine\n')
+        update_extra_repos(add=["c/d"])
+        assert "# mine" in path.read_text()
+        _assert_round_trip(path, ["a/b", "c/d"], monkeypatch)
+
+    def test_crlf_file_stays_crlf(self, tmp_path, monkeypatch):
+        path = _config(tmp_path, monkeypatch, None)
+        path.write_bytes(_COMMENTED.replace("\n", "\r\n").encode())
+        if os.name == "posix":
+            path.chmod(0o600)
+        update_extra_repos(add=["e/f"], remove=["a/b"])
+        raw = path.read_bytes()
+        assert raw.count(b"\n") == raw.count(b"\r\n")
+        assert b"# keep c" in raw and b"# own line" in raw
+        _assert_round_trip(path, ["c/d", "e/f"], monkeypatch)
+
+    def test_crlf_file_stays_crlf_when_the_key_is_new(self, tmp_path, monkeypatch):
+        path = _config(tmp_path, monkeypatch, None)
+        path.write_bytes(b"# top\r\nPIPECAT_HUB_STALE_AFTER_DAYS = 3\r\n")
+        if os.name == "posix":
+            path.chmod(0o600)
+        update_extra_repos(add=["a/b"])
+        raw = path.read_bytes()
+        assert raw.count(b"\n") == raw.count(b"\r\n")
+        _assert_round_trip(path, ["a/b"], monkeypatch)
+
+
 class TestReaderRuleParity:
     """The writer reads and verifies the list by the loader's own rule
     (``env_loading.config_list_value``), so reader, writer and ``repos list``
@@ -361,9 +429,9 @@ class TestReaderRuleParity:
         """``load_global_config`` reads ``[1, 2]`` as ``"1,2"``; the writer agrees
         instead of refusing it (it used to say "must be an array of strings")."""
         path = _config(tmp_path, monkeypatch, "PIPECAT_HUB_EXTRA_REPOS = [1, 2]\n")
-        monkeypatch.delenv(EXTRA_REPOS_KEY, raising=False)
+        monkeypatch.delenv(EXTRA_REPOS_ENV, raising=False)
         env_loading.load_global_config()
-        assert os.environ[EXTRA_REPOS_KEY] == "1,2"
+        assert os.environ[EXTRA_REPOS_ENV] == "1,2"
         result = update_extra_repos(add=["a/b"])
         assert result.before == ["1", "2"]
         _assert_round_trip(path, ["1", "2", "a/b"], monkeypatch)
@@ -392,13 +460,32 @@ class TestReaderRuleParity:
 
         def comma_parse(p: Path) -> dict[str, object]:
             data = dict(real_parse(p))
-            data[EXTRA_REPOS_KEY] = ["a/b,c/d"]
+            data[EXTRA_REPOS_ENV] = ["a/b,c/d"]
             return data
 
         monkeypatch.setattr(config_writer, "parse_global_config", comma_parse)
         with pytest.raises(ConfigWriteRefused):
             update_extra_repos(add=["c/d"])
         assert path.read_text() == original
+
+    def test_reparse_accepts_what_the_reader_reads_as_the_intended_list(
+        self, tmp_path, monkeypatch
+    ):
+        """The accept side: a re-parsed CSV string ``"a/b,c/d"`` is, to the
+        reader, exactly ``["a/b", "c/d"]``, so the edit succeeds. A writer that
+        compared the raw TOML value (a str against a list) would refuse it."""
+        path = _config(tmp_path, monkeypatch, 'PIPECAT_HUB_EXTRA_REPOS = ["a/b"]\n')
+        real_parse = env_loading.parse_global_config
+
+        def csv_parse(p: Path) -> dict[str, object]:
+            data = dict(real_parse(p))
+            data[EXTRA_REPOS_ENV] = "a/b,c/d"
+            return data
+
+        monkeypatch.setattr(config_writer, "parse_global_config", csv_parse)
+        result = update_extra_repos(add=["c/d"])
+        assert result.changed and result.after == ["a/b", "c/d"]
+        assert env_loading.parse_global_config(path)[EXTRA_REPOS_ENV] == ["a/b", "c/d"]
 
     def test_nan_in_another_key_does_not_block_the_edit(self, tmp_path, monkeypatch):
         """NaN != NaN: a plain ``==`` re-parse check refused every edit of such a file."""
@@ -407,7 +494,7 @@ class TestReaderRuleParity:
         result = update_extra_repos(add=["c/d"])
         assert result.changed
         assert "PIPECAT_HUB_WARMUP = nan" in path.read_text()
-        assert env_loading.parse_global_config(path)[EXTRA_REPOS_KEY] == ["a/b", "c/d"]
+        assert env_loading.parse_global_config(path)[EXTRA_REPOS_ENV] == ["a/b", "c/d"]
 
 
 class TestWriteErrors:
@@ -477,6 +564,18 @@ def _foreign_dir(monkeypatch: pytest.MonkeyPatch, directory: Path) -> None:
     monkeypatch.setattr(os, "stat", _stat)
 
 
+def _racing_mkdir(monkeypatch: pytest.MonkeyPatch, directory: Path) -> None:
+    """``directory.mkdir`` loses a race: the directory appears, then FileExistsError."""
+    real_mkdir = Path.mkdir
+
+    def _mkdir(self: Path, *a: Any, **kw: Any) -> None:
+        real_mkdir(self, *a, **kw)
+        if self == directory:
+            raise FileExistsError(str(self))
+
+    monkeypatch.setattr(Path, "mkdir", _mkdir)
+
+
 def _dir(path: Path, mode: int = 0o700) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     path.chmod(mode)
@@ -514,13 +613,22 @@ class TestNewFileTrust:
         update_extra_repos(add=["a/b"])
         assert link.is_symlink()
         assert (real_dir / "sub" / "config.toml").is_file()
-        assert env_loading.parse_global_config(link)[EXTRA_REPOS_KEY] == ["a/b"]
+        assert env_loading.parse_global_config(link)[EXTRA_REPOS_ENV] == ["a/b"]
 
     def test_missing_file_in_a_sticky_world_writable_dir(self, tmp_path, monkeypatch):
         sticky = _dir(tmp_path / "tmpish", 0o777 | stat.S_ISVTX)
         path = _use(monkeypatch, sticky / "config.toml")
         update_extra_repos(add=["a/b"])
         assert env_loading.read_trusted_config(path) is not None
+
+    def test_own_directory_appearing_mid_way_is_accepted(self, tmp_path, monkeypatch):
+        """A benign race (our own concurrent mkdir) still writes."""
+        appeared = tmp_path / "home" / "appeared"
+        _dir(tmp_path / "home")
+        path = _use(monkeypatch, appeared / "config.toml")
+        _racing_mkdir(monkeypatch, appeared)
+        update_extra_repos(add=["a/b"])
+        assert env_loading.parse_global_config(path)[EXTRA_REPOS_ENV] == ["a/b"]
 
     # -- refused ----------------------------------------------------------
     def _refused(self, root: Path) -> None:
@@ -555,12 +663,70 @@ class TestNewFileTrust:
         _use(monkeypatch, _dir(tmp_path / "loose", 0o777) / "x" / "y" / "config.toml")
         self._refused(tmp_path)
 
+    def test_foreign_directory_appearing_mid_way_is_refused_before_any_write(
+        self, tmp_path, monkeypatch
+    ):
+        """Another account creates a missing directory between the pre-check and
+        mkdir (FileExistsError). The writer re-validates with the reader's own
+        predicates and refuses before creating even its temp file there."""
+        home = _dir(tmp_path / "home")
+        appeared = home / "appeared"
+        path = _use(monkeypatch, appeared / "config.toml")
+        _racing_mkdir(monkeypatch, appeared)
+        _foreign_dir(monkeypatch, appeared)
+        temps: list[str] = []
+        real_mkstemp = config_writer.tempfile.mkstemp
+
+        def spy(*a: Any, **kw: Any) -> Any:
+            temps.append(str(kw.get("dir")))
+            return real_mkstemp(*a, **kw)
+
+        monkeypatch.setattr(config_writer.tempfile, "mkstemp", spy)
+        with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
+            update_extra_repos(add=["a/b"])
+        assert "owned by uid" in excinfo.value.reason
+        assert temps == []
+        assert not path.exists()
+        assert sorted(os.listdir(appeared)) == []
+
     def test_dangling_link_into_a_foreign_owned_dir(self, tmp_path, monkeypatch):
         other = _dir(tmp_path / "other-user")
         link = _link(_dir(tmp_path / "cfg") / "config.toml", other / "new" / "config.toml")
         _use(monkeypatch, link)
         _foreign_dir(monkeypatch, other)
         self._refused(tmp_path)
+
+
+@_posix_only
+class TestWriterTargetsTheFileTheReaderOpens:
+    """A ``..`` after a component that is not an existing directory: the kernel
+    fails the lookup while ``realpath`` collapses it lexically, so the writer
+    would create a file the reader never sees. Refused, nothing created."""
+
+    @pytest.mark.parametrize("make", ["missing", "file", "dangling-link"])
+    def test_dotdot_after_a_non_directory_is_refused(self, make, tmp_path, monkeypatch):
+        home = _dir(tmp_path / "home")
+        hop = home / "hop"
+        if make == "file":
+            hop.write_text("")
+        elif make == "dangling-link":
+            _link(hop, home / "nowhere" / "dir")
+        _use(monkeypatch, Path(f"{hop}/../config.toml"))
+        before = _tree(tmp_path)
+        with pytest.raises(ConfigWriteRefused, match=r"\.\."):
+            update_extra_repos(add=["a/b"])
+        assert _tree(tmp_path) == before
+        assert not (home / "config.toml").exists()
+
+    def test_dotdot_after_an_existing_directory_is_written_where_the_reader_reads(
+        self, tmp_path, monkeypatch
+    ):
+        home = _dir(tmp_path / "home")
+        _dir(home / "sub")
+        path = _use(monkeypatch, Path(f"{home}/sub/../config.toml"))
+        update_extra_repos(add=["a/b"])
+        assert env_loading.parse_global_config(path)[EXTRA_REPOS_ENV] == ["a/b"]
+        assert (home / "config.toml").is_file()
 
 
 def env_loading_reason(path: Path) -> str:
