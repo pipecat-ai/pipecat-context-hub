@@ -661,9 +661,7 @@ def _link_owner_refusal(config_path: Path, uid: int) -> str | None:
     return None
 
 
-def _config_parent_refusal(
-    config_path: Path, uid: int, *, resolved: Path | None = None
-) -> str | None:
+def _config_parent_refusal(config_path: Path, uid: int, *, resolved: Path) -> str | None:
     """A refusal (logged) when any directory on config.toml's path is another user's to rewrite.
 
     A per-file mode check cannot see this: write permission on a *directory*
@@ -692,37 +690,26 @@ def _config_parent_refusal(
     resolved one. A per-ancestor version would be noise on any machine with a
     group-writable dir anywhere in ``/``.
 
-    ``resolved`` is where the lookup ends, when the caller has walked it
-    (:func:`check_config_write_target` passes ``paths.lookup_target``'s
-    result, the writer's own target). Without it, ``realpath`` stands in: the
-    reader calls this only after ``open(config_path)`` succeeded, and for a
-    lookup the kernel completed every ``..`` follows an existing directory, so
-    ``realpath`` and the kernel's walk end at the same file.
+    ``resolved`` is where the lookup ends: ``paths.lookup_target(config_path)``,
+    the one method that decides where ``open(path)`` lands. The reader
+    (:func:`_config_fd_refusal`), :func:`check_config_write_target` and the
+    writer all pass it, so there is no second (``realpath``) answer.
     """
     checked: set[str] = set()
     directories: list[tuple[Path, bool]] = []
 
     lexical_parent = Path(os.path.abspath(config_path)).parent
-    real_parent: Path | None
-    if resolved is not None:
-        real_parent = resolved.parent
-    else:
-        try:
-            real_parent = Path(os.path.realpath(config_path)).parent
-        except (OSError, ValueError):
-            real_parent = None
+    real_parent = resolved.parent
 
     # Warn-worthy holders first, so the dedup set records them with
     # `warn_group=True` before the ancestor sweep can claim them with False.
     directories.append((lexical_parent, True))
-    if real_parent is not None:
-        directories.append((real_parent, True))
+    directories.append((real_parent, True))
 
     for location in resolution_chain(config_path):
         directories.extend((ancestor, False) for ancestor in location.parents)
-    if real_parent is not None:
-        directories.append((real_parent, False))
-        directories.extend((ancestor, False) for ancestor in real_parent.parents)
+    directories.append((real_parent, False))
+    directories.extend((ancestor, False) for ancestor in real_parent.parents)
 
     for directory, warn_group in directories:
         marker = str(directory)
@@ -852,7 +839,20 @@ def _config_fd_refusal(fd: int, config_path: Path) -> str | None:
         return None
 
     uid = os.getuid()
-    refusal = _link_owner_refusal(config_path, uid) or _config_parent_refusal(config_path, uid)
+    # Where the open landed, by the same kernel walk the writer uses. The open
+    # already succeeded, so the walk fails only on a race or the hop bound;
+    # a target it cannot prove is not trusted.
+    try:
+        resolved = lookup_target(config_path)
+    except LookupMismatch as exc:
+        return _refuse(
+            "Ignoring config.toml at %s: cannot prove where its lookup lands (%s)",
+            redact_home(config_path),
+            redact_home_in_text(str(exc)),
+        )
+    refusal = _link_owner_refusal(config_path, uid) or _config_parent_refusal(
+        config_path, uid, resolved=resolved
+    )
     if refusal is not None:
         return refusal
 

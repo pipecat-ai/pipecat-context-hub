@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from pipecat_context_hub.shared import env_keys, env_loading
+from pipecat_context_hub.shared import env_keys, env_loading, paths
 from pipecat_context_hub.shared.config import HubConfig, StorageConfig
 from pipecat_context_hub.shared.env_loading import (
     _INVOCATION_SCOPED_KEYS,
@@ -1988,6 +1988,44 @@ class TestReadTrustedConfig:
             env_loading.read_trusted_config(path)
         assert isinstance(excinfo.value.reason, str)
         assert excinfo.value.reason
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+    def test_reader_vets_the_lookup_target_the_writer_uses(self, tmp_path: Path, monkeypatch):
+        """One method decides where ``open(path)`` lands: the reader's parent
+        check uses ``paths.lookup_target`` (as the writer does), not ``realpath``."""
+        if os.getuid() == 0:
+            pytest.skip("root bypasses ownership checks")
+        path = tmp_path / "config.toml"
+        path.write_text("X = 1\n")
+        path.chmod(0o600)
+        unsafe = tmp_path / "unsafe"
+        unsafe.mkdir()
+        unsafe.chmod(0o777)  # world-writable, no sticky bit
+        monkeypatch.setattr(env_loading, "lookup_target", lambda p: unsafe / "config.toml")
+        with pytest.raises(env_loading.ConfigNotTrusted, match="world-writable"):
+            env_loading.read_trusted_config(path)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+    def test_reader_refuses_a_lookup_it_cannot_prove(self, tmp_path: Path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text("X = 1\n")
+        path.chmod(0o600)
+
+        def _mismatch(_p: Path) -> Path:
+            raise paths.LookupMismatch("the hop bound was reached")
+
+        monkeypatch.setattr(env_loading, "lookup_target", _mismatch)
+        with pytest.raises(env_loading.ConfigNotTrusted, match="cannot prove"):
+            env_loading.read_trusted_config(path)
+
+    def test_parent_check_has_no_realpath_fallback(self):
+        import inspect
+
+        param = inspect.signature(env_loading._config_parent_refusal).parameters["resolved"]
+        assert param.default is inspect.Parameter.empty
+        assert (
+            "realpath" not in inspect.getsource(env_loading._config_parent_refusal).split('"""')[-1]
+        )
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
     def test_reason_is_home_redacted(self, tmp_path: Path, monkeypatch):
