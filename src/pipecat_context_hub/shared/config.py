@@ -492,8 +492,15 @@ class SourceConfig(BaseModel):
         result = _dedupe_preserve_order(
             list(self.repos) + split_csv(os.environ.get(EXTRA_REPOS_ENV, ""))
         )
-        tainted = set(self.tainted_repos)
-        return [slug for slug in result if slug not in tainted]
+        return [slug for slug in result if not self.is_tainted(slug)]
+
+    def is_tainted(self, slug: str) -> bool:
+        """The one taint-matching rule: casefolded, because GitHub slugs are
+        case-insensitive, so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.
+        Every consumer of ``tainted_repos`` (``effective_repos``, refresh's
+        cleanup, ``repos``) decides through this method."""
+        folded = slug.casefold()
+        return any(t.casefold() == folded for t in self.tainted_repos)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

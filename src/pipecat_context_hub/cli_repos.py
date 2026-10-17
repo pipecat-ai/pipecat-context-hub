@@ -10,7 +10,8 @@ Checks run in a fixed order for a positional slug (the first that applies
 decides): (1) default or tainted repo, (2) slug syntax and catalog membership,
 (3) a shadowing ``env`` / ``.env`` layer without ``--config-only``, (4) no-op,
 (5) write. ``--group`` skips tainted and ``parseable = false`` members and
-applies checks 3 to 5.
+applies checks 3 to 5 to the rest; with no member left, nothing can be written,
+so it exits 0 (``Nothing to add`` / ``Nothing to remove``) without check 3.
 
 ``shared/config_writer`` (hence ``tomlkit``) is imported inside the add/remove
 bodies only, so ``import pipecat_context_hub.cli`` never loads it.
@@ -30,7 +31,8 @@ from typing import Any, NoReturn, TypeVar
 
 import click
 
-from pipecat_context_hub.shared.config import EXTRA_REPOS_ENV, HubConfig
+from pipecat_context_hub.shared.config import HubConfig, SourceConfig
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.env_loading import (
     LAYER_ENV,
     SHADOWING_LAYERS,
@@ -41,14 +43,8 @@ from pipecat_context_hub.shared.env_loading import (
 )
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
-from pipecat_context_hub.shared.repo_catalog import (
-    Catalog,
-    CatalogGroup,
-    is_valid_repo_slug,
-    load_catalog,
-)
-
-_KEY = EXTRA_REPOS_ENV
+from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
 
 _RUNNING_SERVE = "A running `serve` reopens the rebuilt index itself."
 _REFRESH_REMINDER = f"Run `pipecat-context-hub refresh` to index it. {_RUNNING_SERVE}"
@@ -93,7 +89,7 @@ def _shadowing_layer(ctx: click.Context) -> str | None:
         raise RuntimeError(
             "repos: ctx.obj['env_provenance'] is missing; the command must run under main()"
         )
-    layer = obj["env_provenance"].get(_KEY)
+    layer = obj["env_provenance"].get(EXTRA_REPOS_ENV)
     return layer if layer in SHADOWING_LAYERS else None
 
 
@@ -119,7 +115,7 @@ def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str
     # 1. default or tainted repo
     if folded in {s.casefold() for s in config.sources.repos}:
         _fail(f"{slug} is a default repo; it is always indexed and cannot be added or removed.")
-    if folded in {s.casefold() for s in config.sources.tainted_repos}:
+    if config.sources.is_tainted(slug):
         _fail(f"{slug} is tainted (PIPECAT_HUB_TAINTED_REPOS) and is never indexed.")
     # 2. syntax and catalog membership
     if not is_valid_repo_slug(slug):
@@ -170,9 +166,7 @@ def _apply(*, add: Sequence[str] = (), remove: Sequence[str] = ()) -> tuple[list
 def _shadow_note(layer: str | None) -> str:
     if layer is None:
         return ""
-    return (
-        f" (not in effect: {_layer_phrase(layer)} overrides {_KEY}, so this only edits config.toml)"
-    )
+    return f" (not in effect: {_layer_phrase(layer)} overrides {EXTRA_REPOS_ENV}, so this only edits config.toml)"
 
 
 def _after_write(layer: str | None, *, adding: bool) -> str:
@@ -182,12 +176,12 @@ def _after_write(layer: str | None, *, adding: bool) -> str:
     phrase = _layer_phrase(layer)
     if adding:
         return (
-            f"Not in effect while {phrase} sets {_KEY}: a `refresh` run with that layer in "
+            f"Not in effect while {phrase} sets {EXTRA_REPOS_ENV}: a `refresh` run with that layer in "
             "force will not index it. Run `pipecat-context-hub refresh` where that layer "
             f"does not set the key. {_RUNNING_SERVE}"
         )
     return (
-        f"Not in effect while {phrase} sets {_KEY}: a `refresh` run with that layer in "
+        f"Not in effect while {phrase} sets {EXTRA_REPOS_ENV}: a `refresh` run with that layer in "
         "force still indexes that layer's list. Do not run `refresh --prune` with that layer "
         "in force: it deletes the indexed data of every repo config.toml lists that the "
         f"layer hides. {_RUNNING_SERVE}"
@@ -199,7 +193,7 @@ def _refuse_if_shadowed(ctx: click.Context, config_only: bool) -> str | None:
     layer = _shadowing_layer(ctx)
     if layer is not None and not config_only:
         _fail(
-            f"{_KEY} is set by {_layer_phrase(layer)}, which outranks config.toml, so this "
+            f"{EXTRA_REPOS_ENV} is set by {_layer_phrase(layer)}, which outranks config.toml, so this "
             "change would have no effect. Pass --config-only to edit config.toml anyway."
         )
     return layer
@@ -214,12 +208,12 @@ def _validate_selector(slug: str | None, group: str | None, unlisted: bool) -> N
         _fail("give a SLUG (owner/repo) or --group NAME.")
 
 
-def _skipped_lines(group: CatalogGroup, tainted: set[str]) -> tuple[list[str], list[str]]:
+def _skipped_lines(group: CatalogGroup, sources: SourceConfig) -> tuple[list[str], list[str]]:
     """``(actionable, skipped_lines)`` for a group's members."""
     actionable: list[str] = []
     skipped: list[str] = []
     for repo in group.repos:
-        if repo.slug.casefold() in tainted:
+        if sources.is_tainted(repo.slug):
             skipped.append(f"Skipped (tainted): {repo.slug}")
         elif not repo.parseable:
             skipped.append(f"Skipped (parseable = false): {repo.slug}")
@@ -231,15 +225,18 @@ def _skipped_lines(group: CatalogGroup, tainted: set[str]) -> tuple[list[str], l
 def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool) -> None:
     catalog = _catalog_or_fail()
     group = _resolve_group(catalog, name)
-    tainted = {s.casefold() for s in _config(ctx).sources.tainted_repos}
-    members, skipped = _skipped_lines(group, tainted)
-    layer = _refuse_if_shadowed(ctx, config_only)
-    note = _shadow_note(layer)
-
+    members, skipped = _skipped_lines(group, _config(ctx).sources)
     before: list[str] = []
     changed = False
-    if members:  # nothing actionable: no need to read (or validate) config.toml
+    if members:
+        layer = _refuse_if_shadowed(ctx, config_only)  # check 3: only when a write could happen
         before, changed = _apply(add=members) if adding else _apply(remove=members)
+    else:
+        # Nothing actionable (every member tainted or `parseable = false`): no
+        # write can happen, so neither the shadow refusal nor config.toml's
+        # validation applies; exit 0 with the skipped list (parent plan).
+        layer = _shadowing_layer(ctx)
+    note = _shadow_note(layer)
     present = {s.casefold(): s for s in before}
 
     if adding:
@@ -369,11 +366,11 @@ def _configured_in_toml() -> tuple[list[str], str | None]:
         return [], f"ignoring {redact_home(path)}: not trusted ({exc.reason})"
     except tomllib.TOMLDecodeError as exc:
         return [], f"ignoring {redact_home(path)}: not valid TOML ({redact_home_in_text(str(exc))})"
-    if _KEY not in data:
+    if EXTRA_REPOS_ENV not in data:
         return [], None
-    configured = config_list_value(_KEY, data[_KEY])  # the loader's own rule
+    configured = config_list_value(EXTRA_REPOS_ENV, data[EXTRA_REPOS_ENV])  # the loader's own rule
     if configured is None:
-        return [], f"ignoring {_KEY} in {redact_home(path)}: a value the loader ignores"
+        return [], f"ignoring {EXTRA_REPOS_ENV} in {redact_home(path)}: a value the loader ignores"
     return configured, None
 
 
@@ -425,8 +422,11 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
     layer = _shadowing_layer(ctx)
     if layer is not None:
         in_effect = {s.casefold() for s in effective}
-        tainted = {s.casefold() for s in config.sources.tainted_repos}
-        hidden = [s for s in configured if s.casefold() not in in_effect | tainted]
+        hidden = [
+            s
+            for s in configured
+            if s.casefold() not in in_effect and not config.sources.is_tainted(s)
+        ]
         if hidden:
             click.echo(f"In config.toml but hidden by {_layer_phrase(layer)}:")
             for slug in hidden:

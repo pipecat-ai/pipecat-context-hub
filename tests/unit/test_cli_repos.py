@@ -1226,6 +1226,72 @@ class TestGroupWithNothingActionable:
         assert "Skipped (parseable = false): acme/gamma-ios" in result.output
         assert hub.snapshot() == before
 
+    @pytest.mark.parametrize("verb", ["add", "remove"])
+    @pytest.mark.parametrize("layer", sorted(SHADOWED))
+    @pytest.mark.parametrize(
+        ("group", "skipped"),
+        [
+            ("gamma", "Skipped (parseable = false): acme/gamma-ios"),
+            ("delta", "Skipped (tainted): acme/delta-one"),
+        ],
+    )
+    def test_nothing_actionable_under_a_shadow_exits_0(
+        self, hub: Hub, verb: str, layer: str, group: str, skipped: str
+    ):
+        """No write can happen, so the shadow refusal (check 3) does not apply:
+        exit 0 with ``Nothing to ...`` and the skipped list, file untouched."""
+        hub.env(PIPECAT_HUB_TAINTED_REPOS="acme/delta-one")
+        _arrange(hub, layer)
+        before = hub.snapshot()
+        result = hub.run(verb, "--group", group)
+        assert result.exit_code == 0, result.output
+        assert ("Nothing to add" if verb == "add" else "Nothing to remove") in result.output
+        assert skipped in result.output
+        assert hub.snapshot() == before
+
+    @pytest.mark.parametrize("layer", sorted(SHADOWED))
+    def test_actionable_group_under_a_shadow_is_still_refused(self, hub: Hub, layer: str):
+        _arrange(hub, layer)
+        result = hub.run("add", "--group", "beta")
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "--config-only" in result.output
+
+
+@pytest.mark.usefixtures("no_network")
+class TestOneTaintRule:
+    """Taint matching is casefolded everywhere (``SourceConfig.is_tainted``):
+    ``repos`` refusals, ``effective_repos`` and the hidden section agree."""
+
+    def test_config_entry_in_another_case_is_not_effective(self, hub: Hub):
+        hub.env(PIPECAT_HUB_TAINTED_REPOS="someone/tainted-one")
+        hub.config_list("Someone/Tainted-One", ALPHA_ONE)
+        assert "someone/tainted-one" not in _lower(hub.effective())
+        assert ALPHA_ONE in hub.effective()
+        assert "Someone/Tainted-One" not in _tags(hub.run("list").stdout)
+
+    def test_positional_refusal_agrees_with_effective_repos(self, hub: Hub):
+        hub.env(PIPECAT_HUB_TAINTED_REPOS="someone/tainted-one")
+        result = hub.run("add", "--unlisted", "Someone/Tainted-One")
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "tainted" in result.output
+        hub.config_list("Someone/Tainted-One")
+        assert "someone/tainted-one" not in _lower(hub.effective())
+
+    def test_hidden_section_omits_a_tainted_entry_in_another_case(self, hub: Hub):
+        hub.env(**{KEY: BETA_ONE, "PIPECAT_HUB_TAINTED_REPOS": "someone/tainted-one"})
+        hub.config_list("Someone/Tainted-One", ALPHA_ONE)
+        out = hub.run("list").stdout
+        hidden = out.split("hidden by", 1)[1]
+        assert ALPHA_ONE in hidden
+        assert "Someone/Tainted-One" not in hidden
+
+    def test_group_skip_uses_the_same_rule(self, hub: Hub):
+        hub.env(PIPECAT_HUB_TAINTED_REPOS="ACME/DELTA-ONE")
+        result = hub.run("add", "--group", "delta")
+        assert result.exit_code == 0, result.output
+        assert "Skipped (tainted): acme/delta-one" in result.output
+        assert hub.snapshot() is None
+
 
 @pytest.mark.usefixtures("no_network")
 class TestReaderRuleInList:

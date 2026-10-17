@@ -1398,13 +1398,12 @@ def refresh(
         # Clean up repos removed from configuration (P2: stale data from
         # repos no longer in effective_repos would persist indefinitely).
         configured = set(config.sources.effective_repos)
-        tainted_repos = set(config.sources.tainted_repos)
         all_meta = index_store.get_all_metadata()
         for meta_key in all_meta:
             slug = _repo_slug_of_sha_key(meta_key)
             if slug is not None:
                 if slug not in configured:
-                    if slug in tainted_repos:
+                    if config.sources.is_tainted(slug):  # the one (casefolded) rule
                         # Explicit exclusion — always cleaned up, regardless
                         # of --prune.
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)

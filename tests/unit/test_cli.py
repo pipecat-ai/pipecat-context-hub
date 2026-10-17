@@ -4893,6 +4893,58 @@ class TestPruneSafety(TestRefreshCommand):
     @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
     @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
     @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    @pytest.mark.parametrize(
+        ("indexed", "tainted"),
+        [
+            # a configured default tainted in another case: effective_repos drops it
+            (_DEFAULT_REPOS[0], _DEFAULT_REPOS[0].upper()),
+            # an unconfigured index key in another case than the taint entry
+            ("Acme/Gone-Repo", "acme/gone-repo"),
+        ],
+    )
+    def test_taint_matches_case_insensitively(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        indexed,
+        tainted,
+        tmp_path,
+        monkeypatch,
+    ):
+        """One taint rule (``SourceConfig.is_tainted``, casefolded): a taint
+        entry in another case still excludes the repo from ``effective_repos``
+        and still deletes its index data without --prune."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = {**_sha_metadata("abc123"), f"repo:{indexed}:commit_sha": "abc123"}
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", tainted)
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_call(indexed)
+        assert f"repo:{indexed}:commit_sha" in _batched_delete_keys(mock_store)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
     def test_two_run_sequence_no_prune_then_prune_cleans_up(
         self,
         mock_si_cls,
