@@ -9,7 +9,7 @@
 # This file only accepts the machine-global-config subset of PIPECAT_HUB_*
 # vars. The refresh command's prune/deletion opt-in is invocation-scoped
 # (set as a real env var per invocation, not here) and is deliberately not
-# among the keys below — see docs/troubleshooting.md for why. See docs/README.md's
+# among the keys below — see docs/troubleshooting.md for why. See docs/configuration.md's
 # Environment Variables table for the authoritative descriptions (this
 # file's key set is kept in parity with that table by a test).
 #

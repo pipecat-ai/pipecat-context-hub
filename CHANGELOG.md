@@ -91,6 +91,9 @@ This project uses [Semantic Versioning](https://semver.org/).
 - **A repo whose refresh failed stays findable by `--prune`.** It keeps its
   `repo:<slug>:commit_sha` marker and is flagged `cleanup_failed`, so stale-repo
   cleanup still finds its records.
+- **`.env.example` lists only public, non-archived repos.** It offered nine private
+  repos (a clone fails without access) and the archived `pipecat-cli`; those are gone,
+  and the file gains NVIDIA, Google, AWS and other-provider sections.
 
 ### Security
 - **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`

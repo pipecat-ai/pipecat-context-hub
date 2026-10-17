@@ -648,7 +648,7 @@ sequenceDiagram
   native TOML array (`# PIPECAT_HUB_EXTRA_REPOS = ["org/repo-a",
   "org/repo-b"]`) per Phase 1's array-coercion support, rather than one long
   quoted CSV string.
-- Parity source is `docs/README.md`'s Environment Variables table
+- Parity source is `docs/README.md`'s Environment Variables table (since moved to `docs/configuration.md`; the parity test reads it there)
   (`docs/README.md:302-317`), which already lists all 11 vars — not
   `.env.example`, which is intentionally a curated subset of copy/paste
   repo-bundle presets (5 of 11 vars today). This is stated once, here and

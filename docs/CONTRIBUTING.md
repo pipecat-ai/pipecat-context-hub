@@ -76,13 +76,12 @@ Retrieval:
 - Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var
   - Adjacent pipecat-ai repos that parse cleanly but are opt-in (use the full
     `org/repo` slug in `PIPECAT_HUB_EXTRA_REPOS`):
-    `pipecat-ai/pipecat-cli` (Python CLI — see note below),
-    `pipecat-ai/pipecat-mcp-server` (Python),
-    `pipecat-ai/pipecat-flows-editor` (TS), `pipecat-ai/pipecat-krisp` (Python)
-  - `pipecat-ai/pipecat-cli` is opt-in rather than default: the CLI is used via
-    commands (`pipecat init`, `pipecat cloud deploy`), not imported, and its
-    command reference is already indexed from `docs.pipecat.ai`
-    (`/api-reference/cli/*`). Ingesting the repo only adds CLI-internal source.
+    `pipecat-ai/pipecat-mcp-server` (Python), `pipecat-ai/pipecat-flows-editor` (TS)
+  - `pipecat-ai/pipecat-cli` is archived: the CLI now lives in `pipecat-ai/pipecat`
+    (already indexed), and its command reference is indexed from `docs.pipecat.ai`
+    (`/api-reference/cli/*`). Don't add the archived repo back.
+  - Only list public, non-archived repos in `.env.example`: a private repo cannot
+    be cloned without access. Recheck the list when you edit it.
   - Swift/Kotlin/C++ client SDKs (`pipecat-client-ios`, `pipecat-client-android`,
     `pipecat-client-cxx`, `pipecat-esp32`) are **not** source-indexable — no grammar
     for those languages; adding them clones but yields zero source/API chunks (only
@@ -90,7 +89,8 @@ Retrieval:
   - Repos with `src/` layouts are Python AST-indexed for `search_api`
   - Repos with `.pyi` stubs at root are also AST-indexed
   - Repos with `package.json`/`tsconfig.json` are tree-sitter-indexed
-  - See `.env.example` for curated repo bundles
+  - See `.env.example` for curated repo bundles, grouped by topic and by vendor
+    (NVIDIA, Google, AWS, other providers)
 
 ## Project Structure
 

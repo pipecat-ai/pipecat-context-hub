@@ -433,15 +433,11 @@ class SourceConfig(BaseModel):
 
     - ``pipecat-ai/pipecat-mcp-server`` (Python) — Pipecat MCP server
     - ``pipecat-ai/pipecat-flows-editor`` (TypeScript) — Flows web editor UI
-    - ``pipecat-ai/pipecat-krisp`` (Python) — Krisp noise-cancellation wrapper
-    - ``pipecat-ai/pipecat-cli`` (Python) — official CLI. Opt-in rather than
-      default because the CLI is consumed via commands (``pipecat init``,
-      ``pipecat cloud deploy``), not imported as a library: its command
-      reference is already indexed from ``docs.pipecat.ai`` (``/api-reference/
-      cli/*``), so ingesting the repo source only adds CLI-internal plumbing
-      (``config_validator``, ``generators``) to ``search_examples`` /
-      ``search_api`` without improving CLI usage answers. Enable via
-      ``PIPECAT_HUB_EXTRA_REPOS`` if you need to read the CLI's internals.
+
+    ``pipecat-ai/pipecat-cli`` is archived: the CLI now ships inside
+    ``pipecat-ai/pipecat`` (already indexed) and its command reference is
+    indexed from ``docs.pipecat.ai`` (``/api-reference/cli/*``), so the
+    standalone repo is not a default and should not be added back.
 
     ``pipecat-ai/pipecat-flows`` is archived: as of pipecat 1.5.0 the flows
     framework ships inside ``pipecat-ai/pipecat`` as the ``pipecat.flows``
