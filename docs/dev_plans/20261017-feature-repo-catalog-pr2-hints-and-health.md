@@ -335,7 +335,7 @@ Put the result and the mutation-check results in the PR description. Restore the
 ## Progress
 
 - [x] Phase 3a: `get_counts_by_repo` on the serving index
-- [ ] Phase 3b: `indexed_repos` and `groups_not_indexed`
+- [x] Phase 3b: `indexed_repos` and `groups_not_indexed`
 - [ ] Phase 3c: config values and `get_hub_status`
 - [ ] Phase 4: corpus hints
 - [ ] Phase 5: catalog health and curation scripts
@@ -346,3 +346,10 @@ Put the result and the mutation-check results in the PR description. Restore the
 ### Review Waivers
 
 _(none yet; this plan has not been through `/review-plan`)_
+
+### Conduct reviewer notes (advisory)
+
+- **Phase 3a:** `ServingIndex.get_counts_by_repo` docstring does not state the key shape (configured slug as-is, not casefolded, plus synthetic `docs.pipecat.ai`). Minor.
+- **Phase 3b:** `groups_not_indexed` / `missing_repos` take no tainted set. Phase 4's hint must exclude tainted repos (parent Decision 3) while `catalog_groups_not_indexed` is meant to share the one predicate (Decision 10). Resolve in Phase 4: add a keyword-only casefolded `tainted` argument to the shared predicate rather than forking it, or record that status ignores taint. Important.
+- **Phase 3b:** `indexed_repos` logs `IndexUnavailableError` at WARNING; `annotate_response` logs it at DEBUG (expected refresh race). Match it when Phase 4 wires the hint in. Minor.
+- **Phase 3b:** `indexed_repos` is typed against a private narrow `_CountsSource` protocol, not `ServingIndex` as Decision 10 says. Structurally compatible; chosen so test fakes need no cast. Minor.
