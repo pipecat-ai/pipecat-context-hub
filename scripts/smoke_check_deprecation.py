@@ -2,7 +2,7 @@
 """Live-hub smoke test for ``check_deprecation`` false/true positives.
 
 Runs the ``check-deprecation`` CLI subcommand against the **built local index**
-for a curated set of canary symbols (AGENTS.md items #34–37, #46–48) and asserts
+for a curated set of canary symbols (docs/smoke-test.md items #34–37, #46–48) and asserts
 the ``deprecated`` verdict. Unlike the offline fixture smoke under
 ``tests/smoke/``, this hits the real persisted ``deprecation_map.json``, built
 from pipecat's deprecation registry (PR #85), and therefore requires a prior

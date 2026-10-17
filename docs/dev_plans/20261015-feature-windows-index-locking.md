@@ -116,6 +116,34 @@ claimed done from monkeypatched tests. Minimum evidence before closing:
 - Should `--reset-index` offer to terminate `serve`? Current stance: no, it only
   tells the user to stop it.
 
+## Existing Windows notes to re-validate
+
+Carried over from the old CLAUDE.md "Windows tips". They predate the POSIX-only platform
+contract in `docs/README.md`, so treat them as unverified until Windows index support lands.
+
+- The refresh summary uses U+2500 box-drawing characters. On non-UTF-8 consoles
+  (cp1252, cp1254, cp437, etc.) the hub falls back to ASCII `-` automatically —
+  no crash, no lost output. To get the box-drawing look, set
+  `PYTHONIOENCODING=utf-8` before invoking `refresh` (or use Windows Terminal,
+  which defaults to UTF-8).
+- If `refresh` previously ran but returns zero code results, the local clone may
+  be half-initialized from an interrupted run. The hub now detects this on the
+  next `refresh` and re-clones; look for `Recovered N corrupt clone(s)` in the
+  summary. As a manual remedy you can delete `%LOCALAPPDATA%\pipecat-context-hub\repos\`.
+  Removing the corrupt clone is itself hardened against git's read-only loose
+  object files (`.git/objects/…`), which Windows — unlike POSIX — refuses to
+  delete without first clearing the read-only attribute; a plain `rmtree`
+  used to crash the recovery instead of completing it.
+- On `serve` boot the hub pre-warms the embedding model (and cross-encoder when
+  enabled) so the first MCP query doesn't hang. This used to matter a great
+  deal: loading through `sentence-transformers` dragged in `torch` and Windows
+  CPU cold-starts could take 30-130s, long enough to exceed Claude Code's
+  tool-permission window. The ONNX backend loads in well under a second, so
+  pre-warm is now a minor optimisation rather than a necessity. Set
+  `PIPECAT_HUB_WARMUP=0` to skip it. Look for
+  `Embedding model pre-warmed in …s` and (optionally)
+  `Cross-encoder pre-warmed in …s` in the startup log.
+
 ## References
 - `docs/dev_plans/20261014-fix-index-write-guards.md` (lock design, accepted
   residuals, "Windows (known limitation)" note).

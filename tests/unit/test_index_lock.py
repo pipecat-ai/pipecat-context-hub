@@ -591,7 +591,7 @@ def test_lock_file_symlink_is_not_followed(
 ) -> None:
     """Regression (index_lock.py:102): a lock name planted as a symlink in a
     shared parent must not redirect the open or the mtime bump. Regression
-    (docs/README.md): with O_NOFOLLOW the refusal was logged only at DEBUG,
+    (docs/troubleshooting.md): with O_NOFOLLOW the refusal was logged only at DEBUG,
     so the documented "continuing without a lock" warning never appeared."""
     import os
 

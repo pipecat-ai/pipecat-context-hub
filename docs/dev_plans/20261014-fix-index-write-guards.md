@@ -149,7 +149,10 @@ and header** (so the size bound passes) and the runaway only appears on the
 next load + persist. A structural walk of `link_lists.bin` (length-prefixed
 records of `maxM*4+4`-byte level blocks) flags it beforehand. The walk is now
 part of `check_hnsw_segment_dir` (open-time and post-write). It ran in 6 ms on
-the real 45k-record index with no false positive. Consistent with upstream
+the real 45k-record index with no false positive. The walk reads at most the
+checked size and never more than `MAX_LINK_LISTS_BYTES` (256 MiB, far beyond this
+corpus: a healthy record averages ~10 bytes), so a damaged header cannot force an
+unbounded read. Consistent with upstream
 chroma#7510: unvalidated `linkListSize` on load.
 
 Implications: the `refresh.lock` is justified (concurrent writers are the one

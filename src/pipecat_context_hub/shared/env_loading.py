@@ -251,8 +251,8 @@ def resolve_global_config_path() -> Path | None:
     place in ``_INVOCATION_SCOPED_KEYS``, and its deliberate absence from
     ``_KNOWN_KEYS`` / ``config.toml.example`` / the README's Environment
     Variables table), but it is a real operator-visible capability, not merely
-    a test seam — it is documented under docs/README.md's Troubleshooting
-    section alongside ``PIPECAT_HUB_DEBUG_PROBE``. Reads ``DEFAULT_CONFIG_PATH`` via module-attribute
+    a test seam — it is documented in docs/troubleshooting.md
+    alongside ``PIPECAT_HUB_DEBUG_PROBE``. Reads ``DEFAULT_CONFIG_PATH`` via module-attribute
     lookup so a test-time ``monkeypatch.setattr(env_loading,
     "DEFAULT_CONFIG_PATH", ...)`` is observed. Returns ``None`` only when no
     override is set and ``DEFAULT_CONFIG_PATH`` itself is ``None`` (home
@@ -274,7 +274,7 @@ def resolve_global_config_path() -> Path | None:
         # operator set the override, so falling through to DEFAULT_CONFIG_PATH
         # would load the very machine-global file they asked this invocation
         # not to use. Treated like every other unusable override — warn, load
-        # nothing — matching docs/README.md's documented contract.
+        # nothing — matching docs/troubleshooting.md's documented contract.
         _module_logger.warning(
             "Ignoring %s: set but empty; no config.toml will be loaded "
             "(unset it to use the default location)",

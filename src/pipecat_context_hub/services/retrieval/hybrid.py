@@ -60,6 +60,19 @@ _VersionCompat = Literal["compatible", "newer_required", "older_targeted", "unkn
 # Number of candidate results to fetch for code snippet lookups.
 _DEFAULT_SNIPPET_CANDIDATES = 5
 
+# Floor on the per-backend candidate pool fed to RRF and the cross-encoder.
+# Equal to the largest ``limit`` a tool accepts, so ranking is the same for
+# every ``limit`` and a smaller one only truncates it. Fetching exactly
+# ``limit`` candidates let a bare-identifier query lose its definition to
+# files that merely mention the name (``PipecatClientProvider`` was absent at
+# limit<=15 and rank 1 at limit>=20).
+_MIN_CANDIDATES = 50
+
+
+def _candidate_limit(limit: int) -> int:
+    """Candidates to request from each backend for a caller-visible ``limit``."""
+    return max(limit, _MIN_CANDIDATES)
+
 
 class HybridRetriever:
     """Hybrid retrieval service implementing the Retriever protocol.
@@ -136,7 +149,7 @@ class HybridRetriever:
             query_text=query_text,
             query_embedding=query_embedding,
             filters=filters,
-            limit=limit,
+            limit=_candidate_limit(limit),
         )
 
         logger.debug(
@@ -253,7 +266,7 @@ class HybridRetriever:
                     query_text=c,
                     query_embedding=embedding,
                     filters=filters,
-                    limit=per_concept,
+                    limit=_candidate_limit(per_concept),
                 )
                 for c, embedding in zip(concepts, embeddings, strict=True)
             ]

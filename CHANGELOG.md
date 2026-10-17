@@ -12,155 +12,89 @@ This project uses [Semantic Versioning](https://semver.org/).
   [`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
   This changelog retains repository and Context Hub package history.
 - **No reads while a refresh rewrites the index.** `serve` answers tool calls with
-  a "retry in 60-120 seconds" error (and still starts, with the index unopened, if
-  launched mid-refresh); one-shot CLI queries exit 75 (`EX_TEMPFAIL`) with the same
-  message. `serve` now reopens the rebuilt index itself after a refresh (with the
-  startup readiness checks, and reloading the deprecation map), so no MCP client
-  restart is needed. Every reader open holds `refresh.lock` shared, so a refresh
-  can't start mid-open (it retries its lock for ~10 s, and if readers still hold
-  it says so rather than reporting another refresh); a refresh refused by the
-  lock exits 75 like the queries. An index read already in progress when a
-  refresh starts finishes on the handle it has; any read that starts after it
-  (including a running call's next one) gets the retry message instead of
-  reopening the index mid-write. Closing `serve`'s index handle at shutdown is
-  final: a call arriving afterwards is answered "shutting down" instead of
-  reopening an index nothing will close. The dashboard scripts open the index
-  the same way (refresh exclusion plus the open-time checks), and exit with the
-  `refresh` hint on a missing or empty index instead of creating one. Readers
-  never create the index (only `refresh` does): a vector collection that is lost (or
-  left empty) beside a populated keyword database is reported ("run `refresh --force`")
-  rather than recreated empty beside the populated other half, and a keyword database
-  that is missing, incomplete or empty beside vector records is refused by readers and
-  by every `refresh`, `--force` included (exit 2, "run `refresh --force --reset-index`";
-  the vector collection is not touched): the keyword database is where `refresh` records
-  which repos it indexed, so carrying the vectors forward left those of a repo no
-  longer configured searchable but beyond the reach of cleanup and `--prune`. Writes
-  add keyword rows before their vectors (deletes remove vectors first), so an
-  interrupted `refresh`, a first one included, never leaves that state: it leaves
-  keyword records ahead of the vectors, which `refresh --force` rebuilds. A plain
-  `refresh` that finds the vector collection lost or
-  empty that way exits 2 with the same advice, without touching the vector collection, instead of
-  skipping unchanged sources and leaving vector search empty. `refresh --force`
-  recreates it, and a `refresh` that finds the vector collection empty stops trusting
-  every source's unchanged-skip marker (it drops the docs content hash and flags each
-  indexed repo `repo:<slug>:vector_empty`, kept apart from `cleanup_failed`; the repos
-  stay known, so stale-repo cleanup and tainted-ref purges still find them), so a source whose
-  fetch fails in that run is re-ingested by the next plain `refresh`; a repo indexed
-  earlier but absent from that run's config keeps its keyword records with no
-  vectors (re-add it for that run, or `--prune` it). A corrupt keyword database, or
-  one with a schema the index cannot use, makes `refresh` exit 2 with the
-  `--reset-index` remedy, as the readers do (a locked, busy or unreadable-by-permissions
-  one is not: readers report it with a retry hint). The dashboard
-  scripts report any open failure (including an incompatible index) with the
-  operator message, not a traceback. The stale handle is closed after its last call before the rebuilt
-  index is opened (calls in between are asked to retry in a few seconds):
-  chromadb shares one native System per path, so a client opened beside the
-  stale one served the stale graph. Spikes showed opening the index mid-refresh
-  can leave a graph that crashes the next load.
+  a "retry in 60-120 seconds" error while a refresh holds the lock (and still starts,
+  with the index unopened, if launched mid-refresh), then reopens the rebuilt index
+  itself and reloads the deprecation map, so no MCP client restart is needed.
+  One-shot CLI queries exit 75 (`EX_TEMPFAIL`); so does a `refresh` refused by the
+  lock. Readers hold `refresh.lock` shared only while opening. Closing `serve`'s
+  index handle at shutdown is final: later calls are answered "shutting down".
+- **A half-missing index is refused, not papered over.** Readers never create the
+  index (only `refresh` does).
+  - Vector collection lost or empty beside a populated keyword database: exit 2,
+    "run `refresh --force`". A plain `refresh` refuses too, without touching the
+    vector half.
+  - Keyword database missing, incomplete, empty, corrupt or with an unusable schema
+    beside vector records: exit 2, "run `refresh --force --reset-index`", for readers
+    and for every `refresh`, `--force` included.
+  - Nothing indexed at all: "run `refresh`".
+  - Writes add keyword rows before their vectors, so an interrupted `refresh` leaves
+    keyword records ahead of the vectors, which `refresh --force` rebuilds.
+  - The dashboard scripts open the index the same way and exit with the operator
+    message instead of a traceback.
 - **Index write guards.** After a Chroma HNSW `link_lists.bin` ballooned to
-  15 TB logical / ~325 GB on disk (upstream chroma#7510) and left a machine
-  with 4 GB free: `refresh` now checks free disk (default 5 GB, override
-  `PIPECAT_HUB_MIN_FREE_GB`) before touching the index (with `--reset-index`,
-  after deleting it, since the delete frees the space), takes an exclusive
-  `refresh.lock` so two refreshes can't run on one data dir, and warns when a
-  `serve` (shared `serve.lock`) has the index open. Vector upserts (and
-  compaction's copy) re-run the bounded HNSW size check after every batch and
-  abort on a runaway file instead of growing until the disk is full; a graph
-  Chroma persists with no later check (e.g. during a delete) is caught by the
-  open-time check before anything loads it. Includes an open-time
-  oversized-graph check, extended with a structural walk of `link_lists.bin`: racing writers leave a graph of
-  healthy size that SIGSEGVs or runs away on the next load, and the walk
-  rejects it first. Spikes reproduced the corruption with concurrent
-  `refresh`es; see the dev plan. The walk reads at most the checked size (and
-  never more than 256 MiB), so a damaged header can't force an unbounded read.
-  hnswlib's on-disk layout is private: on a chromadb release other than the
-  verified 1.5.x, header and structure mismatches are logged and skipped (the
-  size bound still applies) instead of refusing every healthy index. Lock files
-  are ignored (with a warning, proceeding unlocked) if they are a symlink, another
-  user owns them, or they are not a regular file with a single link; they are
-  opened without following symlinks (on Windows, which lacks `O_NOFOLLOW`, a
-  symlink is refused before and after the open). The hub never deletes or replaces
-  a lock file; if something outside it does while the lock is held, two refreshes
-  can overlap (accepted on every platform).
+  ~325 GB on disk (upstream chroma#7510): `refresh` checks free disk first (default
+  5 GB, `PIPECAT_HUB_MIN_FREE_GB`), takes an exclusive `refresh.lock`, and warns when
+  a `serve` has the index open. Vector writes re-run a bounded HNSW size check after
+  every batch and abort on a runaway file; the open-time check adds a structural walk
+  of `link_lists.bin` that rejects a graph of healthy size that would crash on load.
+  On a chromadb release other than the verified 1.5.x, structure mismatches are
+  logged and skipped (the size bound still applies). Lock files that are symlinks,
+  foreign-owned or not regular files are ignored with a warning.
 - **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
-  unsafe to keep using; the incompatible-format and corrupt-HNSW errors subclass
-  it. Ingesters re-raise it rather than recording one more per-source error, so a
-  guard failure stops `refresh` (exit 2) instead of letting the remaining sources
-  keep writing into a damaged index. An `IndexWriter` signals that state by
-  raising it.
+  unsafe to keep using; ingesters re-raise it, so a guard failure stops `refresh`
+  (exit 2) instead of letting the remaining sources keep writing.
 
 ### Changed
-- **`refresh --force` compacts the vector graph.** Delete + re-add left the deleted
+- **`refresh --force` compacts the vector graph.** Delete + re-add left deleted
   elements in the persisted HNSW graph, growing it by the whole corpus on every
   forced refresh (20k -> 80k elements for 20k live records over four rounds). A
-  forced refresh now rebuilds the collection from the live records at the end and
-  removes the old segment directory (on the verified chromadb 1.5.x only; on other
-  releases it is left on disk). Non-fatal if it fails, except when the HNSW guard
-  trips on a graph written during the refresh, or the swap fails leaving no
-  `latest` collection: either stops the refresh (exit 2), the latter without deleting
-  anything, so the next `refresh` restores the index. The old collection is parked under a backup name until
-  the rebuilt one is in place; a swap interrupted by a crash is restored by the
-  next `refresh` (readers never write to the index: until then they report it and
-  say to run `refresh`; a restore that itself fails stops that refresh with exit 2
-  and says to rebuild with `refresh --force --reset-index`), and the staging writes get the same per-batch HNSW guard
-  as upserts. A backup left beside the rebuilt collection (its drop failed) is never
-  loaded, so its graph is not checked and cannot block opening the index; the next
-  compaction drops it.
-  Prefer `refresh --force` after a pipecat upgrade: a plain refresh replaces the
-  framework repo's records and leaves them as dead graph elements (docs now say so).
-- **`serve` and the one-shot CLI open the index the same way.** Both go through
-  one open-and-check, so an empty, unreadable, or incompatible index gets the same
-  message from either (the empty-index text no longer mentions `serve`).
+  forced refresh now rebuilds the collection from the live records and removes the
+  old segment directory (verified chromadb 1.5.x only). Non-fatal if it fails,
+  except an HNSW guard trip or a failed swap that leaves no `latest` collection
+  (exit 2, nothing deleted; the next `refresh` restores the index). A swap
+  interrupted by a crash is restored by the next `refresh`; readers report it and
+  never write. Prefer `refresh --force` after a pipecat upgrade: a plain refresh
+  leaves the replaced framework records as dead graph elements.
+- **`serve` and the one-shot CLI open the index the same way**, so an empty,
+  unreadable or incompatible index gets the same message from either.
 - **Opening an initialized keyword database no longer writes to it.** `refresh`
-  completes an incomplete one and rebuilds its full-text table from the stored
-  records in one transaction, so a failed rebuild is retried by the next `refresh`.
+  completes an incomplete one and rebuilds its full-text table in one transaction.
 - **`refresh --reset-index` exits 1 instead of rebuilding when an index file
   survives the delete** (the keyword database or its WAL/shared-memory/journal
-  file, the vector directory, or the deprecation map, which would otherwise be
-  served beside the rebuilt index; on
-  Windows, a running `serve` holds them open: stop it, then retry).
+  file, the vector directory, or the deprecation map). On Windows a running `serve`
+  holds them open: stop it, then retry.
 
 ### Fixed
-- **A reader that finds no keyword database no longer prescribes a reset when
-  nothing is indexed.** With the vector half empty or absent too, it reports an
-  empty index ("run `refresh`"); the reset remedy stays for a keyword database
-  lost beside populated vectors. `tests/unit/test_index_state_matrix.py` pins
-  every keyword-half x vector-half state against every open mode.
+- **Search ranking no longer changes with `limit`.** Each backend was asked for
+  exactly `limit` candidates, so `search_api("PipecatClientProvider",
+  chunk_type="function")` lost its definition to files that merely mention the name
+  at `limit` 15 or less (the default is 10) and found it at 20 or more. Both
+  backends now return a fixed pool of 50 (the largest `limit` a tool accepts) and
+  `limit` only truncates the ranking. `tests/unit/test_retrieval.py::TestCandidatePool`
+  pins it.
+- **A reader with no keyword database no longer prescribes a reset when nothing is
+  indexed**; it says "run `refresh`". The reset remedy stays for a keyword database
+  lost beside populated vectors. `tests/unit/test_index_state_matrix.py` pins every
+  keyword x vector state against every open mode.
 - **`check_deprecation` no longer reports a missing or unreadable deprecation map
-  as "not deprecated".** `DeprecationMap.load` records `load_error` (`missing` or
-  `unreadable`); the tool then returns a null `status` and a note to run
-  `refresh` instead of `current`, and `serve` logs a startup warning naming the
-  map path. A file that parses but is not a deprecation map (e.g.
-  `{"entries": []}`, or an entry `to_dict` could not have written such as
-  `{"Pipeline": {}}`) counts as unreadable. A map that loaded but is empty still
-  answers `current`. The writer enforces the same rule: the registry builders skip
-  (and log) a record with a null or non-string field, and `save` refuses an entry
-  `load` would reject, so `refresh` can no longer publish a map its own reader
-  calls unreadable (it keeps the previous map instead).
-- **Open-time index checks read what Chroma will open.** A writer killed
-  mid-transaction leaves a hot rollback journal beside `chroma.sqlite3`; the
-  format and HNSW checks read the database ignoring it, so they could validate
-  segments Chroma's own open then rolls back. With a journal present they now
-  open the database read-write (never creating it) so SQLite rolls it back first.
+  as "not deprecated".** It returns a null `status` and a note to run `refresh`, and
+  `serve` logs a startup warning. A file that parses but is not a deprecation map
+  counts as unreadable; an empty map that loaded still answers `current`. `refresh`
+  can no longer publish a map its own reader rejects: untrusted registry records are
+  skipped (and logged), and `save` refuses what `load` would reject.
+- **Open-time index checks read what Chroma will open.** With a hot SQLite rollback
+  journal present, the format and HNSW checks now roll it back first instead of
+  validating segments Chroma's own open would roll back.
 - **A failed or interrupted delete no longer leaves a stale "unchanged" marker.**
-  `refresh` cleared `docs:content_hash`, or flagged a repo `cleanup_failed`, only
-  after deleting its records, so a failed marker write or an abort in between
-  left the marker vouching for vectors that were gone, and the next plain
-  `refresh` skipped that source. The marker is now invalidated before the
-  delete; if that write fails, the records are left in place and the source is
-  reported as errored.
-- **A repo whose refresh failed stays findable by `--prune`.** A changed repo
-  whose checkout, delete or ingest failed had its `repo:<slug>:commit_sha`
-  marker deleted so the next run would retry it, but it could still hold
-  records and the stale-repo cleanup finds repos only through that marker:
-  dropped from configuration before a successful retry, its records stayed
-  searchable for good. It now keeps the marker and is flagged `cleanup_failed`,
-  which is what forces the retry.
+  The marker is invalidated before the delete; if that write fails, the records stay
+  and the source is reported as errored.
+- **A repo whose refresh failed stays findable by `--prune`.** It keeps its
+  `repo:<slug>:commit_sha` marker and is flagged `cleanup_failed`, so stale-repo
+  cleanup still finds its records.
 
 ### Security
 - **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`
-  (reached via `huggingface-hub`) to clear PYSEC-2026-4217, which `pip-audit`
-  flagged in the Security CI job. Lock-only change.
+  (via `huggingface-hub`) to clear PYSEC-2026-4217 from `pip-audit`. Lock-only.
 
 ## [0.8.1] - 2026-10-02
 
