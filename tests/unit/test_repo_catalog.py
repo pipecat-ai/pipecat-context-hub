@@ -139,6 +139,22 @@ class TestParseCatalog:
         with pytest.raises(CatalogError, match=key):
             parse_catalog(text)
 
+    @pytest.mark.parametrize("name", ["acme\\n", "acme\\nevil", "\\nacme", "Acme"])
+    def test_group_name_with_a_newline_or_capital_rejected(self, name: str) -> None:
+        """A quoted TOML key can hold a newline; `$` matched before a final one,
+        so `acme\\n` parsed and its name reached CLI messages and the docs."""
+        text = _VALID.replace("groups.acme", f'groups."{name}"')
+        with pytest.raises(CatalogError, match="group name"):
+            parse_catalog(text)
+
+    @pytest.mark.parametrize("name", ["acme\n", "a\nb", "a b"])
+    def test_group_name_regex_is_self_anchoring(self, name: str) -> None:
+        from pipecat_context_hub.shared.repo_catalog import _GROUP_NAME_RE
+
+        assert _GROUP_NAME_RE.match(name) is None
+        assert _GROUP_NAME_RE.search(name) is None
+        assert _GROUP_NAME_RE.fullmatch(name) is None
+
     def test_unknown_key_rejected(self) -> None:
         text = _with(_VALID, 'kind = "vendor"\n', 'kind = "vendor"\nwat = 1\n')
         with pytest.raises(CatalogError):

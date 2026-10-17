@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 CATALOG_RESOURCE = "data/repo_catalog.toml"
 VALID_KINDS = frozenset({"vendor", "topic"})
 
-_GROUP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# Self-anchoring (`\A`..`\Z`, like `repo_slug.REPO_SLUG_RE`): `$` also matches
+# before a final newline, so a quoted TOML key `"bad\n"` would pass `.match()`.
+_GROUP_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 _TOP_KEYS = frozenset({"verified", "groups"})
 _GROUP_KEYS = frozenset({"kind", "description", "aliases", "repos"})
 _REPO_KEYS = frozenset({"slug", "note", "parseable", "maintainer"})
@@ -137,7 +139,7 @@ def _parse_repo(where: str, raw: object) -> CatalogRepo:
 
 def _parse_group(name: str, raw: object) -> CatalogGroup:
     where = f"groups.{name}"
-    if not _GROUP_NAME_RE.match(name):
+    if not _GROUP_NAME_RE.fullmatch(name):
         raise CatalogError(f"{where}: group name must be lowercase letters, digits and '-'")
     if not isinstance(raw, dict):
         raise CatalogError(f"{where}: must be a table")
