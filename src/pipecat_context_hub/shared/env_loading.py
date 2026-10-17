@@ -136,7 +136,7 @@ _EXCLUSION_KEYS = frozenset({"PIPECAT_HUB_TAINTED_REPOS", "PIPECAT_HUB_TAINTED_R
 _SCALAR_TYPES = (str, int, float, bool)
 
 
-def load_cwd_dotenv() -> None:
+def load_cwd_dotenv() -> dict[str, str]:
     """Load ``.env`` file from the current directory if it exists.
 
     Only sets variables that are not already in the environment so that
@@ -148,6 +148,9 @@ def load_cwd_dotenv() -> None:
         KEY=value            # ok
         KEY="value" # note   # inline comment stripped
         KEY=value # note     # inline comment stripped
+
+    Returns the keys actually set (blank values included), mapped to the value
+    set; a key already in ``os.environ`` is not in the result.
 
     Only ``PIPECAT_HUB_*``-prefixed keys are read from this file — any other key
     is silently skipped, not set into ``os.environ``. This file can live in any
@@ -179,12 +182,13 @@ def load_cwd_dotenv() -> None:
     ``_log_serve_cwd`` / ``_write_serve_debug_probe`` and in
     ``shared/paths.py``'s ``resolution_chain``.
     """
+    applied: dict[str, str] = {}
     try:
         env_path = Path.cwd() / ".env"
         if not env_path.is_file():
-            return
+            return applied
     except (OSError, ValueError, RuntimeError):
-        return
+        return applied
     # The read is guarded for the same reason as the cwd lookup above, and
     # mirrors `load_global_config()`'s already-guarded read: a `.env` that
     # exists but is unreadable (PermissionError / ENOENT from a concurrent
@@ -201,7 +205,7 @@ def load_cwd_dotenv() -> None:
             redact_home(env_path),
             redact_home_in_text(str(exc)),
         )
-        return
+        return applied
     for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -240,6 +244,9 @@ def load_cwd_dotenv() -> None:
                     key,
                     exc,
                 )
+            else:
+                applied[key] = value
+    return applied
 
 
 def resolve_global_config_path() -> Path | None:
@@ -452,7 +459,7 @@ def dotenv_collides_with_dir(candidate_dir: Path) -> Path | None:
     return _config_source_collides_with_dir(dotenv_path, candidate_dir)
 
 
-def load_env_layers() -> None:
+def load_env_layers() -> dict[str, str]:
     """Load every config layer below real env vars, in precedence order.
 
     The single bootstrap entry point: ``load_cwd_dotenv()`` (cwd ``.env``)
@@ -462,10 +469,24 @@ def load_env_layers() -> None:
     — calls this rather than hand-replicating the two-call ordering, so the
     contract is enforced by the code path instead of by convention.
 
+    Returns the provenance map: for each ``PIPECAT_HUB_*`` key, the layer that
+    supplied its FINAL NON-BLANK value (``env``, ``.env`` or ``config.toml``).
+    A key whose final value is blank (empty after ``.strip()``) is omitted, so
+    blankness is encoded in the map and no caller consults ``os.environ``.
+    Callers that do not need it ignore the return value.
+
     The individual loaders remain public for tests that exercise one layer.
     """
-    load_cwd_dotenv()
-    load_global_config()
+    env_layer = {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIX) and v.strip()}
+    dotenv_layer = load_cwd_dotenv()
+    global_layer = load_global_config()
+    merged: dict[str, str] = {}
+    provenance: dict[str, str] = {}
+    for label, layer in (("env", env_layer), (".env", dotenv_layer), ("config.toml", global_layer)):
+        for key, value in layer.items():
+            merged[key] = value
+            provenance[key] = label
+    return {key: label for key, label in provenance.items() if merged[key].strip()}
 
 
 def _stringify_scalar_array(value: list[object], key: str) -> str | None:
@@ -805,62 +826,101 @@ def _is_homogeneous_scalar_array(value: list[object]) -> bool:
     return all(type(v) is first_type for v in value)
 
 
-def load_global_config() -> None:
+class ConfigNotTrusted(Exception):
+    """The config file exists but must not be read.
+
+    Raised by :func:`read_trusted_config` for every trust-predicate refusal and
+    every open/read/decode failure. ``logged`` is True when the trust predicate
+    already emitted its own warning, so the :func:`load_global_config` wrapper
+    does not warn twice.
+    """
+
+    def __init__(self, reason: str, *, logged: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.logged = logged
+
+
+def read_trusted_config(path: Path) -> str | None:
+    """Read ``path`` through the loader's trust checks; the one shared reader.
+
+    Returns ``None`` for a missing file. Raises :class:`ConfigNotTrusted` for a
+    trust-predicate refusal or any open/read/decode failure. Invalid TOML is
+    not this function's concern (see :func:`parse_global_config`).
+    """
+    try:
+        fd = _open_config_fd(path)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        # `exc` is redacted, not just the path: OSError's own __str__ appends
+        # the absolute filename, which would leak the home directory.
+        raise ConfigNotTrusted(redact_home_in_text(str(exc))) from exc
+
+    # `fd` ownership transfers to `os.fdopen` on *entry*, not on success:
+    # `io.open` closes the descriptor itself when construction fails. Clearing
+    # the flag beforehand is the correct handoff point. Until that call, this
+    # function closes it on every path.
+    fd_owned = True
+    try:
+        if not _config_fd_is_trusted(fd, path):
+            raise ConfigNotTrusted("config file failed the trust checks", logged=True)
+        fd_owned = False
+        with os.fdopen(fd, "rb") as f:
+            return f.read().decode("utf-8")
+    except (UnicodeError, OSError, ValueError) as exc:
+        raise ConfigNotTrusted(redact_home_in_text(str(exc))) from exc
+    finally:
+        if fd_owned:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def parse_global_config(path: Path) -> dict[str, object]:
+    """Read ``path`` via :func:`read_trusted_config` and parse it as TOML.
+
+    A missing file yields ``{}``. :class:`ConfigNotTrusted` propagates;
+    invalid TOML raises ``tomllib.TOMLDecodeError`` unwrapped.
+    """
+    text = read_trusted_config(path)
+    if text is None:
+        return {}
+    return tomllib.loads(text)
+
+
+def load_global_config() -> dict[str, str]:
     """Load ``PIPECAT_HUB_*`` keys from the machine-global ``config.toml``.
 
     Only sets variables not already in ``os.environ`` (first-writer-wins,
     same as `load_cwd_dotenv`). A missing file returns silently. Malformed or
-    unreadable files log a warning and never raise.
+    unreadable files log a warning and never raise. Returns the keys actually
+    set, mapped to the value set.
     """
+    applied: dict[str, str] = {}
     config_path = resolve_global_config_path()
     if config_path is None:
         # Home directory couldn't be determined at import time (see
         # DEFAULT_CONFIG_PATH above) and no PIPECAT_HUB_CONFIG_FILE override
         # is set. Nothing to load; the warning was already logged once, at
         # import time.
-        return
+        return applied
     try:
-        fd = _open_config_fd(config_path)
-    except FileNotFoundError:
-        return
-    except (OSError, ValueError) as exc:
-        # `exc` is redacted, not just `config_path`: OSError's own __str__
-        # appends the absolute filename ("[Errno 13] Permission denied:
-        # '/Users/<name>/...'"), which would leak the home directory back into
-        # a log line whose path argument was carefully redacted.
+        data = parse_global_config(config_path)
+    except ConfigNotTrusted as exc:
+        if not exc.logged:
+            _module_logger.warning(
+                "Failed to read config.toml at %s: %s",
+                redact_home(config_path),
+                exc.reason,
+            )
+        return applied
+    except tomllib.TOMLDecodeError as exc:
         _module_logger.warning(
             "Failed to read config.toml at %s: %s",
             redact_home(config_path),
             redact_home_in_text(str(exc)),
         )
-        return
-
-    # `fd` ownership transfers to `os.fdopen` on *entry*, not on success:
-    # `io.open` closes the descriptor itself when construction fails. Clearing
-    # the flag beforehand is therefore the correct handoff point — clearing it
-    # after the call returns would leave the `finally` below closing an fd the
-    # interpreter had already closed, which after fd-number reuse closes some
-    # unrelated file. Until that call, this function closes it on every path.
-    fd_owned = True
-    try:
-        if not _config_fd_is_trusted(fd, config_path):
-            return
-        fd_owned = False
-        with os.fdopen(fd, "rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, UnicodeError, OSError, ValueError) as exc:
-        # Same redaction rationale as the open() site above: an OSError raised
-        # mid-read still carries the absolute filename in its message.
-        _module_logger.warning(
-            "Failed to read config.toml at %s: %s",
-            redact_home(config_path),
-            redact_home_in_text(str(exc)),
-        )
-        return
-    finally:
-        if fd_owned:
-            with contextlib.suppress(OSError):
-                os.close(fd)
+        return applied
 
     loaded = 0
     for key, value in data.items():
@@ -1055,7 +1115,9 @@ def load_global_config() -> None:
                 exc,
             )
             continue
+        applied[key] = coerced
         loaded += 1
 
     if loaded:
         _module_logger.info("Loaded %d key(s) from %s", loaded, redact_home(config_path))
+    return applied

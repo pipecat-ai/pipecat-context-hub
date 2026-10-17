@@ -726,8 +726,9 @@ def main(ctx: click.Context, log_level: str) -> None:
     # moving both later, and malformed-config warnings are emitted through
     # configured logging instead of Python's last-resort handler.
     _configure_logging(log_level)
-    env_loading.load_env_layers()
+    provenance = env_loading.load_env_layers()
     ctx.ensure_object(dict)
+    ctx.obj["env_provenance"] = provenance
     config = HubConfig()
     ctx.obj["config"] = config.model_copy(
         update={"server": config.server.model_copy(update={"log_level": log_level})}

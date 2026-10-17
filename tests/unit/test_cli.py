@@ -6947,3 +6947,65 @@ class TestDeleteRepoIndexDataWriteAhead:
         assert await _delete_repo_index_data(store, "o/r", "repo:o/r:commit_sha") is False
         assert flagged_at_delete == [True]
         assert meta == {"repo:o/r:commit_sha": "abc", "repo:o/r:cleanup_failed": "1"}
+
+
+class TestEnvProvenanceCarrier:
+    """`main()` hands the provenance map from `load_env_layers` to subcommands
+    via `ctx.obj["env_provenance"]`, and runs each loader once per invocation."""
+
+    @staticmethod
+    def _probe() -> tuple[click.Command, dict[str, Any]]:
+        seen: dict[str, Any] = {}
+
+        @click.command("provenance-probe")
+        @click.pass_context
+        def probe(ctx: click.Context) -> None:
+            seen["obj"] = ctx.obj
+
+        return probe, seen
+
+    def test_main_sets_env_provenance_from_load_env_layers(self, monkeypatch):
+        probe, seen = self._probe()
+        monkeypatch.setitem(main.commands, "provenance-probe", probe)
+        controlled = {"PIPECAT_HUB_STALE_AFTER_DAYS": "config.toml"}
+        monkeypatch.setattr(env_loading, "load_env_layers", lambda: controlled)
+
+        result = CliRunner().invoke(main, ["provenance-probe"])
+
+        assert result.exit_code == 0, result.output
+        assert seen["obj"]["env_provenance"] is controlled
+
+    def test_main_overwrites_a_preexisting_env_provenance(self, monkeypatch):
+        probe, seen = self._probe()
+        monkeypatch.setitem(main.commands, "provenance-probe", probe)
+        controlled = {"PIPECAT_HUB_X": ".env"}
+        monkeypatch.setattr(env_loading, "load_env_layers", lambda: controlled)
+
+        result = CliRunner().invoke(
+            main, ["provenance-probe"], obj={"env_provenance": {"stale": "env"}}
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["obj"]["env_provenance"] == controlled
+
+    def test_both_loaders_run_once_per_invocation(self, monkeypatch):
+        probe, seen = self._probe()
+        monkeypatch.setitem(main.commands, "provenance-probe", probe)
+        calls: list[str] = []
+
+        def _cwd() -> dict[str, str]:
+            calls.append("cwd")
+            return {}
+
+        def _global() -> dict[str, str]:
+            calls.append("global")
+            return {}
+
+        monkeypatch.setattr(env_loading, "load_cwd_dotenv", _cwd)
+        monkeypatch.setattr(env_loading, "load_global_config", _global)
+
+        result = CliRunner().invoke(main, ["provenance-probe"])
+
+        assert result.exit_code == 0, result.output
+        assert calls == ["cwd", "global"]
+        assert isinstance(seen["obj"]["env_provenance"], dict)

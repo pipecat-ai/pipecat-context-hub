@@ -677,14 +677,26 @@ class TestDashboardScriptConfigParity:
 
     def test_load_env_layers_calls_both_loaders_in_order(self):
         """Behavioural companion to the source scan: the shared bootstrap
-        really does run cwd .env before config.toml."""
+        really does run cwd .env before config.toml. The loaders now return
+        the keys they set (dicts), which feed the provenance map."""
         calls: list[str] = []
+
+        def _cwd() -> dict[str, str]:
+            calls.append("cwd")
+            return {"PIPECAT_HUB_A": "from-dotenv"}
+
+        def _global() -> dict[str, str]:
+            calls.append("global")
+            return {"PIPECAT_HUB_B": "from-toml"}
+
         with (
-            patch.object(env_loading, "load_cwd_dotenv", lambda: calls.append("cwd")),
-            patch.object(env_loading, "load_global_config", lambda: calls.append("global")),
+            patch.object(env_loading, "load_cwd_dotenv", _cwd),
+            patch.object(env_loading, "load_global_config", _global),
         ):
-            env_loading.load_env_layers()
+            provenance = env_loading.load_env_layers()
         assert calls == ["cwd", "global"]
+        assert provenance["PIPECAT_HUB_A"] == ".env"
+        assert provenance["PIPECAT_HUB_B"] == "config.toml"
 
 
 # Derived from the same discovery pass as the source-level scan above, not

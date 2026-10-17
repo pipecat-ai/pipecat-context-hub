@@ -271,7 +271,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
 
 - [x] Phase 1: Catalog, loader, renderers and generated sections
 - [x] Phase 2a: `tomlkit` dependency
-- [ ] Phase 2b: trusted-config read, parse seam and provenance
+- [x] Phase 2b: trusted-config read, parse seam and provenance
 - [ ] Phase 2c: the writer
 - [ ] Phase 2d: the `repos` commands
 
