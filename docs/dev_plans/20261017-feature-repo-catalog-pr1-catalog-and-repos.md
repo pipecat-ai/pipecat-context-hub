@@ -144,15 +144,15 @@ Facts a phase worker needs and cannot cheaply rediscover:
   `tomllib.TOMLDecodeError` from `parse_global_config`, not wrapped. The seam takes a path, so a `None`
   from `resolve_global_config_path()` (no home, blank `PIPECAT_HUB_CONFIG_FILE`) stays outside it:
   the reader returns silently and callers decide (2c, 2d).
-- Parametrized reader-vs-seam equivalence test over: non-regular, foreign-owned, world-writable,
-  untrusted parent dir, foreign symlink hop, unreadable (EACCES), undecodable, embedded-NUL path, invalid
+- Parametrized reader-vs-seam equivalence test over the shared `TRUST_REFUSAL_CASES` (see 2c) plus invalid
   TOML, missing file, unresolvable path. `load_global_config` warns and ignores exactly when the seam
   raises `ConfigNotTrusted` or `TOMLDecodeError`, and returns silently for missing and unresolvable.
   POSIX-only cases are skipped on Windows.
 - Add the provenance map (parent Decision 9): `env` snapshot, per-loader returned keys mirroring each
   loader's own blank rule, merge `{**env, **dotenv, **global_config}`. `load_env_layers` returns it;
   the return value is optional so dashboard and smoke scripts are untouched.
-- `main()` stores the map in `ctx.obj["env_provenance"]`, overwriting any prior value (no `setdefault`).
+- `main()` always overwrites `ctx.obj["env_provenance"]` with the map `load_env_layers` returns (no
+  `setdefault`); downstream the shadow decision reads only that map and never re-reads a layer.
   `test_cli.py` asserts the key is set and that both loaders run once per invocation. Phase 2d tests
   consume the carrier by patching `env_loading.load_env_layers` to return a controlled map.
 - Provenance test rows (parent Test plan, `[PR1]` Provenance bullet): a key set only in the real
@@ -182,8 +182,11 @@ Facts a phase worker needs and cannot cheaply rediscover:
   test with `PIPECAT_HUB_CONFIG_FILE` blank). `ConfigNotTrusted` propagates unchanged.
   The module never exits; `cli_repos.py` maps the errors (Phase 2d).
 - Test cases: one test id per clause of the parent Test plan `[PR1]` Writer bullet, checked off in the
-  PR description; plus, for each 2b trust predicate, the writer raises `ConfigNotTrusted` with the file
-  byte-identical (so a predicate added to the reader is exercised on the writer).
+  PR description; plus a writer test parametrized over `TRUST_REFUSAL_CASES`: the ONE shared tuple of the
+  2b predicates that raise `ConfigNotTrusted` (non-regular, foreign-owned, world-writable, untrusted parent
+  dir, foreign symlink hop, unreadable, undecodable, embedded-NUL path; excludes invalid TOML, missing,
+  unresolvable), defined in `tests/unit/_config_trust_cases.py`. The 2b equivalence test and this test both
+  import it, so a new predicate is exercised on reader and writer. Writer asserts the file byte-identical.
 - Mutation check: remove the failed-re-parse abort; its test must fail. Record it in the PR description.
 - `test_config_writer.py` joins the `ci.yml` Windows file list in this commit. POSIX-only tests skip
   there (`os.name != "posix"`); a Windows round-trip test writes, then asserts both `parse_global_config`
@@ -207,7 +210,8 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - `load_catalog()` returning `None` (gap in the parent, which defines `None` only for PR 2 hints; this
   plan fills it): positional `add`/`remove` and `--group` exit `EXIT_INVALID_INPUT` naming the catalog
   load failure, file untouched; `repos list` still prints the effective list, tags non-default slugs
-  `unlisted`, and warns once. One test row per command. The lead should record this in the parent.
+  `unlisted`, and warns once (relying on `load_catalog`'s own log-once; `cli_repos` emits no second warning, asserted
+  by the test). One test row per command. The lead should record this in the parent.
 - Membership for check 4 and the `repos list` shadow line comes only from `parse_global_config`
   (CSV or array, casefolded). Provenance decides the layer. The shadow refusal fires only when the effective env
   value is NON-BLANK: a blank `.env` value does not shadow (`load_cwd_dotenv` uses presence,
@@ -228,8 +232,10 @@ Facts a phase worker needs and cannot cheaply rediscover:
   (the `gh` path) to raise, applied to every `repos add` row.
 - Docs in `docs/configuration.md`. A Typer-bridge test covers `repos --help` and `repos add --help`
   (matching the direct CLI) plus a functional `pipecat context-hub repos list` and `repos add --config-only`,
-  run with a cwd `.env` present and asserting the named shadow layer, not only the exit code (the host
-  CLI may pre-load `.env`; if it does, document the label as `environment` on that door).
+  asserting the named shadow layer, not only the exit code. Labels are only `env`, `.env`, `config.toml`
+  (parent Decision 9); no fourth label. The host may pre-load a cwd `.env` into `os.environ`, so the
+  bridge test pins the label only for a `config.toml`-layer shadow (no cwd `.env`), and for a cwd-`.env`
+  key asserts only the refusal and that the label is `env` or `.env`.
 - Add a numbered live-smoke item to `docs/smoke-test.md`: `repos list`, `repos add --config-only` and
   `repos remove` against a scratch `PIPECAT_HUB_CONFIG_FILE`.
 - Mutation checks (five), each reverted with its test failing, results in the PR description: the shadow
