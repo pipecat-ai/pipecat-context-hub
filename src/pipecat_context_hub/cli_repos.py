@@ -207,6 +207,19 @@ def _validate_selector(slug: str | None, group: str | None, unlisted: bool) -> N
         _fail("give a SLUG (owner/repo) or --group NAME.")
 
 
+def _shown(slug: str) -> str:
+    """A configured (env, ``.env`` or ``config.toml``) entry, safe to print.
+
+    Such a value is never validated on the way in, so it can hold terminal
+    escape sequences (OSC 52, CSI), line separators or bidi controls. An entry
+    with any non-printable character (``str.isprintable()``: every control,
+    format and separator character) prints as its ``repr()`` tagged
+    ``[invalid]``; anything else, which includes every well-formed slug, as is.
+    Every echo of a configured string goes through this.
+    """
+    return slug if slug.isprintable() else f"{slug!r} [invalid]"
+
+
 def _skipped_lines(group: CatalogGroup, sources: SourceConfig) -> tuple[list[str], list[str]]:
     """``(actionable, skipped_lines)`` for a group's members."""
     actionable: list[str] = []
@@ -250,7 +263,7 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
     else:
         done = [present[slug_key(s)] for s in members if slug_key(s) in present]
         for slug in done:
-            click.echo(f"Removed {slug}")
+            click.echo(f"Removed {_shown(slug)}")
         if not done:
             click.echo("Nothing to remove" + note)
     for line in skipped:
@@ -277,7 +290,7 @@ def _run_positional(
             click.echo(f"Not in config.toml: {target}" + note)
             return
         stored = next((s for s in before if slug_key(s) == slug_key(target)), target)
-        click.echo(f"Removed {stored}")
+        click.echo(f"Removed {_shown(stored)}")
     click.echo(_after_write(layer, adding=adding))
 
 
@@ -401,17 +414,16 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
     config = _config(ctx)
     effective = config.sources.effective_repos
     catalog = load_catalog()
-    listed = catalog.slugs() if catalog is not None else frozenset()
 
     def tag(slug: str) -> str:
         if config.sources.is_default(slug):
             return "default"
-        return "catalog" if slug_key(slug) in listed else "unlisted"
+        return "catalog" if catalog is not None and catalog.lists(slug) else "unlisted"
 
     click.echo(_cwd_line())
     click.echo(f"Effective repos ({len(effective)}):")
     for slug in effective:
-        click.echo(f"  {slug}  [{tag(slug)}]")
+        click.echo(f"  {_shown(slug)}  [{tag(slug)}]")
 
     configured, problem = _configured_in_toml()
     if problem is not None:
@@ -427,7 +439,7 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
         if hidden:
             click.echo(f"In config.toml but hidden by {_layer_phrase(layer)}:")
             for slug in hidden:
-                click.echo(f"  {slug}  [{tag(slug)}]")
+                click.echo(f"  {_shown(slug)}  [{tag(slug)}]")
     if show_groups:
         _print_groups(catalog)
 

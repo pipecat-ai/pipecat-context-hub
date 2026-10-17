@@ -434,9 +434,14 @@ class TestCatalogLookups:
         assert group is not None and group.name == "aws"
         assert shipped_catalog.find_group("nope") is None
 
-    def test_slugs_is_every_slug_casefolded(self, shipped_catalog: Catalog) -> None:
-        expected = {r.slug.casefold() for g in shipped_catalog.groups for r in g.repos}
-        assert shipped_catalog.slugs() == expected
+    def test_lists_every_slug_casefolded(self, shipped_catalog: Catalog) -> None:
+        for group in shipped_catalog.groups:
+            for repo in group.repos:
+                assert shipped_catalog.lists(repo.slug)
+                assert shipped_catalog.lists(repo.slug.upper())
+                assert shipped_catalog.lists(repo.slug.casefold())
+        assert not shipped_catalog.lists("nobody/nothing")
+        assert not hasattr(shipped_catalog, "slugs")  # no accessor leaks slug_key values
 
 
 class TestLoadCatalog:

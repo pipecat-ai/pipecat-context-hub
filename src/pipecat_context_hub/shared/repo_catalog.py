@@ -95,9 +95,9 @@ class Catalog:
         folded = name.casefold()
         return next((g for g in self.groups if g.name.casefold() == folded), None)
 
-    def slugs(self) -> frozenset[str]:
-        """Every catalog slug's :func:`slug_key`."""
-        return frozenset(slug_key(r.slug) for g in self.groups for r in g.repos)
+    def lists(self, slug: str) -> bool:
+        """True when the catalog lists ``slug`` (matched by :func:`slug_key`)."""
+        return self.find_repo(slug) is not None
 
 
 def _check_keys(where: str, table: dict[str, object], allowed: frozenset[str]) -> None:

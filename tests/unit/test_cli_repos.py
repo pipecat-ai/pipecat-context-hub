@@ -384,6 +384,28 @@ class TestListGoldens:
         hub.config_list("ACME/ALPHA-TWO")
         assert _tags(hub.run("list").stdout)["ACME/ALPHA-TWO"] == "catalog"
 
+    _HOSTILE = "evil/x\x1b]52;c;cHduZWQ=\x07\x1b[2J"
+
+    def test_configured_entry_with_escapes_is_never_printed_raw(self, hub: Hub):
+        """A hostile project ``.env`` can set the key (the accepted allowlist
+        case); ``repos list`` must not forward its escape sequences."""
+        hub.env(**{KEY: f"{ALPHA_ONE},{self._HOSTILE}"})
+        result = hub.run("list")
+        assert result.exit_code == 0, result.output
+        assert "\x1b" not in result.stdout and "\x07" not in result.stdout
+        assert f"  {ALPHA_ONE}  [catalog]" in result.stdout  # valid entries unchanged
+        assert f"  {self._HOSTILE!r} [invalid]  [unlisted]" in result.stdout
+
+    def test_hidden_entry_with_escapes_is_never_printed_raw(self, hub: Hub):
+        hub.env(**{KEY: BETA_ONE})
+        hub.write_config(f'{KEY} = ["{ALPHA_ONE}", "evil/x\\u001b]52;c;cHduZWQ=\\u0007"]\n')
+        result = hub.run("list")
+        assert result.exit_code == 0, result.output
+        hidden = result.stdout.split("hidden by", 1)[1]
+        assert "\x1b" not in result.stdout
+        assert f"  {ALPHA_ONE}  [catalog]" in hidden
+        assert "[invalid]" in hidden
+
     def test_cross_cwd_consults_that_cwds_dotenv(self, hub: Hub, tmp_path: Path):
         """A `serve` launched from another directory reads a different `.env`."""
         other = tmp_path / "other"
