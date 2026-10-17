@@ -24,6 +24,7 @@ import click
 
 from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
+from pipecat_context_hub.cli_repos import register_repos_commands
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_REFRESH_IN_PROGRESS
@@ -2174,6 +2175,7 @@ def _print_refresh_summary(
 # the same tool handlers the MCP server dispatches, exposed for shell callers.
 register_query_commands(main)
 register_install_command(main)
+register_repos_commands(main)
 
 
 if __name__ == "__main__":

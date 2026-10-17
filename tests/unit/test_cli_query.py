@@ -13,12 +13,12 @@ import pytest
 from click.testing import CliRunner, Result
 
 from pipecat_context_hub.cli import main
-from pipecat_context_hub.cli_query import _EXIT_BAD_INPUT, _TOOL_TO_COMMAND
+from pipecat_context_hub.cli_query import _TOOL_TO_COMMAND
 from pipecat_context_hub.server.dispatch import iter_tool_definitions
 from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL, create_server
 from pipecat_context_hub.services.index import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
-from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY
+from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_INVALID_INPUT
 from pipecat_context_hub.shared.paths import redact_home_in_text as _real_redact_home_in_text
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
@@ -109,6 +109,17 @@ class TestToolCommandParity:
 
         assert EXIT_REFRESH_IN_PROGRESS == 75
         assert hub_cli._RefreshLockBusy("x").exit_code == EXIT_REFRESH_IN_PROGRESS
+
+    def test_invalid_input_exit_code_is_shared(self):
+        """The one-shot queries and `repos` refuse bad input with the same
+        shared code (1), defined once in `shared/exit_codes.py`."""
+        from pipecat_context_hub import cli_query
+        from pipecat_context_hub.shared import exit_codes
+
+        assert EXIT_INVALID_INPUT == 1
+        assert exit_codes.EXIT_INVALID_INPUT == EXIT_INVALID_INPUT
+        # No module keeps a private copy that could drift from the shared one.
+        assert not hasattr(cli_query, "_EXIT_BAD_INPUT")
 
     def test_semantic_meta_matches_needs_embeddings_call_sites(self):
         """``_SEMANTIC_META`` must enroll exactly the tools invoked
@@ -1001,7 +1012,7 @@ class TestRerankerWarningDoesNotCoFireWithValidationError:
             # fails GetCodeSnippetInput's model validator before any handler
             # runs — a pure input-validation failure, unrelated to reranking.
             result = runner.invoke(main, ["get-code-snippet"])
-        assert result.exit_code == _EXIT_BAD_INPUT
+        assert result.exit_code == EXIT_INVALID_INPUT
         assert "Error:" in result.stderr
         assert BUG_REPORT_ISSUE_URL not in result.stderr
         assert "reranking disabled" not in result.stderr

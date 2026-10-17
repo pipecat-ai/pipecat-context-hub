@@ -273,7 +273,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - [x] Phase 2a: `tomlkit` dependency
 - [x] Phase 2b: trusted-config read, parse seam and provenance
 - [x] Phase 2c: the writer
-- [ ] Phase 2d: the `repos` commands
+- [x] Phase 2d: the `repos` commands
 
 ## Findings
 

@@ -80,6 +80,32 @@ works everywhere `Path.home()` resolves.
 
 CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `docs.pipecat.ai` pages (`/api-reference/cli/*`); the `pipecat-ai/pipecat-cli` repo is archived (the CLI now ships inside `pipecat-ai/pipecat`, which is indexed). Add more repos via `PIPECAT_HUB_EXTRA_REPOS` (full `org/repo` slugs, e.g. `pipecat-ai/pipecat-mcp-server`, `pipecat-ai/pipecat-flows-editor`). Only Python, TypeScript, and RST are parsed — Swift/Kotlin/C++ client SDKs (iOS, Android, cxx, esp32) clone but yield zero source/API chunks (only a few README/config fallback chunks), so they don't surface in `search_api` / `get_code_snippet`.
 
+## Managing repos from the CLI
+
+`pipecat-context-hub repos` (also `pipecat context-hub repos`) edits only the
+`PIPECAT_HUB_EXTRA_REPOS` key of `~/.config/pipecat-context-hub/config.toml`,
+preserving comments and other keys. It works offline; run
+`pipecat-context-hub refresh` afterwards to index (or `refresh --prune` to drop
+data after a remove).
+
+```bash
+pipecat-context-hub repos list                       # effective repos, tagged default / catalog / unlisted
+pipecat-context-hub repos add pipecat-ai/tail        # a catalog repo
+pipecat-context-hub repos add --group nvidia         # every parseable, non-tainted repo of a catalog group
+pipecat-context-hub repos add owner/repo --unlisted  # a well-formed repo that is not in the catalog
+pipecat-context-hub repos remove pipecat-ai/tail     # also --group NAME, --unlisted
+```
+
+Rules, applied in this order to a positional slug (the first that applies decides; exit code 1 on refusal):
+
+1. A default repo, or one in `PIPECAT_HUB_TAINTED_REPOS`, is refused.
+2. A malformed slug is refused; a slug outside the catalog needs `--unlisted`; a catalog slug with `--unlisted` is refused (the catalog spelling is used).
+3. If `PIPECAT_HUB_EXTRA_REPOS` is set by a real environment variable or the cwd `.env`, that layer outranks `config.toml`, so the change would have no effect and is refused, naming the layer. `--config-only` edits `config.toml` anyway (it is then in the file but not in the effective list, and `repos list` names the shadowing layer).
+4. Adding a slug already in `config.toml`, or removing one that is not, exits 0 (`Already in config.toml` / `Not in config.toml`). Slugs compare case-insensitively.
+5. Otherwise the file is written atomically (`Added <slug>` / `Removed <slug>`).
+
+`--group` (mutually exclusive with a slug and `--unlisted`) skips tainted and `parseable = false` members and reports them; it applies rules 3 to 5. An unknown group lists the valid ones. If the catalog fails to load, `add`/`remove` refuse and change nothing; `repos list` still works and tags every non-default repo `unlisted`. An untrusted, invalid or non-array `config.toml` makes `add`/`remove` exit 1 with the file untouched; `repos list` prints the effective list, names the ignored file and exits 0. `repos list` also prints the cwd whose `.env` was consulted, since a `serve` launched from another directory reads a different one.
+
 ## Repo catalog
 
 Curated public repos you can add beyond the defaults, via `PIPECAT_HUB_EXTRA_REPOS`. This section is generated from `src/pipecat_context_hub/data/repo_catalog.toml` (run `just catalog-regen`); a test fails if it drifts from the catalog or from `.env.example`.

@@ -8,8 +8,11 @@ glance. These pin the parts that would silently regress.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import typer
+from click.testing import CliRunner as ClickRunner
 from typer.testing import CliRunner
 
 from pipecat_context_hub.cli import main as hub_cli
@@ -197,3 +200,80 @@ class TestLogLevelForwarding:
         monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _capture)
         runner.invoke(_mounted(), ["context-hub", "status"])
         assert seen["args"][:2] == ["--log-level", "INFO"]
+
+
+class TestReposThroughTheBridge:
+    """`pipecat context-hub repos ...` behaves like the direct CLI.
+
+    The functional rows guard a `ctx.obj["env_provenance"]` gap that only the
+    bridge door could have: they assert the NAMED shadow layer, not just an exit
+    code. The host may pre-load a cwd `.env` into `os.environ`, so the label is
+    pinned only for a real-env-var shadow with no cwd `.env`.
+    """
+
+    @staticmethod
+    def _catalog_slug() -> str:
+        from pipecat_context_hub.shared.repo_catalog import load_catalog
+
+        catalog = load_catalog()
+        assert catalog is not None
+        return next(r.slug for g in catalog.groups for r in g.repos if r.parseable)
+
+    @staticmethod
+    def _direct(argv: list[str]) -> str:
+        result = ClickRunner().invoke(hub_cli, argv, prog_name="pipecat context-hub")
+        assert result.exit_code == 0, result.output
+        return result.output
+
+    @pytest.mark.parametrize("sub", [["repos"], ["repos", "add"], ["repos", "list"]])
+    def test_help_matches_the_direct_cli(self, sub):
+        bridged = runner.invoke(_mounted(), ["context-hub", *sub, "--help"])
+        assert bridged.exit_code == 0, bridged.output
+        assert bridged.output == self._direct([*sub, "--help"])
+
+    def test_add_help_is_the_real_one_not_the_stub(self):
+        result = runner.invoke(_mounted(), ["context-hub", "repos", "add", "--help"])
+        assert "--config-only" in result.output
+        assert "--unlisted" in result.output
+        assert "--group" in result.output
+
+    def test_repos_list_runs_and_tags_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(_mounted(), ["context-hub", "repos", "list"])
+        assert result.exit_code == 0, result.output
+        assert f"Consulted .env in cwd: {tmp_path}" in result.output
+        assert "pipecat-ai/pipecat  [default]" in result.output
+
+    def test_config_only_under_a_real_env_shadow_names_the_env_layer(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # no cwd .env here
+        cfg = tmp_path / "cfg"
+        cfg.mkdir(mode=0o700)
+        config = cfg / "config.toml"
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(config))
+        monkeypatch.setenv("PIPECAT_HUB_EXTRA_REPOS", "someone/else")
+        slug = self._catalog_slug()
+
+        refused = runner.invoke(_mounted(), ["context-hub", "repos", "add", slug])
+        assert refused.exit_code == 1
+        assert "layer `env`" in refused.output
+        assert not config.exists()
+
+        result = runner.invoke(_mounted(), ["context-hub", "repos", "add", "--config-only", slug])
+        assert result.exit_code == 0, result.output
+        assert f"Added {slug}" in result.output
+        assert slug in config.read_text()
+        listed = runner.invoke(_mounted(), ["context-hub", "repos", "list"])
+        assert "hidden by layer `env`" in listed.output
+
+    def test_a_cwd_dotenv_shadow_is_refused_with_env_or_dotenv_label(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("PIPECAT_HUB_EXTRA_REPOS=someone/else\n")
+        cfg = tmp_path / "cfg"
+        cfg.mkdir(mode=0o700)
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", str(cfg / "config.toml"))
+
+        result = runner.invoke(_mounted(), ["context-hub", "repos", "add", self._catalog_slug()])
+
+        assert result.exit_code == 1
+        assert re.search(r"layer `(env|\.env)`", result.output)
+        assert not (cfg / "config.toml").exists()

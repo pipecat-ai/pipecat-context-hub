@@ -399,6 +399,23 @@ the indexed pipecat version; re-verify against the current registry if they drif
     of the `limit=50` result. Repeat with `search_api("send_dtmf")`. Regression:
     `tests/unit/test_retrieval.py::TestCandidatePool`.
 
+53. **`repos` commands against a scratch config (PR 1).** Never point this at
+    your real `config.toml`. In a fresh 0700 directory run
+    `export PIPECAT_HUB_CONFIG_FILE=$(mktemp -d)/config.toml` (`chmod 700` the
+    directory), then:
+    `uv run pipecat-context-hub repos list` (effective list, every slug tagged
+    `default`, and the consulted cwd line);
+    `repos add pipecat-ai/tail` prints `Added pipecat-ai/tail` plus the
+    `refresh` reminder, and `repos list` now shows it tagged `catalog`;
+    repeat the add for `Already in config.toml`; `repos add not-listed/repo`
+    exits 1 and says to pass `--unlisted`. Then
+    `PIPECAT_HUB_EXTRA_REPOS=x/y uv run pipecat-context-hub repos add pipecat-ai/whisker`
+    exits 1 naming layer `env`; with `--config-only` it succeeds and
+    `repos list` names the shadowing layer. Finish with
+    `repos remove pipecat-ai/tail` (`Removed`) and `repos remove --group <name>`.
+    Confirm no network access happens (works offline) and that the scratch
+    file keeps its comments. Unit-side counterpart: `tests/unit/test_cli_repos.py`.
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 
