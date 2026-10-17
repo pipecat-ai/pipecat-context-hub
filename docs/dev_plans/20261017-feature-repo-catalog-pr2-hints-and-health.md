@@ -170,6 +170,18 @@ assumption. Read the catalog data from PR 1's Phase 1 before asserting which gro
 - Frozen queries: the four strings in Context, copied verbatim into `test_corpus_hint.py`. For each, assert
   against a fixture index and fixture catalog: hint when the matched group's repos are absent, no hint when
   present. A new numbered item in `docs/smoke-test.md` reuses them.
+- Expected outcomes for the four frozen queries (provenance: the maintainer's live index, 2026-10-17):
+
+  | Query | Expected | Why (live-index provenance) |
+  |---|---|---|
+  | `AWS Bedrock Nova Sonic voice agent` | hint | The AWS group is only partly indexed: `aws-samples/build-intelligent-ai-voice-agents-with-pipecat-and-amazon-bedrock` (435 records), `pipecat-ai/aws-deepgram-workshop` (390) and `pipecat-ai/aws-workshops` (33) are indexed; four other AWS seed repos are not. The 0.95 top hit `aaronsu11/Dum-E` is not an AWS repo, so confidence must not suppress the hint. |
+  | `Tavus avatar` | hint | `aws-samples/sample-voice-ai-tavus-avatar-demo` has zero records and is not configured. It may sit in the AWS group or a Tavus group; the hint fires either way. |
+  | `Murf TTS` | no hint | `murf-ai/pipecat-murf-tts` is indexed (24 records). |
+  | `Supermemory memory` | no hint | `supermemoryai/pipecat-memory` is indexed (462 records). |
+
+  These expectations assume one catalog group per vendor (PR 1 Phase 1 requires it). The unit tests derive each
+  outcome from a fixture index and fixture catalog, never from the live index; the live numbers are recorded
+  only as provenance.
 - Mutation checks (revert, confirm the named test fails):
   - Alias word boundary: the "laws" negative.
   - Skip `parseable = false`: the `parseable = false` skip test.
