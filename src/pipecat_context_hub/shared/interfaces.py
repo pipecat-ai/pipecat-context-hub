@@ -76,6 +76,10 @@ class ServingIndex(IndexReader, Protocol):
         """Return all persistent index metadata as a dict."""
         ...
 
+    def get_counts_by_repo(self) -> dict[str, int]:
+        """Return the number of indexed records per repo."""
+        ...
+
 
 class FatalIndexError(RuntimeError):
     """The on-disk index is unsafe to keep using (incompatible or corrupt).

@@ -6160,6 +6160,14 @@ class TestServeRefreshGate:
             assert isinstance(handle, ReopeningIndexStore)
             assert captured["kwargs"]["unavailable_reason"] == handle.unavailable_reason
 
+    def test_serve_handle_delegates_get_counts_by_repo(self, tmp_path, monkeypatch):
+        store = self._ready_store()
+        store.get_counts_by_repo = MagicMock(return_value={"owner/repo": 3})
+        with self._run_serve(tmp_path, monkeypatch, [store]) as (_, captured):
+            handle = captured["args"][1]
+            assert handle.get_counts_by_repo() == {"owner/repo": 3}
+            store.get_counts_by_repo.assert_called_once_with()
+
 
 class TestServeRerankerTelemetry:
     """`serve`'s startup reranker-disabled log line gets the same

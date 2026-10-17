@@ -334,7 +334,7 @@ Put the result and the mutation-check results in the PR description. Restore the
 
 ## Progress
 
-- [ ] Phase 3a: `get_counts_by_repo` on the serving index
+- [x] Phase 3a: `get_counts_by_repo` on the serving index
 - [ ] Phase 3b: `indexed_repos` and `groups_not_indexed`
 - [ ] Phase 3c: config values and `get_hub_status`
 - [ ] Phase 4: corpus hints

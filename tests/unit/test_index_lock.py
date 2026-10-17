@@ -303,6 +303,38 @@ class TestReopeningIndexStore:
         assert store.get_all_metadata() == {"k": "v"}
         opener.assert_called_once()
 
+    def test_get_counts_by_repo_delegates_and_reads_the_reopened_store(
+        self, tmp_path: Path
+    ) -> None:
+        """Counts come from the store current at call time: after a refresh the
+        reopened store answers, never the stale one."""
+        data_dir = tmp_path / "hub"
+        first, second = MagicMock(), MagicMock()
+        first.get_counts_by_repo.return_value = {"owner/repo": 1}
+        second.get_counts_by_repo.return_value = {"owner/repo": 5}
+        opener = MagicMock(side_effect=[first, second])
+        store = self._store(data_dir, opener)
+        assert store.get_counts_by_repo() == {"owner/repo": 1}
+        first.get_counts_by_repo.assert_called_once_with()
+        _simulate_refresh(data_dir)
+        assert store.get_counts_by_repo() == {"owner/repo": 5}
+        second.get_counts_by_repo.assert_called_once_with()
+        assert first.get_counts_by_repo.call_count == 1
+        first.close.assert_called_once()
+
+    def test_get_counts_by_repo_is_refused_while_a_refresh_runs(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.shared.index_lock import RefreshInProgressError
+
+        data_dir = tmp_path / "hub"
+        real = MagicMock()
+        opener = MagicMock(return_value=real)
+        store = self._store(data_dir, opener)
+        store.open_now()
+        with IndexLock(data_dir, REFRESH_LOCK, exclusive=True):
+            with pytest.raises(RefreshInProgressError):
+                store.get_counts_by_repo()
+        real.get_counts_by_repo.assert_not_called()
+
     def test_reopens_after_a_refresh_no_call_overlapped(self, tmp_path: Path) -> None:
         """Regression (cli.py:928): the generation is the one current *at open*,
         so a refresh that starts right after the open, with no tool call during
