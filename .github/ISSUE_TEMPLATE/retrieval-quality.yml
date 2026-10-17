@@ -62,6 +62,18 @@ body:
       required: true
 
   - type: textarea
+    id: candidate-repos
+    attributes:
+      label: Candidate repos (optional)
+      description: |
+        Public GitHub repos (owner/repo, one per line) that should be indexed to answer
+        this, for example ones a `corpus_hint` pointed at or that you found yourself.
+      placeholder: |
+        some-vendor/pipecat-some-vendor-example
+    validations:
+      required: false
+
+  - type: textarea
     id: diagnostic-report
     attributes:
       label: Diagnostic Report

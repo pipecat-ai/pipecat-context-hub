@@ -432,6 +432,25 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `Refusing to delete '../home/\x1b[2J/..' [invalid]`). No output line may
     contain a raw `^[`. Unit-side counterpart: `tests/unit/test_terminal.py`.
 
+55. **Corpus hint on unindexed vendors (2026-10-17).** The hint is deterministic
+    (a catalog alias in the query text plus an unindexed repo), never confidence-
+    gated. Against the live index, with `search-examples` and `search-docs` at
+    `--limit 3` (the CLI and MCP door give identical JSON):
+    - `AWS Bedrock Nova Sonic voice agent` -- `corpus_hint` present with
+      `matched_groups: ["aws"]` even though confidence is 0.95; its
+      `repos_not_indexed` lists only the AWS repos with no records.
+    - `Tavus avatar` -- `corpus_hint` present (group `tavus`).
+    - `Murf TTS` -- no `corpus_hint` key (the `murf` group is indexed).
+    - `Supermemory memory` -- no `corpus_hint` key (the `supermemory` group is
+      indexed).
+    A hint's `add_command` is `pipecat-context-hub repos add --config-only --group
+    <group>` (joined with `; ` for several groups). On the CLI the generic
+    "results were poor or missing" stderr hint is suppressed when `corpus_hint` is
+    present. After adding the group and running `refresh`, the same query carries
+    no hint. Verdicts hold only while the live index matches the 2026-10-17
+    provenance; a changed verdict is a data change, not a regression. Regression:
+    `tests/unit/test_corpus_hint.py`.
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 

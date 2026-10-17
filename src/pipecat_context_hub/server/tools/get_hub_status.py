@@ -85,7 +85,7 @@ async def handle_get_hub_status(
         indexed_framework_commits_ahead=commits_ahead,
         indexed_repos=sorted(indexed) if indexed is not None else [],
         configured_no_records=configured_no_records(configured, indexed),
-        catalog_groups_not_indexed=groups_not_indexed(load_catalog(), indexed),
+        catalog_groups_not_indexed=groups_not_indexed(load_catalog(), indexed, tainted=tainted),
         reranker_enabled=reranker_status.enabled,
         reranker_model=reranker_status.model,
         reranker_configured_model=reranker_status.configured_model,

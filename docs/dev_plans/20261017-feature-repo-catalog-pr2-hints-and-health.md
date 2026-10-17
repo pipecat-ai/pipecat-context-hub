@@ -337,7 +337,7 @@ Put the result and the mutation-check results in the PR description. Restore the
 - [x] Phase 3a: `get_counts_by_repo` on the serving index
 - [x] Phase 3b: `indexed_repos` and `groups_not_indexed`
 - [x] Phase 3c: config values and `get_hub_status`
-- [ ] Phase 4: corpus hints
+- [x] Phase 4: corpus hints
 - [ ] Phase 5: catalog health and curation scripts
 - [ ] Phase 4b: seam test against the real `repos` command
 
@@ -355,3 +355,11 @@ _(none yet; this plan has not been through `/review-plan`)_
 - **Phase 3b:** `indexed_repos` is typed against a private narrow `_CountsSource` protocol, not `ServingIndex` as Decision 10 says. Structurally compatible; chosen so test fakes need no cast. Minor.
 - **Phase 3c:** `catalog_groups_not_indexed` passes the catalog to `groups_not_indexed` without a tainted set, so a group whose only unindexed repo is tainted stays listed forever while the Phase 4 hint skips it (same root as the 3b Important note). Fix the predicate once, in Phase 4. Minor.
 - **Phase 3c:** `handle_get_hub_status` makes one more synchronous `get_counts_by_repo` call on the MCP event loop; `server/main.py`'s `_annotate` moves its reads off the loop with `asyncio.to_thread`. Follows the handler's existing pattern; revisit if latency shows. Minor.
+- **Phase 4 (fixed in-phase):** reviewer found Bandit B101 on a new `assert index_store is not None` in `server/main.py::_finish`; `_finish` now takes the already-checked store as a parameter. `bandit -r src` is clean. The gauntlet should still run the PR's Bandit step.
+- **Phase 4 (resolved, deliberate deviations):** the shared predicate (`missing_repos` / `groups_not_indexed`) now takes a keyword-only casefolded `tainted` set, and `get_hub_status.py` passes `tainted_repos` to it (a Phase 3c file edited in Phase 4, resolving the 3b/3c tainted notes). `indexed_repos` logs `IndexUnavailableError` at DEBUG, matching `annotate_response` (an expected refresh race), WARNING for other failures; this departs from the 3b text "every None path logs at warning".
+- **Phase 4 (open, Minor):**
+  - `TestFrozenRealQueries` pins the shipped `data/repo_catalog.toml`, not a fixture catalog; a catalog edit (alias rename, repo added to murf/tavus) breaks them. Freeze a fixture or state that it is intended.
+  - The "`configured_repos` reflects process start" tests check start-time env flows through; none changes config after `create_server` to show a running hint is unchanged.
+  - The tainted-only `catalog_groups_not_indexed` check is covered on the MCP door only; the CLI door shares the predicate but has no test.
+  - Broad catalog aliases (`google`, `gemini`, `turn detection`, `ios`, `android`) make core-topic questions hint while any repo in the group is unindexed (known Decision 3 cost).
+- **Phase 4 mutation checks (run by the conductor):** alias boundary, `parseable = false` skip, tainted skip, CLI stderr suppression, `--config-only`, the `; ` join and unreadable-count `None` were each killed by the named test. Two mutants survived as equivalent: dropping `- tainted` from `configured` (redundant: `missing_repos` already drops tainted repos) and replacing the catalog-`None` `return None` with `pass` (the blanket `except` returns `None` anyway).

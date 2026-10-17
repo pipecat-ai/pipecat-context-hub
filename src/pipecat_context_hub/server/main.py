@@ -28,6 +28,7 @@ from pipecat_context_hub.server.dispatch import (
     iter_tool_definitions,
 )
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError, Retriever, ServingIndex
+from pipecat_context_hub.shared.corpus_hint import attach_corpus_hint, corpus_hint
 from pipecat_context_hub.shared.staleness import annotate_response
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
@@ -140,6 +141,19 @@ If none of these work, suggest the user file a retrieval quality issue at \
 — the issue template includes a diagnostic prompt that you can run to generate \
 a structured report for the maintainers.
 
+**Corpus hint:** A search response may carry a top-level ``corpus_hint`` \
+object (absent when it does not apply). It means the question names a vendor \
+or topic from the repo catalog whose repos are not indexed, so the results may \
+be missing that content even when they look confident. Tell the user, and \
+offer its ``add_command`` (run by the user, never by you) followed by \
+``refresh``; ``repos_configured_no_records`` repos are already configured \
+and only need ``refresh_command``. If you find a relevant public GitHub repo \
+that is not in the catalog, suggest the user run \
+``pipecat-context-hub repos add <owner/repo> --unlisted`` (it edits only their \
+own config, never the shared catalog), and offer to draft a retrieval-quality \
+issue listing the candidate repos. Draft the issue text for the user to file; \
+do not file it yourself.
+
 **When the hub itself is degraded after initialization:** If ``get_hub_status`` reports \
 ``reranker_disabled_reason`` of ``not_cached`` or ``load_failed``, the \
 hub is running in a degraded mode.
@@ -237,20 +251,34 @@ def create_server(
             ]
         )
 
-    async def _annotate(result_json: str) -> str:
-        """Attach the index_staleness footer when the index is old.
+    def _finish(store: ServingIndex, name: str, args: dict[str, Any], result_json: str) -> str:
+        """Compute the corpus hint, add the staleness footer, then attach the hint.
+
+        The same order as the CLI door, so both give identical JSON. Runs in one
+        worker thread: both steps read index metadata under the generation lock.
+        """
+        hint = corpus_hint(
+            store,
+            tool=name,
+            args=args,
+            configured_repos=configured_repos,
+            tainted_repos=tainted_repos,
+        )
+        return attach_corpus_hint(annotate_response(result_json, store), hint)
+
+    async def _annotate(name: str, args: dict[str, Any], result_json: str) -> str:
+        """Attach the index_staleness footer (and, for search tools, the corpus hint).
 
         Skipped for get_hub_status (it *is* the staleness report) by virtue
         of that branch returning before this is called, and a no-op when no
-        index_store was provided. Best-effort: annotate_response never
-        raises.
+        index_store was provided. Best-effort: neither step raises.
         """
         if index_store is None:
             return result_json
         # Metadata reads acquire the cross-process generation lock.  Keep
         # that synchronous wait out of the MCP event loop so an in-progress
         # refresh cannot stall unrelated requests or watchdog progress.
-        return await asyncio.to_thread(annotate_response, result_json, index_store)
+        return await asyncio.to_thread(_finish, index_store, name, args, result_json)
 
     async def call_tool(_ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
         # Mark the call in-flight so the idle watchdog treats the whole
@@ -321,7 +349,11 @@ def create_server(
                 dep_map, fw_version = await asyncio.to_thread(load_deprecation_context)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return types.CallToolResult(
-                    content=[types.TextContent(type="text", text=await _annotate(result_json))]
+                    content=[
+                        types.TextContent(
+                            type="text", text=await _annotate(name, args, result_json)
+                        )
+                    ]
                 )
 
             handler = get_tool_handler(name)
@@ -330,7 +362,9 @@ def create_server(
 
             result_json = await handler(args, retriever)
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=await _annotate(result_json))]
+                content=[
+                    types.TextContent(type="text", text=await _annotate(name, args, result_json))
+                ]
             )
         except (ValidationError, IndexUnavailableError) as exc:
             # IndexUnavailableError: the index became unusable mid-call (e.g. a

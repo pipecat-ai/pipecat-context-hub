@@ -419,6 +419,7 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
     """
     from pydantic import ValidationError
 
+    from pipecat_context_hub.shared.corpus_hint import attach_corpus_hint, corpus_hint
     from pipecat_context_hub.shared.staleness import annotate_response
 
     _quiet_query_logging(ctx)
@@ -462,14 +463,29 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         reranker_uncached = _maybe_warn_reranker_not_cached(
             needs_embeddings, runtime.reranker_status
         ) or _maybe_warn_reranker_load_failed(needs_embeddings, runtime.cross_encoder)
-        _maybe_warn_poor_results(
-            tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
+        # The corpus hint is computed first so the poor-results stderr hint can
+        # yield to it: a vendor miss gets one hint, not two. The hint is attached
+        # after the staleness footer, matching the MCP door's order.
+        hint = (
+            None
+            if tool == "get_hub_status"
+            else corpus_hint(
+                runtime.index_store,
+                tool=tool,
+                args=cleaned,
+                configured_repos=runtime.configured_repos,
+                tainted_repos=runtime.tainted_repos,
+            )
         )
+        if hint is None:
+            _maybe_warn_poor_results(
+                tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
+            )
         # Same staleness footer the MCP door attaches (status excluded — it
         # *is* the staleness report). Inside the runtime block: the store
         # must still be open to read its metadata.
         if tool != "get_hub_status":
-            result = annotate_response(result, runtime.index_store)
+            result = attach_corpus_hint(annotate_response(result, runtime.index_store), hint)
     # Machine output: JSON stays JSON (never the human escaper).
     echo_json(result)
 
