@@ -251,7 +251,8 @@ recommendation, the change is stated. Review history and grilled outcomes are in
      return value is optional, so the dashboard and smoke scripts are untouched. `repos` never re-reads
      a layer to decide which one is in force.
    - **Meaning.** The map holds the layer that supplied the FINAL NON-BLANK value of each key. A key whose
-     final merged value is blank or absent is omitted. The shadow decision (check 3) reads only the map:
+     final merged value is blank or absent is omitted. "Blank" means empty after `.strip()`, as in
+     `load_global_config`, so a whitespace-only value is blank. The shadow decision (check 3) reads only the map:
      a key present with layer `env` or `.env` means shadowed; layer `config.toml` or absent means not
      shadowed. Blankness is already encoded, so no code path consults `os.environ` for the decision.
    - **Construction.** First snapshot the non-blank `PIPECAT_HUB_*` keys already in `os.environ` as
@@ -530,8 +531,9 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   for each layer, including a key set only in the real environment (layer
   `env`), a blank higher-layer value treated as absent (mirror `TestBlankHigherLayerValueDoesNotShadow`),
   plus the row blank real env var + non-blank `.env` + `config.toml` (provenance `config.toml`, no
-  refusal), a blank `.env` value alone (key omitted, no refusal), and the overlap row (a key set blank
-  by `.env` and then by `config.toml`: the merged layer is `config.toml`). Shadow-decision tests build
+  refusal), a whitespace-only real env var alone (key omitted, no refusal), a blank `.env` value alone
+  (key omitted, no refusal), and the overlap row (a key set blank by `.env` and then by `config.toml`:
+  the merged layer is `config.toml`). Blank means empty after `.strip()`. Shadow-decision tests build
   the map directly or patch `env_loading.load_env_layers`, never `os.environ`. The `ctx.obj["env_provenance"]` carrier: through `main()` both loaders run once per `repos`
   invocation. A second test patches `env_loading.load_env_layers` to return a controlled map and asserts neither
   loader is called: that map alone drives the shadow decision (no layer is re-read).

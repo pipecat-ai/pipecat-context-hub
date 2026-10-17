@@ -153,18 +153,29 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - Add the provenance map (parent Decision 9): the layer that supplied the FINAL NON-BLANK value of each
   key; a key whose final merged value is blank or absent is omitted. Build it in `load_env_layers`: the
   non-blank `env` snapshot, the keys each loader actually set (each by its own rule), merge
-  `{**env, **dotenv, **global_config}`, then drop every key whose final value is blank. Blankness is
+  `{**env, **dotenv, **global_config}`, then drop every key whose final value is blank. "Blank" means
+  empty after `.strip()`, as in `load_global_config` (`env_loading.py`, ~line 895). It applies to the
+  `env` snapshot, the final drop and every provenance row. Blankness is
   encoded in the map, so no later code consults `os.environ`. `load_env_layers` returns it; the return
   value is optional so dashboard and smoke scripts are untouched.
 - `main()` always overwrites `ctx.obj["env_provenance"]` with the map `load_env_layers` returns (no
   `setdefault`); downstream the shadow decision reads only that map and never re-reads a layer.
   `test_cli.py` asserts the key is set and that both loaders run once per invocation. Phase 2d tests
   consume the carrier by patching `env_loading.load_env_layers` to return a controlled map.
-- Provenance test rows (parent Test plan, `[PR1]` Provenance bullet): a key set only in the real
-  environment (layer `env`); a blank higher-layer value treated as absent (mirror
-  `TestBlankHigherLayerValueDoesNotShadow`, `tests/unit/test_env_loading.py:1418`); blank real env var +
-  non-blank `.env` + `config.toml` gives provenance `config.toml`; a blank `.env` value alone is omitted
-  from the map; a blank `.env` value plus a `config.toml` key gives `config.toml`; the overlap row.
+- Provenance test rows (parent Test plan, `[PR1]` Provenance bullet), one test id per row. The blank
+  rows mirror `TestBlankHigherLayerValueDoesNotShadow` (`tests/unit/test_env_loading.py:1418`):
+
+  | Layers holding the key | Expected map entry |
+  | --- | --- |
+  | real env, non-blank | `env` |
+  | real env, blank, alone | omitted |
+  | real env, whitespace-only, alone | omitted (no refusal) |
+  | `.env`, non-blank | `.env` |
+  | `.env`, blank, alone | omitted |
+  | `.env` blank + `config.toml` non-blank (the overlap row) | `config.toml` |
+  | real env blank + `.env` non-blank + `config.toml` non-blank | `config.toml` |
+  | `config.toml`, alone | `config.toml` |
+  | none | empty map |
 - Update `test_load_env_layers_calls_both_loaders_in_order`: its patched loaders return `None` today;
   they now return dicts.
 - Mutation check: break the overlap merge (a key set blank by `.env`, then by `config.toml`); the
@@ -236,15 +247,16 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - Shadow-decision rows build the map directly or patch `env_loading.load_env_layers`; none patches
   `os.environ`. Rows: blank real env var + non-blank `.env` + `config.toml` (map says `config.toml`):
   `repos add` succeeds, no refusal. Blank `.env` only (key omitted): no refusal. Blank `.env` +
-  `config.toml` key (map says `config.toml`): no refusal. Non-blank `.env` or real env var: refusal.
+  `config.toml` key (map says `config.toml`): no refusal. Whitespace-only real env var (key omitted):
+  no refusal. Non-blank `.env` or real env var: refusal.
 - A "`repos add` makes no network call" test: a fixture patches `socket.socket` and `subprocess.run`
   (the `gh` path) to raise, applied to every `repos add` row.
 - Docs in `docs/configuration.md`. A Typer-bridge test covers `repos --help` and `repos add --help`
   (matching the direct CLI) plus a functional `pipecat context-hub repos list` and `repos add --config-only`,
   asserting the named shadow layer, not only the exit code. Labels are only `env`, `.env`, `config.toml`
   (parent Decision 9); no fourth label. The host may pre-load a cwd `.env` into `os.environ`, so the
-  bridge test pins the label only for a `config.toml`-layer shadow (no cwd `.env`), and for a cwd-`.env`
-  key asserts only the refusal and that the label is `env` or `.env`.
+  bridge test pins the label only for a real-env-var shadow (label `env`, no cwd `.env`), and for a
+  cwd-`.env` key asserts only the refusal and that the label is `env` or `.env`.
 - Add a numbered live-smoke item to `docs/smoke-test.md`: `repos list`, `repos add --config-only` and
   `repos remove` against a scratch `PIPECAT_HUB_CONFIG_FILE`.
 - Mutation checks (five), each reverted with its test failing, results in the PR description: the shadow
