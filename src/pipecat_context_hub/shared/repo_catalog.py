@@ -22,19 +22,13 @@ from datetime import date
 from importlib import resources
 
 from pipecat_context_hub.shared.config import SourceConfig
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
 
 logger = logging.getLogger(__name__)
 
 CATALOG_RESOURCE = "data/repo_catalog.toml"
 VALID_KINDS = frozenset({"vendor", "topic"})
 
-# The one repo-slug grammar: `owner/repo`, each part starting with a letter or
-# digit, then letters, digits, `.`, `_` or `-`. It is the grammar the ingester
-# accepts (`github_ingest.clone_or_fetch`), so a slug the catalog, `repos` or
-# the writer accepts can always be cloned; it also excludes `.`/`..` segments
-# and a trailing newline. Self-anchoring (`\A`..`\Z`), so `.match()`, `.search()` and
-# `.fullmatch()` agree: a consumer cannot weaken it by choosing the wrong method.
-REPO_SLUG_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _GROUP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _TOP_KEYS = frozenset({"verified", "groups"})
 _GROUP_KEYS = frozenset({"kind", "description", "aliases", "repos"})
@@ -87,11 +81,6 @@ class Catalog:
     def slugs(self) -> frozenset[str]:
         """Every catalog slug, casefolded."""
         return frozenset(r.slug.casefold() for g in self.groups for r in g.repos)
-
-
-def is_valid_repo_slug(slug: str) -> bool:
-    """True when ``slug`` is a well-formed ``owner/repo`` (:data:`REPO_SLUG_RE`)."""
-    return REPO_SLUG_RE.fullmatch(slug) is not None
 
 
 def default_repos() -> list[str]:

@@ -13,16 +13,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
-from pipecat_context_hub.shared.env_loading import split_csv
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, split_csv
 from pipecat_context_hub.shared.versioning import DEFAULT_FRAMEWORK_PIN
 
 logger = logging.getLogger(__name__)
 
-# Environment variable for adding extra repos (comma-separated). The single
-# definition of the literal: the writer (`shared/config_writer.py`), `repos`
-# (`cli_repos.py`) and the catalog renderer import it from here.
-EXTRA_REPOS_ENV = "PIPECAT_HUB_EXTRA_REPOS"
-_EXTRA_REPOS_ENV = EXTRA_REPOS_ENV
+# `EXTRA_REPOS_ENV` (extra repos, comma-separated) and `split_csv` are defined
+# once, in the dependency-free `shared/env_keys.py`, so this model never imports
+# the env loader.
 
 # Environment variable for skipping entire tainted repos (comma-separated).
 _TAINTED_REPOS_ENV = "PIPECAT_HUB_TAINTED_REPOS"
@@ -85,11 +83,6 @@ _DEFAULT_PARENT_WATCH_INTERVAL = 2.0
 _PARENT_WATCH_INTERVAL_FLOOR = 0.1
 
 
-def _split_csv_env(raw: str) -> list[str]:
-    """Split a comma-separated env var into trimmed non-empty entries (``env_loading.split_csv``)."""
-    return split_csv(raw)
-
-
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
     """Deduplicate entries while preserving first-seen order."""
     seen: set[str] = set()
@@ -107,7 +100,7 @@ def _parse_tainted_refs(raw: str) -> dict[str, list[str]]:
     Malformed entries are ignored rather than raising at config-load time.
     """
     parsed: dict[str, list[str]] = {}
-    for entry in _split_csv_env(raw):
+    for entry in split_csv(raw):
         if "@" not in entry:
             continue
         repo_slug, ref = entry.rsplit("@", 1)
@@ -497,7 +490,7 @@ class SourceConfig(BaseModel):
     def effective_repos(self) -> list[str]:
         """Repos list with extra repos appended and tainted repos removed."""
         result = _dedupe_preserve_order(
-            list(self.repos) + _split_csv_env(os.environ.get(_EXTRA_REPOS_ENV, ""))
+            list(self.repos) + split_csv(os.environ.get(EXTRA_REPOS_ENV, ""))
         )
         tainted = set(self.tainted_repos)
         return [slug for slug in result if slug not in tainted]
@@ -506,7 +499,7 @@ class SourceConfig(BaseModel):
     @property
     def tainted_repos(self) -> list[str]:
         """Repos explicitly blocked from refresh by local policy."""
-        return _dedupe_preserve_order(_split_csv_env(os.environ.get(_TAINTED_REPOS_ENV, "")))
+        return _dedupe_preserve_order(split_csv(os.environ.get(_TAINTED_REPOS_ENV, "")))
 
     @computed_field  # type: ignore[prop-decorator]
     @property

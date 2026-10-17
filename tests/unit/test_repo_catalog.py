@@ -22,13 +22,12 @@ import pytest
 from pipecat_context_hub.shared import repo_catalog, repo_catalog_render
 from pipecat_context_hub.shared.config import SourceConfig
 from pipecat_context_hub.shared.repo_catalog import (
-    REPO_SLUG_RE,
     Catalog,
     CatalogError,
-    is_valid_repo_slug,
     load_catalog,
     parse_catalog,
 )
+from pipecat_context_hub.shared.repo_slug import REPO_SLUG_RE, is_valid_repo_slug
 from pipecat_context_hub.shared.repo_catalog_render import (
     DOCS_BEGIN,
     DOCS_END,
@@ -259,10 +258,26 @@ class TestSlugGrammar:
             for repo in group.repos:
                 assert is_valid_repo_slug(repo.slug), repo.slug
 
-    def test_ingester_uses_the_same_pattern(self) -> None:
+    def test_every_consumer_uses_the_one_grammar(self) -> None:
+        """The ingester, the catalog, ``repos`` and the writer all bind the same
+        predicate from the leaf module; none keeps its own pattern."""
+        from pipecat_context_hub import cli_repos
+        from pipecat_context_hub.services.ingest import github_ingest
+        from pipecat_context_hub.shared import config_writer
+
+        for mod in (github_ingest, repo_catalog, cli_repos, config_writer):
+            assert mod.is_valid_repo_slug is is_valid_repo_slug, mod.__name__
+            assert not hasattr(mod, "_REPO_SLUG_RE"), mod.__name__
+            assert not hasattr(mod, "REPO_SLUG_RE"), mod.__name__
+
+    def test_ingester_rejects_what_the_grammar_rejects(self) -> None:
         from pipecat_context_hub.services.ingest import github_ingest
 
-        assert github_ingest._REPO_SLUG_RE is REPO_SLUG_RE
+        with pytest.raises(ValueError, match="Invalid repo slug"):
+            github_ingest.GitHubRepoIngester.clone_or_fetch(
+                object(),  # type: ignore[arg-type]  # the slug check runs before any self use
+                "a/b\n",
+            )
 
 
 class TestCatalogLookups:
@@ -354,6 +369,62 @@ def test_repo_catalog_imports_nothing_from_cli_server_services() -> None:
         [sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=120
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def _modules_loaded_by(module: str) -> list[str]:
+    """Package modules plus ``tomlkit`` that a clean ``-I`` interpreter loads for ``module``."""
+    code = (
+        "import sys, importlib\n"
+        f"importlib.import_module({module!r})\n"
+        "print(' '.join(sorted(k for k in sys.modules "
+        "if k.startswith('pipecat_context_hub') or k.split('.')[0] == 'tomlkit')))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.split()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="python -I subprocess boundary test is POSIX-only")
+class TestModuleLayering:
+    """Model -> loader direction: the config model, the catalog and its renderer
+    never load the env loader (not even indirectly), nor ``tomlkit``; the leaf
+    modules load nothing else from the package."""
+
+    @pytest.mark.parametrize(
+        "module",
+        [
+            "pipecat_context_hub.shared.repo_catalog_render",
+            "pipecat_context_hub.shared.repo_catalog",
+            "pipecat_context_hub.shared.config",
+        ],
+    )
+    def test_never_loads_env_loading_or_tomlkit(self, module: str) -> None:
+        loaded = _modules_loaded_by(module)
+        assert "pipecat_context_hub.shared.env_loading" not in loaded
+        assert "tomlkit" not in loaded
+
+    @pytest.mark.parametrize(
+        "module",
+        ["pipecat_context_hub.shared.env_keys", "pipecat_context_hub.shared.repo_slug"],
+    )
+    def test_leaf_modules_load_nothing_else(self, module: str) -> None:
+        assert _modules_loaded_by(module) == sorted(
+            ["pipecat_context_hub", "pipecat_context_hub.shared", module]
+        )
+
+    def test_env_loading_names_the_key_through_the_one_constant(self) -> None:
+        from pipecat_context_hub.shared import env_keys, env_loading
+
+        tree = ast.parse(Path(env_loading.__file__).read_text(encoding="utf-8"))
+        literals = [
+            n.value
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and n.value == env_keys.EXTRA_REPOS_ENV
+        ]
+        assert literals == []
+        assert env_keys.EXTRA_REPOS_ENV in env_loading._KNOWN_KEYS
 
 
 def test_repo_catalog_module_has_no_forbidden_imports_statically() -> None:

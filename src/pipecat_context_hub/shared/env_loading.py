@@ -23,6 +23,7 @@ import tomllib
 from pathlib import Path
 from typing import Final, Literal
 
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, split_csv
 from pipecat_context_hub.shared.paths import (
     is_inside,
     redact_home,
@@ -85,15 +86,6 @@ LAYER_CONFIG_TOML: Final = "config.toml"
 SHADOWING_LAYERS: Final[frozenset[str]] = frozenset({LAYER_ENV, LAYER_DOTENV})
 
 
-def split_csv(raw: str) -> list[str]:
-    """Split a comma-separated value into trimmed non-empty entries.
-
-    The one CSV rule for every list-valued ``PIPECAT_HUB_*`` setting
-    (``shared/config.py`` reads ``os.environ`` through it).
-    """
-    return [part.strip() for part in raw.split(",") if part.strip()]
-
-
 # Declared above the frozensets below (rather than after them) so those sets
 # reference these constants instead of re-hardcoding the same literals — the
 # same single-source-of-truth rule PRUNE_ENV_VAR/DEBUG_PROBE_ENV_VAR follow.
@@ -131,7 +123,7 @@ _INVOCATION_SCOPED_KEYS = frozenset(
 _KNOWN_KEYS = frozenset(
     {
         _DATA_DIR_ENV_VAR,
-        "PIPECAT_HUB_EXTRA_REPOS",
+        EXTRA_REPOS_ENV,
         "PIPECAT_HUB_FRAMEWORK_VERSION",
         "PIPECAT_HUB_IDLE_TIMEOUT_SECS",
         "PIPECAT_HUB_PARENT_WATCH_INTERVAL",
@@ -1068,7 +1060,7 @@ def load_global_config() -> dict[str, str]:
             # (`PIPECAT_HUB_EXTRA_REPOS`, `PIPECAT_HUB_TAINTED_REPOS`/`_REFS`),
             # and that is deliberate rather than an oversight for that key
             # class: those consumers read
-            # `_split_csv_env(os.environ.get(NAME, ""))`, so a blank yields the
+            # `split_csv(os.environ.get(NAME, ""))`, so a blank yields the
             # empty list — bit-for-bit the same result as the key being unset.
             # A blank list key is therefore inert in exactly the same sense as
             # a blank scalar, and the "neither layer applies" outcome above is

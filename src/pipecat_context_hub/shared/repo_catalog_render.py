@@ -16,7 +16,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from pipecat_context_hub.shared.config import EXTRA_REPOS_ENV
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.repo_catalog import (
     Catalog,
     CatalogGroup,
@@ -32,7 +32,6 @@ DOCS_BEGIN = (
 )
 DOCS_END = "<!-- END GENERATED: repo catalog -->"
 
-_ENV_KEY = EXTRA_REPOS_ENV
 _RULE = "# " + "-" * 74
 _VERIFIED_LINE_RE = re.compile(r"^(verified[ \t]*=[ \t]*)\d{4}-\d{2}-\d{2}([ \t]*(?:#.*)?)$", re.M)
 
@@ -73,11 +72,11 @@ def render_env_block(catalog: Catalog) -> str:
             lines.append(f"#   (clone but yield no source chunks: {', '.join(unparsed)})")
         slugs = [r.slug for r in repos]
         everything.extend(slugs)
-        lines.append(f'# {_ENV_KEY}="{",".join(slugs)}"')
+        lines.append(f'# {EXTRA_REPOS_ENV}="{",".join(slugs)}"')
     lines.append("")
     lines.append(_RULE)
     lines.append("# All catalog repos in one line (copy and uncomment):")
-    lines.append(f'# {_ENV_KEY}="{",".join(everything)}"')
+    lines.append(f'# {EXTRA_REPOS_ENV}="{",".join(everything)}"')
     lines.append(_RULE)
     return "\n".join(lines)
 
