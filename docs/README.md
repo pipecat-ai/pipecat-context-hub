@@ -233,7 +233,8 @@ read-only contract. Keys, compatibility rules and a copy-paste example:
 See [`.env.example`](../.env.example) for curated repo bundles you can copy
 into your `.env`, and [`config.toml.example`](../config.toml.example) for the
 machine-global equivalent described in
-[Config precedence](configuration.md).
+[Config precedence](configuration.md). Reranker model choices:
+[Cross-Encoder Reranking](reranking.md).
 
 Settings resolve from real environment variables, then a project `.env`, then
 `~/.config/pipecat-context-hub/config.toml` (first writer wins). Details and examples:

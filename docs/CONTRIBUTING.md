@@ -233,8 +233,8 @@ comment block at the top of `.github/workflows/release.yml`.
 
 ## Release Process
 
-See the [Release Notes Template](../CLAUDE.md#release-notes-template) in
-CLAUDE.md for the standardised format. Every release needs:
+Use the [Release Notes Template](#release-notes-template) below for the
+standardised format. Every release needs:
 
 1. Update `CHANGELOG.md` (change "Unreleased" → date)
 2. Bump version in both locations above
@@ -250,3 +250,35 @@ CLAUDE.md for the standardised format. Every release needs:
 To dry-run the publish pipeline without touching PyPI, trigger the Release
 workflow manually (`workflow_dispatch`) — it publishes to **TestPyPI**
 instead. Note TestPyPI rejects re-uploads of an existing version.
+
+## Release Notes Template
+
+GitHub releases must follow this format for consistency. Pull content from
+`CHANGELOG.md` — the release note is a reader-friendly version, not a copy-paste.
+
+```markdown
+## What's New
+
+[1-2 sentence summary of the release theme — what capability does this add or what problem does it solve?]
+
+### Added
+- **Feature name** — description
+
+### Changed (if applicable)
+- ...
+
+### Fixed (if applicable)
+- ...
+
+---
+
+**Upgrade:** `uv sync --extra dev --group dev` then `uv run pipecat-context-hub refresh --force`
+**Full changelog:** https://github.com/pipecat-ai/pipecat-context-hub/compare/vPREVIOUS...vCURRENT
+```
+
+Rules:
+- **Title:** version tag only (e.g., `v0.0.17`). No descriptive suffixes.
+- **Sections:** use Keep a Changelog categories (`Added`, `Changed`, `Fixed`, `Security`, `Removed`). Only include sections that apply.
+- **Upgrade line:** always present. Use `uv sync` (not `pip install`).
+- **Full changelog link:** always present (except v0.0.1). Use GitHub compare URL.
+- Do NOT add `Test Coverage`, `Index Impact`, or `Example Queries` sections — these belong in PR descriptions, not releases.

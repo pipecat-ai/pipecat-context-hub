@@ -604,7 +604,7 @@ class TestServerInstructions:
 
     This text is advisory prose for the *connecting agent*, not a code path
     that fires on an exception — nothing else in the tree references it (see
-    AGENTS.md item #50), so a wording edit that drops a clause or a URL would
+    docs/smoke-test.md item #50), so a wording edit that drops a clause or a URL would
     otherwise pass silently. Also, the CLI (``cli_query.py``) now gets the
     same guidance via the shared ``shared/support_links.py`` constants — see
     ``TestSupportLinks`` below.
