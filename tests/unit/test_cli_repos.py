@@ -1068,6 +1068,64 @@ class TestErrorMapping:
         assert hub.run("remove", ALPHA_ONE).exit_code == 0
 
 
+class TestConfiguredPathIsNeverPrintedRaw:
+    """A project ``.env`` may set ``PIPECAT_HUB_CONFIG_FILE`` (accepted); no
+    configured string, slug or path, reaches the terminal raw: not on stdout
+    (``repos list``), not on stderr (``repos add``'s error) and not in the
+    loader's warnings. A printable path prints unchanged."""
+
+    _NAME = "evil\x1b]0;PWNED\x07\x1b[2J.toml"
+
+    def _arrange(self, hub: Hub, name: str, *, mode: int = 0o600) -> Path:
+        """Invalid TOML at ``mode``; ``0o666`` makes it a trust refusal naming the path."""
+        path = hub.cwd / name
+        path.write_text("not = = toml\n")
+        path.chmod(mode)
+        hub.monkeypatch.delenv("PIPECAT_HUB_CONFIG_FILE")
+        hub.write_dotenv(f"PIPECAT_HUB_CONFIG_FILE={path}\n")
+        return path
+
+    @staticmethod
+    def _raw(text: str) -> bool:
+        return "\x1b" in text or "\x07" in text
+
+    def test_list_escapes_the_path(self, hub: Hub, caplog: pytest.LogCaptureFixture):
+        self._arrange(hub, self._NAME)
+        with caplog.at_level(logging.WARNING):
+            result = hub.run("list")
+        assert result.exit_code == 0, result.output
+        assert not self._raw(result.stdout) and not self._raw(result.stderr)
+        assert not any(self._raw(r.getMessage()) for r in caplog.records)
+        problem = [ln for ln in result.stdout.splitlines() if ln.startswith("config.toml:")]
+        assert len(problem) == 1 and "[invalid]" in problem[0]
+
+    @_posix_only
+    def test_failing_add_escapes_the_path(self, hub: Hub, caplog: pytest.LogCaptureFixture):
+        self._arrange(hub, self._NAME, mode=0o666)
+        with caplog.at_level(logging.WARNING):
+            result = hub.run("add", ALPHA_ONE)
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "config.toml was not changed" in result.stderr
+        assert not self._raw(result.stdout) and not self._raw(result.stderr)
+        assert not any(self._raw(r.getMessage()) for r in caplog.records)
+        assert "world-writable" in result.stderr and "[invalid]" in result.stderr
+
+    def test_printable_path_prints_unchanged(self, hub: Hub):
+        path = self._arrange(hub, "plain.toml")
+        result = hub.run("list")
+        assert result.exit_code == 0, result.output
+        assert f"config.toml: ignoring {path}: not valid TOML" in result.stdout
+        assert "[invalid]" not in result.stdout
+
+    @_posix_only
+    def test_printable_path_in_an_add_error_prints_unchanged(self, hub: Hub):
+        path = self._arrange(hub, "plain.toml", mode=0o666)
+        failed = hub.run("add", ALPHA_ONE)
+        assert failed.exit_code == EXIT_INVALID_INPUT
+        assert f"Ignoring config.toml at {path}: it is world-writable" in failed.stderr
+        assert "[invalid]" not in failed.stderr
+
+
 # ---------------------------------------------------------------------------
 # Offline, and no tomlkit at CLI import
 # ---------------------------------------------------------------------------

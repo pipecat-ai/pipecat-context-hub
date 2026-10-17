@@ -37,6 +37,7 @@ from pipecat_context_hub.shared.paths import (
     redact_home,
     redact_home_in_text,
     resolution_chain,
+    shown,
 )
 
 _module_logger = logging.getLogger(__name__)
@@ -223,8 +224,8 @@ def load_cwd_dotenv() -> dict[str, str]:
     except (OSError, UnicodeError, ValueError) as exc:
         _module_logger.warning(
             "Failed to read .env at %s: %s; no cwd .env values were applied",
-            redact_home(env_path),
-            redact_home_in_text(str(exc)),
+            shown(redact_home(env_path)),
+            shown(redact_home_in_text(str(exc))),
         )
         return applied
     for line in content.splitlines():
@@ -600,7 +601,9 @@ def _file_kind(mode: int) -> str:
 
 def _refuse(message: str, *args: object) -> str:
     """Log a trust refusal as a warning and return its text (the ``ConfigNotTrusted`` reason)."""
-    text = message % args
+    # The path in a refusal can come from a project `.env`
+    # (PIPECAT_HUB_CONFIG_FILE); the reason also reaches `repos` output.
+    text = shown(message % args)
     _module_logger.warning("%s", text)
     return text
 
@@ -755,10 +758,10 @@ def _config_dir_refusal(
         _module_logger.warning(
             "config.toml's directory %s is group-writable (mode %o); anyone in group %d "
             "can replace this hub's settings file. Consider `chmod 755 %s`.",
-            redact_home(parent),
+            shown(redact_home(parent)),
             stat.S_IMODE(pst.st_mode),
             pst.st_gid,
-            redact_home(parent),
+            shown(redact_home(parent)),
         )
     return None
 
@@ -876,10 +879,10 @@ def _config_fd_refusal(fd: int, config_path: Path) -> str | None:
         _module_logger.warning(
             "config.toml at %s is group-writable (mode %o); anyone in group %d can change "
             "this hub's settings. Consider `chmod 600 %s`.",
-            redact_home(config_path),
+            shown(redact_home(config_path)),
             stat.S_IMODE(st.st_mode),
             st.st_gid,
-            redact_home(config_path),
+            shown(redact_home(config_path)),
         )
     return None
 
@@ -1046,14 +1049,14 @@ def load_global_config() -> dict[str, str]:
         if not exc.logged:
             _module_logger.warning(
                 "Failed to read config.toml at %s: %s",
-                redact_home(config_path),
-                exc.reason,
+                shown(redact_home(config_path)),
+                shown(exc.reason),
             )
         return applied
     except tomllib.TOMLDecodeError as exc:
         _module_logger.warning(
             "Failed to read config.toml at %s: %s",
-            redact_home(config_path),
+            shown(redact_home(config_path)),
             redact_home_in_text(str(exc)),
         )
         return applied
@@ -1202,7 +1205,7 @@ def load_global_config() -> dict[str, str]:
                     "config.toml key %r would relocate the data dir to contain the "
                     "active config file (%s); skipping",
                     key,
-                    redact_home(colliding_config_path),
+                    shown(redact_home(colliding_config_path)),
                 )
                 continue
 
@@ -1235,5 +1238,5 @@ def load_global_config() -> dict[str, str]:
         loaded += 1
 
     if loaded:
-        _module_logger.info("Loaded %d key(s) from %s", loaded, redact_home(config_path))
+        _module_logger.info("Loaded %d key(s) from %s", loaded, shown(redact_home(config_path)))
     return applied

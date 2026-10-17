@@ -42,7 +42,7 @@ from pipecat_context_hub.shared.env_loading import (
     resolve_global_config_path,
 )
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
-from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text, shown
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
 
@@ -56,7 +56,9 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 
 def _fail(message: str) -> NoReturn:
-    click.echo(f"Error: {message}", err=True)
+    # Every stderr line of this module goes through here, and many carry a
+    # configured path or a reason that embeds one: escape at the sink.
+    click.echo(f"Error: {shown(message)}", err=True)
     raise SystemExit(EXIT_INVALID_INPUT)
 
 
@@ -207,19 +209,6 @@ def _validate_selector(slug: str | None, group: str | None, unlisted: bool) -> N
         _fail("give a SLUG (owner/repo) or --group NAME.")
 
 
-def _shown(slug: str) -> str:
-    """A configured (env, ``.env`` or ``config.toml``) entry, safe to print.
-
-    Such a value is never validated on the way in, so it can hold terminal
-    escape sequences (OSC 52, CSI), line separators or bidi controls. An entry
-    with any non-printable character (``str.isprintable()``: every control,
-    format and separator character) prints as its ``repr()`` tagged
-    ``[invalid]``; anything else, which includes every well-formed slug, as is.
-    Every echo of a configured string goes through this.
-    """
-    return slug if slug.isprintable() else f"{slug!r} [invalid]"
-
-
 def _skipped_lines(group: CatalogGroup, sources: SourceConfig) -> tuple[list[str], list[str]]:
     """``(actionable, skipped_lines)`` for a group's members."""
     actionable: list[str] = []
@@ -263,7 +252,7 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
     else:
         done = [present[slug_key(s)] for s in members if slug_key(s) in present]
         for slug in done:
-            click.echo(f"Removed {_shown(slug)}")
+            click.echo(f"Removed {shown(slug)}")
         if not done:
             click.echo("Nothing to remove" + note)
     for line in skipped:
@@ -290,7 +279,7 @@ def _run_positional(
             click.echo(f"Not in config.toml: {target}" + note)
             return
         stored = next((s for s in before if slug_key(s) == slug_key(target)), target)
-        click.echo(f"Removed {_shown(stored)}")
+        click.echo(f"Removed {shown(stored)}")
     click.echo(_after_write(layer, adding=adding))
 
 
@@ -388,7 +377,7 @@ def _configured_in_toml() -> tuple[list[str], str | None]:
 
 def _cwd_line() -> str:
     try:
-        return f"Consulted .env in cwd: {Path.cwd()}"
+        return f"Consulted .env in cwd: {shown(str(Path.cwd()))}"
     except (OSError, RuntimeError):
         # Same guard as `load_cwd_dotenv`: no cwd means no cwd `.env` was read.
         return "Consulted .env in cwd: none (the working directory is unavailable)"
@@ -423,11 +412,11 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
     click.echo(_cwd_line())
     click.echo(f"Effective repos ({len(effective)}):")
     for slug in effective:
-        click.echo(f"  {_shown(slug)}  [{tag(slug)}]")
+        click.echo(f"  {shown(slug)}  [{tag(slug)}]")
 
     configured, problem = _configured_in_toml()
     if problem is not None:
-        click.echo(f"config.toml: {problem}")
+        click.echo(f"config.toml: {shown(problem)}")
     layer = _shadowing_layer(ctx)
     if layer is not None:
         in_effect = {slug_key(s) for s in effective}
@@ -439,7 +428,7 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
         if hidden:
             click.echo(f"In config.toml but hidden by {_layer_phrase(layer)}:")
             for slug in hidden:
-                click.echo(f"  {_shown(slug)}  [{tag(slug)}]")
+                click.echo(f"  {shown(slug)}  [{tag(slug)}]")
     if show_groups:
         _print_groups(catalog)
 

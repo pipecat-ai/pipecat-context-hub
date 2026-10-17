@@ -17,6 +17,11 @@ Lives in ``shared/`` (not ``cli.py``) because ``cli.py`` imports ``cli_query``;
 importing the helper back from ``cli.py`` would be a cycle. ``shared/`` peers
 import neither CLI module, so the layer stays leaf-level.
 
+:func:`shown` is the one terminal-safety rule for a configured string (a repo
+entry, a config path, a message carrying one): non-printable text prints as its
+``repr()`` tagged ``[invalid]``. It is separate from the redaction helpers,
+which every log line uses and which leave printable text unchanged.
+
 :func:`same_dir`, :func:`is_inside`, :func:`resolution_chain` and
 :func:`lookup_target` are the general filesystem-identity primitives shared by
 every deletion, trust and write guard in this project (``env_loading``'s
@@ -358,6 +363,21 @@ def is_inside(path: Path, directory: Path) -> bool:
     except (OSError, ValueError):
         return False
     return any(same_dir(location, dir_stat) for location in (path, *path.parents))
+
+
+def shown(text: str) -> str:
+    """A configured string (entry, path, or a message that embeds one), safe to print.
+
+    Such a value is never validated on the way in (a project ``.env`` can set
+    ``PIPECAT_HUB_CONFIG_FILE`` or the repo lists), so it can hold terminal
+    escape sequences (OSC 52, CSI), line separators or bidi controls. Text with
+    any non-printable character (``str.isprintable()``: every control, format
+    and separator character, newline included) prints as its ``repr()`` tagged
+    ``[invalid]``; anything else, which includes every well-formed slug and
+    path, as is. ``repr()`` output is itself printable, so applying this twice
+    (an escaped path inside an escaped message) changes nothing further.
+    """
+    return text if text.isprintable() else f"{text!r} [invalid]"
 
 
 def redact_home(path: Path | str) -> str:

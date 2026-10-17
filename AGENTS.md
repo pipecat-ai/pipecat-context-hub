@@ -161,7 +161,7 @@ src/pipecat_context_hub/
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision
 │   ├── model_loading.py      # quiet_model_loading — offline-first HF env defaults (serve + CLI)
-│   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside / resolution_chain / lookup_target (filesystem-identity predicates shared by every deletion, trust and write guard; lookup_target is the config writer's target, walked as the kernel does)
+│   ├── paths.py              # redact_home / redact_home_in_text (log redaction), shown (the one terminal-safety rule: a non-printable configured string prints as repr + [invalid]) + same_dir / is_inside / resolution_chain / lookup_target (filesystem-identity predicates shared by every deletion, trust and write guard; lookup_target is the config writer's target, walked as the kernel does)
 │   ├── index_lock.py         # refresh.lock (exclusive for refresh; readers hold it shared while opening: refresh_excluded) / serve.lock (shared) advisory flocks; serve_is_running
 │   ├── exit_codes.py         # EXIT_INDEX_UNREADY (2) / EXIT_REFRESH_IN_PROGRESS (75), shared by serve, refresh and the CLI queries
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses

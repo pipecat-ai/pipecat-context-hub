@@ -15,6 +15,7 @@ from pipecat_context_hub.shared.paths import (
     lookup_target,
     redact_home_in_text,
     resolution_chain,
+    shown,
 )
 
 
@@ -201,6 +202,25 @@ class TestRedactHomeInText:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         text = "Nothing home-related here."
         assert redact_home_in_text(text) == text
+
+
+class TestShown:
+    """The one terminal-safety rule for a configured string."""
+
+    @pytest.mark.parametrize(
+        "text", ["acme/repo", "/tmp/a b/config.toml", "~/x.toml", "ünïcode/päth", ""]
+    )
+    def test_printable_text_is_unchanged(self, text: str):
+        assert shown(text) == text
+
+    @pytest.mark.parametrize(
+        "text", ["a\x1b]52;c;eA==\x07", "a\x1b[2J", "a\nb", "a\u2028b", "a\u202eb", "a\u200bb"]
+    )
+    def test_non_printable_text_is_repr_tagged_and_idempotent(self, text: str):
+        out = shown(text)
+        assert out == f"{text!r} [invalid]"
+        assert out.isprintable()
+        assert shown(out) == out
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX lookup semantics")
