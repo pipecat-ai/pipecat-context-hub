@@ -24,7 +24,8 @@ Facts a phase worker needs and cannot cheaply rediscover:
   > field defaults, first-writer-wins per key, via `shared/env_loading.py:load_env_layers()`. Do not
   hand-replicate the two loader calls in a new entry point. The source-parity test in
   `tests/unit/test_config.py` scans only `dashboard/scripts` and `scripts`, so it does not guard
-  `src/` modules; the renderer and `cli_repos.py` need their own tests.
+  `src/` modules. That is fine: the renderer's own test asserts it loads no env layer (Phase 1), and
+  `cli_repos.py` runs under `main()`, which already calls `load_env_layers()` (carrier test, 2d).
 - `SourceConfig.repos` holds the 8 default repos; `config.sources.effective_repos` is defaults plus
   `PIPECAT_HUB_EXTRA_REPOS` minus tainted repos; `config.sources.tainted_repos` is a property.
 - `tomlkit` is not in `uv.lock`. `shared/exit_codes.py` has no `EXIT_INVALID_INPUT`; `cli_query._EXIT_BAD_INPUT = 1`
@@ -72,30 +73,45 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - Schema and `load_catalog() -> Catalog | None` per parent Decision 2 (static cross-group invariants,
   `private`/`archived`/`status` keys rejected, failure returns a cached `None` and logs once).
   PR 1 asserts only this loader contract; the hint-side clauses of load failure are PR 2's.
+- Test seams (new named API; the lead must also record them in parent contract C3 and the PR 2 plan,
+  which patches the same symbol): pure `parse_catalog(text: str) -> Catalog` (raises `CatalogError`) and
+  module-level `_read_catalog_text() -> str`; `load_catalog` is `functools.cache` around
+  try/except over both. Tests and PR 2 patch `_read_catalog_text` and call `load_catalog.cache_clear()`
+  in a fixture.
 - Import boundary: `shared/repo_catalog.py` imports nothing from `cli`, `server` or `services`. A test
   imports it in a subprocess (`python -I -c`) and asserts no such `pipecat_context_hub` key in `sys.modules`.
-- `src/pipecat_context_hub/data/` is a new directory. The hatchling wheel must contain the `.toml`:
-  test `importlib.resources.files(...)/"data/repo_catalog.toml"` is a file, and run the validation command.
+- `src/pipecat_context_hub/data/` is a new directory. The hatchling wheel must contain the `.toml`.
+  Wheel inclusion is proven by the validation command only (an editable-install pytest resolves to the
+  source tree, so a pytest check would prove nothing); the test only asserts
+  `importlib.resources.files(...)/"data/repo_catalog.toml"` is a file (resource path is correct).
 - Initial data: every non-default public slug in the current `.env.example`. Four slugs there are
   already defaults; drop those duplicates. The equality test subtracts the live default list
   (`SourceConfig.model_fields['repos'].default`) before counting; hardcode no number. Group as in parent Decision 2, with ONE GROUP PER VENDOR (AWS, Tavus, Murf, Supermemory
   each their own group; no catch-all "other providers" group): PR 2's frozen-query expectations depend on it
   (Murf and Supermemory queries must not hint while Tavus and AWS do).
 - `shared/repo_catalog_render.py` stays pure functions: catalog to block text, and splice of text to
-  text. Paths are resolved only at its `python -m` entry. It rewrites a delimited generated block inside
+  text, including `bump_verified(text, today) -> str`. Paths are resolved only at its `python -m` entry. It rewrites a delimited generated block inside
   `.env.example` (header prose and non-repo settings stay outside the markers) and a generated catalog
   section in `docs/configuration.md`, separate from the env-var table that `TestConfigTomlExampleParity` pins.
 - The renderer reads defaults from `SourceConfig.model_fields['repos'].default`, never `effective_repos`,
-  and never calls `load_env_layers()`. A test sets `PIPECAT_HUB_EXTRA_REPOS` and asserts unchanged output.
-- `just catalog-regen` runs the renderer as a module, with `--bump-verified`. The bump is a line-anchored
-  text rewrite of the single top-level `verified = <date>` line, re-validated through `load_catalog`.
-  The renderer imports no third-party TOML library; `tomlkit` lands in 2a.
-- Catalog tests also cover: a recipe-exists test mirroring `tests/unit/test_audit_sync.py`; a tainted
+  and never calls `load_env_layers()`. A test sets `PIPECAT_HUB_EXTRA_REPOS` and asserts unchanged output;
+  another patches `env_loading.load_env_layers` to raise and still renders.
+- `just catalog-regen *args` runs the renderer as a module and passes extra args through;
+  `--bump-verified` is opt-in (`just catalog-regen --bump-verified`), never in the recipe body (parent
+  Decision 2: `verified` is the last manual audit date). The bump is a line-anchored text rewrite of the
+  single top-level `verified = <date>` line, re-validated with `parse_catalog` on the rewritten text
+  (not the cached `load_catalog`). The renderer imports no third-party TOML library; `tomlkit` lands in 2a.
+- Catalog tests also cover: a recipe-exists test mirroring `tests/unit/test_audit_sync.py` that also
+  asserts the recipe body does not contain `--bump-verified`; a tainted
   env slug (`PIPECAT_HUB_TAINTED_REPOS` set to a catalog slug) does not break loading; a caplog test
-  calls `load_catalog()` three times on a broken catalog and asserts one log record.
+  (patched `_read_catalog_text` returning a broken catalog, `cache_clear()` first) calls `load_catalog()`
+  three times and asserts one log record; `bump_verified` on a catalog copy changes only the
+  top-level `verified` line to today's ISO date, leaves an indented `verified` key inside a group
+  untouched, and the result passes `parse_catalog`; splice on a synthetic file with changed catalog text
+  leaves everything outside the markers byte-identical, and missing or duplicated markers raise.
 - The equality test, the regenerated `.env.example` and the docs section land in this one commit.
-  `test_repo_catalog.py` is Windows-eligible (pure parsing, no permission bits) and joins the
-  `ci.yml` Windows file list here; the subprocess and wheel checks carry a POSIX skip if they fail there.
+  `test_repo_catalog.py` joins the `ci.yml` Windows file list here; its `python -I` subprocess test is
+  marked `skipif(os.name != "posix")` unconditionally (a worker cannot observe Windows before the commit).
 - Catalog test pinning the vendor rule: no group mixes vendors under an "other"/"misc"-style name, and each
   vendor named above resolves to its own group.
 
@@ -106,9 +122,11 @@ Facts a phase worker needs and cannot cheaply rediscover:
 **Test command:** `uv lock --check && uv run python -c "import tomlkit"`
 **Validation cmd:** `uv pip install --dry-run . "pipecat-ai[cli]" && just audit`
 
-- Add `tomlkit` to `[project.dependencies]` as the first commit of the repos work. Record the resolved
-  versions from the validation command in the PR description. `pipecat-ai` is not in `uv.lock`, so
-  `uv lock` alone proves nothing.
+- Add `tomlkit` to `[project.dependencies]` as the first commit of the repos work, with an explicit
+  floor at the version the validation command resolves. Record the resolved versions in the PR
+  description, and that `.` (not PyPI) satisfied `pipecat-ai[cli]`'s own pin on this package
+  (`pipecat-ai-context-hub<1,>=0.7.0`; a failure outside that range is unrelated to `tomlkit`).
+  `pipecat-ai` is not in `uv.lock`, so `uv lock` alone proves nothing.
 
 ### Phase 2b: trusted-config read, parse seam and provenance
 
@@ -120,15 +138,27 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - Extract public `read_trusted_config(path) -> str | None` and `parse_global_config(path) -> dict[str, object]`,
   and `ConfigNotTrusted(reason)`; `load_global_config` becomes a wrapper (parent Decision 8). The trust
   helpers stay private. Add direct tests for all three.
-- Parametrized reader-vs-seam equivalence test over every trust predicate: non-regular, foreign-owned,
-  world-writable, untrusted parent dir, foreign symlink hop, invalid TOML, missing file.
-  `load_global_config` warns and ignores exactly when the seam raises `ConfigNotTrusted` (or returns
-  `None` for missing). POSIX-only cases are skipped on Windows.
+- Seam outcomes (the parent leaves the exception types open; fixed here): missing file -> `None`;
+  every trust predicate and every open/read/decode failure (`OSError`/`ValueError` at open, `UnicodeError`
+  or `OSError` mid-read, e.g. EACCES, embedded NUL) -> `ConfigNotTrusted(reason)`; invalid TOML ->
+  `tomllib.TOMLDecodeError` from `parse_global_config`, not wrapped. The seam takes a path, so a `None`
+  from `resolve_global_config_path()` (no home, blank `PIPECAT_HUB_CONFIG_FILE`) stays outside it:
+  the reader returns silently and callers decide (2c, 2d).
+- Parametrized reader-vs-seam equivalence test over: non-regular, foreign-owned, world-writable,
+  untrusted parent dir, foreign symlink hop, unreadable (EACCES), undecodable, embedded-NUL path, invalid
+  TOML, missing file, unresolvable path. `load_global_config` warns and ignores exactly when the seam
+  raises `ConfigNotTrusted` or `TOMLDecodeError`, and returns silently for missing and unresolvable.
+  POSIX-only cases are skipped on Windows.
 - Add the provenance map (parent Decision 9): `env` snapshot, per-loader returned keys mirroring each
   loader's own blank rule, merge `{**env, **dotenv, **global_config}`. `load_env_layers` returns it;
   the return value is optional so dashboard and smoke scripts are untouched.
-- `main()` stores the map in `ctx.obj["env_provenance"]`. `test_cli.py` asserts the key is set and that
-  both loaders run once per invocation. Phase 2d tests consume the carrier and assert no layer is re-read.
+- `main()` stores the map in `ctx.obj["env_provenance"]`, overwriting any prior value (no `setdefault`).
+  `test_cli.py` asserts the key is set and that both loaders run once per invocation. Phase 2d tests
+  consume the carrier by patching `env_loading.load_env_layers` to return a controlled map.
+- Provenance test rows (parent Test plan, `[PR1]` Provenance bullet): a key set only in the real
+  environment (layer `env`); a blank higher-layer value treated as absent (mirror
+  `TestBlankHigherLayerValueDoesNotShadow`, `tests/unit/test_env_loading.py:1418`); blank real env var +
+  non-blank `.env` + `config.toml` gives provenance `config.toml`; the overlap row.
 - Update `test_load_env_layers_calls_both_loaders_in_order`: its patched loaders return `None` today;
   they now return dicts.
 - Mutation check: break the overlap merge (a key set blank by `.env`, then by `config.toml`); the
@@ -147,37 +177,59 @@ Facts a phase worker needs and cannot cheaply rediscover:
   through `parse_global_config`, atomic write via `os.replace` (not rename, which fails on Windows
   over an existing file), modes 0600/0700, no lock.
 - Refusals raise `ConfigWriteRefused(reason)`, defined in `shared/config_writer.py`: a non-array,
-  non-string value, invalid TOML, and a failed re-parse. `ConfigNotTrusted` propagates unchanged.
-  The module never exits; `cli_repos.py` maps both errors (Phase 2d).
+  non-string value, invalid TOML (the writer wraps `TOMLDecodeError` from the seam and from the temp-file
+  re-parse), a failed re-parse, and no resolvable config path (`resolve_global_config_path()` is `None`;
+  test with `PIPECAT_HUB_CONFIG_FILE` blank). `ConfigNotTrusted` propagates unchanged.
+  The module never exits; `cli_repos.py` maps the errors (Phase 2d).
+- Test cases: one test id per clause of the parent Test plan `[PR1]` Writer bullet, checked off in the
+  PR description; plus, for each 2b trust predicate, the writer raises `ConfigNotTrusted` with the file
+  byte-identical (so a predicate added to the reader is exercised on the writer).
 - Mutation check: remove the failed-re-parse abort; its test must fail. Record it in the PR description.
 - `test_config_writer.py` joins the `ci.yml` Windows file list in this commit. POSIX-only tests skip
-  there (`os.name != "posix"`); a round-trip test that writes twice runs on Windows.
+  there (`os.name != "posix"`); a Windows round-trip test writes, then asserts both `parse_global_config`
+  and `load_global_config` return the intended list.
 
 ### Phase 2d: the `repos` commands
 
 **Goal:** `repos add X` then `repos list` shows X, `effective_repos` contains X, and `repos remove X` undoes it, across every layer combination (parent standing contract, with its `--config-only` qualification).
 **Impl files:** `src/pipecat_context_hub/cli_repos.py`, `src/pipecat_context_hub/cli.py`, `src/pipecat_context_hub/shared/exit_codes.py`, `src/pipecat_context_hub/cli_query.py`, `docs/configuration.md`, `docs/smoke-test.md`, `.github/workflows/ci.yml`
-**Test files:** `tests/unit/test_cli_repos.py`, `tests/unit/test_cli_query.py`, `tests/unit/test_plugin.py`
-**Test command:** `uv run pytest tests/unit/test_cli_repos.py tests/unit/test_cli_query.py tests/unit/test_plugin.py -v`
+**Test files:** `tests/unit/test_cli_repos.py`, `tests/unit/test_cli_query.py`, `tests/unit/test_plugin.py`, `tests/unit/test_config.py`
+**Test command:** `uv run pytest tests/unit/test_cli_repos.py tests/unit/test_cli_query.py tests/unit/test_plugin.py tests/unit/test_config.py -v`
 
-- `cli_repos.py` with `register_repos_commands(main)` (the `cli_install.py` pattern); the parent
+- `cli_repos.py` with `register_repos_commands(main)` (mirror `register_install_command(group)` in
+  `cli_install.py`); the parent
   Decision 7 check-order table, `--group`, `--unlisted`, `--config-only`, `repos list` tags and the
-  consulted-cwd line.
+  consulted-cwd line. Import `shared/config_writer.py` (hence `tomlkit`) inside the add/remove bodies,
+  not at module top; a `python -I` subprocess test (`skipif(os.name != "posix")`) asserts `tomlkit` is
+  absent from `sys.modules` after `import pipecat_context_hub.cli`.
+- Test cases: one test id per clause of the parent Test plan `[PR1]` `repos` table bullet, checked off
+  in the PR description.
+- `load_catalog()` returning `None` (gap in the parent, which defines `None` only for PR 2 hints; this
+  plan fills it): positional `add`/`remove` and `--group` exit `EXIT_INVALID_INPUT` naming the catalog
+  load failure, file untouched; `repos list` still prints the effective list, tags non-default slugs
+  `unlisted`, and warns once. One test row per command. The lead should record this in the parent.
 - Membership for check 4 and the `repos list` shadow line comes only from `parse_global_config`
   (CSV or array, casefolded). Provenance decides the layer. The shadow refusal fires only when the effective env
   value is NON-BLANK: a blank `.env` value does not shadow (`load_cwd_dotenv` uses presence,
   `load_global_config` non-blank), pinned by a test row. `os.environ` is never consulted for
   membership, and `cli_repos` never raw-parses `config.toml`.
-- `cli_repos.py` is the only place that maps `ConfigWriteRefused` and `ConfigNotTrusted` to `EXIT_INVALID_INPUT`.
+- `cli_repos.py` is the only place that maps `ConfigWriteRefused`, `ConfigNotTrusted` and `TOMLDecodeError`
+  to `EXIT_INVALID_INPUT`, for `add`/`remove` only. `repos list` catches all three, prints the effective
+  list, names the ignored `config.toml` and the reason (the reader's posture), and exits 0; it also
+  reports "no config.toml location" when `resolve_global_config_path()` is `None`. One test row each.
 - Add `EXIT_INVALID_INPUT = 1` to `shared/exit_codes.py` and migrate `cli_query._EXIT_BAD_INPUT` to it in
   this commit, including the import at `tests/unit/test_cli_query.py:16`; add a shared-constant pin test
   (mirror `test_refresh_in_progress_exit_code_is_shared`).
-- Carrier tests: through `main`, with both loaders patched, each runs once per `repos` invocation. With
-  `ctx.obj["env_provenance"]` pre-set and the loaders patched to fail, the shadow decision reads only the map.
+- Carrier tests: through `main`, with both loaders patched, each runs once per `repos` invocation. Second
+  test: patch `env_loading.load_env_layers` to return a controlled provenance map and assert
+  `load_cwd_dotenv`/`load_global_config` are never called; the shadow decision reads only the map.
+- Row: blank real env var + non-blank `.env` + `config.toml`: `repos add` succeeds, no refusal.
 - A "`repos add` makes no network call" test: a fixture patches `socket.socket` and `subprocess.run`
   (the `gh` path) to raise, applied to every `repos add` row.
 - Docs in `docs/configuration.md`. A Typer-bridge test covers `repos --help` and `repos add --help`
-  (matching the direct CLI) plus a functional `pipecat context-hub repos list` and `repos add --config-only`.
+  (matching the direct CLI) plus a functional `pipecat context-hub repos list` and `repos add --config-only`,
+  run with a cwd `.env` present and asserting the named shadow layer, not only the exit code (the host
+  CLI may pre-load `.env`; if it does, document the label as `environment` on that door).
 - Add a numbered live-smoke item to `docs/smoke-test.md`: `repos list`, `repos add --config-only` and
   `repos remove` against a scratch `PIPECAT_HUB_CONFIG_FILE`.
 - Mutation checks (five), each reverted with its test failing, results in the PR description: the shadow
