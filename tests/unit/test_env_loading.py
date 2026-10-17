@@ -1869,7 +1869,7 @@ class TestBlankConfigFileOverrideDisablesLookup:
     """Round-8 finding #2: `PIPECAT_HUB_CONFIG_FILE=` (present but blank) fell
     through a truthiness check to DEFAULT_CONFIG_PATH, silently loading the
     machine-global config the operator's explicit override asked *not* to use.
-    docs/README.md documents an unusable override as loading no config.
+    docs/troubleshooting.md documents an unusable override as loading no config.
     """
 
     def test_blank_override_returns_none(self, monkeypatch, caplog):
