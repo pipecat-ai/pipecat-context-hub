@@ -20,8 +20,6 @@ from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.repo_catalog import (
     Catalog,
     CatalogGroup,
-    CatalogRepo,
-    default_repos,
     parse_catalog,
 )
 
@@ -40,11 +38,6 @@ class SpliceError(ValueError):
     """The generated-block markers are missing, duplicated or out of order."""
 
 
-def _extras(group: CatalogGroup) -> list[CatalogRepo]:
-    defaults = {d.casefold() for d in default_repos()}
-    return [r for r in group.repos if r.slug.casefold() not in defaults]
-
-
 def _kind_label(group: CatalogGroup) -> str:
     return "Vendor" if group.kind == "vendor" else "Topic"
 
@@ -59,7 +52,8 @@ def render_env_block(catalog: Catalog) -> str:
     ]
     everything: list[str] = []
     for group in catalog.groups:
-        repos = _extras(group)
+        # No default-repo filter: parse_catalog already rejects a default repo.
+        repos = list(group.repos)
         if not repos:
             continue
         lines.append("")
@@ -92,7 +86,8 @@ def render_docs_block(catalog: Catalog) -> str:
         "|-------|------|-------------|-------|",
     ]
     for group in catalog.groups:
-        repos = _extras(group)
+        # No default-repo filter: parse_catalog already rejects a default repo.
+        repos = list(group.repos)
         if not repos:
             continue
         cells: list[str] = []

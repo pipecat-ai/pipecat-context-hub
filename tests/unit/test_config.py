@@ -15,7 +15,6 @@ from unittest.mock import patch
 import pytest
 
 from pipecat_context_hub.shared import env_loading
-from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, TAINTED_REFS_ENV, TAINTED_REPOS_ENV
 from pipecat_context_hub.shared.config import (
     _DATA_DIR_ENV,
     _DEFAULT_RERANKER_MODEL,
@@ -28,6 +27,7 @@ from pipecat_context_hub.shared.config import (
     SourceConfig,
     StorageConfig,
 )
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, TAINTED_REFS_ENV, TAINTED_REPOS_ENV
 from pipecat_context_hub.shared.markdown import extract_section
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -256,6 +256,15 @@ class TestSourceConfig:
             "pipecat-ai/pipecat-ui",
             "pipecat-ai/pipecat-prebuilt",
         ]
+
+    def test_is_default_is_casefolded_and_per_instance(self):
+        """The one default-repo rule: casefolded, against the instance's repos
+        (``repos`` asks the configured instance, the catalog the shipped one)."""
+        assert SourceConfig().is_default("PIPECAT-AI/Pipecat")
+        assert not SourceConfig().is_default("org/custom")
+        custom = SourceConfig(repos=["Org/Custom"])
+        assert custom.is_default("org/custom")
+        assert not custom.is_default("pipecat-ai/pipecat")
 
     def test_default_repos_membership(self):
         """Legibility companion to the exact-match snapshot in ``test_defaults``.

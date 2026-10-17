@@ -182,13 +182,13 @@ def parse_catalog(text: str) -> Catalog:
         raise CatalogError("catalog: needs at least one [groups.<name>] table")
     groups = tuple(_parse_group(name, raw) for name, raw in groups_raw.items())
 
-    defaults = {d.casefold() for d in default_repos()}
+    shipped = SourceConfig()  # the shipped defaults (see SourceConfig.is_default)
     seen_slugs: dict[str, str] = {}
     seen_aliases: dict[str, str] = {}
     for group in groups:
         for repo in group.repos:
             key = repo.slug.casefold()
-            if key in defaults:
+            if shipped.is_default(repo.slug):
                 raise CatalogError(f"groups.{group.name}: {repo.slug!r} is a default repo")
             if key in seen_slugs:
                 raise CatalogError(

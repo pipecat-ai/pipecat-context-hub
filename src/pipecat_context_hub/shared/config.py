@@ -496,6 +496,18 @@ class SourceConfig(BaseModel):
         )
         return [slug for slug in result if not self.is_tainted(slug)]
 
+    def is_default(self, slug: str) -> bool:
+        """The one default-repo rule: ``slug`` is in *this instance's* ``repos``.
+
+        Casefolded, like :meth:`is_tainted` (GitHub slugs are case-insensitive).
+        ``repos add|remove|list`` ask the configured instance; the catalog
+        parser asks ``SourceConfig()`` (the shipped defaults), because the
+        catalog is validated against what ships, not against one machine's
+        configuration.
+        """
+        folded = slug.casefold()
+        return any(r.casefold() == folded for r in self.repos)
+
     def is_tainted(self, slug: str) -> bool:
         """The one taint-matching rule: casefolded, because GitHub slugs are
         case-insensitive, so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.

@@ -111,9 +111,8 @@ def _catalog_or_fail() -> Catalog:
 def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str:
     """Checks 1 and 2 for a positional slug; returns the slug to act on."""
     config = _config(ctx)
-    folded = slug.casefold()
     # 1. default or tainted repo
-    if folded in {s.casefold() for s in config.sources.repos}:
+    if config.sources.is_default(slug):
         _fail(f"{slug} is a default repo; it is always indexed and cannot be added or removed.")
     if config.sources.is_tainted(slug):
         _fail(f"{slug} is tainted (PIPECAT_HUB_TAINTED_REPOS) and is never indexed.")
@@ -401,15 +400,13 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
     """Show the effective repos, tagged default, catalog or unlisted."""
     config = _config(ctx)
     effective = config.sources.effective_repos
-    defaults = {s.casefold() for s in config.sources.repos}
     catalog = load_catalog()
     listed = catalog.slugs() if catalog is not None else frozenset()
 
     def tag(slug: str) -> str:
-        folded = slug.casefold()
-        if folded in defaults:
+        if config.sources.is_default(slug):
             return "default"
-        return "catalog" if folded in listed else "unlisted"
+        return "catalog" if slug.casefold() in listed else "unlisted"
 
     click.echo(_cwd_line())
     click.echo(f"Effective repos ({len(effective)}):")
