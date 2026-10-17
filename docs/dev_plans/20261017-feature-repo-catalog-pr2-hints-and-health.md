@@ -37,17 +37,24 @@ Facts a phase worker needs and cannot cheaply rediscover:
   (`shared/interfaces.py`) or `ReopeningIndexStore` (`services/index/reopening.py`); it keys by the
   configured slug verbatim and injects a synthetic `docs.pipecat.ai` key. `refresh` in `cli.py` already
   calls it; leave those callers alone.
-- Existing test fakes (`MagicMock`, the `Any`-typed `_Stub` in `tests/unit/test_server.py`) may lack
-  `get_counts_by_repo` or let it raise. So `indexed_repos` is the only caller on the hint and status paths.
+- Existing test fakes differ. `MagicMock()` stores (`tests/unit/test_server.py`, `tests/unit/test_cli_query.py`)
+  auto-create `get_counts_by_repo` and return a `MagicMock`, not a mapping; the `Any`-typed `_Stub` in
+  `test_server.py` may lack the method or let it raise. So `indexed_repos` is the only caller on the hint
+  and status paths, and it treats a missing method, a raise or a non-`Mapping` result as unreadable (`None`).
 - `config.sources.effective_repos` already strips tainted slugs; `config.sources.tainted_repos` is a
   property. `_QueryRuntime` and `_query_runtime` live in `cli_query.py`.
-- `shared/` imports nothing from `services/` at runtime (`shared/reranker.py` imports under
-  `TYPE_CHECKING` only). No test enforces this; `corpus_hint.py` may use `TYPE_CHECKING` imports only.
+- `shared/` has no module-level runtime import of `services/` (`shared/reranker.py` imports it under
+  `TYPE_CHECKING` and function-locally inside `probe_reranker`). No test enforces this. For `corpus_hint.py`
+  it is a choice made here: `TYPE_CHECKING` imports only.
 - PR 1 Phase 2d rewrites the `tests/unit/test_cli_query.py` line-16 import. Phases 3c and 4 extend the
   same module. On rebase keep both sides.
 - Tests import package modules only, except scripts: `scripts/` is not a package, so a script's tests load
   it by path (`importlib.util.spec_from_file_location`, as `tests/unit/test_probe_mcp_2x.py` does).
-- The Windows CI job lists test files by name. A new test module joins the list in the commit that creates it.
+- The Windows CI job lists test files by name. A new test module that touches no index store joins the list
+  in the commit that creates it. Index-store and Chroma tests stay off it: `ci.yml`'s Windows step and
+  `docs/README.md` say the persisted index is POSIX-only and fails closed on Windows. So tests in
+  Windows-listed modules (`test_corpus_hint.py`, `test_hub_status.py`, `test_cli.py`) use fakes or
+  `FTSIndex`, never `IndexStore`.
 - Never `git add -A`; stage explicit paths.
 
 **Frozen real queries (2026-10-17).** One CLI loop, `search-examples` and `search-docs` with `--limit 3`,
@@ -63,7 +70,8 @@ against the maintainer's live index. Copy these strings verbatim into the tests.
 Confidence is not an input to the hint. Those results come from a live index no test can reproduce, so a
 test freezes the strings and asks what the fixture index and fixture catalog say. `Supermemory memory` looks
 already indexed through examples. Its expected outcome (hint or none) comes from the fixture index, not an
-assumption. Read the catalog data from PR 1's Phase 1 before asserting which groups fire for any query.
+assumption. Read the catalog data from PR 1's Phase 1 before asserting which groups fire for any query. The
+expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step fixes it).
 
 ## Requirements
 
@@ -111,15 +119,26 @@ assumption. Read the catalog data from PR 1's Phase 1 before asserting which gro
 
 - `indexed_repos(index_store)` is casefolded and drops the synthetic `docs.pipecat.ai` key. It returns
   `None` when the count is unreadable: `AttributeError` (a fake without the method),
-  `IndexUnavailableError`, or any raise from `get_counts_by_repo`. It never returns an empty set for that case.
+  `IndexUnavailableError`, any raise from `get_counts_by_repo`, or a result that is not a `Mapping` (a
+  `MagicMock` store returns a `MagicMock`). It never returns an empty set for that case. On the `None` path
+  it logs at warning level, like `annotate_response`; `get_hub_status` collapses `None` to empty lists, so
+  the log is the only signal that a count was unreadable.
 - `groups_not_indexed(catalog, indexed)` follows parent Decision 10. With `indexed is None` it returns `[]`.
-- `test_corpus_hint.py` joins the Windows file list in `ci.yml` in this commit.
+- The configured-no-records comparison (configured minus indexed, casefolded on both sides) lives in this
+  module too, used by status and hint.
+- `test_corpus_hint.py` joins the Windows file list in `ci.yml` in this commit. Its fixture index is a fake
+  exposing `get_counts_by_repo` only (no `IndexStore`), so the module stays Windows-eligible.
+- Named tests: `docs.pipecat.ai` absent from `indexed_repos`; `groups_not_indexed` for a fully indexed, a
+  partly indexed and a `parseable = false`-only group; a bare `MagicMock()` store gives `None`; a case-variant
+  pair (configured `Owner/Repo`, index key `owner/repo`) lands in indexed, not in configured-no-records.
 - Mutation checks:
   - Drop the casefold in `indexed_repos`: the case-variant slug test must fail.
+  - Drop the casefold on the configured side of the configured-no-records comparison: the same
+    case-variant pair test must fail.
   - Replace the `None` result with an empty set: the unreadable-count test must fail, because every
     catalog group would fire a false hint.
 
-### Phase 3c: config providers and `get_hub_status`
+### Phase 3c: config values and `get_hub_status`
 
 **Goal:** `get_hub_status` reports indexed, configured-no-records and uncovered catalog groups on both doors.
 **Impl files:** `src/pipecat_context_hub/shared/types.py`, `src/pipecat_context_hub/server/tools/get_hub_status.py`, `src/pipecat_context_hub/server/main.py`, `src/pipecat_context_hub/cli_query.py`, `src/pipecat_context_hub/cli.py`
@@ -128,14 +147,21 @@ assumption. Read the catalog data from PR 1's Phase 1 before asserting which gro
 
 - `HubStatusOutput` (in `shared/types.py`) gains three `list[str]` fields, default empty: `indexed_repos`,
   `configured_no_records` and `catalog_groups_not_indexed`.
-- Thread `configured_repos` and `tainted_repos` providers (read once at process start from
-  `config.sources`) through `serve`, `create_server`, `handle_get_hub_status`, `_QueryRuntime` and
-  `_query_runtime`, in this one commit, with a both-front-doors parity test.
+- Thread `configured_repos` and `tainted_repos` through `serve`, `create_server`, `handle_get_hub_status`,
+  `_QueryRuntime` and `_query_runtime`, in this one commit, with a both-front-doors parity test. They are two
+  `frozenset[str]` values captured once at process start from `config.sources`, not callables (so no
+  `*_provider` name, unlike `reranker_status_provider`). On every changed signature they are keyword-only
+  and default to empty, so the existing `handle_get_hub_status` and `create_server` callers and test fakes
+  keep working unedited (`cli_query._dispatch` passes `handle_get_hub_status` arguments positionally).
 - `test_cli.py` gains the serve wiring test: `serve` passes `effective_repos` and `tainted_repos` from
   `config.sources` into `create_server`.
 - A `get_counts_by_repo` that raises (or is missing on a fake) leaves `get_hub_status` returning with
   the three fields empty and no exception. Test it on both doors; mirror
-  `test_store_errors_never_break_the_response`.
+  `test_store_errors_never_break_the_response`. Tests added to `test_hub_status.py` and `test_cli.py` use
+  fakes or `FTSIndex` only (Windows-listed modules).
+- A status test with one indexed, one configured-no-records and one unconfigured catalog repo asserts all
+  three fields on both doors. A case-variant test (configured `Owner/Repo`, index key `owner/repo`) asserts
+  the slug is in `indexed_repos` and absent from `configured_no_records`.
 - The catalog-load-failure status half lives here: with `load_catalog` returning `None`,
   `catalog_groups_not_indexed == []` on both doors.
 
@@ -146,40 +172,61 @@ assumption. Read the catalog data from PR 1's Phase 1 before asserting which gro
 **Test files:** `tests/unit/test_corpus_hint.py`, `tests/unit/test_cli_query.py`, `tests/unit/test_server.py`, `tests/unit/test_staleness.py`
 **Test command:** `uv run pytest tests/unit/test_corpus_hint.py tests/unit/test_cli_query.py tests/unit/test_server.py tests/unit/test_staleness.py -v`
 
-- `corpus_hint(index_store, *, tool, args, configured_repos, tainted_repos)` and
-  `attach_corpus_hint(result_json, hint)` and both front-door call sites in one commit; CLI order
-  compute, `_maybe_warn_poor_results` (suppressed), `annotate_response`, attach.
+- `corpus_hint(index_store, *, tool, args, configured_repos, tainted_repos)` (the two repo sets are the
+  `frozenset[str]` values from Phase 3c) and `attach_corpus_hint(result_json, hint)` and both front-door call
+  sites in one commit; CLI order compute, `_maybe_warn_poor_results` (suppressed), `annotate_response`, attach.
+- MCP door: `_annotate(result_json)` in `server/main.py` takes only the result today. Replace it with one
+  thread function `(name, args, result_json)` that computes the hint, calls `annotate_response`, then
+  attaches, all inside the existing single `asyncio.to_thread` hop. `check_deprecation` and
+  `get_hub_status` route through it unchanged (no hint for non-search tools).
+- The per-tool text table in `corpus_hint.py` is a third list of tool names. A drift-guard test in
+  `test_corpus_hint.py`: every table key is a registered tool name, and every registered tool whose input
+  model has a `query`, `symbol` or `intent` field appears in the table.
 - `test_staleness.py` runs here: it pins the `annotate_response` signature
   (`test_no_parsed_shortcut_parameter`) and holds `TestBothFrontDoors`, which the hint mirrors.
 - Output shape, `add_command` format (parent contract C1: `pipecat-context-hub repos add --config-only
   --group <group>` per matched group, joined with `; `), `refresh_command`, and absent-not-null behaviour
   per parent Decision 4.
 - The parent Hints bullet in full, by file:
-  - `test_corpus_hint.py`: text matching (alias negatives such as "laws" vs "aws", ` + ` and ` & `
-    concepts, uppercase alias), `get_code_snippet` from `symbol`/`intent` and not `path` alone, a partial
-    group listing only missing repos, catalog-ordered `matched_groups`, the `parseable = false` and tainted
-    skips, `configured_no_records`, and 0.95 confidence still hinting.
-  - `test_server.py` and `test_cli_query.py`: golden `corpus_hint` per door and identical JSON, non-search
-    tools never hint, `configured_repos` reflects process start, coexistence with the staleness footer,
-    and the stderr hint suppressed when a hint exists.
+  - `test_corpus_hint.py`: text matching (alias negatives such as "laws" vs "aws", the verbatim concept
+    queries `TTS + nvidia` and `TTS & nvidia`, uppercase alias), `get_code_snippet` from `symbol`/`intent`
+    and not `path` alone, a partial group listing only missing repos, catalog-ordered `matched_groups`, the
+    `parseable = false` and tainted skips, `repos_configured_no_records` (the hint field; `configured_no_records`
+    is the status field), and 0.95 confidence still hinting. Unreadable counts: a store whose
+    `get_counts_by_repo` raises, a fake lacking the method and a bare `MagicMock()` store each give
+    `corpus_hint(...) is None`. Case variant: configured `Owner/Repo` with index key `owner/repo` gives no
+    `repos_configured_no_records` entry and no `refresh_command`.
+  - `test_server.py` and `test_cli_query.py`: golden `corpus_hint` per door and identical JSON (the golden
+    object includes `report_issue_url == RETRIEVAL_QUALITY_ISSUE_URL`), non-search tools never hint,
+    `configured_repos` reflects process start, coexistence with the staleness footer, and the stderr hint
+    suppressed when a hint exists. With an unreadable count (a store that raises, a fake lacking the method,
+    a `MagicMock()` store) a vendor query has no `corpus_hint` key on both doors and the CLI stderr hint
+    still prints; existing `MagicMock`-store golden tests stay unchanged.
   - `test_server.py` (the line-864 pattern): `_SERVER_INSTRUCTIONS` pins `corpus_hint`, `--unlisted` and
     the draft-not-file wording; `retrieval-quality.yml` carries the optional *Candidate repos* field.
 - The catalog-load-failure half lives here: with `load_catalog` returning `None` (seam:
   `load_catalog.cache_clear()` plus a patched loader) there is no `corpus_hint` key on either door, and the
   CLI stderr hint is still printed.
 - Frozen queries: the four strings in Context, copied verbatim into `test_corpus_hint.py`. For each, assert
-  against a fixture index and fixture catalog: hint when the matched group's repos are absent, no hint when
-  present. A new numbered item in `docs/smoke-test.md` reuses them.
-- Expected outcomes for the four frozen queries (provenance: the maintainer's live index, 2026-10-17):
+  against a fake fixture index (exposing `get_counts_by_repo` only, so the module stays Windows-eligible)
+  and a fixture catalog: hint when the matched group's repos are absent, no hint when present.
+- Read the PR 1 Phase 1 catalog (`data/repo_catalog.toml`) before writing those assertions. For each frozen
+  query record the matched group, its aliases and its parseable members; then fix the table below and the
+  smoke-test expectations from that data, and record any changed verdict in the PR description.
+- A new numbered item in `docs/smoke-test.md` reuses the four queries. PR 1 Phase 2d also adds an item
+  there, so number this one after the highest existing item on rebase (11 is PR 1's, expect 12).
+- Expected outcomes for the four frozen queries (provenance: the maintainer's live index, 2026-10-17).
+  **Provisional** until the catalog read above; the verdicts hold only under the stated catalog condition:
 
   | Query | Expected | Why (live-index provenance) |
   |---|---|---|
   | `AWS Bedrock Nova Sonic voice agent` | hint | The AWS group is only partly indexed: `aws-samples/build-intelligent-ai-voice-agents-with-pipecat-and-amazon-bedrock` (435 records), `pipecat-ai/aws-deepgram-workshop` (390) and `pipecat-ai/aws-workshops` (33) are indexed; four other AWS seed repos are not. The 0.95 top hit `aaronsu11/Dum-E` is not an AWS repo, so confidence must not suppress the hint. |
-  | `Tavus avatar` | hint | `aws-samples/sample-voice-ai-tavus-avatar-demo` has zero records and is not configured. It may sit in the AWS group or a Tavus group; the hint fires either way. |
-  | `Murf TTS` | no hint | `murf-ai/pipecat-murf-tts` is indexed (24 records). |
-  | `Supermemory memory` | no hint | `supermemoryai/pipecat-memory` is indexed (462 records). |
+  | `Tavus avatar` | hint | `aws-samples/sample-voice-ai-tavus-avatar-demo` has zero records and is not configured. The hint fires only if a catalog group with a `tavus` alias contains it (one group per vendor); if it sits only in the AWS group, `Tavus avatar` matches no alias and there is no hint. |
+  | `Murf TTS` | no hint | `murf-ai/pipecat-murf-tts` is indexed (24 records). Holds only if every parseable repo in the Murf group is indexed. |
+  | `Supermemory memory` | no hint | `supermemoryai/pipecat-memory` is indexed (462 records). Holds only if every parseable repo in the Supermemory group is indexed. |
 
-  These expectations assume one catalog group per vendor (PR 1 Phase 1 requires it). The unit tests derive each
+  These expectations assume one catalog group per vendor (PR 1 Phase 1 requires it), which does not bound
+  repos per group (hence the "every parseable repo" conditions). The unit tests derive each
   outcome from a fixture index and fixture catalog, never from the live index; the live numbers are recorded
   only as provenance.
 - Mutation checks (revert, confirm the named test fails):
@@ -189,28 +236,47 @@ assumption. Read the catalog data from PR 1's Phase 1 before asserting which gro
   - CLI stderr suppression: the one-hint-not-two test.
   - `add_command` format: the golden-object test, including `--config-only` and the `; ` join.
   - Catalog-load-failure fallback: the no-`corpus_hint`-key test.
+  - Unreadable count: replace `None` with an empty set in `corpus_hint`'s call to `indexed_repos`; the
+    unreadable-count tests (raising store, missing method, `MagicMock` store) must fail.
 
 ### Phase 5: catalog health and curation scripts
 
 **Goal:** private, archived and renamed catalog entries are caught weekly, without network in PR CI.
-**Impl files:** `scripts/check_repo_catalog.py`, `scripts/curate_repo_catalog.py`, `.github/workflows/catalog-health.yml`, `.github/workflows/ci.yml`
+**Impl files:** `scripts/check_repo_catalog.py`, `scripts/curate_repo_catalog.py`, `.github/workflows/catalog-health.yml`, `.github/workflows/ci.yml`, `justfile`
 **Test files:** `tests/unit/test_check_repo_catalog.py`
 **Test command:** `uv run pytest tests/unit/test_check_repo_catalog.py -v`
 
 - Parent Decision 6 in full: `httpx` with `follow_redirects=False`, the classifier taking an injected
   response, the inconclusive outcome, the aggregate verdict and exit code, `GITHUB_TOKEN` header
-  behaviour, and a test that the workflow invokes the script (the `test_audit_sync.py` pattern).
+  behaviour, and a test that the workflow invokes the script (the `test_audit_sync.py` pattern). This list
+  is the checklist; each is a named test:
+  - 90-day advisory boundary at 90 days (ok) and 91 days (advisory).
+  - Exit codes over one mixed injected result set: ok with an old `verified` date exits 0; stale exits
+    nonzero; inconclusive-only exits nonzero in its own report section.
+  - Inconclusive, never labelled inaccessible, for each of 403, 429, 5xx, timeout and network error.
+  - A rename reports the new name; a case-only `full_name` difference is not a rename.
+  - `Authorization` header sent when `GITHUB_TOKEN` is set and omitted when not; a 301 routed through
+    `httpx.MockTransport` is not followed.
+- Add `just catalog-health` and `just catalog-curate` recipes (the local run matches the workflow
+  invocation); the workflow-invokes-script test also pins the recipe names.
 - Decided now: the tests load both scripts by path with `importlib.util.spec_from_file_location`
   (the `test_probe_mcp_2x.py` pattern). No package module, so `httpx` GitHub code stays out of the wheel.
 - Frozen stale fixtures from 2026-10-16, all owner `pipecat-ai`:
-  - Real private (404 unauthenticated, `private` with a token): `nvidia-sgmaker`,
+  - Real private. Freeze both observed shapes as fixtures: a 404 (what the job's `GITHUB_TOKEN` sees, and
+    what an unauthenticated call sees, indistinguishable from missing) and a 200 with `private: true`
+    (what a maintainer's local token sees; the job never sees it). The classifier must report stale on
+    either: `nvidia-sgmaker`,
     `pipecat-websocket-transport`, `hosted-smart-turn`, `pipecat-krisp`, `instant-voice-demo`,
     `openai-realtime-todo-example`, `pipecat.ai-agents`, `gradient-bang-subagents`,
     `gradient-bang-synth-forge`.
   - Real archived: `pipecat-cli`, `pipecat-client-cxx-daily`.
   - Synthetic, no real example was recorded: the 301-renamed, the deleted 404, the `full_name` rename
-    beyond case, and the case-only difference. Label them synthetic in the test.
-- `curate_repo_catalog.py` takes an injectable `httpx` client or transport. Its test runs it with an
+    beyond case, and the case-only difference. Label them synthetic in the test. The classifier reads
+    the new name from the 301 `Location` header (fallback: the body `url` field), and the synthetic 301
+    fixture is built that way. It is unverified against a live rename until the first weekly run.
+- `curate_repo_catalog.py` takes an injectable `httpx` client or transport. A real run needs a GitHub token
+  (code search rejects unauthenticated requests): read `GITHUB_TOKEN`, else `gh auth token`, and exit
+  nonzero with a message when neither exists. Its test runs it with an
   `httpx.MockTransport` returning canned search results (no network), and asserts the catalog file is
   byte-identical and never opened for writing.
 - `test_check_repo_catalog.py` joins the Windows file list in `ci.yml` in this commit. It reads files by
@@ -223,7 +289,7 @@ assumption. Read the catalog data from PR 1's Phase 1 before asserting which gro
 exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.py` is absent, hand back.
 
 **Goal:** what `repos add` writes is what the hint reads, proven offline.
-**Impl files:** `tests/unit/test_repos_hint_seam.py`, `.github/workflows/ci.yml`
+**Impl files:** `tests/unit/test_repos_hint_seam.py`
 **Test files:** `tests/unit/test_repos_hint_seam.py`
 **Test command:** `uv run pytest tests/unit/test_repos_hint_seam.py -v`
 
@@ -237,10 +303,17 @@ exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.
   the hint has `repos_configured_no_records` and `refresh_command` and no `add_command`. With records, no hint.
 - The test runs the exact `add_command` string against the temp `config.toml`-only layout. It splits on
   `; `, strips the leading `pipecat-context-hub`, and invokes each part on the real `repos` command, exit 0.
-  The test states this layer in a comment.
+  The test states this layer in a comment. Afterwards it asserts the written `config.toml` slug set equals
+  the `repos_not_indexed` slugs of the matched groups (read back through `load_global_config`), and that a
+  recomputed hint has no `add_command`.
 - A second case sets `PIPECAT_HUB_EXTRA_REPOS` in a cwd `.env`. The `--config-only` form exits 0; plain
-  `repos add` exits 1 (parent Decision 7). That proves `--config-only` is accepted under a shadowing layer.
-- `test_repos_hint_seam.py` joins the Windows file list in `ci.yml`, skipping POSIX permission-bit assertions.
+  `repos add` exits 1 (parent Decision 7). That proves `--config-only` is accepted under a shadowing layer. After it, the slugs are in `config.toml`
+  but not in `effective_repos`.
+- `test_repos_hint_seam.py` does **not** join the Windows file list: it opens a real `IndexStore`, which
+  fails closed on Windows (the POSIX-only platform contract in `ci.yml` and `docs/README.md`). Guard the
+  module with `pytest.mark.skipif(os.name != "posix")` so a local Windows run skips rather than fails. This
+  phase leaves `ci.yml` unchanged. (Parent ownership table lists this module on the Windows list; this plan
+  departs from it, see the Findings note.)
 - Mutation check: change the C1 `add_command` to drop `--config-only`; the shadowing-`.env` case must fail.
 
 **Closing steps (not a phase; before opening the PR).** Run the offline smoke
@@ -254,7 +327,7 @@ Put the result and the mutation-check results in the PR description. Restore the
 
 - [ ] Phase 3a: `get_counts_by_repo` on the serving index
 - [ ] Phase 3b: `indexed_repos` and `groups_not_indexed`
-- [ ] Phase 3c: config providers and `get_hub_status`
+- [ ] Phase 3c: config values and `get_hub_status`
 - [ ] Phase 4: corpus hints
 - [ ] Phase 5: catalog health and curation scripts
 - [ ] Phase 4b: seam test against the real `repos` command
@@ -264,3 +337,7 @@ Put the result and the mutation-check results in the PR description. Restore the
 ### Review Waivers
 
 _(none yet; this plan has not been through `/review-plan`)_
+
+Parent drift: the parent's file-ownership table puts `test_repos_hint_seam.py` on the Windows file list.
+It cannot run there (real `IndexStore`), so Phase 4b keeps it off the list. The parent needs the same
+correction; until then this plan wins on that line.
