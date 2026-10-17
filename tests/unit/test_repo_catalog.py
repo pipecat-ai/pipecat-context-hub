@@ -27,7 +27,6 @@ from pipecat_context_hub.shared.repo_catalog import (
     load_catalog,
     parse_catalog,
 )
-from pipecat_context_hub.shared.repo_slug import REPO_SLUG_RE, is_valid_repo_slug
 from pipecat_context_hub.shared.repo_catalog_render import (
     DOCS_BEGIN,
     DOCS_END,
@@ -41,6 +40,7 @@ from pipecat_context_hub.shared.repo_catalog_render import (
     render_env_example,
     splice,
 )
+from pipecat_context_hub.shared.repo_slug import REPO_SLUG_RE, is_valid_repo_slug
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
@@ -285,6 +285,37 @@ class TestSlugGrammar:
             assert mod.is_valid_repo_slug is is_valid_repo_slug, mod.__name__
             assert not hasattr(mod, "_REPO_SLUG_RE"), mod.__name__
             assert not hasattr(mod, "REPO_SLUG_RE"), mod.__name__
+
+    def test_slug_identity_has_one_owner(self) -> None:
+        """Every slug comparison goes through ``repo_slug.slug_key``: no module
+        spells its own ``.casefold()``. The only other folds in ``src/`` compare
+        things that are not slugs (catalog group names and aliases, tag sort)."""
+        not_slugs = {
+            "shared/repo_slug.py": 1,  # slug_key itself
+            "shared/repo_catalog.py": 3,  # find_group (2: group names), alias dedupe
+            "services/ingest/github_ingest.py": 1,  # release-tag sort key
+        }
+        src = _REPO_ROOT / "src" / "pipecat_context_hub"
+        found: dict[str, int] = {}
+        for path in sorted(src.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            count = sum(
+                1
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "casefold"
+            )
+            if count:
+                found[path.relative_to(src).as_posix()] = count
+        assert found == not_slugs
+
+    def test_every_slug_comparer_binds_the_one_key(self) -> None:
+        from pipecat_context_hub import cli_repos
+        from pipecat_context_hub.shared import config, config_writer, env_loading, repo_slug
+
+        for mod in (config, config_writer, env_loading, repo_catalog, cli_repos):
+            assert mod.slug_key is repo_slug.slug_key, mod.__name__
 
     def test_ingester_rejects_what_the_grammar_rejects(self) -> None:
         from pipecat_context_hub.services.ingest import github_ingest

@@ -28,7 +28,6 @@ from pipecat_context_hub.shared.env_keys import (
     TAINTED_REFS_ENV,
     TAINTED_REPOS_ENV,
     split_csv,
-    taint_key,
 )
 from pipecat_context_hub.shared.paths import (
     is_inside,
@@ -36,6 +35,7 @@ from pipecat_context_hub.shared.paths import (
     redact_home_in_text,
     resolution_chain,
 )
+from pipecat_context_hub.shared.repo_slug import slug_key
 
 _module_logger = logging.getLogger(__name__)
 
@@ -878,9 +878,9 @@ def _shadowed_exclusion_entries(
     :func:`config_list_value` (so a shape the loader wouldn't accept yields
     ``None`` rather than an error; this runs on a value that lost precedence
     before validation), the winning value by :func:`split_csv`. Entries
-    compare by the setting's own matching rule: casefolded (:func:`taint_key`,
-    as ``SourceConfig.is_tainted`` matches) for ``PIPECAT_HUB_TAINTED_REPOS``,
-    exact for ``PIPECAT_HUB_TAINTED_REFS``, so an entry the winning list still
+    compare by the setting's own matching rule: by :func:`slug_key` (the one
+    slug identity, as ``SourceConfig.is_tainted`` matches) for
+    ``PIPECAT_HUB_TAINTED_REPOS``, exact for ``PIPECAT_HUB_TAINTED_REFS``, so an entry the winning list still
     honours under another spelling is not reported lost.
 
     ``None`` (unreadable shape — nothing can be said about what survived) is
@@ -899,7 +899,7 @@ def _shadowed_exclusion_entries(
     )
     if configured is None:
         return None
-    fold = taint_key if key == TAINTED_REPOS_ENV else (lambda entry: entry)
+    fold = slug_key if key == TAINTED_REPOS_ENV else (lambda entry: entry)
     active = {fold(entry) for entry in split_csv(active_value)}
     return sorted({entry for entry in configured if fold(entry) not in active})
 

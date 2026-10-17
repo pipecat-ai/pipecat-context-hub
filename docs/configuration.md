@@ -7,7 +7,7 @@ Part of the [Pipecat Context Hub README](README.md). This file owns the `PIPECAT
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PIPECAT_HUB_DATA_DIR` | `~/.pipecat-context-hub` | Index, clones, and metadata location. Consumers of the metadata contract must honour it |
-| `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults |
+| `PIPECAT_HUB_EXTRA_REPOS` | *(empty)* | Comma-separated repo slugs to ingest alongside defaults (case-insensitive: a case variant of a slug already listed is ignored, the first spelling wins) |
 | `PIPECAT_HUB_FRAMEWORK_VERSION` | `latest` | Pin the framework repo to a specific git tag (e.g. `v0.0.96`), `latest` for its newest release tag, or `head` (or `main`) for its default branch |
 | `PIPECAT_HUB_TAINTED_REPOS` | *(empty)* | Comma-separated repo slugs to skip entirely |
 | `PIPECAT_HUB_TAINTED_REFS` | *(empty)* | Comma-separated `org/repo@ref` entries to skip |

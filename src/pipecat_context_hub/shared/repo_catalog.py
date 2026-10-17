@@ -22,7 +22,7 @@ from datetime import date
 from importlib import resources
 
 from pipecat_context_hub.shared.config import SourceConfig
-from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +67,11 @@ class Catalog:
     groups: tuple[CatalogGroup, ...]
 
     def find_repo(self, slug: str) -> CatalogRepo | None:
-        """The catalog entry for ``slug`` (casefolded match), or ``None``."""
-        folded = slug.casefold()
+        """The catalog entry for ``slug`` (matched by :func:`slug_key`), or ``None``."""
+        key = slug_key(slug)
         for group in self.groups:
             for repo in group.repos:
-                if repo.slug.casefold() == folded:
+                if slug_key(repo.slug) == key:
                     return repo
         return None
 
@@ -81,14 +81,8 @@ class Catalog:
         return next((g for g in self.groups if g.name.casefold() == folded), None)
 
     def slugs(self) -> frozenset[str]:
-        """Every catalog slug, casefolded."""
-        return frozenset(r.slug.casefold() for g in self.groups for r in g.repos)
-
-
-def default_repos() -> list[str]:
-    """The built-in default repo list (never the env-aware ``effective_repos``)."""
-    default = SourceConfig.model_fields["repos"].default
-    return list(default)
+        """Every catalog slug's :func:`slug_key`."""
+        return frozenset(slug_key(r.slug) for g in self.groups for r in g.repos)
 
 
 def _check_keys(where: str, table: dict[str, object], allowed: frozenset[str]) -> None:
@@ -189,7 +183,7 @@ def parse_catalog(text: str) -> Catalog:
     seen_aliases: dict[str, str] = {}
     for group in groups:
         for repo in group.repos:
-            key = repo.slug.casefold()
+            key = slug_key(repo.slug)
             if shipped.is_default(repo.slug):
                 raise CatalogError(f"groups.{group.name}: {repo.slug!r} is a default repo")
             if key in seen_slugs:

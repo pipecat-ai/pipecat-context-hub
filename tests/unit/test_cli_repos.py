@@ -32,9 +32,9 @@ from click.testing import CliRunner, Result
 
 from pipecat_context_hub.cli import main
 from pipecat_context_hub.shared import env_loading, repo_catalog
-from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.config import HubConfig, SourceConfig
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
-from pipecat_context_hub.shared.repo_catalog import default_repos, load_catalog, parse_catalog
+from pipecat_context_hub.shared.repo_catalog import load_catalog, parse_catalog
 from tests.unit._config_trust_cases import TRUST_REFUSAL_CASES
 
 KEY = "PIPECAT_HUB_EXTRA_REPOS"
@@ -325,7 +325,7 @@ class TestListGoldens:
 
     @staticmethod
     def _golden(hub: Hub, extras: list[tuple[str, str]], hidden: str | None = None) -> str:
-        defaults = default_repos()
+        defaults = SourceConfig().repos
         rows = [(s, "default") for s in defaults] + extras
         lines = [
             f"Consulted .env in cwd: {Path.cwd()}",
@@ -376,7 +376,7 @@ class TestListGoldens:
     def test_tags_default_catalog_and_unlisted(self, hub: Hub):
         hub.config_list(ALPHA_TWO, UNLISTED)
         tags = _tags(hub.run("list").stdout)
-        assert tags[default_repos()[0]] == "default"
+        assert tags[SourceConfig().repos[0]] == "default"
         assert tags[ALPHA_TWO] == "catalog"
         assert tags[UNLISTED] == "unlisted"
 
@@ -418,14 +418,14 @@ class TestCheckOrder:
 
     @pytest.mark.parametrize("verb", ["add", "remove"])
     def test_default_repo_is_refused(self, hub: Hub, verb: str):
-        default = default_repos()[0]
+        default = SourceConfig().repos[0]
         result = hub.run(verb, default)
         assert result.exit_code == EXIT_INVALID_INPUT
         assert "default repo" in result.output
         assert hub.snapshot() is None  # never created
 
     def test_default_repo_is_refused_case_insensitively(self, hub: Hub):
-        result = hub.run("add", default_repos()[0].upper())
+        result = hub.run("add", SourceConfig().repos[0].upper())
         assert result.exit_code == EXIT_INVALID_INPUT
         assert "default repo" in result.output
 
@@ -441,7 +441,7 @@ class TestCheckOrder:
 
     def test_default_beats_shadow(self, hub: Hub):
         hub.env(**{KEY: BETA_ONE})
-        result = hub.run("add", default_repos()[0])
+        result = hub.run("add", SourceConfig().repos[0])
         assert result.exit_code == EXIT_INVALID_INPUT
         assert "default repo" in result.output
         assert _SHADOW_MARKER not in result.output
@@ -456,7 +456,7 @@ class TestCheckOrder:
     def test_default_beats_catalog_membership(self, hub: Hub):
         """Check 1 precedes check 2: a default repo is not in the catalog, yet the
         message is 'default', not 'not in the repo catalog'."""
-        result = hub.run("add", default_repos()[0])
+        result = hub.run("add", SourceConfig().repos[0])
         assert "not in the repo catalog" not in result.output
 
     def test_tainted_beats_catalog_membership(self, hub: Hub):
@@ -934,7 +934,7 @@ class TestCatalogFailedToLoad:
         tags = _tags(result.stdout)
         assert tags[ALPHA_ONE] == "unlisted"  # no catalog to say otherwise
         assert tags[UNLISTED] == "unlisted"
-        assert tags[default_repos()[0]] == "default"
+        assert tags[SourceConfig().repos[0]] == "default"
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         loader = [r for r in warnings if "catalog failed to load" in r.getMessage()]
         assert len(loader) == 1  # the loader's own log-once
@@ -1005,7 +1005,7 @@ class TestErrorMapping:
         result = hub.run("list")
         assert result.exit_code == 0, result.output
         assert _tags(result.stdout)[ALPHA_ONE] == "catalog"
-        assert _tags(result.stdout)[default_repos()[0]] == "default"
+        assert _tags(result.stdout)[SourceConfig().repos[0]] == "default"
         problem = [ln for ln in result.stdout.splitlines() if ln.startswith("config.toml:")]
         assert len(problem) == 1
         assert "ignoring" in problem[0]
@@ -1021,7 +1021,7 @@ class TestErrorMapping:
         result = hub.run("list")
         assert result.exit_code == 0, result.output
         assert "no config.toml location" in result.stdout
-        assert _tags(result.stdout)[default_repos()[0]] == "default"
+        assert _tags(result.stdout)[SourceConfig().repos[0]] == "default"
 
     @pytest.mark.parametrize("build", TRUST_REFUSAL_CASES)
     def test_every_trust_refusal_is_a_clean_exit_1_for_add(
@@ -1187,7 +1187,7 @@ class TestErrorBoundary:
         assert result.exit_code == 0, result.output
         if verb == "list":
             assert "Consulted .env in cwd: none" in result.stdout
-            assert _tags(result.stdout)[default_repos()[0]] == "default"
+            assert _tags(result.stdout)[SourceConfig().repos[0]] == "default"
 
     def test_any_oserror_in_list_is_a_clean_exit_1(self, hub: Hub, monkeypatch: pytest.MonkeyPatch):
         """The command-level floor: an OSError from anywhere in the body."""

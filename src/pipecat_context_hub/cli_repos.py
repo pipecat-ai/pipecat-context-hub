@@ -44,7 +44,7 @@ from pipecat_context_hub.shared.env_loading import (
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
 from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
-from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
 
 _RUNNING_SERVE = "A running `serve` reopens the rebuilt index itself."
 _REFRESH_REMINDER = f"Run `pipecat-context-hub refresh` to index it. {_RUNNING_SERVE}"
@@ -236,11 +236,11 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
         # validation applies; exit 0 with the skipped list (parent plan).
         layer = _shadowing_layer(ctx)
     note = _shadow_note(layer)
-    present = {s.casefold(): s for s in before}
+    present = {slug_key(s): s for s in before}
 
     if adding:
-        done = [s for s in members if s.casefold() not in present]
-        already = [s for s in members if s.casefold() in present]
+        done = [s for s in members if slug_key(s) not in present]
+        already = [s for s in members if slug_key(s) in present]
         for slug in done:
             click.echo(f"Added {slug}")
         for slug in already:
@@ -248,7 +248,7 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
         if not done:
             click.echo("Nothing to add" + note)
     else:
-        done = [present[s.casefold()] for s in members if s.casefold() in present]
+        done = [present[slug_key(s)] for s in members if slug_key(s) in present]
         for slug in done:
             click.echo(f"Removed {slug}")
         if not done:
@@ -276,7 +276,7 @@ def _run_positional(
         if not changed:
             click.echo(f"Not in config.toml: {target}" + note)
             return
-        stored = next((s for s in before if s.casefold() == target.casefold()), target)
+        stored = next((s for s in before if slug_key(s) == slug_key(target)), target)
         click.echo(f"Removed {stored}")
     click.echo(_after_write(layer, adding=adding))
 
@@ -406,7 +406,7 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
     def tag(slug: str) -> str:
         if config.sources.is_default(slug):
             return "default"
-        return "catalog" if slug.casefold() in listed else "unlisted"
+        return "catalog" if slug_key(slug) in listed else "unlisted"
 
     click.echo(_cwd_line())
     click.echo(f"Effective repos ({len(effective)}):")
@@ -418,11 +418,11 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
         click.echo(f"config.toml: {problem}")
     layer = _shadowing_layer(ctx)
     if layer is not None:
-        in_effect = {s.casefold() for s in effective}
+        in_effect = {slug_key(s) for s in effective}
         hidden = [
             s
             for s in configured
-            if s.casefold() not in in_effect and not config.sources.is_tainted(s)
+            if slug_key(s) not in in_effect and not config.sources.is_tainted(s)
         ]
         if hidden:
             click.echo(f"In config.toml but hidden by {_layer_phrase(layer)}:")

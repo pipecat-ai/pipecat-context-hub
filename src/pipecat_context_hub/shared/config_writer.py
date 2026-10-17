@@ -49,7 +49,7 @@ from pipecat_context_hub.shared.env_loading import (
     resolve_global_config_path,
 )
 from pipecat_context_hub.shared.paths import LookupMismatch, lookup_target, redact_home_in_text
-from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
 
 __all__ = [
     "ConfigWriteRefused",
@@ -126,13 +126,13 @@ def _same(a: object, b: object) -> bool:
 
 
 def _compute(current: list[str], add: Iterable[str], remove: Iterable[str]) -> list[str]:
-    drop = {s.casefold() for s in remove}
-    result = [s for s in current if s.casefold() not in drop]
-    seen = {s.casefold() for s in result}
+    drop = {slug_key(s) for s in remove}
+    result = [s for s in current if slug_key(s) not in drop]
+    seen = {slug_key(s) for s in result}
     for slug in add:
-        if slug.casefold() not in seen:
+        if slug_key(slug) not in seen:
             result.append(slug)
-            seen.add(slug.casefold())
+            seen.add(slug_key(slug))
     return result
 
 
@@ -142,22 +142,22 @@ def _edit_in_place(doc: TOMLDocument, after: list[str], remove: Iterable[str]) -
     ``after`` is ``_compute``'s result: the current list minus ``remove``, then
     the added slugs. An existing array of strings is edited in place (so its
     comments and layout survive): elements matching ``remove`` (by the
-    reader's rule: stripped, casefolded) are deleted, the new slugs appended.
+    reader's rule: stripped, then :func:`slug_key`) are deleted, the new slugs appended.
     Anything else (absent key, CSV string, a non-string array the loader
     stringifies) is replaced by a fresh array. The caller's re-parse check is
     what proves the result reads back as ``after``.
     """
     existing = doc.get(EXTRA_REPOS_ENV)
     if isinstance(existing, Array) and all(isinstance(v, str) for v in existing):
-        drop = {s.casefold() for s in remove}
+        drop = {slug_key(s) for s in remove}
         for index in reversed(range(len(existing))):
-            if str(existing[index]).strip().casefold() in drop:
+            if slug_key(str(existing[index]).strip()) in drop:
                 del existing[index]
-        kept = {str(v).strip().casefold() for v in existing}
+        kept = {slug_key(str(v).strip()) for v in existing}
         for slug in after:
-            if slug.casefold() not in kept:
+            if slug_key(slug) not in kept:
                 existing.append(slug)
-                kept.add(slug.casefold())
+                kept.add(slug_key(slug))
         return
     arr = tomlkit.array()
     arr.extend(after)

@@ -18,18 +18,11 @@ from pipecat_context_hub.shared.env_keys import (
     TAINTED_REFS_ENV,
     TAINTED_REPOS_ENV,
     split_csv,
-    taint_key,
 )
+from pipecat_context_hub.shared.repo_slug import slug_key
 from pipecat_context_hub.shared.versioning import DEFAULT_FRAMEWORK_PIN
 
 logger = logging.getLogger(__name__)
-
-# `EXTRA_REPOS_ENV` (extra repos, comma-separated) and `split_csv` are defined
-# once, in the dependency-free `shared/env_keys.py`, so this model never imports
-# the env loader.
-
-# `TAINTED_REPOS_ENV` / `TAINTED_REFS_ENV` (the taint keys) and `taint_key`
-# (the taint-matching fold) live in `shared/env_keys.py` too.
 
 # Environment variable for enabling cross-encoder reranking.
 _RERANKER_ENABLED_ENV = "PIPECAT_HUB_RERANKER_ENABLED"
@@ -490,31 +483,40 @@ class SourceConfig(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def effective_repos(self) -> list[str]:
-        """Repos list with extra repos appended and tainted repos removed."""
-        result = _dedupe_preserve_order(
-            list(self.repos) + split_csv(os.environ.get(EXTRA_REPOS_ENV, ""))
-        )
+        """Repos list with extra repos appended and tainted repos removed.
+
+        Deduplicated by :func:`slug_key` (the one slug identity), first
+        spelling wins with the defaults first, so a case variant of a repo
+        already listed is not cloned and indexed a second time.
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for slug in list(self.repos) + split_csv(os.environ.get(EXTRA_REPOS_ENV, "")):
+            key = slug_key(slug)
+            if key not in seen:
+                seen.add(key)
+                result.append(slug)
         return [slug for slug in result if not self.is_tainted(slug)]
 
     def is_default(self, slug: str) -> bool:
         """The one default-repo rule: ``slug`` is in *this instance's* ``repos``.
 
-        Casefolded, like :meth:`is_tainted` (GitHub slugs are case-insensitive).
+        Compared by :func:`slug_key`, like :meth:`is_tainted`.
         ``repos add|remove|list`` ask the configured instance; the catalog
         parser asks ``SourceConfig()`` (the shipped defaults), because the
         catalog is validated against what ships, not against one machine's
         configuration.
         """
-        folded = slug.casefold()
-        return any(r.casefold() == folded for r in self.repos)
+        key = slug_key(slug)
+        return any(slug_key(r) == key for r in self.repos)
 
     def is_tainted(self, slug: str) -> bool:
-        """The one taint-matching rule: casefolded, because GitHub slugs are
-        case-insensitive, so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.
+        """The one taint-matching rule: compared by :func:`slug_key` (the one
+        slug identity), so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.
         Every consumer of ``tainted_repos`` (``effective_repos``, refresh's
         cleanup, ``repos``) decides through this method."""
-        folded = taint_key(slug)
-        return any(taint_key(t) == folded for t in self.tainted_repos)
+        key = slug_key(slug)
+        return any(slug_key(t) == key for t in self.tainted_repos)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

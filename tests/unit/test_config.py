@@ -316,6 +316,15 @@ class TestSourceConfig:
             s = SourceConfig()
             assert s.effective_repos == s.repos + ["org/new"]
 
+    def test_effective_repos_deduplicates_case_variants(self):
+        """Dedupe is by ``slug_key`` (GitHub slugs are case-insensitive): a case
+        variant of a default or of an earlier extra is not cloned twice; the
+        first spelling wins, defaults first."""
+        raw = "Pipecat-AI/Pipecat,foo/bar,FOO/bar,org/new"
+        with patch.dict(os.environ, {EXTRA_REPOS_ENV: raw}):
+            s = SourceConfig()
+            assert s.effective_repos == s.repos + ["foo/bar", "org/new"]
+
     def test_effective_repos_strips_whitespace(self):
         """Whitespace around slugs is trimmed."""
         with patch.dict(os.environ, {EXTRA_REPOS_ENV: " org/a , org/b "}):

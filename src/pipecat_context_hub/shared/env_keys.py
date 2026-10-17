@@ -13,7 +13,6 @@ __all__ = [
     "TAINTED_REFS_ENV",
     "TAINTED_REPOS_ENV",
     "split_csv",
-    "taint_key",
 ]
 
 # The single definitions of the list-valued key literals.
@@ -33,15 +32,3 @@ def split_csv(raw: str) -> list[str]:
     shadowed-taint warning to the winning layer's value).
     """
     return [part.strip() for part in raw.split(",") if part.strip()]
-
-
-def taint_key(slug: str) -> str:
-    """The one taint-matching fold for ``PIPECAT_HUB_TAINTED_REPOS`` entries.
-
-    Casefolded, because GitHub slugs are case-insensitive: ``Foo/Bar`` and
-    ``foo/bar`` name the same repo. ``SourceConfig.is_tainted`` matches through
-    it, and the loader's shadowed-taint warning compares through it, so the
-    warning never reports an entry as lost that ``is_tainted`` still honours.
-    (``PIPECAT_HUB_TAINTED_REFS`` matching stays exact.)
-    """
-    return slug.casefold()
