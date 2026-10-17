@@ -5,10 +5,11 @@ not part of the wheel. Every GitHub answer is an injected ``httpx`` response or
 ``httpx.MockTransport``.
 
 Fixture provenance: the private/archived shapes below were observed on
-2026-10-16 (owner ``pipecat-ai``). The 301 rename, the deleted 404, the
-``full_name`` rename beyond case and the case-only difference are SYNTHETIC; no
-real example was recorded, so the 301 handling is unverified against a live
-rename until the first weekly run.
+2026-10-16 (owner ``pipecat-ai``). The 301 redirect SHAPE is real (verified
+against ``joyent/node``: ``Location: https://api.github.com/repositories/{id}``,
+not a ``/repos/owner/name`` URL), but the second-hop 200 body, the deleted 404,
+the ``full_name`` rename beyond case and the case-only difference are
+SYNTHETIC.
 """
 
 from __future__ import annotations
@@ -104,7 +105,23 @@ class TestClassifyResponse:
         assert r.status == check.STATUS_INACCESSIBLE
 
     @pytest.mark.parametrize("code", [301, 308])
-    def test_synthetic_redirect_reports_new_name_from_location(self, code: int) -> None:
+    def test_redirect_without_resolved_name_is_renamed_with_no_new_name(self, code: int) -> None:
+        loc = "https://api.github.com/repositories/211666"  # real shape
+        r = check.classify_response("pipecat-ai/old-name", _resp(code, headers={"location": loc}))
+        assert r.status == check.STATUS_RENAMED
+        assert r.new_name is None
+
+    @pytest.mark.parametrize("code", [301, 308])
+    def test_redirect_uses_resolved_name(self, code: int) -> None:
+        loc = "https://api.github.com/repositories/211666"
+        r = check.classify_response(
+            "pipecat-ai/old-name", _resp(code, headers={"location": loc}), "pipecat-ai/new-name"
+        )
+        assert r.status == check.STATUS_RENAMED
+        assert r.new_name == "pipecat-ai/new-name"
+
+    @pytest.mark.parametrize("code", [301, 308])
+    def test_redirect_with_repos_location_reports_new_name(self, code: int) -> None:
         loc = "https://api.github.com/repos/pipecat-ai/new-name"
         r = check.classify_response("pipecat-ai/old-name", _resp(code, headers={"location": loc}))
         assert r.status == check.STATUS_RENAMED
@@ -137,9 +154,18 @@ class TestClassifyResponse:
     def test_unexpected_status_is_inconclusive(self) -> None:
         assert check.classify_response("a/b", _resp(418)).status == check.STATUS_INCONCLUSIVE
 
-    def test_non_json_200_does_not_crash(self) -> None:
-        r = check.classify_response("a/b", httpx.Response(200, content=b"<html>"))
-        assert r.status == check.STATUS_OK
+    @pytest.mark.parametrize(
+        "response",
+        [
+            httpx.Response(200, content=b"<html>"),
+            httpx.Response(200, json=["not", "an", "object"]),
+            httpx.Response(200, json={"private": False, "archived": False}),
+            httpx.Response(200, json={"full_name": 7, "private": False}),
+        ],
+    )
+    def test_non_json_200_does_not_crash(self, response: httpx.Response) -> None:
+        r = check.classify_response("a/b", response)
+        assert r.status == check.STATUS_INCONCLUSIVE
 
 
 class TestCheckSlugErrors:
@@ -190,22 +216,73 @@ class TestClient:
         assert seen[0].headers["authorization"] == "Bearer tok"
         assert "authorization" not in seen[1].headers
 
-    def test_301_is_not_followed(self) -> None:
+    def test_301_is_not_followed_automatically(self) -> None:
+        # Exactly the explicit second request; the 301 itself is never auto-followed.
         calls: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             calls.append(request.url.path)
             if request.url.path == "/repos/pipecat-ai/old":
                 return _resp(
-                    301, headers={"location": "https://api.github.com/repos/pipecat-ai/new"}
+                    301, headers={"location": "https://api.github.com/repositories/211666"}
                 )
-            return _resp(200, _ok_body("pipecat-ai/new"))
+            return _resp(200, {"full_name": "pipecat-ai/new"})  # synthetic body
 
         with check.make_client(None, httpx.MockTransport(handler)) as client:
             r = check.check_slug(client, "pipecat-ai/old")
-        assert calls == ["/repos/pipecat-ai/old"]
+        assert calls == ["/repos/pipecat-ai/old", "/repositories/211666"]
         assert r.status == check.STATUS_RENAMED
         assert r.new_name == "pipecat-ai/new"
+
+    def test_second_hop_that_redirects_again_is_not_followed(self) -> None:
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path == "/repos/o/old":
+                return _resp(301, headers={"location": "https://api.github.com/repositories/1"})
+            return _resp(301, headers={"location": "https://api.github.com/repositories/2"})
+
+        with check.make_client(None, httpx.MockTransport(handler)) as client:
+            r = check.check_slug(client, "o/old")
+        assert calls == ["/repos/o/old", "/repositories/1"]
+        assert r.status == check.STATUS_RENAMED
+        assert r.new_name is None
+
+    @pytest.mark.parametrize(
+        "second",
+        [
+            lambda: _resp(404),
+            lambda: _resp(500),
+            lambda: httpx.Response(200, content=b"<html>"),
+            lambda: _resp(200, ["x"]),
+            lambda: _resp(200, {"name": "no-full-name"}),
+            lambda: _resp(200, {"full_name": 3}),
+            lambda: (_ for _ in ()).throw(httpx.ReadTimeout("slow")),
+        ],
+    )
+    def test_failed_second_hop_keeps_renamed_without_new_name(self, second: object) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/repos/o/old":
+                return _resp(301, headers={"location": "https://api.github.com/repositories/9"})
+            return second()  # type: ignore[operator]
+
+        with check.make_client(None, httpx.MockTransport(handler)) as client:
+            r = check.check_slug(client, "o/old")
+        assert r.status == check.STATUS_RENAMED
+        assert r.new_name is None
+
+    def test_off_host_redirect_is_not_requested(self) -> None:
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return _resp(301, headers={"location": "https://evil.example/repositories/9"})
+
+        with check.make_client("tok", httpx.MockTransport(handler)) as client:
+            r = check.check_slug(client, "o/old")
+        assert len(calls) == 1
+        assert r.status == check.STATUS_RENAMED and r.new_name is None
 
     def test_client_does_not_follow_redirects(self) -> None:
         with check.make_client(None) as client:
@@ -348,7 +425,24 @@ class TestMain:
             today=_TODAY,
             environ={},
         )
-        assert code != 0
+        assert code == check.EXIT_CATALOG
+        assert code not in (check.EXIT_STALE, check.EXIT_INCONCLUSIVE)
+
+    def test_catalog_failure_prints_on_stdout(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bad = tmp_path / "bad.toml"
+        bad.write_text("not [valid toml", encoding="utf-8")
+        for path in (bad, tmp_path / "missing.toml"):
+            code = check.main(
+                ["--catalog", str(path)],
+                transport=httpx.MockTransport(lambda r: _resp(200)),
+                today=_TODAY,
+                environ={},
+            )
+            captured = capsys.readouterr()
+            assert code == check.EXIT_CATALOG
+            assert "cannot load the catalog" in captured.out
 
     def test_runs_against_the_packaged_catalog_offline(self) -> None:
         # The shipped catalog parses and every slug is probed through the injected
@@ -447,6 +541,67 @@ class TestCurate:
 
         with curate.make_client("t", httpx.MockTransport(handler)) as client:
             assert curate.repo_stats(client, "a/b")["error"] == "HTTP 404"
+
+    def test_catalog_failure_has_its_own_exit_code_and_stdout_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code = curate.main(
+            ["--catalog", str(tmp_path / "missing.toml")],
+            transport=httpx.MockTransport(lambda r: _resp(200)),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        captured = capsys.readouterr()
+        assert code == curate.EXIT_CATALOG
+        assert curate.EXIT_CATALOG not in (curate.EXIT_OK, curate.EXIT_NO_TOKEN)
+        assert "cannot load the catalog" in captured.out
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: httpx.Response(200, content=b"<html>"),
+            lambda: _resp(200, ["x"]),
+            lambda: _resp(200, {"items": "nope"}),
+        ],
+    )
+    def test_discover_vendors_records_malformed_response(self, make: object) -> None:
+        with curate.make_client("t", httpx.MockTransport(lambda r: make())) as client:  # type: ignore[operator]
+            problems: list[str] = []
+            found = curate.discover_vendors(client, set(), problems)
+        assert not found
+        assert len(problems) == 1
+
+    def test_discover_vendors_skips_null_and_non_dict_repository(self) -> None:
+        items = [
+            {"repository": None},
+            {"repository": "str"},
+            "junk",
+            {"repository": {"full_name": "new/vendor"}},
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            problems: list[str] = []
+            found = curate.discover_vendors(client, set(), problems)
+        assert list(found) == ["new/vendor"]
+        assert problems and "3 item(s)" in problems[0]
+        assert "Code-search problems" in curate.render_report([], found, problems)
+
+    def test_repo_stats_non_dict_body_is_recorded(self) -> None:
+        with curate.make_client("t", httpx.MockTransport(lambda r: _resp(200, ["x"]))) as client:
+            assert "error" in curate.repo_stats(client, "a/b")
+
+    def test_truncated_tree_is_marked_in_report(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/repos/a/b":
+                return _resp(200, {"default_branch": "main"})
+            return _resp(200, {"truncated": True, "tree": [{"type": "blob", "path": "x.py"}]})
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            stats = curate.repo_stats(client, "a/b")
+        assert stats["truncated"] is True
+        assert "1 (truncated) source files" in curate.render_report([stats], curate.Counter())
 
     def test_script_never_opens_the_catalog_for_writing(self) -> None:
         src = (_SCRIPTS / "curate_repo_catalog.py").read_text(encoding="utf-8")

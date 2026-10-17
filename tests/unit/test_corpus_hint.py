@@ -569,6 +569,8 @@ _AWS_INDEXED = {
 
 
 class TestFrozenRealQueries:
+    """Deliberately pins the shipped catalog: a catalog edit that moves these hints must update them."""
+
     @pytest.fixture(autouse=True)
     def _shipped_catalog(self) -> Any:
         from pipecat_context_hub.shared import repo_catalog

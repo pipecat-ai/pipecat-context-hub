@@ -9,15 +9,19 @@ classify the answer:
                     ``private: true``. The catalog is public-only, so both fail.
 - ``archived``      200 with ``archived: true``
 - ``renamed``       a 301/308 redirect, or a 200 whose ``full_name`` differs from
-                    the slug beyond case. The new name is reported.
+                    the slug beyond case. The new name is reported; GitHub's real
+                    redirect target is ``/repositories/{id}``, so one more
+                    non-following GET resolves it (failure keeps ``renamed``
+                    with no new name).
 - ``inconclusive``  403/429 (rate limit), 5xx, timeout, network error, or any
-                    other unexpected answer. Reported in its own section, never
+                    other unexpected answer, including a 200 that is not a repository
+                    object (no string ``full_name``). Reported in its own section, never
                     labelled inaccessible or private.
 
 Exit codes (``aggregate_verdict``): 0 only when every entry is ok (a stale
 ``verified`` date is advisory and does not fail); 1 when any entry is
 inaccessible, archived or renamed; 2 when the only problems are inconclusive
-(re-run the job).
+(re-run the job); 3 when the catalog cannot be loaded.
 
 ``follow_redirects`` is False so a 301 is observable. ``GITHUB_TOKEN`` is sent
 as a bearer token when set and omitted otherwise.
@@ -61,6 +65,7 @@ STATUS_INCONCLUSIVE = "inconclusive"
 EXIT_OK = 0
 EXIT_STALE = 1
 EXIT_INCONCLUSIVE = 2
+EXIT_CATALOG = 3
 
 _STALE_STATUSES = frozenset({STATUS_INACCESSIBLE, STATUS_ARCHIVED, STATUS_RENAMED})
 
@@ -108,19 +113,63 @@ def _name_from_api_url(url: str) -> str | None:
     return None
 
 
-def _json_body(response: httpx.Response) -> dict[str, object]:
+def _json_object(response: httpx.Response) -> dict[str, object] | None:
+    """The body as a JSON object, or ``None`` when it is not valid JSON or not an object."""
     try:
         data = response.json()
     except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
+        return None
+    return data if isinstance(data, dict) else None
 
 
-def classify_response(slug: str, response: httpx.Response) -> EntryResult:
-    """Classify one ``/repos/{slug}`` response. Pure: no network, no clock."""
+def _json_body(response: httpx.Response) -> dict[str, object]:
+    return _json_object(response) or {}
+
+
+def _is_repositories_target(url: str) -> bool:
+    """True for ``https://api.github.com/repositories/{id}`` (GitHub's rename target)."""
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.split("/") if p]
+    return (
+        parsed.netloc == urlparse(API_BASE).netloc
+        and len(parts) == 2
+        and parts[0] == "repositories"
+        and parts[1].isdigit()
+    )
+
+
+def resolve_repositories_redirect(client: httpx.Client, response: httpx.Response) -> str | None:
+    """New ``full_name`` behind a 301/308 to ``/repositories/{id}``, else ``None``.
+
+    One extra GET that does not follow redirects (the client never does). Any
+    failure (non-200, non-JSON, no string ``full_name``, httpx error) is ``None``.
+    """
+    location = response.headers.get("location", "")
+    if not _is_repositories_target(location):
+        return None
+    try:
+        second = client.get(urlparse(location).path)
+    except httpx.HTTPError:
+        return None
+    if second.status_code != 200:
+        return None
+    full_name = (_json_object(second) or {}).get("full_name")
+    return full_name if isinstance(full_name, str) and full_name else None
+
+
+def classify_response(
+    slug: str, response: httpx.Response, resolved_name: str | None = None
+) -> EntryResult:
+    """Classify one ``/repos/{slug}`` response. Pure: no network, no clock.
+
+    ``resolved_name`` is the new name ``check_slug`` found by following a
+    ``/repositories/{id}`` redirect target one hop (``None`` when it did not or could not).
+    """
     code = response.status_code
     if code in (301, 308):
         new_name = _name_from_api_url(response.headers.get("location", ""))
+        if new_name is None:
+            new_name = resolved_name
         if new_name is None:
             body_url = _json_body(response).get("url")
             if isinstance(body_url, str):
@@ -129,13 +178,17 @@ def classify_response(slug: str, response: httpx.Response) -> EntryResult:
     if code == 404:
         return EntryResult(slug, STATUS_INACCESSIBLE, "HTTP 404 (missing or private)")
     if code == 200:
-        body = _json_body(response)
+        body = _json_object(response)
+        if body is None:
+            return EntryResult(slug, STATUS_INCONCLUSIVE, "200 body is not a JSON object")
         if body.get("private") is True:
             return EntryResult(slug, STATUS_INACCESSIBLE, "repository is private")
         if body.get("archived") is True:
             return EntryResult(slug, STATUS_ARCHIVED, "repository is archived")
         full_name = body.get("full_name")
-        if isinstance(full_name, str) and full_name.casefold() != slug.casefold():
+        if not isinstance(full_name, str):
+            return EntryResult(slug, STATUS_INCONCLUSIVE, "200 body has no string full_name")
+        if full_name.casefold() != slug.casefold():
             return EntryResult(slug, STATUS_RENAMED, "full_name differs", full_name)
         return EntryResult(slug, STATUS_OK)
     if code in (403, 429) or code >= 500:
@@ -152,9 +205,14 @@ def check_slug(client: httpx.Client, slug: str) -> EntryResult:
     """Fetch and classify one slug; any ``httpx`` failure is inconclusive."""
     try:
         response = client.get(f"/repos/{slug}")
+        resolved = (
+            resolve_repositories_redirect(client, response)
+            if response.status_code in (301, 308)
+            else None
+        )
     except httpx.HTTPError as exc:
         return classify_error(slug, exc)
-    return classify_response(slug, response)
+    return classify_response(slug, response, resolved)
 
 
 def check_slugs(client: httpx.Client, slugs: Sequence[str]) -> list[EntryResult]:
@@ -214,6 +272,12 @@ def render_report(results: Sequence[EntryResult], verified: date, today: date) -
     return "\n".join(lines)
 
 
+def _catalog_failure(message: str) -> None:
+    """One line on stdout too, so the workflow's empty-report guard files an issue."""
+    print(message)
+    print(message, file=sys.stderr)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -232,11 +296,11 @@ def main(
         else:
             catalog = load_catalog()
     except (CatalogError, OSError) as exc:
-        print(f"cannot load the catalog: {exc}", file=sys.stderr)
-        return EXIT_STALE
+        _catalog_failure(f"cannot load the catalog: {exc}")
+        return EXIT_CATALOG
     if catalog is None:
-        print("cannot load the catalog (see log)", file=sys.stderr)
-        return EXIT_STALE
+        _catalog_failure("cannot load the catalog (see log)")
+        return EXIT_CATALOG
 
     token = env.get("GITHUB_TOKEN") or None
     with make_client(token, transport) as client:
