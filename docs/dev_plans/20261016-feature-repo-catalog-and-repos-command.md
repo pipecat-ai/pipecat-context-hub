@@ -1,6 +1,6 @@
 # Repo catalog, `repos` command and corpus hints
 
-**Branch:** `feature/repo-catalog` | **Review Gates:** full | **Component:** config | **Status:** Planned (design grilled 2026-10-16; `/review-plan` runs `20261016T231344`, `20261017T004623` and `20261017T025658` after the first sign-off; the contradictions the first two found were grilled 2026-10-17; findings routed)
+**Branch:** `feature/repo-catalog` | **Review Gates:** full | **Component:** config | **Status:** Planned (design grilled 2026-10-16; independently reviewed by `/review-plan`, see Findings)
 
 ## Problem
 
@@ -44,18 +44,15 @@ or to add it. Evidence gathered on 2026-10-16:
 - No network access during tool calls (true today; this plan keeps it so). Hints come from the static catalog.
 - No automatic indexing by an agent. The agent proposes; the user runs or approves the command.
 - No change to the default repo list, and no support for non-Python/TS/RST parsing.
+- **Deferred, built only if hints prove insufficient:** a read-only `search_repo_catalog` MCP tool plus
+  a `repos search` CLI twin. `test_mapped_commands_are_registered_on_main` checks top-level command
+  names, so either register `repos search` top-level or extend `_TOOL_TO_COMMAND` and that test
+  deliberately.
 
 ## Decisions (grilled 2026-10-16)
 
 Ten decisions, each recommended once and answered by the maintainer. Where the answer changed the
-recommendation, the change is stated. Decisions 8-10, and the edits to 2, 3, 4, 6 and 7, come from
-the first `/review-plan`. Three later passes (runs `20261016T231344`, 34 findings, `20261017T004623`,
-38 findings, and `20261017T025658`, 31 findings, none Critical in any) added the writer/provenance seams, the case-fold and `--group`
-rules, the hint plumbing order and the test gaps; those edits are folded into decisions 2-4 and 6-10,
-the phases and the test plan, not listed separately. Three contradictions were grilled and resolved
-(2026-10-17): the Windows writer mirrors the reader (decision 8); taint is a command-time and
-hint-time concern, not a loader invariant (decisions 2, 3, 7); `verified` is the date of the last
-manual audit (decisions 2, 6).
+recommendation, the change is stated. Review history and grilled outcomes are in Findings.
 
 1. **TOML writer: `tomlkit`, a new runtime dependency.** `repos add/remove` edits only the
    `PIPECAT_HUB_EXTRA_REPOS` key in `~/.config/pipecat-context-hub/config.toml`, preserving comments,
@@ -114,39 +111,37 @@ manual audit (decisions 2, 6).
      offer to draft a retrieval-quality issue listing candidate repos. An optional *Candidate
      repos* field is added to `.github/ISSUE_TEMPLATE/retrieval-quality.yml`. The agent drafts; the
      user files. A read-only `search_repo_catalog` MCP tool plus a `repos search` CLI twin (required by
-     `test_every_mcp_tool_has_a_cli_command`) is a **later phase**, after hints show whether they
-     suffice.
-4. **Placement: a shared function beside `annotate_response`, not a new parameter on it.**
-   `annotate_response(result_json, index_store)` receives no query or tool name and a test
-   (`test_no_parsed_shortcut_parameter`) pins its signature. The hint is split into a compute step and an attach step in a new
-   `shared/corpus_hint.py`: `corpus_hint(index_store, *, tool, args, configured_repos, tainted_repos) -> dict | None`
-   (`args` is the raw tool arguments; the per-tool text extraction lives in the one table in that
-   module, so the front doors do not duplicate it) and `attach_corpus_hint(result_json, hint)`. Both
-   front doors (`server/main.py`, `cli_query.py`) compute the hint, call `annotate_response`, then
-   attach, in the same commit. The catalog comes from `load_catalog()` (`functools.cache`, with
-   `cache_clear()` as the test seam; a failure is a cached `None`, so it logs once). On the MCP door both annotations run in the one
-   existing `asyncio.to_thread` hop (metadata reads take the generation lock); the catalog loads once
-   per process and counts are read per call. Cache counts per index generation (via
-   `ReopeningIndexStore.add_open_listener`) only if the Phase 4 smoke run shows the cost matters. On
-   the CLI the compute step runs **before** `_maybe_warn_poor_results`, which already prints before
-   `annotate_response` (`cli_query.py`), and its presence is passed in, so suppression happens before
-   stderr is written; the attach step still runs after `annotate_response`, as on the MCP door, so the
-   two doors produce the same JSON. It adds a top-level `corpus_hint` object `{matched_groups,
-   repos_not_indexed, repos_configured_no_records, add_command, refresh_command, report_issue_url}`,
-   **absent** (the key is missing, not null) when it does not apply. `add_command` covers only repos
-   that are neither configured nor tainted, and is omitted when there are none; a group repo that is
-   configured but has no records (failed clone) goes in `repos_configured_no_records`, and
-   `refresh_command` (`pipecat-context-hub refresh`) is present only when that list is non-empty;
-   `report_issue_url` is `RETRIEVAL_QUALITY_ISSUE_URL`. When present, the CLI's existing
-   `_maybe_warn_poor_results` stderr hint is suppressed (one hint, not two) and `_SERVER_INSTRUCTIONS`
-   points at the field. A parity test mirrors `TestBothFrontDoors`. `get_hub_status` (never annotated)
-   gains `indexed_repos`, `configured_no_records` and `catalog_groups_not_indexed`.
-   `configured_no_records` needs the configured repo list, so `handle_get_hub_status` and
-   `create_server` gain `configured_repos` and `tainted_repos` providers, wired from `serve` and
-   `cli_query._dispatch` (`_QueryRuntime` gains both fields, set from
-   `config.sources.effective_repos` and `config.sources.tainted_repos` in `_query_runtime`;
-   `effective_repos` already strips tainted slugs, which is why the tainted list is a separate input).
-   Both reflect the config **at process start**, not a later `repos add`.
+     `test_every_mcp_tool_has_a_cli_command`) is **deferred** (see Non-goals).
+4. **Corpus hint: placement and contract.** A shared function pair beside `annotate_response`, not a
+   new parameter on it: `annotate_response(result_json, index_store)` receives no query or tool name,
+   and `test_no_parsed_shortcut_parameter` pins its signature.
+   - **API** (`shared/corpus_hint.py`): `corpus_hint(index_store, *, tool, args, configured_repos,
+     tainted_repos) -> dict | None` and `attach_corpus_hint(result_json, hint)`. `args` is the raw tool
+     arguments; the per-tool text extraction is one table in that module, so the front doors do not
+     duplicate it. The catalog comes from `load_catalog()` (`functools.cache`, `cache_clear()` as the
+     test seam); a load failure is a cached `None`, so it logs once.
+   - **Call order**, both front doors, landed in the same commit, producing the same JSON. MCP door
+     (`server/main.py`): compute, `annotate_response`, attach, all inside the existing
+     `asyncio.to_thread` hop (metadata reads take the generation lock). CLI door (`cli_query.py`):
+     compute, then `_maybe_warn_poor_results` (its stderr hint is suppressed when a hint exists, so
+     the user sees one hint, not two), then `annotate_response`, then attach. Counts are read per
+     call; cache them per index generation (`ReopeningIndexStore.add_open_listener`) only if the
+     Phase 4 smoke run shows the cost matters.
+   - **Output.** A top-level `corpus_hint` object `{matched_groups, repos_not_indexed,
+     repos_configured_no_records, add_command, refresh_command, report_issue_url}`, **absent** (the key
+     is missing, not null) when it does not apply. `add_command` covers only repos that are neither
+     configured nor tainted and is omitted when there are none. A group repo that is configured but has
+     no records (failed clone) goes in `repos_configured_no_records`, and `refresh_command`
+     (`pipecat-context-hub refresh`) is present only when that list is non-empty. `report_issue_url` is
+     `RETRIEVAL_QUALITY_ISSUE_URL`. `_SERVER_INSTRUCTIONS` points at the field. A parity test mirrors
+     `TestBothFrontDoors`.
+   - **Config inputs** (`configured_repos`, `tainted_repos`) are read once, at process start, from
+     `config.sources.effective_repos` and `config.sources.tainted_repos` in `_query_runtime` (which
+     gains both fields) and `serve`, and threaded through `create_server` and
+     `handle_get_hub_status`. `effective_repos` already strips tainted slugs, which is why the tainted
+     list is a separate input. A later `repos add` is not seen by a running `serve`.
+   - **`get_hub_status`** (never annotated) gains `indexed_repos`, `configured_no_records` and
+     `catalog_groups_not_indexed`, from the same providers.
 5. **`repos add` does not run `refresh`.** It edits `config.toml`, prints
    `pipecat-context-hub refresh`, and notes that a running `serve` reopens the rebuilt index itself.
 6. **Health check: existence first.** `scripts/check_repo_catalog.py` runs locally and in a new
@@ -168,91 +163,82 @@ manual audit (decisions 2, 6).
    `scripts/curate_repo_catalog.py` reproduces the 2026-10-16 manual analysis (source-file counts,
    activity, vendor discovery by code search) for a human to review; it never edits the catalog (a
    test checks the file is byte-identical after a run).
-7. **Guard rails on `repos add/remove`.**
-   - Catalog slugs add freely; any other slug needs `--unlisted` and is syntax-checked. Visibility is
-     unknowable offline: a private `--unlisted` slug fails at the next `refresh` as a per-source clone
-     error. Checks run in a fixed order: (1) default/tainted refusal, (2) slug syntax and catalog
-     membership (a well-formed slug that is not in the catalog without `--unlisted` exits 1 and says
-     to pass `--unlisted`; `--unlisted` on a catalog slug exits 1 and says to drop it, so the catalog
-     spelling stays authoritative), (3) the shadow check below, (4) the no-op. "Already configured" means present in
-     `config.toml` (casefolded), never "effective through another layer": adding a slug already in
-     `config.toml` is a no-op (exit 0) that prints `Already in config.toml` and the `refresh` reminder;
-     a successful add prints `Added <slug>` and the reminder.
-   - If a real env var or cwd `.env` sets `PIPECAT_HUB_EXTRA_REPOS`, the edit would not change the
-     effective list, so `repos add` and `repos remove` **refuse** (exit 1, naming the shadowing layer)
-     unless `--config-only` is passed. This runs before the no-op, so a slug present only in a
-     shadowing `.env` also exits 1 without `--config-only`. Contract: after a successful add **without** `--config-only`, `repos
-     list` shows the repo effective; with it, `config.toml` changes and `repos list` says the repo is
-     shadowed by that layer. The layer comes from decision 9. `repos list` prints the cwd whose `.env`
-     it consulted, because a `serve` launched from another directory reads a different `.env`, and
-     tags each slug `default`, `catalog` or `unlisted`.
-   - Default and tainted repos cannot be added or removed through `repos` (tainted is read from
-     `PIPECAT_HUB_TAINTED_REPOS` at command time).
-   - `repos remove <slug>` of a slug not in `config.toml` follows the same order: if a shadowing layer
-     sets the key it refuses (exit 1, naming the layer) unless `--config-only`, with which it is a
-     no-op (exit 0, `Not in config.toml`, naming the layer); with no shadowing layer it is a no-op
-     (exit 0, `Not in config.toml`).
-   - Case: `add` writes the slug in the catalog's spelling (as typed with `--unlisted`) and treats a
-     case-variant of a configured slug as already configured; `remove` matches casefolded and removes
-     whatever spelling is configured.
-   - `--group <name>` (on `add` and `remove`; mutually exclusive with a positional slug and with
-     `--unlisted`) acts on the catalog group's `parseable`, non-tainted repos: `add` skips repos
-     already in `config.toml` and prints the `parseable = false` and tainted ones it skipped;
-     `remove` removes only the group's repos present in `config.toml`. When nothing changes (including
-     a group whose members are all tainted or `parseable = false`) it exits 0 and prints `Nothing to
-     add` / `Nothing to remove` plus the skipped list. The shadow refusal and `--config-only` apply
-     as for a single slug; an unknown group is exit 1 listing the valid groups.
-   - `repos add` is offline; a bad slug surfaces as a per-source clone error at the next `refresh`.
+7. **`repos add/remove` contract.** Checks run in this fixed order for a positional slug on `add`
+   and `remove`; the first that applies decides.
 
-8. **`tomlkit` writer contract** (grilled 2026-10-17). The writer resolves the path with
-   `resolve_global_config_path()` (honours `PIPECAT_HUB_CONFIG_FILE`); for a symlink it writes the temp
-   file in the target's directory and renames over the resolved target, so the link survives. Trust
-   is checked once, in `env_loading`, on the same open file descriptor that is then read (the
-   reader's TOCTOU-free design): a new public `read_trusted_config(path) -> str | None` opens the
-   file, applies every predicate `load_global_config` applies (non-regular, foreign-owned,
-   world-writable, a foreign-owned or world-writable-without-sticky containing directory, a
-   foreign-owned symlink hop), and returns the text (`None` for a missing file) or raises
-   `ConfigNotTrusted(reason)`. The trust helpers stay private; the writer never reimplements them, so
-   it cannot write a file the reader would ignore. The writer creates a new file
-   0600 and its directory 0700, and preserves an existing file's mode. It edits only the top-level
-   `PIPECAT_HUB_EXTRA_REPOS` key and writes a native array of strings; a CSV-string value is read and
-   rewritten as an array. A non-array, non-string existing value is refused (exit 1) rather than
-   overwritten, and so is an existing file that is not valid TOML or not trusted (exit 1, the file
-   untouched, the message names the reason; `load_global_config` keeps ignoring such a file with a
-   warning). Before the rename it re-parses the temp file through a new
-   `parse_global_config(path) -> dict[str, object]` (`read_trusted_config` plus `tomllib.loads`; the
-   raw values, raising on untrusted or invalid TOML) and aborts, leaving the original untouched, if the
-   list differs from the intended one. `load_global_config` cannot do this job: it takes no path and
-   only sets `os.environ` keys that are absent **or blank**. `read_trusted_config` and
-   `parse_global_config` are extracted in Phase 2(b) and `load_global_config` becomes a wrapper that
-   catches the raises, warns, coerces and merges. Modules: `shared/config_writer.py` (the writer, using `read_trusted_config`), `cli_repos.py` with `register_repos_commands(main)`
-   (the `cli_install.py` pattern). The read-modify-write holds an exclusive advisory lock on `config.toml.lock`, a sibling of the
-   **resolved target** (so two invocations via different symlink paths take the same lock). Contention:
-   `IndexLock.acquire` is non-blocking, so the writer retries a bounded number of times
-   (`attempts`/`delay`, a few seconds in all) and then exits 1 saying another `repos` command is
-   running. Fail-open (the lock cannot be created or used: unwritable directory, symlinked lock file,
-   foreign-owned file, ENOLCK/EOPNOTSUPP, Windows) proceeds unlocked with a stderr warning; the atomic
-   rename still prevents a torn file, and only the lost-update window remains, accepted for a
-   single-user CLI. `IndexLock` takes a data directory and a name, so Phase 2(c) reuses it as
-   `IndexLock(config_dir, ...)` only if its lock-file naming and trust checks suit a config
-   directory, and otherwise writes a small flock helper with the same fail-open rules. On Windows
-   the writer **mirrors the reader** (grilled 2026-10-17): the regular-file check only, no 0600/0700
-   guarantee, a round-trip test on Windows CI, the POSIX-only tests skipped there.
-9. **Layer provenance** (grilled 2026-10-17). `load_env_layers` first snapshots the non-blank
-   `PIPECAT_HUB_*` keys already in `os.environ` as layer `env`, because neither loader records a key it
-   skips. `load_cwd_dotenv` and `load_global_config` then return a per-key map `{key: layer}` of the
-   keys they actually set, mirroring each loader's *own* rule, which differ today: `load_cwd_dotenv`
-   uses presence (`key not in os.environ`, so a blank real env var hides a `.env` value), while
-   `load_global_config` treats a blank as absent. So a blank real env var plus a non-blank `.env` plus
-   `config.toml` resolves to `config.toml`, and `repos add` does not refuse. Each loader sets only keys
-   still absent or blank, but a blank counts as set by `load_cwd_dotenv` (it writes the empty value
-   because the key was absent) and is then set again by `load_global_config`, so the key sets can
-   overlap. The merge is `{**env, **dotenv, **global_config}`: the loader that ran last, and so
-   determined the final `os.environ` value, wins. `load_env_layers` exposes the map; `main()` stores it in `ctx.obj["env_provenance"]` for the `repos` subcommand, and the
-   return value is optional so the dashboard and smoke scripts are untouched. `repos` never re-reads a
-   layer to decide which one is in force (the writer's verification parse in decision 8 is a separate
-   concern). This is the first Phase 2 task after the pure parse extraction (the loaders merge into
-   `os.environ` first-writer-wins and record no source today).
+   | # | Check | Outcome |
+   |---|---|---|
+   | 1 | the slug is a default (`SourceConfig.repos`) or tainted (`PIPECAT_HUB_TAINTED_REPOS`, read at command time) repo | exit 1 |
+   | 2 | slug syntax and catalog membership | exit 1 if malformed; exit 1 if not in the catalog and `--unlisted` is absent (says to pass it); exit 1 if in the catalog and `--unlisted` is given (says to drop it, so the catalog spelling stays authoritative) |
+   | 3 | a real env var or cwd `.env` sets `PIPECAT_HUB_EXTRA_REPOS` (decision 9) and `--config-only` is absent | exit 1, naming the layer |
+   | 4 | no-op: `add` of a slug already in `config.toml`, or `remove` of one not in it (casefolded) | exit 0: `Already in config.toml` / `Not in config.toml`; with `--config-only` under a shadowing layer it also names that layer |
+   | 5 | write | `Added <slug>` / `Removed <slug>` plus the `refresh` reminder |
+
+   - "Already configured" means present in `config.toml`, never "effective through another layer".
+     Check 3 precedes check 4, so a slug present only in a shadowing `.env` also exits 1 without
+     `--config-only`.
+   - Case: `add` writes the catalog's spelling (as typed, with `--unlisted`), and treats a case-variant of
+     a configured slug as already configured; `remove` matches casefolded and removes whatever spelling
+     is configured.
+   - `--group <name>` (on `add` and `remove`; mutually exclusive with a positional slug and `--unlisted`)
+     acts on the catalog group's `parseable`, non-tainted repos: `add` skips repos already in
+     `config.toml` and prints the `parseable = false` and tainted ones it skipped; `remove` removes only
+     the group's repos present in `config.toml`. Checks 3 to 5 apply as above. When nothing changes
+     (including a group whose members are all tainted or `parseable = false`) it exits 0 and prints
+     `Nothing to add` / `Nothing to remove` plus the skipped list; an unknown group exits 1 listing the
+     valid groups.
+   - `repos list` shows the effective list and the consulted cwd (a `serve` launched from another
+     directory reads a different `.env`), tags each slug `default`, `catalog` or `unlisted`, and names
+     the shadowing layer for any repo that `config.toml` holds but a higher layer hides.
+   - `repos add` is offline. Visibility is unknowable offline, so a bad or private `--unlisted` slug
+     surfaces as a per-source clone error at the next `refresh`.
+8. **`tomlkit` writer contract** (grilled 2026-10-17).
+   - **Path.** `resolve_global_config_path()` (honours `PIPECAT_HUB_CONFIG_FILE`). For a symlink the
+     temp file is written in the target's directory and renamed over the resolved target, so the link
+     survives.
+   - **Trust, checked once, in `env_loading`.** A new public `read_trusted_config(path) -> str | None`
+     opens the file, applies every predicate `load_global_config` applies on the same open descriptor
+     (non-regular, foreign-owned, world-writable, a foreign-owned or world-writable-without-sticky
+     containing directory, a foreign-owned symlink hop), and returns the text (`None` for a missing
+     file) or raises `ConfigNotTrusted(reason)`. The trust helpers stay private and the writer never
+     reimplements them, so it cannot write a file the reader would ignore. A new
+     `parse_global_config(path) -> dict[str, object]` is `read_trusted_config` plus `tomllib.loads`
+     (raw values; raises on untrusted or invalid TOML). `load_global_config` becomes a wrapper that
+     catches the raises, warns, coerces and merges; it stays unable to do the writer's job because it
+     takes no path and sets only `os.environ` keys that are absent **or blank**. Both are extracted in
+     Phase 2(b).
+   - **Edit.** Only the top-level `PIPECAT_HUB_EXTRA_REPOS` key, as a native array of strings; a
+     CSV-string value is read and rewritten as an array. Comments and other keys are preserved. A new
+     file is created 0600 in a 0700 directory; an existing file's mode is kept.
+   - **Refusals** (exit 1, file untouched, message names the reason): a non-array, non-string existing
+     value; an existing file that is not valid TOML; an untrusted file. (`load_global_config` keeps
+     ignoring such a file with a warning.)
+   - **Verification.** Before the rename the writer re-parses the temp file through
+     `parse_global_config` and aborts, leaving the original untouched, if the list differs from the
+     intended one.
+   - **Concurrency.** None: no lock. Two simultaneous `repos` invocations can lose one edit (last write
+     wins); the atomic rename prevents a torn file. Accepted for a single-user CLI. A lock was
+     considered and dropped (its fail-open and Windows cases cost more than the race).
+   - **Windows** mirrors the reader (grilled 2026-10-17): the regular-file check only, no 0600/0700
+     guarantee, a round-trip test on Windows CI, POSIX-only tests skipped there.
+   - **Modules.** `shared/config_writer.py` (the writer) and `cli_repos.py` with
+     `register_repos_commands(main)` (the `cli_install.py` pattern).
+9. **Layer provenance** (grilled 2026-10-17). `repos` must say which layer is in force, and the
+   loaders merge into `os.environ` first-writer-wins and record no source today.
+   - **Contract.** `load_env_layers` returns `dict[str, str]`, key to layer (`env`, `.env`,
+     `config.toml`); `main()` stores it in `ctx.obj["env_provenance"]` for the `repos` subcommand. The
+     return value is optional, so the dashboard and smoke scripts are untouched. `repos` never re-reads
+     a layer to decide which one is in force.
+   - **Construction.** First snapshot the non-blank `PIPECAT_HUB_*` keys already in `os.environ` as
+     layer `env`, because neither loader records a key it skips. Then each loader returns the keys it
+     actually set, mirroring its own rule, which differ today: `load_cwd_dotenv` uses presence
+     (`key not in os.environ`, so a blank real env var hides a `.env` value), `load_global_config` treats
+     a blank as absent. So a blank real env var, a non-blank `.env` value and a `config.toml` value
+     resolve to `config.toml`, and `repos add` does not refuse.
+   - **Merge.** The key sets can overlap: `load_cwd_dotenv` writes an absent key as blank and
+     `load_global_config` then sets it. The merge is `{**env, **dotenv, **global_config}`, so the loader
+     that ran last, and determined the final `os.environ` value, wins.
+   - **Order.** This is the first Phase 2 task after the parse extraction.
 10. **"Indexed" means at least one record** (grilled 2026-10-17). `indexed_repos(index_store)` in
     `shared/corpus_hint.py` reads `get_counts_by_repo` (the store is passed in, so `shared/`
     imports nothing from `services/`). Serve's handle is `ServingIndex`/`ReopeningIndexStore`, which
@@ -289,7 +275,7 @@ the `repos` test table states which outcome it expects.
 
 | Process | Reads | Writes | When |
 |---|---|---|---|
-| `repos` (one-shot CLI) | env layers via the provenance map, `config.toml`, the catalog data file | `config.toml` and its lock file only | on demand |
+| `repos` (one-shot CLI) | env layers via the provenance map, `config.toml`, the catalog data file | `config.toml` only | on demand |
 | `refresh` (one-shot) | the effective repo list from all layers | the index | user-run, after an add |
 | `serve` (long-lived) | the index (reopened after a refresh), the catalog, `configured_repos` and `tainted_repos` (read at startup) | nothing | per tool call |
 | one-shot query CLI | the index, the catalog, `configured_repos` and `tainted_repos` (for the hint and `status`) | nothing | per invocation |
@@ -355,9 +341,6 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
    `config.toml` holds the `.env` list minus the defaults (44 slugs today) and `effective_repos` is the
    defaults plus that list; confirm both counts rather than "the 47-repo list". Then delete the `.env`
    line, run `repos list`, then `refresh`. `.env.backup` exists. Record anything awkward.
-7. **Later, only if hints prove insufficient:** `search_repo_catalog` MCP tool + `repos search` CLI.
-   `test_mapped_commands_are_registered_on_main` checks top-level command names, so either register
-   `repos search` top-level or extend `_TOOL_TO_COMMAND` and that test deliberately.
 
 ## Test plan
 
@@ -389,9 +372,7 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
   symlinked config, `PIPECAT_HUB_CONFIG_FILE`, non-regular, world-writable and foreign-owned refusal,
   mode kept or created 0600, directory created 0700, and a failed re-parse leaving the original
   untouched, the containing-directory and symlink-hop refusals, an existing file that is not valid
-  TOML refused with the file untouched, lock contention (retries, then exit 1) and lock fail-open
-  (warns, still writes atomically), and two concurrent writers not losing an edit (POSIX-only).
-  POSIX-only cases are skipped on Windows, where a round-trip test asserts the mirror-the-reader
+  TOML refused with the file untouched, and an untrusted file refused. POSIX-only cases are skipped on Windows, where a round-trip test asserts the mirror-the-reader
   contract.
 - `repos` table: layers (env var / cwd `.env` / blank `.env` / `config.toml` only / none) x (add /
   remove / list / add `--config-only`), asserting `SourceConfig.effective_repos`, the shadow refusal
@@ -471,16 +452,21 @@ correctly after a `refresh`, but a repo added with `repos add` after startup is 
 - [ ] Phase 4: corpus hints
 - [ ] Phase 5: catalog health and curation scripts
 - [ ] Phase 6: dogfood migration
-- [ ] Phase 7: `search_repo_catalog` (only if hints prove insufficient)
 
 ## Findings
 
+### Review history
+
+| Run | Findings | Notes |
+|---|---|---|
+| first `/review-plan` (2026-10-17) | 38 | folded into decisions 2-4, 6-10 |
+| `20261016T231344` | 34 | writer and provenance seams, case-fold, `--group`, hint plumbing |
+| `20261017T004623` | 38 | three contradictions grilled: Windows writer mirrors the reader; taint is a command-time and hint-time concern, not a loader invariant; `verified` is the last manual audit date |
+| `20261017T025658` | 31 | taken at the recommended resolution without a grill: `read_trusted_config` owns open-and-trust; `--unlisted` on a catalog slug exits 1; the writer lock was later dropped in a consolidation pass |
+
+No pass found a Critical finding. Most findings in each later pass were in edits from the pass before,
+so decisions 4, 7, 8 and 9 were rewritten as contracts (2026-10-17) rather than patched again.
+
 ### Review Waivers
 
-None. All 38 findings of the first `/review-plan`, all 34 of run `20261016T231344`, all 38 of run
-`20261017T004623` and all 31 of run `20261017T025658` (taken with the recommended resolution, no
-grill: lock contention retries then exits 1 and fails open with a warning; `read_trusted_config` owns
-open-and-trust; `--unlisted` on a catalog slug exits 1) were routed into the plan above, with the recommended resolution taken for each
-("fix all"); the three contradictions that were real decisions were grilled and accepted as recommended
-(Windows writer mirrors the reader; taint is not a loader invariant; `verified` is the manual-audit
-date). The health-check recommendation was overridden by the maintainer (see decision 6).
+None. Every finding of the four passes was routed into the plan above, with the recommended resolution taken for each. The health-check recommendation was overridden by the maintainer (see decision 6).
