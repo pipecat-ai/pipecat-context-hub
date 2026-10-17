@@ -4,7 +4,7 @@
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
 | 2026-10-15 | feature | Windows index locking: shared locks via `LockFileEx`, `--reset-index` vs running `serve`, Windows CI for the lock path | Planned (design notes) | vr000m | _(not started)_ | `20261015-feature-windows-index-locking.md` |
-| 2026-10-16 | feature | Repo catalog, `repos list/add/remove` and corpus hints for vendor/example questions | Planned (design agreed; open questions in plan) | vr000m | _(not started)_ | `20261016-feature-repo-catalog-and-repos-command.md` |
+| 2026-10-16 | feature | Repo catalog, `repos list/add/remove` and corpus hints for vendor/example questions | Planned (design reviewed 2026-10-17; ready to implement) | vr000m | _(not started)_ | `20261016-feature-repo-catalog-and-repos-command.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
