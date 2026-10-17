@@ -26,9 +26,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   dangling symlink whose target ends in `/`, which the kernel's open would fail)
   and re-walks it just before the atomic rename, refusing with the original
   untouched if a symlink was retargeted in between; the reader vets the same
-  walked target. `repos list` prints a configured entry that holds a
-  non-printable character (an escape sequence from a hostile `.env`, say) as its
-  `repr()` tagged `[invalid]`. Run `refresh` afterwards to index.
+  walked target. No configured string reaches the terminal raw: every line of
+  `repos` and `refresh` output, every refusal and every log line (load-time
+  warnings included) passes through one output boundary
+  (`shared/terminal.py`) that escapes any non-printable character (an escape
+  sequence from a hostile `.env`, say) other than the message's own newlines
+  and tabs, and a configured entry or `config.toml` / `.env` path that holds
+  one is also flagged as its `repr()` tagged `[invalid]` where it is named.
+  Run `refresh` afterwards to index.
 - **Repo catalog** (`src/pipecat_context_hub/data/repo_catalog.toml`): curated
   public repos grouped by vendor or topic. It generates the extras block in
   `.env.example` and the "Repo catalog" section of `docs/configuration.md`
