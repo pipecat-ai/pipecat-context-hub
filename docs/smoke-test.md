@@ -65,9 +65,10 @@ The checklist referenced from [AGENTS.md](../AGENTS.md#pre-merge-live-mcp-smoke-
     called out below. For the reliable check that the const export from
     `pipecat-ai/pipecat-client-web` is indexed with its full arrow-function
     body (not truncated at the parameter list), use
-    `search_api("PipecatClientProvider", chunk_type="function")` or
-    `get_code_snippet(symbol="PipecatClientProvider")` — both return it as
-    the top/only hit.
+    `search_api("PipecatClientProvider", chunk_type="function")` (at the default
+    `limit` the definition is in the top 3; test 52 pins why) or
+    `get_code_snippet(symbol="PipecatClientProvider")`, which returns it as
+    the top hit.
 22. `search_api("SmallWebRTCTransport", class_name="SmallWebRTCTransport")` —
     returns TS class from `pipecat-ai/pipecat-client-web-transports` (verifies
     nested-package TS detection for `pipecat-prebuilt`, formerly
@@ -109,9 +110,13 @@ misdiagnosed as ranking misses before the filtered/symbol-lookup form
 confirmed both were indexed correctly).
 
 30. `search_examples("TTS pipeline", pipecat_version="0.0.95", domain="backend")`
-    — all hits have `version_compatibility: "newer_required"` (framework
-    examples now pin pipecat `1.3.0`, and community examples pin `>=0.0.98` /
-    `>=1.0.0` — all newer than the queried 0.0.95)
+    — no hit is `compatible`: pinned hits are `newer_required` (framework
+    examples pin the indexed release, and community examples pin `>=0.0.98` /
+    `>=1.0.0` — all newer than the queried 0.0.95). A repo with no pipecat pin
+    (e.g. `pipecat-ai/pipecat.ai-agents`) scores `unknown`, so expect a few of
+    those. The score only annotates; it does not re-rank, so the order matches
+    test 33 (relevance noise on a generic query like this is accepted — see the
+    Review Checklist in AGENTS.md).
 31. `search_examples("TTS pipeline", pipecat_version="0.0.110", domain="backend")`
     — mixed by pin: framework `pipecat`/`pipecat-examples` hits pin `1.3.0` so
     they score `newer_required` at 0.0.110; sub-1.0 community pins (e.g.
@@ -373,6 +378,17 @@ the indexed pipecat version; re-verify against the current registry if they drif
     and logical file size; `tests/integration/test_report_hint_e2e.py` freezes
     the query against synthetic corruption. This bounded size check does not
     prove all persisted graph data is healthy.
+
+52. **Ranking does not depend on `limit` (2026-10-16).** Each backend is asked
+    for a fixed pool (`_MIN_CANDIDATES`, 50) regardless of the caller's `limit`,
+    which then only truncates. Frozen from a live failure:
+    `search_api("PipecatClientProvider", chunk_type="function")` dropped the
+    definition (`client-react/src/PipecatClientProvider`) at `limit` ≤ 15 and
+    ranked it first at `limit` ≥ 20, because exactly `limit` candidates let files
+    that merely mention the name fill the pool. Run it at `limit` 5, 10, 20 and 50:
+    the definition is present at every one, and each shorter result is a prefix
+    of the `limit=50` result. Repeat with `search_api("send_dtmf")`. Regression:
+    `tests/unit/test_retrieval.py::TestCandidatePool`.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
