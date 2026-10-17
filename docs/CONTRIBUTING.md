@@ -111,10 +111,11 @@ Retrieval:
       `archived` and `status` are refused: visibility is the health check's job.
     - A slug appears in one group only and is never a default repo; an alias
       belongs to one group only. Both compare case-insensitively.
-    - No text (slug, note, kind, description, alias) may hold a control
-      character, a line or paragraph separator, or a bidi or zero-width
-      character; a `description` may not hold `|`; and no text may hold
-      `BEGIN GENERATED` or `END GENERATED`.
+    - No text (slug, note, kind, description, alias) may hold any control
+      (Unicode category Cc) or format (Cf: bidi, zero-width, BOM) character,
+      U+2028 / U+2029 (Zl / Zp), or anything `str.splitlines()` splits on; a
+      `description` may not hold `|`; and no text may hold `BEGIN GENERATED`
+      or `END GENERATED`.
 
 ## Project Structure
 
