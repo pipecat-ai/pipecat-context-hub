@@ -20,7 +20,7 @@ import neither CLI module, so the layer stays leaf-level.
 :func:`same_dir`, :func:`is_inside` and :func:`resolution_chain` are the
 general filesystem-identity primitives shared by every deletion and trust guard
 in this project (``env_loading``'s ``config_collides_with_dir()`` /
-``_config_parent_is_trusted()`` and ``cli.py``'s ``_refuse_unsafe_data_dir()``).
+``_config_parent_refusal()`` and ``cli.py``'s ``_refuse_unsafe_data_dir()``).
 They live here rather than in ``env_loading`` because they are path predicates,
 not env-var/config-file loading.
 """
@@ -108,7 +108,7 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
       (``config_collides_with_dir``'s concern);
     * a hop whose *holding directory* another local account can write is
       enough to redirect the whole lookup, even though both endpoints sit in
-      well-permissioned directories (``_config_parent_is_trusted``'s concern).
+      well-permissioned directories (``_config_parent_refusal``'s concern).
 
     So this walks ``path`` one component at a time, expanding each symlink by a
     single ``readlink`` (never ``realpath``, which would skip exactly the
