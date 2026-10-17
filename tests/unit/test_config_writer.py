@@ -761,6 +761,35 @@ class TestWriterTargetsTheFileTheReaderOpens:
         assert _tree(tmp_path) == tree
         assert {p: p.read_bytes() for p in before} == before
 
+    # A symlink target ending in a separator (`cfg.toml/`): the kernel requires
+    # a directory there, so open(link) fails with ENOTDIR, while `Path` drops
+    # the separator and a walk on `.parts` lands on a creatable `cfg.toml`.
+    @pytest.mark.parametrize("existing", ["create", "replace"])
+    @pytest.mark.parametrize("chain", ["direct", "chained", "slash-on-first-hop"])
+    def test_link_target_with_trailing_separator_is_refused(
+        self, chain, existing, tmp_path, monkeypatch
+    ):
+        home = _dir(tmp_path / "home")
+        link = home / "config.toml"
+        if chain == "direct":
+            os.symlink("cfg.toml/", link)
+        elif chain == "chained":
+            os.symlink("hop", link)
+            os.symlink("cfg.toml/", home / "hop")
+        else:
+            os.symlink("hop/", link)
+            os.symlink("cfg.toml", home / "hop")
+        if existing == "replace":
+            (home / "cfg.toml").write_text('OTHER = "kept"\n')
+            (home / "cfg.toml").chmod(0o600)
+        _use(monkeypatch, link)
+        before = {p: p.read_bytes() for p in home.iterdir() if p.is_file() and not p.is_symlink()}
+        tree = _tree(tmp_path)
+        with pytest.raises(ConfigWriteRefused, match="separator"):
+            update_extra_repos(add=["a/b"])
+        assert _tree(tmp_path) == tree
+        assert {p: p.read_bytes() for p in before} == before
+
     def _accepted(self, path: Path, expected_file: Path, existing: str) -> None:
         if existing == "replace":
             expected_file.write_text('OTHER = "kept"\n')

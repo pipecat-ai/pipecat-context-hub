@@ -34,10 +34,22 @@ from collections import deque
 from pathlib import Path
 from typing import Final, NamedTuple
 
-# Upper bound on symlink hops followed by :func:`resolution_chain`. Chosen to
+# Upper bound on symlink hops followed by `_walk`, the one walk behind
+# :func:`resolution_chain` and :func:`lookup_target`. Chosen to
 # sit above any legitimate layout (the kernel's own ELOOP limit is typically
 # 40 on Linux, 32 on macOS) while still terminating on a cycle.
 _MAX_SYMLINK_HOPS: Final = 64
+
+# Queued by `_walk` after a symlink target that ends in a separator (`name/`,
+# `name/.`): the kernel then requires what precedes it to be a directory.
+# NUL can never be a path component, so it cannot collide with a real name.
+_MUST_BE_DIR: Final = "\0"
+
+
+def _ends_in_separator(raw: str) -> bool:
+    """True when the raw link text ends in a separator (or `/.`), which ``Path`` drops."""
+    seps = [os.sep] + ([os.altsep] if os.altsep else [])
+    return any(raw.endswith(sep) or raw.endswith(sep + os.curdir) for sep in seps)
 
 
 def is_reparse_link(path: Path) -> bool:
@@ -152,8 +164,9 @@ def _walk(path: Path, max_hops: int) -> _Walk:
     ``endpoint`` is where the walk ends (``None`` when it stopped on the hop
     bound); ``problem`` names the first step at which the kernel's lookup of
     the same path would fail where this walk carries on (a ``..`` after a
-    component that is not an existing directory, the hop bound, an unreadable
-    link). :func:`resolution_chain` ignores ``problem`` (best-effort by
+    component that is not an existing directory, a symlink target ending in a
+    separator whose endpoint is not an existing directory, the hop bound, an
+    unreadable link). :func:`resolution_chain` ignores ``problem`` (best-effort by
     contract); :func:`lookup_target` refuses on it.
     """
     try:
@@ -175,6 +188,20 @@ def _walk(path: Path, max_hops: int) -> _Walk:
 
     while pending:
         name = pending.popleft()
+        if name == _MUST_BE_DIR:
+            # A link target `name/` makes the kernel demand a directory there.
+            # Only the endpoint matters: an intermediate component must be a
+            # directory anyway (a creator makes it one), and a `..` after it is
+            # checked below. `Path(...).parts` drops the separator, so without
+            # this a dangling `link -> "cfg.toml/"` walked to a creatable file
+            # the kernel's open(link) then fails with ENOTDIR.
+            final = all(n in ("", os.curdir, _MUST_BE_DIR) for n in pending)
+            if problem is None and final and not resolved.is_dir():
+                problem = (
+                    f"a symlink target ends in a separator, so the lookup needs {resolved} "
+                    "to be an existing directory"
+                )
+            continue
         if not name or name == os.curdir:
             continue
         if name == os.pardir:
@@ -205,11 +232,14 @@ def _walk(path: Path, max_hops: int) -> _Walk:
         if hops > max_hops:
             return _Walk(visited, None, problem or f"more than {max_hops} symlink hops")
         try:
-            target = Path(os.readlink(current))
+            raw_target = os.readlink(current)
+            target = Path(raw_target)
         except (OSError, ValueError, NotImplementedError):
             problem = problem or f"the symlink {current} cannot be read"
             resolved = current
             continue
+        if _ends_in_separator(raw_target):
+            pending.appendleft(_MUST_BE_DIR)  # checked once the target's own parts are walked
         if target.is_absolute():
             # Fully-qualified target: restart from *its* anchor, which on
             # Windows may be a different drive than the one the walk started on.

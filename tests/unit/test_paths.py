@@ -227,6 +227,30 @@ class TestLookupTarget:
         path = tmp_path / "hop" / "sub" / ".." / "new" / "config.toml"
         assert str(lookup_target(path)) == os.path.realpath(path)
 
+    @pytest.mark.parametrize("target", ["cfg.toml/", "cfg.toml/."])
+    @pytest.mark.parametrize("existing", ["missing", "file"])
+    def test_link_target_ending_in_a_separator_needs_a_directory(
+        self, target: str, existing: str, tmp_path: Path
+    ):
+        if existing == "file":
+            (tmp_path / "cfg.toml").write_text("")
+        os.symlink(target, tmp_path / "link")
+        with pytest.raises(LookupMismatch, match="separator"):
+            lookup_target(tmp_path / "link")
+
+    def test_link_target_ending_in_a_separator_through_a_chain(self, tmp_path: Path):
+        os.symlink("hop", tmp_path / "link")
+        os.symlink("cfg.toml/", tmp_path / "hop")
+        with pytest.raises(LookupMismatch, match="separator"):
+            lookup_target(tmp_path / "link")
+
+    def test_link_target_ending_in_a_separator_to_a_directory_is_fine(self, tmp_path: Path):
+        (tmp_path / "real").mkdir()
+        os.symlink("real/", tmp_path / "link")
+        assert lookup_target(tmp_path / "link") == tmp_path / "real"
+        new = tmp_path / "link" / "config.toml"  # intermediate: a directory either way
+        assert str(lookup_target(new)) == os.path.realpath(new)
+
     def test_hop_bound(self, tmp_path: Path):
         (tmp_path / "loop").symlink_to("loop")
         with pytest.raises(LookupMismatch):
