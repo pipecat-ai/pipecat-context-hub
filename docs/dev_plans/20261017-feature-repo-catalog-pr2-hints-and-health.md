@@ -336,7 +336,7 @@ Put the result and the mutation-check results in the PR description. Restore the
 
 - [x] Phase 3a: `get_counts_by_repo` on the serving index
 - [x] Phase 3b: `indexed_repos` and `groups_not_indexed`
-- [ ] Phase 3c: config values and `get_hub_status`
+- [x] Phase 3c: config values and `get_hub_status`
 - [ ] Phase 4: corpus hints
 - [ ] Phase 5: catalog health and curation scripts
 - [ ] Phase 4b: seam test against the real `repos` command
@@ -353,3 +353,5 @@ _(none yet; this plan has not been through `/review-plan`)_
 - **Phase 3b:** `groups_not_indexed` / `missing_repos` take no tainted set. Phase 4's hint must exclude tainted repos (parent Decision 3) while `catalog_groups_not_indexed` is meant to share the one predicate (Decision 10). Resolve in Phase 4: add a keyword-only casefolded `tainted` argument to the shared predicate rather than forking it, or record that status ignores taint. Important.
 - **Phase 3b:** `indexed_repos` logs `IndexUnavailableError` at WARNING; `annotate_response` logs it at DEBUG (expected refresh race). Match it when Phase 4 wires the hint in. Minor.
 - **Phase 3b:** `indexed_repos` is typed against a private narrow `_CountsSource` protocol, not `ServingIndex` as Decision 10 says. Structurally compatible; chosen so test fakes need no cast. Minor.
+- **Phase 3c:** `catalog_groups_not_indexed` passes the catalog to `groups_not_indexed` without a tainted set, so a group whose only unindexed repo is tainted stays listed forever while the Phase 4 hint skips it (same root as the 3b Important note). Fix the predicate once, in Phase 4. Minor.
+- **Phase 3c:** `handle_get_hub_status` makes one more synchronous `get_counts_by_repo` call on the MCP event loop; `server/main.py`'s `_annotate` moves its reads off the loop with `asyncio.to_thread`. Follows the handler's existing pattern; revisit if latency shows. Minor.

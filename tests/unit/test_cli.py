@@ -6168,6 +6168,20 @@ class TestServeRefreshGate:
             assert handle.get_counts_by_repo() == {"owner/repo": 3}
             store.get_counts_by_repo.assert_called_once_with()
 
+    def test_serve_passes_config_repo_sets_to_create_server(self, tmp_path, monkeypatch):
+        """`serve` captures `effective_repos` / `tainted_repos` once, as frozensets."""
+        monkeypatch.setenv("PIPECAT_HUB_EXTRA_REPOS", "acme/one,taint/me")
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "taint/me")
+        expected = HubConfig().sources
+        with self._run_serve(tmp_path, monkeypatch, [self._ready_store()]) as (_, captured):
+            kwargs = captured["kwargs"]
+            assert isinstance(kwargs["configured_repos"], frozenset)
+            assert isinstance(kwargs["tainted_repos"], frozenset)
+            assert kwargs["configured_repos"] == frozenset(expected.effective_repos)
+            assert "acme/one" in kwargs["configured_repos"]
+            assert "taint/me" not in kwargs["configured_repos"]
+            assert kwargs["tainted_repos"] == frozenset({"taint/me"})
+
 
 class TestServeRerankerTelemetry:
     """`serve`'s startup reranker-disabled log line gets the same

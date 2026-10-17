@@ -1018,6 +1018,8 @@ def serve(ctx: click.Context) -> None:
             idle_tracker=idle_tracker,
             # Back off while a refresh runs; reopen after any refresh.
             unavailable_reason=index_store.unavailable_reason,
+            configured_repos=frozenset(config.sources.effective_repos),
+            tainted_repos=frozenset(config.sources.tainted_repos),
         )
 
         def _close_index_store_on_watchdog_shutdown() -> None:

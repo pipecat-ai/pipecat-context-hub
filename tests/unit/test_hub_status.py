@@ -355,3 +355,171 @@ class TestHandleGetHubStatus:
         assert "server_version" in parsed
         assert "total_records" in parsed
         assert "counts_by_type" in parsed
+
+
+# ---------------------------------------------------------------------------
+# Catalog coverage fields (indexed / configured-no-records / not-indexed groups)
+# ---------------------------------------------------------------------------
+
+_CATALOG_TEXT = """
+verified = 2026-10-17
+
+[groups.acme]
+kind = "vendor"
+description = "Acme"
+aliases = ["acme"]
+repos = [{ slug = "acme/one" }]
+
+[groups.beta]
+kind = "vendor"
+description = "Beta"
+aliases = ["beta"]
+repos = [{ slug = "beta/one" }]
+
+[groups.gamma]
+kind = "topic"
+description = "Gamma"
+aliases = ["gamma"]
+repos = [{ slug = "gamma/one" }]
+"""
+
+
+class _StatusStore:
+    """Fake serving index for status: counts, stats, metadata, data_dir only."""
+
+    data_dir = Path("/tmp/hub")
+
+    def __init__(self, counts: Any) -> None:
+        self._counts = counts
+
+    def get_index_stats(self) -> dict[str, Any]:
+        return {"total": 0, "counts_by_type": {}, "commit_shas": []}
+
+    def get_all_metadata(self) -> dict[str, str]:
+        return {}
+
+    def get_counts_by_repo(self) -> Any:
+        if isinstance(self._counts, Exception):
+            raise self._counts
+        return self._counts
+
+
+class _NoCountsStore:
+    """Like ``_StatusStore`` but lacking ``get_counts_by_repo`` entirely."""
+
+    data_dir = Path("/tmp/hub")
+
+    def get_index_stats(self) -> dict[str, Any]:
+        return {"total": 0, "counts_by_type": {}, "commit_shas": []}
+
+    def get_all_metadata(self) -> dict[str, str]:
+        return {}
+
+
+@pytest.fixture
+def catalog_text(monkeypatch):
+    """Serve ``_CATALOG_TEXT`` as the shipped catalog; clear the load cache around the test."""
+    from pipecat_context_hub.shared import repo_catalog
+
+    text = {"value": _CATALOG_TEXT}
+    repo_catalog.load_catalog.cache_clear()
+    monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: text["value"])
+    yield text
+    repo_catalog.load_catalog.cache_clear()
+
+
+async def _status(store: Any, **kwargs: Any) -> HubStatusOutput:
+    from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+    return HubStatusOutput.model_validate_json(await handle_get_hub_status({}, store, **kwargs))
+
+
+class TestHubStatusCoverageFields:
+    def test_new_fields_default_to_empty_lists(self):
+        output = HubStatusOutput.model_validate({"server_version": "x"})
+        assert output.indexed_repos == []
+        assert output.configured_no_records == []
+        assert output.catalog_groups_not_indexed == []
+
+    async def test_indexed_configured_no_records_and_uncovered(self, catalog_text):
+        store = _StatusStore({"acme/one": 5, "beta/one": 0, "docs.pipecat.ai": 9})
+        output = await _status(
+            store,
+            configured_repos=frozenset({"acme/one", "beta/one"}),
+            tainted_repos=frozenset(),
+        )
+        assert [s.casefold() for s in output.indexed_repos] == ["acme/one"]
+        assert output.configured_no_records == ["beta/one"]
+        # beta is configured but empty; gamma is not configured at all.
+        assert output.catalog_groups_not_indexed == ["beta", "gamma"]
+
+    async def test_case_variant_slug_counts_as_indexed(self, catalog_text):
+        store = _StatusStore({"owner/repo": 3})
+        output = await _status(
+            store, configured_repos=frozenset({"Owner/Repo"}), tainted_repos=frozenset()
+        )
+        assert "owner/repo" in [s.casefold() for s in output.indexed_repos]
+        assert output.configured_no_records == []
+
+    async def test_fully_indexed_catalog_has_no_uncovered_groups(self, catalog_text):
+        store = _StatusStore({"acme/one": 1, "beta/one": 1, "gamma/one": 1})
+        output = await _status(store, configured_repos=frozenset(), tainted_repos=frozenset())
+        assert output.catalog_groups_not_indexed == []
+
+    async def test_kwargs_are_optional(self, catalog_text):
+        """Existing callers pass neither set; the response still builds."""
+        output = await _status(_StatusStore({"acme/one": 1}))
+        assert output.configured_no_records == []
+        assert output.catalog_groups_not_indexed == ["beta", "gamma"]
+
+
+class TestHubStatusUnreadableCounts:
+    """A counts failure leaves the three fields empty and never raises."""
+
+    @pytest.mark.parametrize(
+        "store",
+        [
+            pytest.param(_StatusStore(RuntimeError("boom")), id="raises"),
+            pytest.param(_NoCountsStore(), id="method-missing"),
+            pytest.param(_StatusStore(MagicMock()), id="non-mapping"),
+        ],
+    )
+    async def test_fields_empty_and_response_returned(self, catalog_text, store):
+        output = await _status(
+            store,
+            configured_repos=frozenset({"acme/one"}),
+            tainted_repos=frozenset(),
+        )
+        assert output.indexed_repos == []
+        assert output.configured_no_records == []
+        assert output.catalog_groups_not_indexed == []
+        assert output.server_version == _SERVER_VERSION
+
+    async def test_bare_magicmock_store(self, catalog_text):
+        store = MagicMock()
+        store.get_index_stats.return_value = {"total": 0, "counts_by_type": {}, "commit_shas": []}
+        store.get_all_metadata.return_value = {}
+        store.data_dir = Path("/tmp/hub")
+        output = await _status(store, configured_repos=frozenset({"acme/one"}))
+        assert output.indexed_repos == []
+        assert output.configured_no_records == []
+        assert output.catalog_groups_not_indexed == []
+
+
+class TestHubStatusCatalogLoadFailure:
+    @pytest.mark.parametrize("broken", ["this is [not toml", "verified = 2026-10-17\n"])
+    async def test_broken_catalog_gives_empty_groups_only(self, catalog_text, broken):
+        from pipecat_context_hub.shared import repo_catalog
+
+        catalog_text["value"] = broken
+        repo_catalog.load_catalog.cache_clear()
+        assert repo_catalog.load_catalog() is None
+        output = await _status(
+            _StatusStore({"acme/one": 2}),
+            configured_repos=frozenset({"acme/one", "beta/one"}),
+            tainted_repos=frozenset(),
+        )
+        assert output.catalog_groups_not_indexed == []
+        # The count itself is still readable, so the other fields still work.
+        assert [s.casefold() for s in output.indexed_repos] == ["acme/one"]
+        assert output.configured_no_records == ["beta/one"]

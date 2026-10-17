@@ -490,6 +490,135 @@ class TestGetHubStatusRerankerFields:
         assert calls == []
 
 
+_STATUS_CATALOG = """
+verified = 2026-10-17
+
+[groups.acme]
+kind = "vendor"
+description = "Acme"
+aliases = ["acme"]
+repos = [{ slug = "acme/one" }]
+
+[groups.beta]
+kind = "vendor"
+description = "Beta"
+aliases = ["beta"]
+repos = [{ slug = "beta/one" }]
+
+[groups.gamma]
+kind = "topic"
+description = "Gamma"
+aliases = ["gamma"]
+repos = [{ slug = "gamma/one" }]
+"""
+
+
+class TestGetHubStatusCoverageOverMcp:
+    """The MCP door threads ``configured_repos`` / ``tainted_repos`` into get_hub_status."""
+
+    @pytest.fixture(autouse=True)
+    def _catalog(self, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        repo_catalog.load_catalog.cache_clear()
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: _STATUS_CATALOG)
+        yield
+        repo_catalog.load_catalog.cache_clear()
+
+    @staticmethod
+    def _store(counts: Any) -> Any:
+        class _Stub:
+            data_dir = "/tmp/hub"
+
+            def get_index_stats(self) -> dict[str, Any]:
+                return {"total": 0, "counts_by_type": {}, "commit_shas": []}
+
+            def get_all_metadata(self) -> dict[str, str]:
+                return {}
+
+            def get_counts_by_repo(self) -> Any:
+                if isinstance(counts, Exception):
+                    raise counts
+                return counts
+
+        return _Stub()
+
+    @staticmethod
+    async def _call_status(server: Any) -> dict[str, Any]:
+        import json
+
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        result = await entry.handler(
+            cast(Any, None),
+            types.CallToolRequestParams(name="get_hub_status", arguments={}),
+        )
+        assert isinstance(result, types.CallToolResult)
+        assert not result.is_error
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        payload: dict[str, Any] = json.loads(block.text)
+        return payload
+
+    async def test_reports_the_three_coverage_fields(self, mock_retriever):
+        server = create_server(
+            mock_retriever,
+            index_store=self._store({"acme/one": 5, "beta/one": 0}),
+            configured_repos=frozenset({"acme/one", "beta/one"}),
+            tainted_repos=frozenset({"bad/repo"}),
+        )
+        payload = await self._call_status(server)
+        assert [s.casefold() for s in payload["indexed_repos"]] == ["acme/one"]
+        assert payload["configured_no_records"] == ["beta/one"]
+        assert payload["catalog_groups_not_indexed"] == ["beta", "gamma"]
+
+    async def test_case_variant_configured_slug(self, mock_retriever):
+        server = create_server(
+            mock_retriever,
+            index_store=self._store({"owner/repo": 3}),
+            configured_repos=frozenset({"Owner/Repo"}),
+        )
+        payload = await self._call_status(server)
+        assert "owner/repo" in [s.casefold() for s in payload["indexed_repos"]]
+        assert payload["configured_no_records"] == []
+
+    async def test_omitting_the_sets_keeps_existing_callers_working(self, mock_retriever):
+        server = create_server(mock_retriever, index_store=self._store({"acme/one": 1}))
+        payload = await self._call_status(server)
+        assert payload["configured_no_records"] == []
+
+    @pytest.mark.parametrize(
+        "counts", [RuntimeError("boom"), MagicMock()], ids=["raises", "non-mapping"]
+    )
+    async def test_unreadable_counts_never_break_the_response(self, mock_retriever, counts):
+        server = create_server(
+            mock_retriever,
+            index_store=self._store(counts),
+            configured_repos=frozenset({"acme/one"}),
+            tainted_repos=frozenset(),
+        )
+        payload = await self._call_status(server)
+        assert payload["indexed_repos"] == []
+        assert payload["configured_no_records"] == []
+        assert payload["catalog_groups_not_indexed"] == []
+        assert payload["server_version"]
+
+    async def test_catalog_load_failure_leaves_groups_empty(self, mock_retriever, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: "not [valid toml")
+        repo_catalog.load_catalog.cache_clear()
+        server = create_server(
+            mock_retriever,
+            index_store=self._store({"acme/one": 5}),
+            configured_repos=frozenset({"acme/one", "beta/one"}),
+            tainted_repos=frozenset(),
+        )
+        payload = await self._call_status(server)
+        assert payload["catalog_groups_not_indexed"] == []
+        assert payload["configured_no_records"] == ["beta/one"]
+
+
 class TestTransport:
     def test_transport_module_importable(self):
         from pipecat_context_hub.server import transport

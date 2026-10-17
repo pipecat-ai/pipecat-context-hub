@@ -570,6 +570,22 @@ class HubStatusOutput(BaseModel):
         "a larger value means the tag is only a floor, as it is for a 'head' "
         "refresh, which tracks the default branch.",
     )
+    indexed_repos: list[str] = Field(
+        default_factory=list,
+        description="Casefolded slugs of repos with at least one indexed record. "
+        "Empty when the per-repo counts could not be read.",
+    )
+    configured_no_records: list[str] = Field(
+        default_factory=list,
+        description="Configured repos that have no indexed records (configured "
+        "but not yet refreshed, or empty). Empty when the counts could not be read.",
+    )
+    catalog_groups_not_indexed: list[str] = Field(
+        default_factory=list,
+        description="Names of repo-catalog groups with at least one parseable "
+        "repo that is not indexed. Empty when the catalog failed to load or the "
+        "counts could not be read.",
+    )
     reranker_enabled: bool = Field(
         default=False,
         description="Whether cross-encoder reranking is ACTIVE right now "

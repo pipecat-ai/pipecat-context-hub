@@ -1292,3 +1292,168 @@ class TestStdoutStaysJson:
         assert payload["text"] == _JSON_HOSTILE
         assert payload["items"] == [_JSON_HOSTILE]
         assert not any(not (ch in "\n\t" or ch.isprintable()) for ch in result.stdout)
+
+
+_STATUS_CATALOG = """
+verified = 2026-10-17
+
+[groups.acme]
+kind = "vendor"
+description = "Acme"
+aliases = ["acme"]
+repos = [{ slug = "acme/one" }]
+
+[groups.beta]
+kind = "vendor"
+description = "Beta"
+aliases = ["beta"]
+repos = [{ slug = "beta/one" }]
+
+[groups.gamma]
+kind = "topic"
+description = "Gamma"
+aliases = ["gamma"]
+repos = [{ slug = "gamma/one" }]
+"""
+
+
+class TestStatusCoverageFields:
+    """`status` reports indexed / configured-no-records / uncovered catalog groups."""
+
+    @pytest.fixture(autouse=True)
+    def _catalog(self, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        repo_catalog.load_catalog.cache_clear()
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: _STATUS_CATALOG)
+        yield
+        repo_catalog.load_catalog.cache_clear()
+
+    @staticmethod
+    def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
+        return {
+            "PIPECAT_HUB_DATA_DIR": str(tmp_path),
+            "PIPECAT_HUB_EXTRA_REPOS": "acme/one,beta/one",
+            **extra,
+        }
+
+    @staticmethod
+    def _default_counts() -> dict[str, int]:
+        from pipecat_context_hub.shared.config import HubConfig
+
+        return {slug: 1 for slug in HubConfig().sources.repos}
+
+    def _status(self, store: MagicMock, tmp_path: Path, **env: str) -> dict[str, Any]:
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore", return_value=store),
+            patch.dict("os.environ", self._env(tmp_path, **env)),
+        ):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0, result.stderr
+        payload: dict[str, Any] = json.loads(result.stdout)
+        return payload
+
+    def test_reports_the_three_fields(self, tmp_path):
+        store = _index_store_mock(total=10)
+        store.get_counts_by_repo.return_value = {
+            **self._default_counts(),
+            "acme/one": 5,
+            "beta/one": 0,
+        }
+        payload = self._status(store, tmp_path)
+        assert "acme/one" in [s.casefold() for s in payload["indexed_repos"]]
+        assert payload["configured_no_records"] == ["beta/one"]
+        assert payload["catalog_groups_not_indexed"] == ["beta", "gamma"]
+
+    def test_case_variant_configured_slug(self, tmp_path):
+        store = _index_store_mock(total=10)
+        store.get_counts_by_repo.return_value = {**self._default_counts(), "acme/one": 2}
+        payload = self._status(
+            store,
+            tmp_path,
+            PIPECAT_HUB_EXTRA_REPOS="Acme/One",
+        )
+        assert "acme/one" in [s.casefold() for s in payload["indexed_repos"]]
+        assert payload["configured_no_records"] == []
+
+    @pytest.mark.parametrize("failure", ["raises", "non-mapping"])
+    def test_unreadable_counts_leave_the_fields_empty(self, tmp_path, failure):
+        store = _index_store_mock(total=10)
+        if failure == "raises":
+            store.get_counts_by_repo.side_effect = RuntimeError("boom")
+        # else: the bare MagicMock auto-attribute returns a MagicMock, not a mapping
+        payload = self._status(store, tmp_path)
+        assert payload["indexed_repos"] == []
+        assert payload["configured_no_records"] == []
+        assert payload["catalog_groups_not_indexed"] == []
+        assert payload["total_records"] == 10
+
+    def test_catalog_load_failure_leaves_groups_empty(self, tmp_path, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: "not [valid toml")
+        repo_catalog.load_catalog.cache_clear()
+        store = _index_store_mock(total=10)
+        store.get_counts_by_repo.return_value = {**self._default_counts(), "acme/one": 5}
+        payload = self._status(store, tmp_path)
+        assert payload["catalog_groups_not_indexed"] == []
+        assert payload["configured_no_records"] == ["beta/one"]
+
+    def test_query_runtime_captures_the_config_sets_once(self, tmp_path):
+        from pipecat_context_hub.cli_query import _query_runtime
+        from pipecat_context_hub.shared.config import HubConfig
+
+        store = _index_store_mock(total=10)
+        env = self._env(tmp_path, PIPECAT_HUB_TAINTED_REPOS="acme/one")
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore", return_value=store),
+            patch.dict("os.environ", env),
+        ):
+            config = HubConfig()
+            with _query_runtime(config, needs_embeddings=False) as rt:
+                assert isinstance(rt.configured_repos, frozenset)
+                assert isinstance(rt.tainted_repos, frozenset)
+                assert rt.configured_repos == frozenset(config.sources.effective_repos)
+                assert "acme/one" not in rt.configured_repos
+                assert "beta/one" in rt.configured_repos
+                assert rt.tainted_repos == frozenset({"acme/one"})
+
+    def test_both_front_doors_emit_identical_coverage_fields(self, tmp_path):
+        from pipecat_context_hub.shared.config import HubConfig
+
+        counts = {**self._default_counts(), "acme/one": 5, "beta/one": 0}
+        cli_store = _index_store_mock(total=10)
+        cli_store.get_counts_by_repo.return_value = counts
+        cli_payload = self._status(cli_store, tmp_path)
+
+        with patch.dict("os.environ", self._env(tmp_path)):
+            sources = HubConfig().sources
+            configured = frozenset(sources.effective_repos)
+            tainted = frozenset(sources.tainted_repos)
+        mcp_store = _index_store_mock(total=10)
+        mcp_store.get_counts_by_repo.return_value = counts
+        mcp_store.data_dir = tmp_path
+        server = create_server(
+            MagicMock(), index_store=mcp_store, configured_repos=configured, tainted_repos=tainted
+        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        from mcp import types
+
+        import asyncio
+
+        async def _call() -> Any:
+            return await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name="get_hub_status", arguments={}),
+            )
+
+        result = asyncio.run(_call())
+        assert isinstance(result, types.CallToolResult)
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        mcp_payload = json.loads(block.text)
+
+        for key in ("indexed_repos", "configured_no_records", "catalog_groups_not_indexed"):
+            assert cli_payload[key] == mcp_payload[key], key
+        assert mcp_payload["configured_no_records"] == ["beta/one"]

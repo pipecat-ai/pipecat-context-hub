@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Set
 from typing import Any, TypeVar
 
+from pipecat_context_hub.shared.corpus_hint import (
+    configured_no_records,
+    groups_not_indexed,
+    indexed_repos,
+)
 from pipecat_context_hub.shared.interfaces import ServingIndex
+from pipecat_context_hub.shared.repo_catalog import load_catalog
 from pipecat_context_hub.shared.types import HubStatusOutput, RerankerStatus
 
 logger = logging.getLogger(__name__)
@@ -33,12 +39,19 @@ async def handle_get_hub_status(
     arguments: dict[str, Any],
     index_store: ServingIndex,
     reranker_status: RerankerStatus | None = None,
+    *,
+    configured_repos: Set[str] = frozenset(),
+    tainted_repos: Set[str] = frozenset(),
 ) -> str:
     """Return index health metadata: freshness, record counts, commit SHAs.
 
     *reranker_status* reflects live runtime state (not configured intent),
     built by the CLI after the reranker is constructed or skipped. When
     omitted, reranker fields report as disabled.
+
+    *configured_repos* and *tainted_repos* are captured once at process start
+    (``config.sources.effective_repos`` / ``tainted_repos``). An unreadable
+    per-repo count leaves the three repo-status fields empty.
     """
     # Import here to use the same version string as the server.
     from pipecat_context_hub.server.main import _SERVER_VERSION
@@ -54,6 +67,11 @@ async def handle_get_hub_status(
         # reranking is off, so leave disabled_reason unset.
         reranker_status = RerankerStatus(enabled=False)
 
+    indexed = indexed_repos(index_store)
+    # Tainted slugs are never reported as missing coverage.
+    tainted = {s.casefold() for s in tainted_repos}
+    configured = [s for s in configured_repos if s.casefold() not in tainted]
+
     output = HubStatusOutput(
         server_version=_SERVER_VERSION,
         last_refresh_at=metadata.get("last_refresh_at"),
@@ -65,6 +83,9 @@ async def handle_get_hub_status(
         framework_version=metadata.get("framework_version"),
         indexed_framework_version=metadata.get("indexed_framework_version"),
         indexed_framework_commits_ahead=commits_ahead,
+        indexed_repos=sorted(indexed) if indexed is not None else [],
+        configured_no_records=configured_no_records(configured, indexed),
+        catalog_groups_not_indexed=groups_not_indexed(load_catalog(), indexed),
         reranker_enabled=reranker_status.enabled,
         reranker_model=reranker_status.model,
         reranker_configured_model=reranker_status.configured_model,

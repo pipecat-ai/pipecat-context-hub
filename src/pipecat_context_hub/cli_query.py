@@ -268,6 +268,9 @@ class _QueryRuntime:
     # caller can check ``.enabled`` *after* dispatch — see
     # ``_maybe_warn_reranker_load_failed``.
     cross_encoder: CrossEncoderReranker | None
+    # Repo slugs captured once from ``config.sources``; see ``handle_get_hub_status``.
+    configured_repos: frozenset[str] = frozenset()
+    tainted_repos: frozenset[str] = frozenset()
 
 
 def _quiet_query_logging(ctx: click.Context) -> None:
@@ -369,6 +372,8 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
             index_store=index_store,
             reranker_status=reranker_status,
             cross_encoder=cross_encoder,
+            configured_repos=frozenset(config.sources.effective_repos),
+            tainted_repos=frozenset(config.sources.tainted_repos),
         )
     finally:
         index_store.close()
@@ -385,7 +390,13 @@ def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
 
     if tool == "get_hub_status":
         return asyncio.run(
-            handle_get_hub_status(args, runtime.index_store, runtime.reranker_status)
+            handle_get_hub_status(
+                args,
+                runtime.index_store,
+                runtime.reranker_status,
+                configured_repos=runtime.configured_repos,
+                tainted_repos=runtime.tainted_repos,
+            )
         )
     if tool == "check_deprecation":
         dep_map = getattr(runtime.retriever, "deprecation_map", None)

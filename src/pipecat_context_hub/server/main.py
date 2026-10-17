@@ -6,7 +6,7 @@ import logging
 import re
 import contextlib
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Set
 from pathlib import Path
 from typing import Any
 
@@ -193,6 +193,9 @@ def create_server(
     reranker_status_provider: Callable[[], RerankerStatus] | None = None,
     idle_tracker: IdleTracker | None = None,
     unavailable_reason: Callable[[], str | None] | None = None,
+    *,
+    configured_repos: Set[str] = frozenset(),
+    tainted_repos: Set[str] = frozenset(),
 ) -> Server:
     """Create and configure the MCP server with all tool handlers.
 
@@ -208,6 +211,9 @@ def create_server(
     call. When it returns a message (e.g. an index rebuild is in progress),
     the call is answered with that message as a tool error instead of touching
     the index, so the calling agent can retry later.
+
+    *configured_repos* and *tainted_repos* are the repo slugs captured once at
+    process start from ``config.sources``; ``get_hub_status`` reports against them.
     """
     tool_registry = tuple(iter_tool_definitions(include_hub_status=index_store is not None))
 
@@ -270,7 +276,13 @@ def create_server(
             # get_hub_status has a different dispatch signature (needs index_store)
             if name == "get_hub_status" and index_store is not None:
                 status = reranker_status_provider() if reranker_status_provider else None
-                result_json = await handle_get_hub_status(args, index_store, status)
+                result_json = await handle_get_hub_status(
+                    args,
+                    index_store,
+                    status,
+                    configured_repos=configured_repos,
+                    tainted_repos=tainted_repos,
+                )
                 return types.CallToolResult(
                     content=[types.TextContent(type="text", text=result_json)]
                 )
