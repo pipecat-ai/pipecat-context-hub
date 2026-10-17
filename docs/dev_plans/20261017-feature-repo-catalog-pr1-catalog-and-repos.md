@@ -78,7 +78,9 @@ Facts a phase worker needs and cannot cheaply rediscover:
   test `importlib.resources.files(...)/"data/repo_catalog.toml"` is a file, and run the validation command.
 - Initial data: every non-default public slug in the current `.env.example`. Four slugs there are
   already defaults; drop those duplicates. The equality test subtracts the live default list
-  (`SourceConfig.model_fields['repos'].default`) before counting; hardcode no number. Group as in parent Decision 2.
+  (`SourceConfig.model_fields['repos'].default`) before counting; hardcode no number. Group as in parent Decision 2, with ONE GROUP PER VENDOR (AWS, Tavus, Murf, Supermemory
+  each their own group; no catch-all "other providers" group): PR 2's frozen-query expectations depend on it
+  (Murf and Supermemory queries must not hint while Tavus and AWS do).
 - `shared/repo_catalog_render.py` stays pure functions: catalog to block text, and splice of text to
   text. Paths are resolved only at its `python -m` entry. It rewrites a delimited generated block inside
   `.env.example` (header prose and non-repo settings stay outside the markers) and a generated catalog
@@ -94,6 +96,8 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - The equality test, the regenerated `.env.example` and the docs section land in this one commit.
   `test_repo_catalog.py` is Windows-eligible (pure parsing, no permission bits) and joins the
   `ci.yml` Windows file list here; the subprocess and wheel checks carry a POSIX skip if they fail there.
+- Catalog test pinning the vendor rule: no group mixes vendors under an "other"/"misc"-style name, and each
+  vendor named above resolves to its own group.
 
 ### Phase 2a: `tomlkit` dependency
 
@@ -160,7 +164,9 @@ Facts a phase worker needs and cannot cheaply rediscover:
   Decision 7 check-order table, `--group`, `--unlisted`, `--config-only`, `repos list` tags and the
   consulted-cwd line.
 - Membership for check 4 and the `repos list` shadow line comes only from `parse_global_config`
-  (CSV or array, casefolded). Provenance decides the layer. `os.environ` is never consulted for
+  (CSV or array, casefolded). Provenance decides the layer. The shadow refusal fires only when the effective env
+  value is NON-BLANK: a blank `.env` value does not shadow (`load_cwd_dotenv` uses presence,
+  `load_global_config` non-blank), pinned by a test row. `os.environ` is never consulted for
   membership, and `cli_repos` never raw-parses `config.toml`.
 - `cli_repos.py` is the only place that maps `ConfigWriteRefused` and `ConfigNotTrusted` to `EXIT_INVALID_INPUT`.
 - Add `EXIT_INVALID_INPUT = 1` to `shared/exit_codes.py` and migrate `cli_query._EXIT_BAD_INPUT` to it in
