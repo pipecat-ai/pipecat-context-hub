@@ -209,7 +209,7 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
   - `test_server.py` (the line-864 pattern): `_SERVER_INSTRUCTIONS` pins `corpus_hint`, `--unlisted` and
     the draft-not-file wording; `retrieval-quality.yml` carries the optional *Candidate repos* field.
 - The catalog-load-failure half lives here: with `load_catalog` returning `None` (seam: patch
-  `_read_catalog_text` to return a broken catalog, with `load_catalog.cache_clear()` between cases) there is no `corpus_hint` key on either door, and the
+  `_read_catalog_text` to return a broken catalog, with `load_catalog.cache_clear()` before and after each case) there is no `corpus_hint` key on either door, and the
   CLI stderr hint is still printed.
 - Frozen queries: the four strings in Context, copied verbatim into `test_corpus_hint.py`. For each, assert
   against a fake fixture index (exposing `get_counts_by_repo` only, so the module stays Windows-eligible)
@@ -300,7 +300,7 @@ exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.
 - Fixture index: a real on-disk `IndexStore` (`create=True`, no model needed), filled with records built
   like `_make_record(repo=<slug>)` in `tests/unit/test_index_store.py`. Copy that pattern; do not import
   the private helper. Use a fixture catalog by patching `_read_catalog_text` (PR 1's seam), with `load_catalog.cache_clear()`
-  between cases.
+  before and after each case.
 - With a temp `config.toml`-only layout (no env var, no `.env`): `repos add <catalog slug>` then a new
   `_query_runtime` puts the slug in `configured_repos`. A tainted slug yields neither field.
 - Group-level expectations. In a two-repo group with one repo added, `repos_not_indexed` lists the other
