@@ -1,9 +1,10 @@
 """Render the repo catalog into ``.env.example`` and ``docs/configuration.md``.
 
 Pure functions (catalog to block text, text to text splice) plus a ``python -m``
-entry that resolves paths. Defaults come from ``SourceConfig.model_fields``,
-never the env-aware ``effective_repos``, and no env layer is loaded, so output is
-identical on every machine.
+entry that resolves paths. Default repos are never rendered (``parse_catalog``
+rejects them against the shipped ``SourceConfig()`` defaults), nothing reads the
+env-aware ``effective_repos`` and no env layer is loaded, so output is identical
+on every machine.
 
     python -m pipecat_context_hub.shared.repo_catalog_render [--bump-verified] [--check]
 """

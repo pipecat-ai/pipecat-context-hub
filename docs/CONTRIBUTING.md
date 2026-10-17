@@ -89,9 +89,10 @@ Retrieval:
   - Repos with `src/` layouts are Python AST-indexed for `search_api`
   - Repos with `.pyi` stubs at root are also AST-indexed
   - Repos with `package.json`/`tsconfig.json` are tree-sitter-indexed
-  - Users add extra repos with `pipecat-context-hub repos add <owner/repo>` (or
-    `--group NAME`), which edits `config.toml`; setting the env var or a `.env`
-    still works
+  - Users add extra repos with `pipecat-context-hub repos add <owner/repo>` (a
+    catalog repo; a slug outside the catalog needs `--unlisted`) or
+    `repos add --group NAME`, which edit `config.toml`; setting the env var or a
+    `.env` still works
   - The curated bundles (by topic and by vendor: NVIDIA, Google, AWS, other
     providers) live in `src/pipecat_context_hub/data/repo_catalog.toml`. The
     `.env.example` block and the `docs/configuration.md` section are generated

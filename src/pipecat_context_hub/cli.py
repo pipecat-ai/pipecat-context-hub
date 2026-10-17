@@ -1397,6 +1397,12 @@ def refresh(
 
         # Clean up repos removed from configuration (P2: stale data from
         # repos no longer in effective_repos would persist indefinitely).
+        # Membership is by exact spelling, not `slug_key`: index records are
+        # keyed by the spelling refresh ingested, and only the effective
+        # spelling (first wins, `effective_repos`) is refreshed, so records
+        # under another case variant are stale and handled like any
+        # unconfigured repo (warn, or delete with --prune). Taint matching
+        # stays `is_tainted` (slug_key), so tainted cleanup is unconditional.
         configured = set(config.sources.effective_repos)
         all_meta = index_store.get_all_metadata()
         for meta_key in all_meta:
