@@ -830,3 +830,77 @@ def env_loading_reason(path: Path) -> str:
     with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
         env_loading.check_config_write_target(path)
     return excinfo.value.reason
+
+
+@_posix_only
+class TestRenameTargetIsRecheckedBeforeReplace:
+    """The file replaced is the file ``open(path)`` reaches at the rename: a
+    symlink retargeted after the target was derived (here, during the re-parse
+    verification) is refused, both targets untouched and the temp file gone."""
+
+    def _retarget_during_reparse(
+        self, monkeypatch: pytest.MonkeyPatch, link: Path, new_target: str
+    ) -> None:
+        real = env_loading.parse_global_config  # what config_writer binds
+
+        def flip(path: Path) -> dict[str, object]:
+            result = real(path)
+            link.unlink()
+            os.symlink(new_target, link)
+            return result
+
+        monkeypatch.setattr(config_writer, "parse_global_config", flip)
+
+    @pytest.mark.parametrize("existing", ["create", "replace"])
+    @pytest.mark.parametrize("new_target", ["b/config.toml", "nope/../b/config.toml"])
+    def test_retargeted_link_is_refused(self, existing, new_target, tmp_path, monkeypatch):
+        home = _dir(tmp_path / "home")
+        a = _dir(home / "a")
+        _dir(home / "b")
+        if existing == "replace":
+            (a / "config.toml").write_text('OTHER = "kept"\n')
+            (a / "config.toml").chmod(0o600)
+        link = home / "config.toml"
+        os.symlink("a/config.toml", link)
+        _use(monkeypatch, link)
+        before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file() and not p.is_symlink()}
+        self._retarget_during_reparse(monkeypatch, link, new_target)
+        with pytest.raises(ConfigWriteRefused, match="changed while it was being edited"):
+            update_extra_repos(add=["a/b"])
+        after = {p: p.read_bytes() for p in home.rglob("*") if p.is_file() and not p.is_symlink()}
+        assert after == before  # no temp file left, neither target written
+        assert _stray_files(a) == []
+
+    @pytest.mark.parametrize("existing", ["create", "replace"])
+    def test_unchanged_link_still_writes(self, existing, tmp_path, monkeypatch):
+        home = _dir(tmp_path / "home")
+        a = _dir(home / "a")
+        if existing == "replace":
+            (a / "config.toml").write_text('OTHER = "kept"\n')
+            (a / "config.toml").chmod(0o600)
+        link = home / "config.toml"
+        os.symlink("a/config.toml", link)
+        _use(monkeypatch, link)
+        update_extra_repos(add=["a/b"])
+        assert env_loading.parse_global_config(link)[EXTRA_REPOS_ENV] == ["a/b"]
+
+
+@_posix_only
+class TestWriteTargetCheckUsesTheKernelWalk:
+    """``check_config_write_target`` is correct standalone: it vets the
+    directories ``lookup_target`` reaches (the writer's target), and refuses a
+    lookup that walk cannot prove, instead of trusting ``realpath``."""
+
+    def test_dotdot_after_a_missing_component_is_refused_standalone(self, tmp_path):
+        home = _dir(tmp_path / "home")
+        with pytest.raises(env_loading.ConfigNotTrusted, match=r"\.\."):
+            env_loading.check_config_write_target(Path(f"{home}/nope/../config.toml"))
+
+    def test_vets_the_walked_parent_not_realpaths(self, tmp_path):
+        """``realpath`` collapses ``nope/..`` inside a link target to a trusted
+        directory; the kernel's walk cannot get there, so the check refuses."""
+        home = _dir(tmp_path / "home")
+        _dir(home / "real")
+        os.symlink("nope/../real/config.toml", home / "config.toml")
+        with pytest.raises(env_loading.ConfigNotTrusted):
+            env_loading.check_config_write_target(home / "config.toml")

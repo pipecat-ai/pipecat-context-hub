@@ -19,7 +19,12 @@ array or an absent key becomes a fresh array. The module never exits; callers ma
 the write itself) to exit codes.
 
 No lock: two simultaneous invocations can lose one edit (last write wins); the
-atomic ``os.replace`` prevents a torn file.
+atomic ``os.replace`` prevents a torn file. The rename target is re-derived
+from ``path`` immediately before ``os.replace`` and the edit refused if it
+moved (a symlink retargeted while the file was checked), which narrows but
+cannot close the window: without a lock or an fd-relative rename, a retarget
+in the instant between that re-check and the rename still lands the file at
+the old target. That residual race is an accepted limit.
 """
 
 from __future__ import annotations
@@ -171,6 +176,22 @@ def _same_newlines(original: str | None, rendered: str) -> str:
     return rendered
 
 
+def _require_same_target(path: Path, target: Path) -> None:
+    """Raise :class:`ConfigWriteRefused` unless ``path`` still resolves to ``target``."""
+    try:
+        now = lookup_target(path)
+    except LookupMismatch as exc:
+        raise ConfigWriteRefused(
+            f"{redact_home_in_text(str(path))} changed while it was being edited: "
+            f"{redact_home_in_text(str(exc))}"
+        ) from exc
+    if now != target:
+        raise ConfigWriteRefused(
+            f"{redact_home_in_text(str(path))} changed while it was being edited (it now "
+            f"leads to {redact_home_in_text(str(now))}, not {redact_home_in_text(str(target))})"
+        )
+
+
 def _ensure_dir(directory: Path) -> None:
     """Create missing directories 0700 (existing ones are left alone).
 
@@ -290,6 +311,11 @@ def update_extra_repos(*, add: Iterable[str] = (), remove: Iterable[str] = ()) -
         if got_list != after or not _same(got_rest, expected_rest):
             raise ConfigWriteRefused("re-parse of the edited config differs from the intended edit")
 
+        # The file replaced must be the one open(path) reaches at the rename,
+        # not the one it reached before the trust checks: re-walk now and
+        # refuse if a hop was retargeted in between (residual race: module
+        # docstring).
+        _require_same_target(path, target)
         os.replace(tmp, target)
     except BaseException:
         with contextlib.suppress(OSError):

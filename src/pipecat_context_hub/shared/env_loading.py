@@ -30,7 +30,9 @@ from pipecat_context_hub.shared.env_keys import (
     split_csv,
 )
 from pipecat_context_hub.shared.paths import (
+    LookupMismatch,
     is_inside,
+    lookup_target,
     redact_home,
     redact_home_in_text,
     resolution_chain,
@@ -658,7 +660,9 @@ def _link_owner_refusal(config_path: Path, uid: int) -> str | None:
     return None
 
 
-def _config_parent_refusal(config_path: Path, uid: int) -> str | None:
+def _config_parent_refusal(
+    config_path: Path, uid: int, *, resolved: Path | None = None
+) -> str | None:
     """A refusal (logged) when any directory on config.toml's path is another user's to rewrite.
 
     A per-file mode check cannot see this: write permission on a *directory*
@@ -686,16 +690,26 @@ def _config_parent_refusal(config_path: Path, uid: int) -> str | None:
     two directories that directly hold the file — the lexical parent and the
     resolved one. A per-ancestor version would be noise on any machine with a
     group-writable dir anywhere in ``/``.
+
+    ``resolved`` is where the lookup ends, when the caller has walked it
+    (:func:`check_config_write_target` passes ``paths.lookup_target``'s
+    result, the writer's own target). Without it, ``realpath`` stands in: the
+    reader calls this only after ``open(config_path)`` succeeded, and for a
+    lookup the kernel completed every ``..`` follows an existing directory, so
+    ``realpath`` and the kernel's walk end at the same file.
     """
     checked: set[str] = set()
     directories: list[tuple[Path, bool]] = []
 
     lexical_parent = Path(os.path.abspath(config_path)).parent
     real_parent: Path | None
-    try:
-        real_parent = Path(os.path.realpath(config_path)).parent
-    except (OSError, ValueError):
-        real_parent = None
+    if resolved is not None:
+        real_parent = resolved.parent
+    else:
+        try:
+            real_parent = Path(os.path.realpath(config_path)).parent
+        except (OSError, ValueError):
+            real_parent = None
 
     # Warn-worthy holders first, so the dedup set records them with
     # `warn_group=True` before the ancestor sweep can claim them with False.
@@ -976,12 +990,22 @@ def check_config_write_target(path: Path) -> None:
     ancestors. Directories that do not exist yet are skipped here (the writer
     creates them 0700); the file-level predicates (regular file, owner, mode)
     are the writer's to satisfy, since it creates the file itself.
-    POSIX only, like the predicates it reuses.
+    The would-be target's directories come from :func:`paths.lookup_target`
+    (the kernel's hop-by-hop walk the writer also uses), not ``realpath``, so
+    the check vets the file the writer would create even when called alone; a
+    lookup the walk cannot prove (a ``..`` after a non-directory, say) is
+    refused. POSIX only, like the predicates it reuses.
     """
     if os.name != "posix":
         return
+    try:
+        resolved = lookup_target(path)
+    except LookupMismatch as exc:
+        raise ConfigNotTrusted(
+            f"{redact_home_in_text(str(path))}: {redact_home_in_text(str(exc))}"
+        ) from exc
     uid = os.getuid()
-    refusal = _link_owner_refusal(path, uid) or _config_parent_refusal(path, uid)
+    refusal = _link_owner_refusal(path, uid) or _config_parent_refusal(path, uid, resolved=resolved)
     if refusal is not None:
         raise ConfigNotTrusted(refusal, logged=True)
 
