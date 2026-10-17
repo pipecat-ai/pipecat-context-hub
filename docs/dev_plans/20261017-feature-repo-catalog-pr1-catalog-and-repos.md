@@ -265,7 +265,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
   consulted-cwd line at runtime (via `Path`), and uid/mode rows skip when `os.name != "posix"`.
   `test_cli_query.py` and `test_plugin.py` are not Windows-listed and stay so.
 
-<!-- reviewed: YYYY-MM-DD @ <hash> -->
+<!-- reviewed: 2026-10-17 @ 88af6c3e0054de59ee837720caae74dc86674f2f -->
 
 ## Progress
 
