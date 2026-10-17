@@ -621,6 +621,20 @@ class TestModuleLayering:
             ["pipecat_context_hub", "pipecat_context_hub.shared", module]
         )
 
+    def test_exclusion_folds_loads_only_its_two_leaves(self) -> None:
+        """Shared by the config model and the env loader, so importing either
+        from it would recreate the cycle it exists to break."""
+        module = "pipecat_context_hub.shared.exclusion_folds"
+        assert _modules_loaded_by(module) == sorted(
+            [
+                "pipecat_context_hub",
+                "pipecat_context_hub.shared",
+                "pipecat_context_hub.shared.env_keys",
+                module,
+                "pipecat_context_hub.shared.repo_slug",
+            ]
+        )
+
     def test_env_loading_names_the_key_through_the_one_constant(self) -> None:
         from pipecat_context_hub.shared import env_keys, env_loading
 
