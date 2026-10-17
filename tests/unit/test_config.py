@@ -352,6 +352,46 @@ class TestSourceConfig:
             assert s.effective_repos == expected
             assert s.tainted_repos == ["pipecat-ai/pipecat", "org/repo-a"]
 
+    def test_slug_lists_collapse_case_variants_first_spelling_wins(self):
+        """``tainted_repos`` and ``effective_repos`` both dedupe by ``slug_key``
+        (``is_tainted`` already treats ``Foo/Bar`` and ``foo/bar`` as one)."""
+        with patch.dict(
+            os.environ,
+            {
+                EXTRA_REPOS_ENV: "Org/Extra,org/extra,ORG/EXTRA",
+                TAINTED_REPOS_ENV: "Foo/Bar,foo/bar,FOO/BAR,x/y",
+            },
+        ):
+            s = SourceConfig()
+            assert s.tainted_repos == ["Foo/Bar", "x/y"]
+            assert s.effective_repos == [*s.repos, "Org/Extra"]
+
+    def test_exclusion_fold_map(self):
+        from pipecat_context_hub.shared.exclusion_folds import EXCLUSION_FOLDS, exclusion_fold
+
+        assert exclusion_fold(TAINTED_REPOS_ENV)("Foo/Bar") == "foo/bar"
+        assert exclusion_fold(TAINTED_REFS_ENV)("Foo/Bar@V1") == "Foo/Bar@V1"
+        assert set(EXCLUSION_FOLDS) == {TAINTED_REPOS_ENV, TAINTED_REFS_ENV}
+        for unknown in (EXTRA_REPOS_ENV, "PIPECAT_HUB_TAINTED_NEW"):
+            with pytest.raises(KeyError):
+                exclusion_fold(unknown)
+
+    def test_shadow_warning_uses_the_fold_map(self):
+        """The loader's exclusion keys are the map's keys, and its shadow
+        comparison refuses a key the map does not define rather than silently
+        matching it exactly."""
+        from pipecat_context_hub.shared.exclusion_folds import EXCLUSION_FOLDS
+
+        assert env_loading._EXCLUSION_KEYS == frozenset(EXCLUSION_FOLDS)
+        assert (
+            env_loading._shadowed_exclusion_entries(TAINTED_REPOS_ENV, ["Foo/Bar"], "foo/bar") == []
+        )
+        assert env_loading._shadowed_exclusion_entries(
+            TAINTED_REFS_ENV, ["Foo/Bar@v1"], "foo/bar@v1"
+        ) == ["Foo/Bar@v1"]
+        with pytest.raises(KeyError):
+            env_loading._shadowed_exclusion_entries("PIPECAT_HUB_NEW_EXCLUSION", ["a/b"], "c/d")
+
     def test_tainted_refs_by_repo_parses_env(self):
         """Tainted refs are parsed from org/repo@ref entries."""
         with patch.dict(

@@ -19,7 +19,8 @@ from pipecat_context_hub.shared.env_keys import (
     TAINTED_REPOS_ENV,
     split_csv,
 )
-from pipecat_context_hub.shared.repo_slug import slug_key
+from pipecat_context_hub.shared.exclusion_folds import exclusion_fold
+from pipecat_context_hub.shared.repo_slug import dedupe_slugs, slug_key
 from pipecat_context_hub.shared.versioning import DEFAULT_FRAMEWORK_PIN
 
 logger = logging.getLogger(__name__)
@@ -76,17 +77,6 @@ _DEFAULT_PARENT_WATCH_INTERVAL = 2.0
 # Floor for the parent-watch interval when non-zero — prevents a
 # misconfigured tiny value from CPU-spinning on os.getppid().
 _PARENT_WATCH_INTERVAL_FLOOR = 0.1
-
-
-def _dedupe_preserve_order(items: list[str]) -> list[str]:
-    """Deduplicate entries while preserving first-seen order."""
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
 
 
 def _parse_tainted_refs(raw: str) -> dict[str, list[str]]:
@@ -485,17 +475,11 @@ class SourceConfig(BaseModel):
     def effective_repos(self) -> list[str]:
         """Repos list with extra repos appended and tainted repos removed.
 
-        Deduplicated by :func:`slug_key` (the one slug identity), first
-        spelling wins with the defaults first, so a case variant of a repo
-        already listed is not cloned and indexed a second time.
+        Deduplicated by :func:`dedupe_slugs` (by :func:`slug_key`, the one
+        slug identity), first spelling wins with the defaults first, so a case
+        variant of a repo already listed is not cloned and indexed a second time.
         """
-        seen: set[str] = set()
-        result: list[str] = []
-        for slug in list(self.repos) + split_csv(os.environ.get(EXTRA_REPOS_ENV, "")):
-            key = slug_key(slug)
-            if key not in seen:
-                seen.add(key)
-                result.append(slug)
+        result = dedupe_slugs(list(self.repos) + split_csv(os.environ.get(EXTRA_REPOS_ENV, "")))
         return [slug for slug in result if not self.is_tainted(slug)]
 
     def is_default(self, slug: str) -> bool:
@@ -514,15 +498,22 @@ class SourceConfig(BaseModel):
         """The one taint-matching rule: compared by :func:`slug_key` (the one
         slug identity), so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.
         Every consumer of ``tainted_repos`` (``effective_repos``, refresh's
-        cleanup, ``repos``) decides through this method."""
-        key = slug_key(slug)
-        return any(slug_key(t) == key for t in self.tainted_repos)
+        cleanup, ``repos``) decides through this method. The fold is
+        ``exclusion_folds.EXCLUSION_FOLDS``'s, which the loader's shadowed-taint
+        warning also uses."""
+        fold = exclusion_fold(TAINTED_REPOS_ENV)
+        key = fold(slug)
+        return any(fold(t) == key for t in self.tainted_repos)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def tainted_repos(self) -> list[str]:
-        """Repos explicitly blocked from refresh by local policy."""
-        return _dedupe_preserve_order(split_csv(os.environ.get(TAINTED_REPOS_ENV, "")))
+        """Repos explicitly blocked from refresh by local policy.
+
+        Deduplicated by :func:`dedupe_slugs` (first spelling wins), so
+        ``Foo/Bar,foo/bar`` is one entry, as :meth:`is_tainted` treats it.
+        """
+        return dedupe_slugs(split_csv(os.environ.get(TAINTED_REPOS_ENV, "")))
 
     @computed_field  # type: ignore[prop-decorator]
     @property

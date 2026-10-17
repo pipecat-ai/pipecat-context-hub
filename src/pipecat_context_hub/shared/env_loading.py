@@ -29,6 +29,7 @@ from pipecat_context_hub.shared.env_keys import (
     TAINTED_REPOS_ENV,
     split_csv,
 )
+from pipecat_context_hub.shared.exclusion_folds import EXCLUSION_FOLDS, exclusion_fold
 from pipecat_context_hub.shared.paths import (
     LookupMismatch,
     is_inside,
@@ -37,7 +38,6 @@ from pipecat_context_hub.shared.paths import (
     redact_home_in_text,
     resolution_chain,
 )
-from pipecat_context_hub.shared.repo_slug import slug_key
 
 _module_logger = logging.getLogger(__name__)
 
@@ -149,7 +149,8 @@ _KNOWN_KEYS = frozenset(
 # that is shadowed by a real env var or cwd `.env` is worth saying out loud —
 # an operator who deliberately excluded a repo machine-globally should learn
 # that this invocation is not honouring that list.
-_EXCLUSION_KEYS = frozenset({TAINTED_REPOS_ENV, TAINTED_REFS_ENV})
+# The keys of `exclusion_folds.EXCLUSION_FOLDS`, which owns each key's matching rule.
+_EXCLUSION_KEYS = frozenset(EXCLUSION_FOLDS)
 
 # Scalar TOML value types accepted as-is (coerced via str()) or as elements
 # of a homogeneous array.
@@ -892,10 +893,11 @@ def _shadowed_exclusion_entries(
     :func:`config_list_value` (so a shape the loader wouldn't accept yields
     ``None`` rather than an error; this runs on a value that lost precedence
     before validation), the winning value by :func:`split_csv`. Entries
-    compare by the setting's own matching rule: by :func:`slug_key` (the one
-    slug identity, as ``SourceConfig.is_tainted`` matches) for
-    ``PIPECAT_HUB_TAINTED_REPOS``, exact for ``PIPECAT_HUB_TAINTED_REFS``, so an entry the winning list still
-    honours under another spelling is not reported lost.
+    compare by the setting's own matching rule, :func:`exclusion_folds.exclusion_fold`
+    (the map ``SourceConfig.is_tainted`` also matches through: :func:`slug_key`
+    for ``PIPECAT_HUB_TAINTED_REPOS``, exact for ``PIPECAT_HUB_TAINTED_REFS``), so
+    an entry the winning list still honours under another spelling is not
+    reported lost.
 
     ``None`` (unreadable shape — nothing can be said about what survived) is
     distinct from ``[]`` (read fine, and the winning layer's list covers every
@@ -913,7 +915,7 @@ def _shadowed_exclusion_entries(
     )
     if configured is None:
         return None
-    fold = slug_key if key == TAINTED_REPOS_ENV else (lambda entry: entry)
+    fold = exclusion_fold(key)
     active = {fold(entry) for entry in split_csv(active_value)}
     return sorted({entry for entry in configured if fold(entry) not in active})
 

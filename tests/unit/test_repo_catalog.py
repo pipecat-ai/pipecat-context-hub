@@ -404,12 +404,57 @@ class TestSlugGrammar:
                 found[path.relative_to(src).as_posix()] = count
         assert found == not_slugs
 
+    def test_no_lower_or_upper_on_slugs(self) -> None:
+        """Extends the guard above to ``.lower()`` / ``.upper()``, which would
+        pass it while spelling a second slug identity. Every call counted here
+        folds something that is not a slug (env flags, SHAs, paths, prose)."""
+        not_slugs = {
+            "cli.py": 1,  # log level
+            "cli_install.py": 1,  # subprocess output
+            "services/ingest/github_ingest.py": 10,  # SHAs, a tag's `v`, a file path
+            "services/ingest/rst_type_parser.py": 2,
+            "services/ingest/taxonomy.py": 2,  # dir name, README text
+            "services/retrieval/rerank.py": 2,
+            "shared/config.py": 1,  # PIPECAT_HUB_RERANKER_ENABLED flag
+            "shared/markdown.py": 3,
+            "shared/versioning.py": 2,
+        }
+        src = _REPO_ROOT / "src" / "pipecat_context_hub"
+        found: dict[str, int] = {}
+        for path in sorted(src.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            count = sum(
+                1
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"lower", "upper"}
+            )
+            if count:
+                found[path.relative_to(src).as_posix()] = count
+        assert found == not_slugs
+
     def test_every_slug_comparer_binds_the_one_key(self) -> None:
         from pipecat_context_hub import cli_repos
-        from pipecat_context_hub.shared import config, config_writer, env_loading, repo_slug
+        from pipecat_context_hub.shared import (
+            config,
+            config_writer,
+            env_loading,
+            exclusion_folds,
+            repo_slug,
+        )
 
-        for mod in (config, config_writer, env_loading, repo_catalog, cli_repos):
+        # env_loading compares taint entries only through the one fold map.
+        for mod in (config, config_writer, exclusion_folds, repo_catalog, cli_repos):
             assert mod.slug_key is repo_slug.slug_key, mod.__name__
+        for mod in (env_loading, config):
+            assert getattr(mod, "exclusion_fold") is exclusion_folds.exclusion_fold, mod.__name__
+        assert getattr(config, "dedupe_slugs") is repo_slug.dedupe_slugs
+
+    def test_no_slug_list_keeps_a_raw_string_dedupe(self) -> None:
+        from pipecat_context_hub.shared import config
+
+        assert not hasattr(config, "_dedupe_preserve_order")
 
     def test_ingester_rejects_what_the_grammar_rejects(self) -> None:
         from pipecat_context_hub.services.ingest import github_ingest
