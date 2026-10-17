@@ -205,6 +205,15 @@ the indexed pipecat version; re-verify against the current registry if they drif
     must yield `("1.6.0", 55)`. Confirms the index records the revision it was
     actually built from, not just an operator's pin — a `null`
     `indexed_framework_version` after a successful pipecat ingest is the regression.
+    Run it on a fresh copy of the index (`PIPECAT_HUB_DATA_DIR`) with no other
+    hub process open. Exit 139 (SIGSEGV in `chromadb_rust_bindings`) is the
+    known, probabilistic Chroma 1.5.x family (see
+    `docs/dev_plans/20261014-fix-index-write-guards.md`; upstream chroma#7510),
+    seen on 2026-10-16 right after the delete-and-re-add of the pipecat records
+    in a 38 → 38a → 38b sequence; a re-run on the same index and on a fresh copy
+    both exited 0. A crashed refresh leaves the vector and keyword halves out of
+    step; a plain `refresh` repairs it, and `refresh --force --reset-index` is
+    the fallback.
 39. `refresh --framework-version nonexistent-tag-xyz` — exits **1** in ~1s
     with `Error: --framework-version 'nonexistent-tag-xyz': Tag '…' not found
     in repository. Available tags (latest 5): [...]`. The pin is validated
