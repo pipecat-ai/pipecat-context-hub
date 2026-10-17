@@ -60,3 +60,74 @@ IDE/Agent  ←stdio→  pipecat-context-hub serve  ←→  Local index (~/.pipec
 ```
 
 No network requests are made during tool calls — all data is served from the local index.
+
+## Install Command and Scopes
+
+A fresh Claude Code registration is made at Claude's `user` scope, so it applies
+in every directory rather than only the one `install` ran in. Nothing about the
+hub is per-project: one index serves the machine, and the registered command is
+an absolute path to a global install. An entry that already exists is repaired
+at whatever scope it currently holds, so a deliberate `local` or `project`
+registration stays where it is. Codex has no scope concept — its single config
+is already machine-wide.
+
+## Manual Configuration Example
+
+**Example** (an equivalent manual config — `~/.claude.json` for
+the `user`-scope default above, or `.mcp.json` for the deliberate project-scope
+choice):
+
+```json
+{
+  "mcpServers": {
+    "pipecat-context-hub": {
+      "command": "uvx",
+      "args": ["pipecat-ai-context-hub", "serve"],
+      "env": {}
+    }
+  }
+}
+```
+
+Config templates for all clients are in [`config/clients/`](../../config/clients/).
+
+## Tell Your Agent to Use the Tools (Recommended)
+
+Add this to your project's `CLAUDE.md` (or `~/.claude/CLAUDE.md` globally) so
+your coding agent prefers the MCP tools for Pipecat questions:
+
+```markdown
+## MCP Tools
+
+When pipecat-context-hub MCP is available, always prefer its tools
+(`search_docs`, `search_api`, `search_examples`, `get_example`, `get_doc`,
+`get_code_snippet`, `check_deprecation`) for Pipecat framework questions.
+Do not read `.venv` or source files directly.
+
+If the MCP server isn't wired up but the package is installed, the same
+tools are CLI subcommands — shell out instead of reading source, e.g.
+`uv run pipecat-context-hub check-deprecation PipelineTask` or
+`uv run pipecat-context-hub search-docs "TTS + STT"`.
+
+- "How do I ...?" → `search_docs`
+- "Show me an example of ..." → `search_examples`, then `get_example`
+- Class constructors, method signatures, frame types → `search_api`
+- Specific code span or symbol → `get_code_snippet`
+- Retrieve a specific doc page → `get_doc`
+- Check if an import is deprecated or removed → `check_deprecation`
+
+**Multi-concept queries:** Use ` + ` or ` & ` as delimiters
+(e.g., `search_docs("TTS + STT")`). Each concept is searched independently
+and results are interleaved.
+
+When suggesting commands for Pipecat projects, always use `uv` as the
+package manager:
+- Install dependencies: `uv sync` (not `pip install`)
+- Run scripts: `uv run python bot.py` (not `python bot.py`)
+- Add packages: `uv add <package>` (not `pip install <package>`)
+```
+
+## Server Lifecycle
+
+How `serve` exits when the client goes away, `uv tool install` vs `uvx`, and the idle
+timeout: [MCP Client Configuration and Server Lifecycle](server-lifecycle.md).
