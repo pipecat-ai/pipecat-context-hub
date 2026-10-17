@@ -17,6 +17,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   effective repos tagged `default` / `catalog` / `unlisted`, the cwd whose
   `.env` was consulted, and repos `config.toml` holds but a higher layer hides;
   `--groups` lists the catalog groups. Refusals exit 1 with the file untouched.
+  `--group` skips (and lists) tainted and `parseable = false` members; a group
+  with nothing left to act on exits 0 with `Nothing to add` / `Nothing to
+  remove` and the skipped list, without a shadowing refusal or reading
+  `config.toml`.
   The writer reads through the loader's trust checks and never creates a file
   the loader would ignore. Run `refresh` afterwards to index.
 - **Repo catalog** (`src/pipecat_context_hub/data/repo_catalog.toml`): curated
@@ -63,6 +67,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   (exit 2) instead of letting the remaining sources keep writing.
 
 ### Changed
+- **Taint matching is case-insensitive.** A `PIPECAT_HUB_TAINTED_REPOS` entry
+  now excludes a repo whatever its spelling (`Foo/Bar` taints `foo/bar`); it was
+  exact set membership. `refresh`'s cleanup, the effective repo list and `repos`
+  all decide through `SourceConfig.is_tainted`, and the warning about a
+  `config.toml` taint list shadowed by a higher layer compares the same way.
+  `PIPECAT_HUB_TAINTED_REFS` matching stays exact.
 - **`refresh --force` compacts the vector graph.** Delete + re-add left deleted
   elements in the persisted HNSW graph, growing it by the whole corpus on every
   forced refresh (20k -> 80k elements for 20k live records over four rounds). A

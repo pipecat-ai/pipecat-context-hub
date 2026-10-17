@@ -24,7 +24,7 @@ uv run pipecat-context-hub refresh --framework-version head     # ...or at its d
 uv run pipecat-context-hub serve                    # start MCP server (`start` is an alias)
 uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
 uv run pipecat-context-hub repos list [--groups]    # effective repos (default/catalog/unlisted) and the catalog groups
-uv run pipecat-context-hub repos add <slug>         # edit EXTRA_REPOS in config.toml (--unlisted, --group NAME, --config-only); also `remove`
+uv run pipecat-context-hub repos add <slug>         # edit PIPECAT_HUB_EXTRA_REPOS in config.toml (--unlisted, --group NAME, --config-only); also `remove`
 just catalog-regen                                  # regenerate .env.example / docs from data/repo_catalog.toml (--check, --bump-verified)
 ```
 
@@ -154,13 +154,13 @@ src/pipecat_context_hub/
 │   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
 │   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants)
 │   ├── repo_slug.py          # REPO_SLUG_RE / is_valid_repo_slug — the one owner/repo grammar (leaf: ingester, catalog, repos, writer)
-│   ├── env_keys.py           # EXTRA_REPOS_ENV / split_csv — the key literal and CSV rule (leaf: config model and env loader both import it)
+│   ├── env_keys.py           # EXTRA_REPOS_ENV / TAINTED_REPOS_ENV / TAINTED_REFS_ENV / split_csv / taint_key — the list-key literals, CSV rule and taint fold (leaf: config model and env loader both import it)
 │   ├── repo_catalog_render.py # pure renderers + splice for the generated catalog sections; `python -m` entry behind `just catalog-regen`
 │   ├── interfaces.py         # IndexWriter/Reader, ServingIndex, Retriever, Ingester; FatalIndexError (ingesters re-raise: stops refresh), IndexUnavailableError (message for the caller)
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision
 │   ├── model_loading.py      # quiet_model_loading — offline-first HF env defaults (serve + CLI)
-│   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside (filesystem-identity predicates shared by every deletion guard)
+│   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside / resolution_chain / lookup_target (filesystem-identity predicates shared by every deletion, trust and write guard; lookup_target is the config writer's target, walked as the kernel does)
 │   ├── index_lock.py         # refresh.lock (exclusive for refresh; readers hold it shared while opening: refresh_excluded) / serve.lock (shared) advisory flocks; serve_is_running
 │   ├── exit_codes.py         # EXIT_INDEX_UNREADY (2) / EXIT_REFRESH_IN_PROGRESS (75), shared by serve, refresh and the CLI queries
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
