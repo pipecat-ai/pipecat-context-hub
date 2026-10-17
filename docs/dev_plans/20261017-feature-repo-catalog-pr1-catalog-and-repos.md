@@ -54,8 +54,8 @@ Facts a phase worker needs and cannot cheaply rediscover:
 
 - `shared/env_loading.py` is security-sensitive (PR #121 closed a cwd-module-shadowing RCE and a cwd
   `.env` key-allowlist hole here). The writer must not reimplement a trust check the reader applies.
-- The provenance map must mirror each loader's *own* blank rule (parent Decision 9); the overlap row is
-  the likely bug.
+- The provenance map records the layer that supplied the FINAL NON-BLANK value of each key; a key whose
+  final value is blank or absent is omitted (parent Decision 9). The overlap row is the likely bug.
 - The `repos` check order (parent Decision 7 table) is an invariant for a positional slug. Checks 1 and 2
   apply to a positional slug only. `--group` skips tainted and `parseable = false` members and applies
   checks 3 to 5 in order.
@@ -73,8 +73,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - Schema and `load_catalog() -> Catalog | None` per parent Decision 2 (static cross-group invariants,
   `private`/`archived`/`status` keys rejected, failure returns a cached `None` and logs once).
   PR 1 asserts only this loader contract; the hint-side clauses of load failure are PR 2's.
-- Test seams (new named API; the lead must also record them in parent contract C3 and the PR 2 plan,
-  which patches the same symbol): pure `parse_catalog(text: str) -> Catalog` (raises `CatalogError`) and
+- Test seams (new named API; PR 2 patches the same symbol): pure `parse_catalog(text: str) -> Catalog` (raises `CatalogError`) and
   module-level `_read_catalog_text() -> str`; `load_catalog` is `functools.cache` around
   try/except over both. Tests and PR 2 patch `_read_catalog_text` and call `load_catalog.cache_clear()`
   in a fixture.
@@ -132,7 +131,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
 
 **Goal:** the writer and the reader share one trust check, and `repos` can tell which layer is in force.
 **Impl files:** `src/pipecat_context_hub/shared/env_loading.py`, `src/pipecat_context_hub/cli.py`
-**Test files:** `tests/unit/test_env_loading.py`, `tests/unit/test_config.py`, `tests/unit/test_cli.py`, `tests/unit/_config_trust_cases.py` (shared helper, no tests)
+**Test files:** `tests/unit/test_env_loading.py`, `tests/unit/test_config.py`, `tests/unit/test_cli.py`, `tests/unit/_config_trust_cases.py`
 **Test command:** `uv run pytest tests/unit/test_env_loading.py tests/unit/test_config.py tests/unit/test_cli.py -v`
 
 - Extract public `read_trusted_config(path) -> str | None` and `parse_global_config(path) -> dict[str, object]`,
@@ -143,14 +142,20 @@ Facts a phase worker needs and cannot cheaply rediscover:
   or `OSError` mid-read, e.g. EACCES, embedded NUL) -> `ConfigNotTrusted(reason)`; invalid TOML ->
   `tomllib.TOMLDecodeError` from `parse_global_config`, not wrapped. The seam takes a path, so a `None`
   from `resolve_global_config_path()` (no home, blank `PIPECAT_HUB_CONFIG_FILE`) stays outside it:
-  the reader returns silently and callers decide (2c, 2d).
+  the reader loads nothing and callers decide (2c, 2d). The resolver itself warns for a blank override.
 - Parametrized reader-vs-seam equivalence test over the shared `TRUST_REFUSAL_CASES` (defined here in 2b in `tests/unit/_config_trust_cases.py`; 2c imports it) plus invalid
-  TOML, missing file, unresolvable path. `load_global_config` warns and ignores exactly when the seam
-  raises `ConfigNotTrusted` or `TOMLDecodeError`, and returns silently for missing and unresolvable.
+  TOML, missing file, unresolvable path. The helper is a shared module with no tests of its own.
+  The unresolvable fixture is a blank `PIPECAT_HUB_CONFIG_FILE`. `load_global_config` warns and ignores
+  exactly when the seam raises `ConfigNotTrusted` or `TOMLDecodeError`. For a missing file it returns
+  silently. For the unresolvable fixture it loads nothing; the only log is the resolver's own warning
+  (`resolve_global_config_path`, `env_loading.py`), which the test allows.
   POSIX-only cases are skipped on Windows.
-- Add the provenance map (parent Decision 9): `env` snapshot, per-loader returned keys mirroring each
-  loader's own blank rule, merge `{**env, **dotenv, **global_config}`. `load_env_layers` returns it;
-  the return value is optional so dashboard and smoke scripts are untouched.
+- Add the provenance map (parent Decision 9): the layer that supplied the FINAL NON-BLANK value of each
+  key; a key whose final merged value is blank or absent is omitted. Build it in `load_env_layers`: the
+  non-blank `env` snapshot, the keys each loader actually set (each by its own rule), merge
+  `{**env, **dotenv, **global_config}`, then drop every key whose final value is blank. Blankness is
+  encoded in the map, so no later code consults `os.environ`. `load_env_layers` returns it; the return
+  value is optional so dashboard and smoke scripts are untouched.
 - `main()` always overwrites `ctx.obj["env_provenance"]` with the map `load_env_layers` returns (no
   `setdefault`); downstream the shadow decision reads only that map and never re-reads a layer.
   `test_cli.py` asserts the key is set and that both loaders run once per invocation. Phase 2d tests
@@ -158,7 +163,8 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - Provenance test rows (parent Test plan, `[PR1]` Provenance bullet): a key set only in the real
   environment (layer `env`); a blank higher-layer value treated as absent (mirror
   `TestBlankHigherLayerValueDoesNotShadow`, `tests/unit/test_env_loading.py:1418`); blank real env var +
-  non-blank `.env` + `config.toml` gives provenance `config.toml`; the overlap row.
+  non-blank `.env` + `config.toml` gives provenance `config.toml`; a blank `.env` value alone is omitted
+  from the map; a blank `.env` value plus a `config.toml` key gives `config.toml`; the overlap row.
 - Update `test_load_env_layers_calls_both_loaders_in_order`: its patched loaders return `None` today;
   they now return dicts.
 - Mutation check: break the overlap merge (a key set blank by `.env`, then by `config.toml`); the
@@ -211,12 +217,12 @@ Facts a phase worker needs and cannot cheaply rediscover:
   plan fills it): positional `add`/`remove` and `--group` exit `EXIT_INVALID_INPUT` naming the catalog
   load failure, file untouched; `repos list` still prints the effective list, tags non-default slugs
   `unlisted`, and warns once (relying on `load_catalog`'s own log-once; `cli_repos` emits no second warning, asserted
-  by the test). One test row per command. The lead should record this in the parent.
+  by the test). One test row per command.
 - Membership for check 4 and the `repos list` shadow line comes only from `parse_global_config`
-  (CSV or array, casefolded). Provenance decides the layer. The shadow refusal fires only when the effective env
-  value is NON-BLANK: a blank `.env` value does not shadow (`load_cwd_dotenv` uses presence,
-  `load_global_config` non-blank), pinned by a test row. `os.environ` is never consulted for
-  membership, and `cli_repos` never raw-parses `config.toml`.
+  (CSV or array, casefolded). The shadow decision reads only the provenance map: the key present with
+  layer `env` or `.env` means shadowed; layer `config.toml` or absent means not shadowed. The map already
+  omits blank values, so no code path consults `os.environ` for the decision, and `cli_repos` never
+  raw-parses `config.toml`.
 - `cli_repos.py` is the only place that maps `ConfigWriteRefused`, `ConfigNotTrusted` and `TOMLDecodeError`
   to `EXIT_INVALID_INPUT`, for `add`/`remove` only. `repos list` catches all three, prints the effective
   list, names the ignored `config.toml` and the reason (the reader's posture), and exits 0; it also
@@ -227,7 +233,10 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - Carrier tests: through `main`, with both loaders patched, each runs once per `repos` invocation. Second
   test: patch `env_loading.load_env_layers` to return a controlled provenance map and assert
   `load_cwd_dotenv`/`load_global_config` are never called; the shadow decision reads only the map.
-- Row: blank real env var + non-blank `.env` + `config.toml`: `repos add` succeeds, no refusal.
+- Shadow-decision rows build the map directly or patch `env_loading.load_env_layers`; none patches
+  `os.environ`. Rows: blank real env var + non-blank `.env` + `config.toml` (map says `config.toml`):
+  `repos add` succeeds, no refusal. Blank `.env` only (key omitted): no refusal. Blank `.env` +
+  `config.toml` key (map says `config.toml`): no refusal. Non-blank `.env` or real env var: refusal.
 - A "`repos add` makes no network call" test: a fixture patches `socket.socket` and `subprocess.run`
   (the `gh` path) to raise, applied to every `repos add` row.
 - Docs in `docs/configuration.md`. A Typer-bridge test covers `repos --help` and `repos add --help`

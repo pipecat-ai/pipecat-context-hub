@@ -180,7 +180,7 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    |---|---|---|
    | 1 | the slug is a default (`SourceConfig.repos`) or tainted (`PIPECAT_HUB_TAINTED_REPOS`, read at command time) repo | exit 1 |
    | 2 | slug syntax and catalog membership | exit 1 if malformed; exit 1 if not in the catalog and `--unlisted` is absent (says to pass it); exit 1 if in the catalog and `--unlisted` is given (says to drop it, so the catalog spelling stays authoritative) |
-   | 3 | a real env var or cwd `.env` sets `PIPECAT_HUB_EXTRA_REPOS` (decision 9) and `--config-only` is absent | exit 1, naming the layer |
+   | 3 | the provenance map (decision 9) holds `PIPECAT_HUB_EXTRA_REPOS` from layer `env` or `.env` (so its final value is non-blank) and `--config-only` is absent | exit 1, naming the layer |
    | 4 | no-op: `add` of a slug already in `config.toml`, or `remove` of one not in it (casefolded) | exit 0: `Already in config.toml` / `Not in config.toml`; with `--config-only` under a shadowing layer it also names that layer |
    | 5 | write | `Added <slug>` / `Removed <slug>` plus the `refresh` reminder |
 
@@ -250,12 +250,17 @@ recommendation, the change is stated. Review history and grilled outcomes are in
      `config.toml`); `main()` always overwrites `ctx.obj["env_provenance"]` with it (no `setdefault`) for the `repos` subcommand. The
      return value is optional, so the dashboard and smoke scripts are untouched. `repos` never re-reads
      a layer to decide which one is in force.
+   - **Meaning.** The map holds the layer that supplied the FINAL NON-BLANK value of each key. A key whose
+     final merged value is blank or absent is omitted. The shadow decision (check 3) reads only the map:
+     a key present with layer `env` or `.env` means shadowed; layer `config.toml` or absent means not
+     shadowed. Blankness is already encoded, so no code path consults `os.environ` for the decision.
    - **Construction.** First snapshot the non-blank `PIPECAT_HUB_*` keys already in `os.environ` as
      layer `env`, because neither loader records a key it skips. Then each loader returns the keys it
      actually set, mirroring its own rule, which differ today: `load_cwd_dotenv` uses presence
      (`key not in os.environ`, so a blank real env var hides a `.env` value), `load_global_config` treats
-     a blank as absent. So a blank real env var, a non-blank `.env` value and a `config.toml` value
-     resolve to `config.toml`, and `repos add` does not refuse.
+     a blank as absent. After the merge below, `load_env_layers` drops every key whose final value is
+     blank. So a blank real env var, a non-blank `.env` value and a `config.toml` value resolve to
+     `config.toml`, a blank `.env` value alone is omitted, and `repos add` refuses in neither case.
    - **Merge.** The key sets can overlap: `load_cwd_dotenv` writes an absent key as blank and
      `load_global_config` then sets it. The merge is `{**env, **dotenv, **global_config}`, so the loader
      that ran last, and determined the final `os.environ` value, wins.
@@ -521,11 +526,13 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   stale exits nonzero; inconclusive-only exits nonzero in its own section); `follow_redirects=False`
   asserted by routing a 301 through `httpx.MockTransport`; `curate_repo_catalog.py` leaves the catalog
   byte-identical.
-- **[PR1]** Provenance: per-key map for each layer, including a key set only in the real environment (layer
+- **[PR1]** Provenance: per-key map (the layer of the final non-blank value; blank or absent keys omitted)
+  for each layer, including a key set only in the real environment (layer
   `env`), a blank higher-layer value treated as absent (mirror `TestBlankHigherLayerValueDoesNotShadow`),
   plus the row blank real env var + non-blank `.env` + `config.toml` (provenance `config.toml`, no
-  refusal), and the overlap row (a key set blank by `.env` and then by `config.toml`: the merged layer
-  is `config.toml`). The `ctx.obj["env_provenance"]` carrier: through `main()` both loaders run once per `repos`
+  refusal), a blank `.env` value alone (key omitted, no refusal), and the overlap row (a key set blank
+  by `.env` and then by `config.toml`: the merged layer is `config.toml`). Shadow-decision tests build
+  the map directly or patch `env_loading.load_env_layers`, never `os.environ`. The `ctx.obj["env_provenance"]` carrier: through `main()` both loaders run once per `repos`
   invocation. A second test patches `env_loading.load_env_layers` to return a controlled map and asserts neither
   loader is called: that map alone drives the shadow decision (no layer is re-read).
 - **[PR1]** Writer: round trip through `parse_global_config` and `load_global_config` for no file, empty file,
