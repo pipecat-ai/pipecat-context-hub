@@ -6413,6 +6413,33 @@ class TestPrintRefreshSummaryEncoding:
         raw = cp437_stdout.buffer.getvalue().decode("cp437")
         assert "\u2026" not in raw
 
+    _HOSTILE = "evil/x\x1b]52;c;cHduZWQ=\x07\x1b[2J"
+
+    def test_a_configured_repo_name_is_never_printed_raw(self, capsys):
+        """Rows are keyed by configured ``PIPECAT_HUB_EXTRA_REPOS`` entries,
+        which nothing validates before the summary prints them."""
+        row: dict[str, str | int] = {"status": "error", "sha": "-", "existing": 0, "updated": "-"}
+        source_status = {self._HOSTILE: row, "pipecat-ai/pipecat": dict(row)}
+        _print_refresh_summary(source_status, 0, 1, 1.0, recovered_repos=[self._HOSTILE])
+        out = capsys.readouterr().out
+        assert "\x1b" not in out and "\x07" not in out
+        flagged = f"{self._HOSTILE!r} [invalid]"
+        rows = [ln for ln in out.splitlines() if ln.startswith((flagged, "pipecat-ai/pipecat"))]
+        assert len(rows) == 2 and rows[0].index("error") == rows[1].index("error")
+        assert f"Recovered 1 corrupt clone(s): {flagged}" in out
+
+    def test_an_invalid_configured_slug_error_flags_the_slug(self):
+        """``Failed to clone/fetch <slug>: <exc>`` reaches the log with the
+        ingester's own ``Invalid repo slug`` text, which names the slug."""
+        from pipecat_context_hub.services.ingest import github_ingest
+
+        with pytest.raises(ValueError) as caught:
+            github_ingest.GitHubRepoIngester.clone_or_fetch(
+                object(),  # type: ignore[arg-type]  # the slug check runs before any self use
+                self._HOSTILE,
+            )
+        assert str(caught.value) == f"Invalid repo slug: {self._HOSTILE!r} [invalid]"
+
     def test_recovered_repos_surfaced_in_summary(self, capsys):
         source_status: dict[str, dict[str, str | int]] = {
             "pipecat-ai/pipecat": {

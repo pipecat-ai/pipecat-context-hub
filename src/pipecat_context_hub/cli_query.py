@@ -60,6 +60,7 @@ from pipecat_context_hub.shared.support_links import (
     RETRIEVAL_QUALITY_ISSUE_URL,
     bug_report_hint,
 )
+from pipecat_context_hub.shared.terminal import echo
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -77,7 +78,7 @@ def _echo_stderr_warning(text: str) -> None:
     change (a common prefix, ``click.secho`` coloring, a log-level tag)
     lands once instead of drifting across call sites.
     """
-    click.echo(redact_home_in_text(text), err=True)
+    echo(redact_home_in_text(text), err=True)
 
 
 class _SemanticMeta(NamedTuple):
@@ -420,7 +421,7 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         try:
             result = _dispatch(tool, cleaned, runtime)
         except (ValidationError, ValueError) as exc:
-            click.echo(f"Error: {exc}", err=True)
+            echo(f"Error: {exc}", err=True)
             raise SystemExit(EXIT_INVALID_INPUT) from exc
         # Read-only inspection of the handler's raw JSON, before the staleness
         # footer below touches it — the hint must not affect what gets annotated.
@@ -458,7 +459,7 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         # must still be open to read its metadata.
         if tool != "get_hub_status":
             result = annotate_response(result, runtime.index_store)
-    click.echo(result)
+    echo(result)
 
 
 # ── Commands ─────────────────────────────────────────────────────────────────

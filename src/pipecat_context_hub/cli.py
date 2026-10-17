@@ -45,6 +45,7 @@ from pipecat_context_hub.shared.paths import (
     same_dir,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
+from pipecat_context_hub.shared.terminal import echo, shown
 from pipecat_context_hub.shared.versioning import (
     canonicalize_framework_pin,
     exact_release_version,
@@ -1504,7 +1505,7 @@ def refresh(
                     raise _framework_pin_not_found(fw_version, exc) from exc
                 if repo_slug == framework_slug:
                     fw_state.clone_or_fetch_failed = True
-                all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
+                all_errors.append(f"Failed to clone/fetch {shown(repo_slug)}: {exc}")
                 source_status[repo_slug] = {
                     "status": "error",
                     "sha": _MISSING_SENTINEL,
@@ -2090,7 +2091,7 @@ def _safe_placeholder() -> str:
 def _echo_prune_skip_notice(unpruned_repo_count: int) -> None:
     """Print the 'Skipped pruning' line, shared by both summary branches below."""
     if unpruned_repo_count:
-        click.echo(
+        echo(
             f"Skipped pruning: {unpruned_repo_count} repo(s) not in this run's config "
             "(use --prune to remove)"
         )
@@ -2111,22 +2112,24 @@ def _print_refresh_summary(
         # a warning whose whole point is to be noticed shouldn't sit after the
         # line that reads as "done".
         _echo_prune_skip_notice(unpruned_repo_count)
-        click.echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
+        echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
         return
 
-    # Compute column widths
-    name_width = max(len(name) for name in source_status)
+    # Rows are keyed by configured repo entries, which nothing validated:
+    # flag a non-printable one (and size the column by what is printed).
+    labels = {name: shown(name) for name in source_status}
+    name_width = max(len(label) for label in labels.values())
     name_width = max(name_width, len("Repository"))
 
     hr = f"{_safe_hr(name_width)}  {_safe_hr(8)}  {_safe_hr(10)}  {_safe_hr(8)}  {_safe_hr(8)}"
     placeholder = _safe_placeholder()
 
     # Header
-    click.echo()
-    click.echo(
+    echo()
+    echo(
         f"{'Repository':<{name_width}}  {'Status':<8}  {'SHA':<10}  {'Existing':>8}  {'Updated':>8}"
     )
-    click.echo(hr)
+    echo(hr)
 
     # Rows — updated/error first, then skipped
     total_existing = 0
@@ -2158,22 +2161,20 @@ def _print_refresh_summary(
 
         existing_str = f"{existing_int:,}" if existing_int else placeholder
 
-        click.echo(
-            f"{name:<{name_width}}  {status:<8}  {sha:<10}  {existing_str:>8}  {updated_str:>8}"
+        echo(
+            f"{labels[name]:<{name_width}}  {status:<8}  {sha:<10}  {existing_str:>8}  {updated_str:>8}"
         )
 
     # Footer
-    click.echo(hr)
-    click.echo(
-        f"{'Total':<{name_width}}  {'':<8}  {'':<10}  {total_existing:>8,}  {total_updated:>8,}"
-    )
-    click.echo()
+    echo(hr)
+    echo(f"{'Total':<{name_width}}  {'':<8}  {'':<10}  {total_existing:>8,}  {total_updated:>8,}")
+    echo()
     if recovered_repos:
-        click.echo(
-            f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
+        echo(
+            f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(shown(r) for r in recovered_repos)}"
         )
     _echo_prune_skip_notice(unpruned_repo_count)
-    click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
+    echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 
 
 # One-shot query subcommands (search-docs, check-deprecation, status, ...) —

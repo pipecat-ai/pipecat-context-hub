@@ -18,7 +18,9 @@ bodies only, so ``import pipecat_context_hub.cli`` never loads it.
 
 Error boundary: every command exits ``EXIT_INVALID_INPUT`` with a
 home-redacted message on a writer refusal, an untrusted config or an
-``OSError``; none ends in a traceback.
+``OSError``; none ends in a traceback. Every line is printed through
+``shared/terminal.echo`` (the output boundary); configured entries and paths
+are additionally flagged ``repr() [invalid]`` by ``shown()`` where named.
 """
 
 from __future__ import annotations
@@ -42,9 +44,10 @@ from pipecat_context_hub.shared.env_loading import (
     resolve_global_config_path,
 )
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
-from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text, shown
+from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
+from pipecat_context_hub.shared.terminal import echo, shown
 
 _RUNNING_SERVE = "A running `serve` reopens the rebuilt index itself."
 _REFRESH_REMINDER = f"Run `pipecat-context-hub refresh` to index it. {_RUNNING_SERVE}"
@@ -56,9 +59,10 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 
 def _fail(message: str) -> NoReturn:
-    # Every stderr line of this module goes through here, and many carry a
-    # configured path or a reason that embeds one: escape at the sink.
-    click.echo(f"Error: {shown(message)}", err=True)
+    # Every stderr line of this module goes through here; many carry a
+    # configured path or a reason that embeds one. `echo` (the output boundary)
+    # escapes the text; the paths inside are already flagged where named.
+    echo(f"Error: {message}", err=True)
     raise SystemExit(EXIT_INVALID_INPUT)
 
 
@@ -244,21 +248,21 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
         done = [s for s in members if slug_key(s) not in present]
         already = [s for s in members if slug_key(s) in present]
         for slug in done:
-            click.echo(f"Added {slug}")
+            echo(f"Added {slug}")
         for slug in already:
-            click.echo(f"Already in config.toml: {slug}")
+            echo(f"Already in config.toml: {slug}")
         if not done:
-            click.echo("Nothing to add" + note)
+            echo("Nothing to add" + note)
     else:
         done = [present[slug_key(s)] for s in members if slug_key(s) in present]
         for slug in done:
-            click.echo(f"Removed {shown(slug)}")
+            echo(f"Removed {shown(slug)}")
         if not done:
-            click.echo("Nothing to remove" + note)
+            echo("Nothing to remove" + note)
     for line in skipped:
-        click.echo(line)
+        echo(line)
     if changed:
-        click.echo(_after_write(layer, adding=adding))
+        echo(_after_write(layer, adding=adding))
 
 
 def _run_positional(
@@ -270,17 +274,17 @@ def _run_positional(
     if adding:  # checks 4, 5
         before, changed = _apply(add=[target])
         if not changed:
-            click.echo(f"Already in config.toml: {target}" + note)
+            echo(f"Already in config.toml: {target}" + note)
             return
-        click.echo(f"Added {target}")
+        echo(f"Added {target}")
     else:
         before, changed = _apply(remove=[target])
         if not changed:
-            click.echo(f"Not in config.toml: {target}" + note)
+            echo(f"Not in config.toml: {target}" + note)
             return
         stored = next((s for s in before if slug_key(s) == slug_key(target)), target)
-        click.echo(f"Removed {shown(stored)}")
-    click.echo(_after_write(layer, adding=adding))
+        echo(f"Removed {shown(stored)}")
+    echo(_after_write(layer, adding=adding))
 
 
 _SLUG_ARG = click.argument("slug", required=False)
@@ -364,14 +368,19 @@ def _configured_in_toml() -> tuple[list[str], str | None]:
     try:
         data = parse_global_config(path)
     except ConfigNotTrusted as exc:
-        return [], f"ignoring {redact_home(path)}: not trusted ({exc.reason})"
+        return [], f"ignoring {shown(redact_home(path))}: not trusted ({exc.reason})"
     except tomllib.TOMLDecodeError as exc:
-        return [], f"ignoring {redact_home(path)}: not valid TOML ({redact_home_in_text(str(exc))})"
+        return [], (
+            f"ignoring {shown(redact_home(path))}: not valid TOML ({redact_home_in_text(str(exc))})"
+        )
     if EXTRA_REPOS_ENV not in data:
         return [], None
     configured = config_list_value(EXTRA_REPOS_ENV, data[EXTRA_REPOS_ENV])  # the loader's own rule
     if configured is None:
-        return [], f"ignoring {EXTRA_REPOS_ENV} in {redact_home(path)}: a value the loader ignores"
+        return (
+            [],
+            f"ignoring {EXTRA_REPOS_ENV} in {shown(redact_home(path))}: a value the loader ignores",
+        )
     return configured, None
 
 
@@ -385,11 +394,11 @@ def _cwd_line() -> str:
 
 def _print_groups(catalog: Catalog | None) -> None:
     if catalog is None:
-        click.echo("Catalog groups: unavailable (the repo catalog failed to load).")
+        echo("Catalog groups: unavailable (the repo catalog failed to load).")
         return
-    click.echo("Catalog groups (for `repos add --group NAME`):")
+    echo("Catalog groups (for `repos add --group NAME`):")
     for group in catalog.groups:
-        click.echo(f"  {group.name}  [{group.kind}]  {group.description}")
+        echo(f"  {group.name}  [{group.kind}]  {group.description}")
 
 
 @repos_group.command("list")
@@ -409,14 +418,14 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
             return "default"
         return "catalog" if catalog is not None and catalog.lists(slug) else "unlisted"
 
-    click.echo(_cwd_line())
-    click.echo(f"Effective repos ({len(effective)}):")
+    echo(_cwd_line())
+    echo(f"Effective repos ({len(effective)}):")
     for slug in effective:
-        click.echo(f"  {shown(slug)}  [{tag(slug)}]")
+        echo(f"  {shown(slug)}  [{tag(slug)}]")
 
     configured, problem = _configured_in_toml()
     if problem is not None:
-        click.echo(f"config.toml: {shown(problem)}")
+        echo(f"config.toml: {problem}")
     layer = _shadowing_layer(ctx)
     if layer is not None:
         in_effect = {slug_key(s) for s in effective}
@@ -426,9 +435,9 @@ def list_command(ctx: click.Context, show_groups: bool) -> None:
             if slug_key(s) not in in_effect and not config.sources.is_tainted(s)
         ]
         if hidden:
-            click.echo(f"In config.toml but hidden by {_layer_phrase(layer)}:")
+            echo(f"In config.toml but hidden by {_layer_phrase(layer)}:")
             for slug in hidden:
-                click.echo(f"  {shown(slug)}  [{tag(slug)}]")
+                echo(f"  {shown(slug)}  [{tag(slug)}]")
     if show_groups:
         _print_groups(catalog)
 

@@ -30,6 +30,7 @@ from pipecat_context_hub.services.ingest.ingest_filters import (
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.interfaces import FatalIndexError
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
+from pipecat_context_hub.shared.terminal import shown
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
@@ -1430,7 +1431,7 @@ class GitHubRepoIngester:
             the returned commit was resolved from.
         """
         if not is_valid_repo_slug(repo_slug):
-            raise ValueError(f"Invalid repo slug: {repo_slug}")
+            raise ValueError(f"Invalid repo slug: {shown(repo_slug)}")
         if tag is not None and is_head_sentinel(tag):
             raise ValueError(
                 "clone_or_fetch: tag must not be the 'head' sentinel; "

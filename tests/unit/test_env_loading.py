@@ -1961,6 +1961,68 @@ class TestDataDirPathWarningIsHomeRedacted:
         assert str(home) not in caplog.text
 
 
+class TestLoadTimeWarningsAreTerminalSafe:
+    """Load-time warnings embed configured config.toml values; a cwd ``.env`` can
+    select a project-owned config.toml (``PIPECAT_HUB_CONFIG_FILE``) that passes
+    the trust seam, so those values are not owner-trusted. The bootstrap
+    (``load_env_layers``) installs the log boundary before it loads anything."""
+
+    _HOSTILE = "evil/x\x1b]52;c;cHduZWQ=\x07\x1b[2J"
+
+    @pytest.fixture(autouse=True)
+    def _default_record_factory(self):
+        import logging
+
+        previous = logging.getLogRecordFactory()
+        logging.setLogRecordFactory(logging.LogRecord)
+        yield
+        logging.setLogRecordFactory(previous)
+
+    @staticmethod
+    def _raw(text: str) -> bool:
+        return "\x1b" in text or "\x07" in text
+
+    def test_shadowed_exclusion_warning_flags_each_lost_entry(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            'PIPECAT_HUB_TAINTED_REPOS = ["org/kept", "evil/x\\u001b]52;c;cHduZWQ=\\u0007"]\n'
+        )
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "org/kept")
+        with caplog.at_level("WARNING"):
+            env_loading.load_env_layers()
+        assert "NOT in effect for this run: 'evil/x\\x1b]52;c;cHduZWQ=\\x07' [invalid]" in (
+            caplog.text
+        )
+        assert not any(self._raw(r.getMessage()) for r in caplog.records)
+
+    def test_unusable_data_dir_warning_escapes_the_error_text(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """The resolve error's text embeds the configured path; it is escaped
+        by the log boundary, not at the call site."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_DATA_DIR = "/data/evil"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
+        real_resolve = Path.resolve
+        hostile = self._HOSTILE
+
+        def _resolve(path: Path, strict: bool = False) -> Path:
+            if path.name == "evil":
+                raise RuntimeError(f"Symlink loop from {hostile}")
+            return real_resolve(path, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", _resolve)
+        with caplog.at_level("WARNING"):
+            env_loading.load_env_layers()
+        assert "not a usable path" in caplog.text
+        assert not any(self._raw(r.getMessage()) for r in caplog.records)
+        assert not self._raw(caplog.text)
+
+
 class TestReadTrustedConfig:
     """Direct tests for the shared reader seam (parent Decision 8)."""
 

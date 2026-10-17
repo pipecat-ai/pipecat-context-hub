@@ -37,10 +37,21 @@ from pipecat_context_hub.shared.paths import (
     redact_home,
     redact_home_in_text,
     resolution_chain,
-    shown,
 )
+from pipecat_context_hub.shared.terminal import install_log_escaping, shown
 
 _module_logger = logging.getLogger(__name__)
+
+
+def _shown_path(path: Path) -> str:
+    """A configured path for a message: home-redacted, flagged when not printable.
+
+    Every path this module names in a warning or a refusal goes through here.
+    The flag is for the reader; terminal safety itself is the log boundary's
+    (``shared/terminal.py``), which also covers the text around the path.
+    """
+    return shown(redact_home(path))
+
 
 # Default lookup path for the machine-global config file. Read via
 # `resolve_global_config_path()` (module-attribute lookup at call time, not a
@@ -224,8 +235,8 @@ def load_cwd_dotenv() -> dict[str, str]:
     except (OSError, UnicodeError, ValueError) as exc:
         _module_logger.warning(
             "Failed to read .env at %s: %s; no cwd .env values were applied",
-            shown(redact_home(env_path)),
-            shown(redact_home_in_text(str(exc))),
+            _shown_path(env_path),
+            redact_home_in_text(str(exc)),
         )
         return applied
     for line in content.splitlines():
@@ -503,7 +514,13 @@ def load_env_layers() -> dict[str, ProvenanceLayer]:
     config (``main()`` stores the result in ``ctx.obj["env_provenance"]``).
 
     The individual loaders remain public for tests that exercise one layer.
+
+    It first installs the terminal-safe log boundary
+    (:func:`terminal.install_log_escaping`): the loaders' warnings name
+    configured paths and entries, and an entry point that never configures
+    logging prints them through ``logging.lastResort``.
     """
+    install_log_escaping()
     env_layer = {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIX) and v.strip()}
     dotenv_layer = load_cwd_dotenv()
     global_layer = load_global_config()
@@ -601,9 +618,10 @@ def _file_kind(mode: int) -> str:
 
 def _refuse(message: str, *args: object) -> str:
     """Log a trust refusal as a warning and return its text (the ``ConfigNotTrusted`` reason)."""
-    # The path in a refusal can come from a project `.env`
-    # (PIPECAT_HUB_CONFIG_FILE); the reason also reaches `repos` output.
-    text = shown(message % args)
+    # Callers pass each path through `_shown_path`; the text is escaped at the
+    # output boundary (the log record, `repos`' echo), never as a whole here,
+    # so the remedy text stays readable and a path is never escaped twice.
+    text = message % args
     _module_logger.warning("%s", text)
     return text
 
@@ -656,8 +674,8 @@ def _link_owner_refusal(config_path: Path, uid: int) -> str | None:
             "Ignoring config.toml at %s: path component %s is a symlink owned by uid %d, "
             "not the current user (uid %d). Another local account could redirect this "
             "hub's settings.",
-            redact_home(config_path),
-            redact_home(location),
+            _shown_path(config_path),
+            _shown_path(location),
             lst.st_uid,
             uid,
         )
@@ -740,7 +758,7 @@ def _config_dir_refusal(
         return _refuse(
             "Ignoring config.toml at %s: its directory is owned by uid %d, not the "
             "current user (uid %d). Another local account could replace the file.",
-            redact_home(config_path),
+            _shown_path(config_path),
             pst.st_uid,
             uid,
         )
@@ -749,19 +767,19 @@ def _config_dir_refusal(
             "Ignoring config.toml at %s: its directory %s is world-writable without the "
             "sticky bit (mode %o), so any local account could replace the file. "
             "Run `chmod 755 %s` and retry.",
-            redact_home(config_path),
-            redact_home(parent),
+            _shown_path(config_path),
+            _shown_path(parent),
             stat.S_IMODE(pst.st_mode),
-            redact_home(parent),
+            _shown_path(parent),
         )
     if warn_group and pst.st_mode & stat.S_IWGRP and not pst.st_mode & stat.S_ISVTX:
         _module_logger.warning(
             "config.toml's directory %s is group-writable (mode %o); anyone in group %d "
             "can replace this hub's settings file. Consider `chmod 755 %s`.",
-            shown(redact_home(parent)),
+            _shown_path(parent),
             stat.S_IMODE(pst.st_mode),
             pst.st_gid,
-            shown(redact_home(parent)),
+            _shown_path(parent),
         )
     return None
 
@@ -834,7 +852,7 @@ def _config_fd_refusal(fd: int, config_path: Path) -> str | None:
     if not stat.S_ISREG(st.st_mode):
         return _refuse(
             "Ignoring config.toml at %s: not a regular file (%s); config.toml must be a plain file",
-            redact_home(config_path),
+            _shown_path(config_path),
             _file_kind(st.st_mode),
         )
 
@@ -850,7 +868,7 @@ def _config_fd_refusal(fd: int, config_path: Path) -> str | None:
     except LookupMismatch as exc:
         return _refuse(
             "Ignoring config.toml at %s: cannot prove where its lookup lands (%s)",
-            redact_home(config_path),
+            _shown_path(config_path),
             redact_home_in_text(str(exc)),
         )
     refusal = _link_owner_refusal(config_path, uid) or _config_parent_refusal(
@@ -863,7 +881,7 @@ def _config_fd_refusal(fd: int, config_path: Path) -> str | None:
         return _refuse(
             "Ignoring config.toml at %s: owned by uid %d, not the current user (uid %d). "
             "Another local account could control this hub's settings.",
-            redact_home(config_path),
+            _shown_path(config_path),
             st.st_uid,
             uid,
         )
@@ -871,18 +889,18 @@ def _config_fd_refusal(fd: int, config_path: Path) -> str | None:
         return _refuse(
             "Ignoring config.toml at %s: it is world-writable (mode %o). "
             "Run `chmod 600 %s` and retry.",
-            redact_home(config_path),
+            _shown_path(config_path),
             stat.S_IMODE(st.st_mode),
-            redact_home(config_path),
+            _shown_path(config_path),
         )
     if st.st_mode & stat.S_IWGRP:
         _module_logger.warning(
             "config.toml at %s is group-writable (mode %o); anyone in group %d can change "
             "this hub's settings. Consider `chmod 600 %s`.",
-            shown(redact_home(config_path)),
+            _shown_path(config_path),
             stat.S_IMODE(st.st_mode),
             st.st_gid,
-            shown(redact_home(config_path)),
+            _shown_path(config_path),
         )
     return None
 
@@ -1006,9 +1024,7 @@ def check_config_write_target(path: Path) -> None:
     try:
         resolved = lookup_target(path)
     except LookupMismatch as exc:
-        raise ConfigNotTrusted(
-            f"{redact_home_in_text(str(path))}: {redact_home_in_text(str(exc))}"
-        ) from exc
+        raise ConfigNotTrusted(f"{_shown_path(path)}: {redact_home_in_text(str(exc))}") from exc
     uid = os.getuid()
     refusal = _link_owner_refusal(path, uid) or _config_parent_refusal(path, uid, resolved=resolved)
     if refusal is not None:
@@ -1049,14 +1065,14 @@ def load_global_config() -> dict[str, str]:
         if not exc.logged:
             _module_logger.warning(
                 "Failed to read config.toml at %s: %s",
-                shown(redact_home(config_path)),
-                shown(exc.reason),
+                _shown_path(config_path),
+                exc.reason,
             )
         return applied
     except tomllib.TOMLDecodeError as exc:
         _module_logger.warning(
             "Failed to read config.toml at %s: %s",
-            shown(redact_home(config_path)),
+            _shown_path(config_path),
             redact_home_in_text(str(exc)),
         )
         return applied
@@ -1147,7 +1163,7 @@ def load_global_config() -> dict[str, str]:
                         "(real env var or cwd .env); these machine-global exclusions are "
                         "NOT in effect for this run: %s",
                         key,
-                        ", ".join(lost),
+                        ", ".join(shown(entry) for entry in lost),
                     )
                 elif lost is None:
                     # The shadowed value's shape isn't one this loader reads
@@ -1205,7 +1221,7 @@ def load_global_config() -> dict[str, str]:
                     "config.toml key %r would relocate the data dir to contain the "
                     "active config file (%s); skipping",
                     key,
-                    shown(redact_home(colliding_config_path)),
+                    _shown_path(colliding_config_path),
                 )
                 continue
 
@@ -1238,5 +1254,5 @@ def load_global_config() -> dict[str, str]:
         loaded += 1
 
     if loaded:
-        _module_logger.info("Loaded %d key(s) from %s", loaded, shown(redact_home(config_path)))
+        _module_logger.info("Loaded %d key(s) from %s", loaded, _shown_path(config_path))
     return applied

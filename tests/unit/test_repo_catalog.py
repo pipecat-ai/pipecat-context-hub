@@ -614,7 +614,12 @@ class TestModuleLayering:
 
     @pytest.mark.parametrize(
         "module",
-        ["pipecat_context_hub.shared.env_keys", "pipecat_context_hub.shared.repo_slug"],
+        [
+            "pipecat_context_hub.shared.env_keys",
+            "pipecat_context_hub.shared.repo_slug",
+            # The output boundary: every module that prints imports it.
+            "pipecat_context_hub.shared.terminal",
+        ],
     )
     def test_leaf_modules_load_nothing_else(self, module: str) -> None:
         assert _modules_loaded_by(module) == sorted(

@@ -15,8 +15,8 @@ from pipecat_context_hub.shared.paths import (
     lookup_target,
     redact_home_in_text,
     resolution_chain,
-    shown,
 )
+from pipecat_context_hub.shared.terminal import shown
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")

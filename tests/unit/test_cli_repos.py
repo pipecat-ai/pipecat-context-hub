@@ -1125,6 +1125,67 @@ class TestConfiguredPathIsNeverPrintedRaw:
         assert f"Ignoring config.toml at {path}: it is world-writable" in failed.stderr
         assert "[invalid]" not in failed.stderr
 
+    @_posix_only
+    def test_list_flags_an_untrusted_path_once_per_mention(self, hub: Hub):
+        """The problem line names the path twice (the list's own prefix and the
+        refusal reason): each mention is flagged once, never re-escaped as part
+        of a larger message (no doubled backslashes, no nested ``[invalid]``)."""
+        path = self._arrange(hub, self._NAME, mode=0o666)
+        result = hub.run("list")
+        assert result.exit_code == 0, result.output
+        assert not self._raw(result.stdout)
+        flagged = f"{str(path)!r} [invalid]"
+        problem = [ln for ln in result.stdout.splitlines() if ln.startswith("config.toml:")]
+        assert problem == [
+            f"config.toml: ignoring {flagged}: not trusted (Ignoring config.toml at {flagged}: "
+            f"it is world-writable (mode 666). Run `chmod 600 {flagged}` and retry.)"
+        ]
+        assert "\\\\" not in problem[0]
+
+    @_posix_only
+    def test_add_with_an_unprovable_lookup_never_prints_the_path_raw(
+        self, hub: Hub, caplog: pytest.LogCaptureFixture
+    ):
+        """A ``..`` after a non-directory: the writer's lookup check refuses it,
+        and that reason embeds the path in the walk's own words, not via
+        ``shown()``; only the output boundary keeps it safe."""
+        (hub.cwd / "nope").write_text("a file, not a directory\n")
+        hub.monkeypatch.delenv("PIPECAT_HUB_CONFIG_FILE")
+        hub.write_dotenv(f"PIPECAT_HUB_CONFIG_FILE={hub.cwd / 'nope' / '..' / self._NAME}\n")
+        with caplog.at_level(logging.WARNING):
+            result = hub.run("add", ALPHA_ONE)
+        assert result.exit_code == EXIT_INVALID_INPUT, result.output
+        assert "config.toml was not changed" in result.stderr
+        assert not self._raw(result.stdout) and not self._raw(result.stderr)
+        assert not any(self._raw(r.getMessage()) for r in caplog.records)
+
+    def test_an_os_error_naming_the_path_is_never_printed_raw(self, hub: Hub, monkeypatch):
+        """``_apply``'s ``OSError`` branch prints the error's own text."""
+        from pipecat_context_hub.shared import config_writer
+
+        def _boom(**_k: Any) -> Any:
+            # One argument: unlike (errno, strerror, filename), str() does not repr it.
+            raise PermissionError(f"Permission denied: {hub.cwd / self._NAME}")
+
+        monkeypatch.setattr(config_writer, "update_extra_repos", _boom)
+        result = hub.run("add", ALPHA_ONE)
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "Permission denied" in result.stderr
+        assert not self._raw(result.stderr)
+
+    def test_a_command_level_os_error_is_never_printed_raw(self, hub: Hub, monkeypatch):
+        """``_os_error_boundary`` prints an escaping ``OSError``'s text."""
+        from pipecat_context_hub import cli_repos
+
+        def _boom() -> Any:
+            raise FileNotFoundError(f"No such file: {hub.cwd / self._NAME}")
+
+        monkeypatch.setattr(cli_repos, "_configured_in_toml", _boom)
+        result = hub.run("list")
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "No such file" in result.stderr
+        assert not self._raw(result.stderr)
+
 
 # ---------------------------------------------------------------------------
 # Offline, and no tomlkit at CLI import

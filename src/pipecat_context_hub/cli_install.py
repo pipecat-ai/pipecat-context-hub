@@ -23,6 +23,8 @@ from typing import Any, Literal
 
 import click
 
+from pipecat_context_hub.shared.terminal import echo
+
 # MCP server name registered with the client. Matches the command name, and the
 # name the agent guides tell coding agents to look for.
 _SERVER_NAME = "pipecat-context-hub"
@@ -129,7 +131,7 @@ def _run_client(exe: str, args: list[str]) -> subprocess.CompletedProcess[str] |
             [exe, *args], capture_output=True, text=True, timeout=60
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        click.echo(f"  failed to run {exe}: {exc}", err=True)
+        echo(f"  failed to run {exe}: {exc}", err=True)
         return None
 
 
@@ -218,7 +220,7 @@ def _inspect_registration(client: str, exe: str, command: list[str]) -> _Registr
         if _not_found(completed):
             return _Registration("absent")
         detail = _first_error_line(completed) or "unknown error"
-        click.echo(
+        echo(
             f"  cannot inspect existing registration: {detail}; leaving it unchanged.",
             err=True,
         )
@@ -245,7 +247,7 @@ def _inspect_registration(client: str, exe: str, command: list[str]) -> _Registr
         matches = _config_matches_command(config, command, default_type="stdio")
         return _Registration("matching" if matches else "mismatched", config, scope)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
-        click.echo(f"  cannot inspect existing registration safely: {exc}", err=True)
+        echo(f"  cannot inspect existing registration safely: {exc}", err=True)
         return _Registration("error")
 
 
@@ -256,7 +258,7 @@ def _first_error_line(completed: subprocess.CompletedProcess[str]) -> str:
 
 
 def _report_failure(exe: str, completed: subprocess.CompletedProcess[str]) -> None:
-    click.echo(f"  {exe} exited {completed.returncode}: {_first_error_line(completed)}", err=True)
+    echo(f"  {exe} exited {completed.returncode}: {_first_error_line(completed)}", err=True)
 
 
 def _restore_claude_registration(exe: str, registration: _Registration) -> bool:
@@ -283,9 +285,9 @@ def _restore_claude_registration(exe: str, registration: _Registration) -> bool:
         ],
     )
     if rollback is None or rollback.returncode != 0:
-        click.echo("  failed to restore the previous registration.", err=True)
+        echo("  failed to restore the previous registration.", err=True)
         return False
-    click.echo("  restored the previous registration.", err=True)
+    echo("  restored the previous registration.", err=True)
     return True
 
 
@@ -321,7 +323,7 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
         return "failed"
     if registration.state == "matching":
         # No restart advice: nothing changed, so the running client is already correct.
-        click.echo("  already registered; no change.")
+        echo("  already registered; no change.")
         return "ok"
 
     add_options: list[str] = []
@@ -330,7 +332,7 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
         # the only state _inspect_registration populates scope for.
         assert registration.scope is not None  # nosec B101
         remove_args = ["mcp", "remove", _SERVER_NAME, "-s", registration.scope]
-        click.echo(f"  $ {exe} {' '.join(remove_args)}")
+        echo(f"  $ {exe} {' '.join(remove_args)}")
         removed = _run_client(exe, remove_args)
         if removed is None:
             return _fail_with_rollback(exe, registration)
@@ -353,7 +355,7 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
     # `codex mcp add` overwrites an existing name atomically. For an absent entry,
     # both clients take this same non-destructive path.
     args = ["mcp", "add", *add_options, _SERVER_NAME, "--", *command]
-    click.echo(f"  $ {exe} {' '.join(args)}")
+    echo(f"  $ {exe} {' '.join(args)}")
     completed = _run_client(exe, args)
     if completed is None:
         if is_claude_mismatch:
@@ -364,7 +366,7 @@ def _register_with_cli(client: str, command: list[str]) -> Literal["ok", "failed
         if is_claude_mismatch:
             return _fail_with_rollback(exe, registration)
         return "failed"
-    click.echo(f"  registered. Restart {client} to load it.")
+    echo(f"  registered. Restart {client} to load it.")
     return "ok"
 
 
@@ -412,8 +414,8 @@ def install_command(
     command = _server_command()
 
     if print_config:
-        click.echo(f"Server command: {' '.join(command)}")
-        click.echo(_mcp_json(command))
+        echo(f"Server command: {' '.join(command)}")
+        echo(_mcp_json(command))
         return
 
     selected = list(clients) or _detect_cli_clients()
@@ -421,39 +423,39 @@ def install_command(
     corrupted: list[str] = []
     configured = False
     if not selected:
-        click.echo(
+        echo(
             "No client CLI detected (looked for: "
             f"{', '.join(sorted(_CLI_CLIENTS.values()))}).\n"
             "Add the block below to your client's MCP config (schema differs per client):\n"
         )
         for name, location in sorted(_FILE_CLIENTS.items()):
-            click.echo(f"{name}: add this to {location}")
-            click.echo(_mcp_json(command, name))
+            echo(f"{name}: add this to {location}")
+            echo(_mcp_json(command, name))
     else:
         for client in selected:
             if client in _FILE_CLIENTS:
-                click.echo(f"{client}: add this to {_FILE_CLIENTS[client]}")
-                click.echo(_mcp_json(command, client))
+                echo(f"{client}: add this to {_FILE_CLIENTS[client]}")
+                echo(_mcp_json(command, client))
                 continue
-            click.echo(f"Registering '{_SERVER_NAME}' with {client}:")
+            echo(f"Registering '{_SERVER_NAME}' with {client}:")
             outcome = _register_with_cli(client, command)
             if outcome == "ok":
                 configured = True
             elif outcome == "corrupted":
-                click.echo(
+                echo(
                     f"  registration failed for {client}, and the previous "
                     "registration could not be restored either.",
                     err=True,
                 )
                 corrupted.append(client)
             else:
-                click.echo(f"  registration failed for {client}.", err=True)
+                echo(f"  registration failed for {client}.", err=True)
                 failures.append(client)
 
     if no_refresh:
-        click.echo("\nSkipped index build. Run `refresh` before the first query.")
+        echo("\nSkipped index build. Run `refresh` before the first query.")
     else:
-        click.echo("\nBuilding the index (first run downloads models; allow several minutes)...")
+        echo("\nBuilding the index (first run downloads models; allow several minutes)...")
         ctx.invoke(refresh)
 
     if corrupted or failures:
@@ -469,7 +471,7 @@ def install_command(
             # A plain ClickException always exits 1, which would make this
             # indistinguishable from a failure that left the old registration intact.
             # Losing a working registration needs its own exit code.
-            click.echo(f"Error: {message}", err=True)
+            echo(f"Error: {message}", err=True)
             ctx.exit(_EXIT_REGISTRATION_LOST)
         raise click.ClickException(message)
     if not configured:
