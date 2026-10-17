@@ -132,7 +132,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
 
 **Goal:** the writer and the reader share one trust check, and `repos` can tell which layer is in force.
 **Impl files:** `src/pipecat_context_hub/shared/env_loading.py`, `src/pipecat_context_hub/cli.py`
-**Test files:** `tests/unit/test_env_loading.py`, `tests/unit/test_config.py`, `tests/unit/test_cli.py`
+**Test files:** `tests/unit/test_env_loading.py`, `tests/unit/test_config.py`, `tests/unit/test_cli.py`, `tests/unit/_config_trust_cases.py` (shared helper, no tests)
 **Test command:** `uv run pytest tests/unit/test_env_loading.py tests/unit/test_config.py tests/unit/test_cli.py -v`
 
 - Extract public `read_trusted_config(path) -> str | None` and `parse_global_config(path) -> dict[str, object]`,
@@ -144,7 +144,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
   `tomllib.TOMLDecodeError` from `parse_global_config`, not wrapped. The seam takes a path, so a `None`
   from `resolve_global_config_path()` (no home, blank `PIPECAT_HUB_CONFIG_FILE`) stays outside it:
   the reader returns silently and callers decide (2c, 2d).
-- Parametrized reader-vs-seam equivalence test over the shared `TRUST_REFUSAL_CASES` (see 2c) plus invalid
+- Parametrized reader-vs-seam equivalence test over the shared `TRUST_REFUSAL_CASES` (defined here in 2b in `tests/unit/_config_trust_cases.py`; 2c imports it) plus invalid
   TOML, missing file, unresolvable path. `load_global_config` warns and ignores exactly when the seam
   raises `ConfigNotTrusted` or `TOMLDecodeError`, and returns silently for missing and unresolvable.
   POSIX-only cases are skipped on Windows.
@@ -185,7 +185,7 @@ Facts a phase worker needs and cannot cheaply rediscover:
   PR description; plus a writer test parametrized over `TRUST_REFUSAL_CASES`: the ONE shared tuple of the
   2b predicates that raise `ConfigNotTrusted` (non-regular, foreign-owned, world-writable, untrusted parent
   dir, foreign symlink hop, unreadable, undecodable, embedded-NUL path; excludes invalid TOML, missing,
-  unresolvable), defined in `tests/unit/_config_trust_cases.py`. The 2b equivalence test and this test both
+  unresolvable), created in 2b at `tests/unit/_config_trust_cases.py`. The 2b equivalence test and this test both
   import it, so a new predicate is exercised on reader and writer. Writer asserts the file byte-identical.
 - Mutation check: remove the failed-re-parse abort; its test must fail. Record it in the PR description.
 - `test_config_writer.py` joins the `ci.yml` Windows file list in this commit. POSIX-only tests skip
