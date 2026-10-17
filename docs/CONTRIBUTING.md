@@ -98,6 +98,23 @@ Retrieval:
     `.env.example` block and the `docs/configuration.md` section are generated
     from it: edit the catalog, then run `just catalog-regen` (a test fails on
     drift). Do not hand-edit the generated blocks
+  - Catalog rules, enforced by the parser (`just catalog-regen --check`
+    validates them, and so does the test suite):
+    - Top-level `verified` is a plain ISO date (`YYYY-MM-DD`, not a timestamp);
+      the only top-level keys are `verified` and `groups`.
+    - Group names (`[groups.<name>]`) are lowercase letters, digits and `-`,
+      starting with a letter or digit. Each group has `kind` (`vendor` or
+      `topic`), a non-empty `description`, a non-empty `aliases` list of
+      non-empty strings, and at least one `[[repos]]` entry; no other keys.
+    - Each repo has a `slug` (`owner/repo`, the grammar `refresh` clones) and
+      optionally `note`, `parseable` and `maintainer` (booleans). `private`,
+      `archived` and `status` are refused: visibility is the health check's job.
+    - A slug appears in one group only and is never a default repo; an alias
+      belongs to one group only. Both compare case-insensitively.
+    - No text (slug, note, kind, description, alias) may hold a control
+      character, a line or paragraph separator, or a bidi or zero-width
+      character; a `description` may not hold `|`; and no text may hold
+      `BEGIN GENERATED` or `END GENERATED`.
 
 ## Project Structure
 

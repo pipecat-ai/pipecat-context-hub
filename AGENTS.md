@@ -153,7 +153,8 @@ src/pipecat_context_hub/
 │   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule)
 │   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
 │   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants)
-│   ├── repo_slug.py          # REPO_SLUG_RE / is_valid_repo_slug / slug_key — the one owner/repo grammar and the one slug identity (casefolded; every default/taint/dedupe/writer/catalog comparison) (leaf: ingester, catalog, repos, writer)
+│   ├── repo_slug.py          # REPO_SLUG_RE / is_valid_repo_slug / slug_key / dedupe_slugs — the one owner/repo grammar, the one slug identity (casefolded; every default/taint/dedupe/writer/catalog comparison) and the one slug-list dedupe (leaf: ingester, catalog, repos, writer)
+│   ├── exclusion_folds.py    # EXCLUSION_FOLDS / exclusion_fold — the one per-key entry fold for the taint lists (slug_key for repos, exact for refs; unknown key raises); SourceConfig and the loader's shadowed-exclusion warning both use it
 │   ├── env_keys.py           # EXTRA_REPOS_ENV / TAINTED_REPOS_ENV / TAINTED_REFS_ENV / split_csv — the list-key literals and CSV rule (leaf: config model and env loader both import it)
 │   ├── repo_catalog_render.py # pure renderers + splice for the generated catalog sections; `python -m` entry behind `just catalog-regen`
 │   ├── interfaces.py         # IndexWriter/Reader, ServingIndex, Retriever, Ingester; FatalIndexError (ingesters re-raise: stops refresh), IndexUnavailableError (message for the caller)
