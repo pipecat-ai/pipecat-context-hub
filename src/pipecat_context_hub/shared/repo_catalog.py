@@ -32,8 +32,9 @@ VALID_KINDS = frozenset({"vendor", "topic"})
 # digit, then letters, digits, `.`, `_` or `-`. It is the grammar the ingester
 # accepts (`github_ingest.clone_or_fetch`), so a slug the catalog, `repos` or
 # the writer accepts can always be cloned; it also excludes `.`/`..` segments
-# and (via `fullmatch`) a trailing newline.
-REPO_SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
+# and a trailing newline. Self-anchoring (`\A`..`\Z`), so `.match()`, `.search()` and
+# `.fullmatch()` agree: a consumer cannot weaken it by choosing the wrong method.
+REPO_SLUG_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _GROUP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _TOP_KEYS = frozenset({"verified", "groups"})
 _GROUP_KEYS = frozenset({"kind", "description", "aliases", "repos"})

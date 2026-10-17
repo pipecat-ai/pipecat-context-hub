@@ -246,6 +246,14 @@ class TestSlugGrammar:
         with pytest.raises(CatalogError):
             parse_catalog(_with(_VALID, 'slug = "widgets/one"', f'slug = "{slug}"'))
 
+    @pytest.mark.parametrize("slug", ["a/b\n", "a/b\nc/d", "a/b/c", "x a/b"])
+    def test_pattern_is_self_anchoring(self, slug: str) -> None:
+        """Every regex method must agree, so a consumer using ``.match`` or
+        ``.search`` cannot accept what ``fullmatch`` refuses."""
+        assert REPO_SLUG_RE.match(slug) is None
+        assert REPO_SLUG_RE.search(slug) is None
+        assert REPO_SLUG_RE.fullmatch(slug) is None
+
     def test_every_shipped_slug_passes(self, shipped_catalog: Catalog) -> None:
         for group in shipped_catalog.groups:
             for repo in group.repos:
