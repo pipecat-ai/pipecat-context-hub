@@ -21,9 +21,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterable, Mapping, Set
+from collections.abc import Callable, Iterable, Mapping, Set
 from typing import TYPE_CHECKING, Any, Protocol
 
+from pipecat_context_hub.shared.env_keys import TAINTED_REPOS_ENV
+from pipecat_context_hub.shared.exclusion_folds import exclusion_fold
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
 from pipecat_context_hub.shared.repo_slug import slug_key
@@ -82,13 +84,13 @@ def configured_no_records(
 ) -> list[str]:
     """Untainted configured slugs (original case) with no indexed records; ``[]`` if unreadable.
 
-    ``tainted`` is casefolded here, so callers may pass raw slugs.
+    ``tainted`` is folded here, so callers may pass raw slugs.
     """
     if indexed is None:
         return []
-    skip = _fold(tainted)
+    is_tainted = _taint_matcher(tainted)
     return sorted(
-        slug for slug in configured if (key := slug_key(slug)) not in indexed and key not in skip
+        slug for slug in configured if slug_key(slug) not in indexed and not is_tainted(slug)
     )
 
 
@@ -96,18 +98,30 @@ def _fold(slugs: Iterable[str]) -> frozenset[str]:
     return frozenset(slug_key(s) for s in slugs)
 
 
+def _taint_matcher(tainted: Iterable[str]) -> Callable[[str], bool]:
+    """``SourceConfig.is_tainted``'s rule over an explicit taint list.
+
+    Both sides go through ``exclusion_fold(TAINTED_REPOS_ENV)``, the one taint
+    fold, so the hint and ``get_hub_status`` cannot drift from refresh,
+    ``repos`` and ``effective_repos`` if that fold changes.
+    """
+    fold = exclusion_fold(TAINTED_REPOS_ENV)
+    keys = frozenset(fold(t) for t in tainted)
+    return lambda slug: fold(slug) in keys
+
+
 def missing_repos(
     group: CatalogGroup, indexed: Set[str], *, tainted: Set[str] = frozenset()
 ) -> list[str]:
     """Parseable, untainted catalog slugs of ``group`` that have no indexed records.
 
-    ``tainted`` is casefolded here, so callers may pass raw slugs.
+    ``tainted`` is folded here, so callers may pass raw slugs.
     """
-    skip = _fold(tainted)
+    is_tainted = _taint_matcher(tainted)
     return [
         r.slug
         for r in group.repos
-        if r.parseable and (key := slug_key(r.slug)) not in indexed and key not in skip
+        if r.parseable and slug_key(r.slug) not in indexed and not is_tainted(r.slug)
     ]
 
 

@@ -248,6 +248,36 @@ class TestTaintedSkipInThePredicate:
     def test_unreadable_count_still_wins_over_tainted(self) -> None:
         assert groups_not_indexed(_catalog(), None, tainted=frozenset({"acme/x"})) == []
 
+    def test_taint_rule_is_the_exclusion_fold_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The hint and status fold tainted slugs through the same registry entry as
+        # ``SourceConfig.is_tainted``, so a change to that fold reaches all of them.
+        from types import MappingProxyType
+
+        from pipecat_context_hub.shared import exclusion_folds
+        from pipecat_context_hub.shared.config import SourceConfig
+        from pipecat_context_hub.shared.env_keys import TAINTED_REPOS_ENV
+        from pipecat_context_hub.shared.repo_slug import slug_key
+
+        def fold(slug: str) -> str:
+            return slug_key(slug).removesuffix("-mirror")
+
+        monkeypatch.setattr(
+            exclusion_folds,
+            "EXCLUSION_FOLDS",
+            MappingProxyType({**exclusion_folds.EXCLUSION_FOLDS, TAINTED_REPOS_ENV: fold}),
+        )
+        monkeypatch.setenv(TAINTED_REPOS_ENV, "acme/bad-mirror")
+        assert SourceConfig().is_tainted("acme/bad")
+
+        tainted = frozenset({"acme/bad-mirror"})
+        group = _group("g", _repo("acme/bad"), _repo("acme/other"))
+        assert missing_repos(group, set(), tainted=tainted) == ["acme/other"]
+        assert configured_no_records(["acme/bad", "acme/x"], set(), tainted=tainted) == ["acme/x"]
+        catalog = Catalog(verified=date(2026, 10, 17), groups=(_group("g", _repo("acme/bad")),))
+        assert groups_not_indexed(catalog, set(), tainted=tainted) == []
+
 
 # --- corpus_hint ---------------------------------------------------------------------------
 

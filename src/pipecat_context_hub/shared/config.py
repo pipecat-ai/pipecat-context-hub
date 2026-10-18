@@ -498,9 +498,11 @@ class SourceConfig(BaseModel):
         """The one taint-matching rule: compared by :func:`slug_key` (the one
         slug identity), so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.
         Every consumer of ``tainted_repos`` (``effective_repos``, refresh's
-        cleanup, ``repos``) decides through this method. The fold is
+        cleanup, ``repos``) decides through this method, except
+        ``corpus_hint`` (the corpus hint and ``get_hub_status``), which takes
+        the taint list as data and applies the same rule. The fold is
         ``exclusion_folds.EXCLUSION_FOLDS``'s, which the loader's shadowed-taint
-        warning also uses."""
+        warning and ``corpus_hint`` also use."""
         fold = exclusion_fold(TAINTED_REPOS_ENV)
         key = fold(slug)
         return any(fold(t) == key for t in self.tainted_repos)
