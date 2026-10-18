@@ -155,7 +155,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   fallback (also `doc`, but with a repo) vanished from both stores until that repo
   was next re-ingested. It now removes docs-site records only
   (`delete_by_content_type(..., without_repo=True)`: `repo IS NULL` in FTS, no
-  `repo` key in Chroma). Closes #146.
+  `repo` key in Chroma). The Chroma delete refuses to run (raises) when Chroma returns
+  missing, short or null metadata. Closes #146.
 - **`get_counts_by_repo` counts each chunk once.** The synthetic `docs.pipecat.ai`
   key counted every `doc` chunk, including a repo's README fallback, which is
   also counted under its repo. It now counts only crawled doc chunks (no repo), so

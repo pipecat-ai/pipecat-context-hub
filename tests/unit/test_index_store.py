@@ -230,6 +230,29 @@ class TestVectorIndex:
         monkeypatch.undo()
         assert set(vector_index._collection.get(include=[])["ids"]) == {"site1", "readme1", "c1"}
 
+    def test_delete_by_content_type_without_repo_fails_closed_on_null_metadata_entry(
+        self, vector_index: VectorIndex, monkeypatch: pytest.MonkeyPatch
+    ):
+        vector_index.upsert(_docs_site_and_readme_fallback())
+        real_get = vector_index._collection.get
+
+        def get_with_null_entry(**kw: Any) -> Any:
+            result = real_get(**kw)
+            # Blank the repo-owned README-fallback record's metadata entry.
+            metadatas = [
+                None if id_ == "readme1" else meta
+                for id_, meta in zip(result["ids"], result["metadatas"], strict=True)
+            ]
+            return {**result, "metadatas": metadatas}
+
+        monkeypatch.setattr(vector_index._collection, "get", get_with_null_entry)
+
+        with pytest.raises(RuntimeError, match="refusing to delete"):
+            vector_index.delete_by_content_type("doc", without_repo=True)
+
+        monkeypatch.undo()
+        assert set(vector_index._collection.get(include=[])["ids"]) == {"site1", "readme1", "c1"}
+
     def test_delete_by_content_type(self, vector_index: VectorIndex):
         records = [
             _make_record(chunk_id="d1", content_type="doc"),
