@@ -28,7 +28,7 @@ from pipecat_context_hub.shared.index_lock import (
     refresh_in_progress,
 )
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
-from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+from pipecat_context_hub.shared.paths import redact_home_in_text, shown_path
 from pipecat_context_hub.shared.support_links import bug_report_hint
 from pipecat_context_hub.shared.types import IndexQuery, IndexResult
 
@@ -82,13 +82,13 @@ def open_ready_index_store(storage: StorageConfig) -> IndexStore:
             # Busy, locked, I/O or permissions: the index may be healthy, so
             # never advise deleting it (refresh gives no reset advice either).
             message = (
-                f"Failed to open index at {redact_home(storage.data_dir)}: "
+                f"Failed to open index at {shown_path(storage.data_dir)}: "
                 f"{redact_home_in_text(str(exc))}. This looks temporary (busy, locked, "
                 "I/O or permissions): check the index files are readable, then retry."
             )
         else:
             message = (
-                f"Failed to open index at {redact_home(storage.data_dir)}: "
+                f"Failed to open index at {shown_path(storage.data_dir)}: "
                 f"{redact_home_in_text(str(exc))}. {RESET_INDEX_REMEDIATION}"
             )
         raise IndexUnavailableError(f"{message} {bug_report_hint()}") from exc

@@ -130,7 +130,7 @@ def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str
     if entry is None:
         if not unlisted:
             _fail(
-                f"{slug} is not in the repo catalog. Pass --unlisted to add a repo "
+                f"{slug} is not in the repo catalog. Pass --unlisted to act on a repo "
                 "that is not listed there."
             )
         return slug

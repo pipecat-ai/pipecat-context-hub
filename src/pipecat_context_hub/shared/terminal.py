@@ -66,6 +66,17 @@ def _is_kept(ch: str) -> bool:
     return ch in _KEPT or ch.isprintable()
 
 
+def _all_kept(text: str) -> bool:
+    """True when every character of ``text`` is kept as is (:func:`_is_kept`).
+
+    The same test as ``all(map(_is_kept, text))`` at C speed: the output boundary
+    runs it over every line a command prints, so the common all-printable case
+    must not cost a Python call per character (a query command's whole JSON
+    document goes through it).
+    """
+    return text.replace("\n", "").replace("\t", "").isprintable()
+
+
 def escape_controls(text: str) -> str:
     """``text`` with every non-printable character except ``\\n``/``\\t`` escaped.
 
@@ -74,7 +85,7 @@ def escape_controls(text: str) -> str:
     is byte-identical. The output's added characters are printable, so applying
     this twice changes nothing further.
     """
-    if text.isprintable():
+    if _all_kept(text):
         return text
     out: list[str] = []
     for ch in text:
@@ -112,7 +123,7 @@ def escape_json(text: str) -> str:
     else outside a string gets :func:`escape_controls`' escape. Printable JSON
     is byte-identical; applying this twice changes nothing further.
     """
-    if all(_is_kept(ch) for ch in text):
+    if _all_kept(text):
         return text
     out: list[str] = []
     in_string = False
