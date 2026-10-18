@@ -4,7 +4,7 @@ Startup telemetry and one-shot CLI error messages are included in the "share
 this with maintainers" guidance, so stripping usernames out of absolute paths
 keeps routine bug reports from leaking local filesystem layout.
 
-Two helpers, because the leak has two shapes:
+Three helpers, because the leak has two shapes and one presentation rule:
 
 - :func:`redact_home` — the *whole argument* is a path (banner / cache-dir
   sites). A prefix match suffices.
@@ -12,12 +12,15 @@ Two helpers, because the leak has two shapes:
   message string (e.g. a ``{exc}`` rendering whose ``__str__`` carries an
   absolute path). A prefix-only helper cannot redact this, so the home dir is
   matched and replaced wherever it appears in the text.
+- :func:`shown_path` — naming a configured path in a message:
+  :func:`redact_home`, then ``terminal.shown`` (flagged when not printable).
 
 Lives in ``shared/`` (not ``cli.py``) because ``cli.py`` imports ``cli_query``;
-importing the helper back from ``cli.py`` would be a cycle. ``shared/`` peers
-import neither CLI module, so the layer stays leaf-level.
+importing the helper back from ``cli.py`` would be a cycle. This module imports
+neither CLI module; its only package dependency is the stdlib-only
+``shared/terminal.py`` leaf.
 
-Terminal safety (escaping non-printable text) is not a path concern; it
+Escaping non-printable text at the output sinks is not a path concern; it
 lives in ``shared/terminal.py``.
 
 :func:`same_dir`, :func:`is_inside`, :func:`resolution_chain` and
