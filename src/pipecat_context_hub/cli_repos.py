@@ -267,7 +267,7 @@ def _validate_selector(slug: str | None, group: str | None, unlisted: bool) -> N
 
 
 def _skipped_lines(
-    group: CatalogGroup, sources: SourceConfig, *, adding: bool
+    group: CatalogGroup, sources: SourceConfig, *, for_removal: bool
 ) -> tuple[list[str], list[str]]:
     """``(actionable, skipped_lines)`` for a group's members.
 
@@ -279,7 +279,7 @@ def _skipped_lines(
     actionable: list[str] = []
     skipped: list[str] = []
     for repo in group.repos:
-        reason = member_skip_reason(repo, sources.is_tainted, for_removal=not adding)
+        reason = member_skip_reason(repo, sources.is_tainted, for_removal=for_removal)
         if reason is None:
             actionable.append(repo.slug)
         else:
@@ -290,7 +290,7 @@ def _skipped_lines(
 def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool) -> None:
     catalog = _catalog_or_fail()
     group = _resolve_group(catalog, name)
-    members, skipped = _skipped_lines(group, _config(ctx).sources, adding=adding)
+    members, skipped = _skipped_lines(group, _config(ctx).sources, for_removal=not adding)
     before: list[str] = []
     changed = False
     if members:
