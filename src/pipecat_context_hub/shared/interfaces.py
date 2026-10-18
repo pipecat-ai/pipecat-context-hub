@@ -32,6 +32,10 @@ from pipecat_context_hub.shared.types import (
 # Index service protocols
 # ---------------------------------------------------------------------------
 
+# Synthetic key ``get_counts_by_repo`` adds for crawled doc chunks (they have
+# no repo). Not a repo: readers that list repos must skip it.
+DOCS_COUNT_KEY = "docs.pipecat.ai"
+
 
 class IndexWriter(Protocol):
     """Writes chunked records into the index store."""
@@ -77,7 +81,12 @@ class ServingIndex(IndexReader, Protocol):
         ...
 
     def get_counts_by_repo(self) -> dict[str, int]:
-        """Return the number of indexed records per repo."""
+        """Return the number of indexed records per repo.
+
+        Keys are each repo's configured slug verbatim (not casefolded), plus the
+        synthetic :data:`DOCS_COUNT_KEY` for doc chunks when any exist; that key
+        is not a repo.
+        """
         ...
 
 

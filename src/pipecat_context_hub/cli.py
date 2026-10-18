@@ -37,7 +37,11 @@ from pipecat_context_hub.shared.index_lock import (
     refresh_in_progress,
     serve_is_running,
 )
-from pipecat_context_hub.shared.interfaces import FatalIndexError, IndexUnavailableError
+from pipecat_context_hub.shared.interfaces import (
+    DOCS_COUNT_KEY,
+    FatalIndexError,
+    IndexUnavailableError,
+)
 from pipecat_context_hub.shared.paths import (
     is_reparse_link,
     redact_home,
@@ -1358,7 +1362,7 @@ def refresh(
 
         # ----- 1. Docs -----
         crawler = DocsCrawler(writer, config.sources, config.chunking)
-        docs_key = "docs.pipecat.ai"
+        docs_key = DOCS_COUNT_KEY
         try:
             raw_text = await crawler.fetch_llms_txt()
         except Exception as exc:

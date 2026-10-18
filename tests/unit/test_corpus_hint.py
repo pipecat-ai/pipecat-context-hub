@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -23,10 +24,12 @@ from pipecat_context_hub.shared.corpus_hint import (
     indexed_repos,
     missing_repos,
 )
-from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+from pipecat_context_hub.services.index.fts import FTSIndex
+from pipecat_context_hub.shared.interfaces import DOCS_COUNT_KEY, IndexUnavailableError
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, CatalogRepo
 from pipecat_context_hub.shared.response_finish import finish_response
 from pipecat_context_hub.shared.support_links import RETRIEVAL_QUALITY_ISSUE_URL
+from pipecat_context_hub.shared.types import ChunkedRecord
 
 
 class _CountsIndex:
@@ -85,6 +88,31 @@ def _names(groups: Any) -> list[str]:
 
 
 class TestIndexedRepos:
+    def test_the_real_docs_key_is_absent(self, tmp_path: Path) -> None:
+        # Producer and consumer of the synthetic docs key agree: a real FTS index
+        # with a doc chunk reports DOCS_COUNT_KEY, and indexed_repos skips it.
+        fts = FTSIndex(tmp_path / "metadata.db", create=True)
+        try:
+            common: dict[str, Any] = {
+                "content": "pipecat",
+                "source_url": "https://example.invalid/x",
+                "path": "/x.md",
+                "indexed_at": datetime.now(tz=UTC),
+                "embedding": [0.0],
+            }
+            fts.upsert(
+                [
+                    ChunkedRecord(chunk_id="c-doc", content_type="doc", repo=None, **common),
+                    ChunkedRecord(
+                        chunk_id="c-code", content_type="code", repo="acme/full-one", **common
+                    ),
+                ]
+            )
+            assert DOCS_COUNT_KEY in fts.get_counts_by_repo()
+            assert indexed_repos(fts) == frozenset({"acme/full-one"})
+        finally:
+            fts.close()
+
     def test_synthetic_docs_key_is_absent(self) -> None:
         idx = _CountsIndex({"acme/full-one": 5, "docs.pipecat.ai": 900})
         result = indexed_repos(idx)

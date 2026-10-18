@@ -26,7 +26,7 @@ from collections.abc import Iterable, Mapping, Set
 from typing import Any, Protocol
 
 from pipecat_context_hub.shared.exclusion_folds import taint_matcher
-from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+from pipecat_context_hub.shared.interfaces import DOCS_COUNT_KEY, IndexUnavailableError
 from pipecat_context_hub.shared.repo_catalog import (
     Catalog,
     CatalogGroup,
@@ -37,9 +37,6 @@ from pipecat_context_hub.shared.repo_slug import slug_key
 from pipecat_context_hub.shared.support_links import RETRIEVAL_QUALITY_ISSUE_URL
 
 logger = logging.getLogger(__name__)
-
-# Synthetic key `get_counts_by_repo` injects for crawled docs; not a repo.
-_DOCS_KEY = "docs.pipecat.ai"
 
 
 class _CountsSource(Protocol):
@@ -73,7 +70,7 @@ def indexed_repos(index_store: _CountsSource) -> frozenset[str] | None:
     return frozenset(
         slug_key(str(slug))
         for slug, count in counts.items()
-        if slug_key(str(slug)) != _DOCS_KEY and isinstance(count, int) and count > 0
+        if slug_key(str(slug)) != DOCS_COUNT_KEY and isinstance(count, int) and count > 0
     )
 
 
