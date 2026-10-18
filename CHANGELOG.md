@@ -11,7 +11,12 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-18
+
 ### Added
+- **`.release-template.json`** records this repo's release-note shape (bare `vX.Y.Z`
+  titles, a `Full changelog` compare line) so `/skein:release audit` compares
+  releases against the convention actually in use.
 - **`repos list|add|remove`** (also `pipecat context-hub repos ...`) edits your
   `config.toml` for you, so adding a vendor's repos no longer means hand-editing
   `PIPECAT_HUB_EXTRA_REPOS`. `add` takes a catalog slug, `--unlisted owner/repo`
