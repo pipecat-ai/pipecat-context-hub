@@ -98,7 +98,7 @@ Tool selection guide:
 - Specific code span or symbol → get_code_snippet
 - Retrieve a specific doc page → get_doc
 - Import deprecation check → check_deprecation
-- Index health, freshness, version info → get_hub_status
+- Index health, freshness, version info, which repos are indexed → get_hub_status
 
 **Important:** When you see pipecat imports in user code (e.g. \
 ``from pipecat.services.grok import ...``), use ``check_deprecation`` \
