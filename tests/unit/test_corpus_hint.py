@@ -402,6 +402,12 @@ description = "Murf"
 aliases = ["murf"]
 repos = [{ slug = "murf/one" }]
 
+[groups.mobile]
+kind = "topic"
+description = "Mobile"
+aliases = ["ios"]
+repos = [{ slug = "mo/one" }]
+
 [groups.swift]
 kind = "topic"
 description = "Swift only"
@@ -485,6 +491,55 @@ class TestCorpusHint:
     def test_alias_needs_a_word_boundary(self, query: str) -> None:
         # "aws" inside "laws" must not match.
         assert _hint(query) is None
+
+    @pytest.mark.parametrize(
+        ("query", "group"),
+        [
+            ("AWSBedrockLLMService", "aws"),
+            ("aws_bedrock", "aws"),
+            ("NovaSonicLLMService", "aws"),
+            ("NvidiaSTTService", "nvidia"),
+            ("nvidia_stt_service", "nvidia"),
+            ("MurfTTSService", "murf"),
+        ],
+    )
+    def test_identifier_shaped_query_hints(self, query: str, group: str) -> None:
+        # CamelCase runs and underscores join \w, so the plain word boundary missed these.
+        hint = _hint(query)
+        assert hint is not None
+        assert hint["matched_groups"] == [group]
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "LawsOfRobotics",
+            "FlawsInCode",
+            "ClawsClient",
+            "claws_of_x",
+            "InnovaSonicBoom",
+            "DeepgramSTTService",
+            "PipelineTask",
+            "aws2bedrock",
+        ],
+    )
+    def test_identifier_split_needs_a_whole_token(self, query: str) -> None:
+        # An alias must equal a whole camel/snake token (run), never a substring of one.
+        assert _hint(query) is None
+
+    def test_ios_alias_still_matches_the_original_text(self) -> None:
+        # "iOS app" splits to "i OS app", which has no "ios" word: only the original-text
+        # arm keeps this hinting.
+        hint = _hint("iOS app")
+        assert hint is not None
+        assert hint["matched_groups"] == ["mobile"]
+
+    def test_identifier_split_keeps_the_original_text_arm(self) -> None:
+        # Splitting "iOS" gives "i OS"; the original-text match is what keeps an alias
+        # like "ios" matching, so the new rule can only add hints, never remove one.
+        from pipecat_context_hub.shared.corpus_hint import _identifier_words, _matchable
+
+        assert _identifier_words("iOS app") == "i OS app"
+        assert _matchable("iOS app") == ("ios app", "i os app")
 
     @pytest.mark.parametrize("query", ["TTS + nvidia", "TTS & nvidia"])
     def test_concept_queries_match_every_concept(self, query: str) -> None:
@@ -587,12 +642,22 @@ class TestCorpusHintPerTool:
         assert _hint("nvidia", tool=tool) is not None
         # A symbol/intent on these tools is not the matched text.
         assert _hint("x", tool=tool, args={"query": "x", "symbol": "nvidia"}) is None
+        for key in ("class_name", "module"):
+            assert _hint("x", tool=tool, args={"query": "x", key: "nvidia"}) is None
 
     def test_get_code_snippet_reads_symbol(self) -> None:
         assert _hint("", tool="get_code_snippet", args={"symbol": "NvidiaSTTService nvidia"})
 
     def test_get_code_snippet_reads_intent(self) -> None:
         assert _hint("", tool="get_code_snippet", args={"intent": "nvidia riva setup"})
+
+    def test_get_code_snippet_reads_class_name(self) -> None:
+        args = {"symbol": "__init__", "class_name": "NvidiaSTTService"}
+        assert _hint("", tool="get_code_snippet", args=args)
+
+    def test_get_code_snippet_reads_module(self) -> None:
+        args = {"symbol": "__init__", "module": "pipecat.services.nvidia.stt"}
+        assert _hint("", tool="get_code_snippet", args=args)
 
     def test_get_code_snippet_path_alone_never_hints(self) -> None:
         args = {"path": "src/pipecat/services/nvidia/stt.py"}
@@ -736,6 +801,36 @@ class TestFrozenRealQueries:
         assert hint is not None
         assert hint["matched_groups"] == ["tavus"]
         assert hint["repos_not_indexed"] == ["aws-samples/sample-voice-ai-tavus-avatar-demo"]
+
+    @pytest.mark.parametrize(
+        ("query", "group"),
+        [
+            ("TavusVideoService", "tavus"),
+            ("AWSBedrockLLMService", "aws"),
+            ("GeminiLiveLLMService", "google"),
+            ("aws_bedrock", "aws"),
+        ],
+    )
+    def test_issue_148_identifier_queries_hint(self, query: str, group: str) -> None:
+        # The four queries from issue #148, verbatim, against the shipped catalog.
+        for tool in ("search_api", "search_docs", "search_examples"):
+            hint = _hint(query, {}, tool=tool)
+            assert hint is not None, (tool, query)
+            assert group in hint["matched_groups"]
+
+    def test_issue_148_get_code_snippet_class_name_hints(self) -> None:
+        args = {"symbol": "__init__", "class_name": "TavusVideoService"}
+        hint = _hint("", {}, tool="get_code_snippet", args=args)
+        assert hint is not None
+        assert hint["matched_groups"] == ["tavus"]
+
+    @pytest.mark.parametrize(
+        "query",
+        ["ReturnDetection", "InnovaSonicBoom", "ClipSyncer", "androidx_core", "FlawsInCode"],
+    )
+    def test_shipped_aliases_need_a_whole_identifier_token(self, query: str) -> None:
+        # turn detection / nova sonic / lip sync / android / aws as substrings of one token.
+        assert _hint(query, {}) is None
 
     def test_tavus_indexed_gives_no_hint(self) -> None:
         assert _hint(_FROZEN_TAVUS, {"aws-samples/sample-voice-ai-tavus-avatar-demo": 9}) is None

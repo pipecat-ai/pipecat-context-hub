@@ -150,6 +150,15 @@ This project uses [Semantic Versioning](https://semver.org/).
   holds them open: stop it, then retry.
 
 ### Fixed
+- **`corpus_hint` now fires for identifier-shaped queries.** `TavusVideoService`,
+  `AWSBedrockLLMService`, `GeminiLiveLLMService` and `aws_bedrock` carried no hint,
+  because CamelCase runs and underscores defeated the alias word boundary. An
+  alias now also matches the query with CamelCase and underscores split into
+  words, on top of the text as typed, so no query that hinted before stops
+  hinting. A whole word must equal an alias: `LawsOfRobotics`, `ClawsClient` and
+  `claws_of_x` still do not match `aws`. `get_code_snippet` also reads
+  `class_name` and `module` (valid beside `symbol`), so `symbol="__init__",
+  class_name="TavusVideoService"` hints.
 - **`get_counts_by_repo` counts each chunk once.** The synthetic `docs.pipecat.ai`
   key counted every `doc` chunk, including a repo's README fallback, which is
   also counted under its repo. It now counts only crawled doc chunks (no repo), so

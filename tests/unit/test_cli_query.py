@@ -1784,6 +1784,24 @@ class TestCorpusHintBothFrontDoors(_HintCatalogMixin):
                 frozenset(),
                 id="snippet",
             ),
+            pytest.param(
+                ["search-docs", "AcmeVideoService"],
+                "search_docs",
+                {"query": "AcmeVideoService"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="camelcase-identifier",
+            ),
+            pytest.param(
+                ["get-code-snippet", "--symbol", "connect", "--class-name", "AcmeVideoService"],
+                "get_code_snippet",
+                {"symbol": "connect", "class_name": "AcmeVideoService"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="snippet-class-name",
+            ),
         ],
     )
     def test_identical_hint_json(
