@@ -291,3 +291,24 @@ output boundary: `echo` for human text, `echo_json` for the query commands'
 JSON, `escaped_click_errors` behind `cli.TerminalSafeGroup`, and the log record
 class and excepthook `load_env_layers` installs). `paths.shown_path` is the one
 rule for naming a configured path in a message.
+
+### Review gauntlet outcome
+
+Ten `skein:review-gauntlet` rounds ran and ended at the loop cap (decision
+`cap`), not at a clean full pass. Reconciled findings per round: 21, 13, 12, 11,
+9, 4, 9, 11, 12, 3. Rounds 7-10 were mostly the terminal-output boundary
+growing (`shared/terminal.py`, `cli.TerminalSafeGroup`, the log and excepthook
+hooks); the trust seam, writer, taint matching, slug grammar and catalog checks
+were clean in the last four rounds, and `/security-review` found nothing in the
+last five. Round 10's three Minor findings were fixed after that pass and not
+re-gated; `just ci` is green on the final commit.
+
+Accepted and not fixed: the writer's same-instant race after its pre-rename
+re-check; `\n` and `\t` kept as layout, so a multi-line configured value could
+add log lines; log handlers must use `%(message)s` (a raw `%(msg)s` formatter
+bypasses the read-side escaping); a cwd `.env` can set `PIPECAT_HUB_CONFIG_FILE`
+and so steer `repos add|remove` writes (the trust checks still apply); the
+Windows junction test is POSIX-emulated and `test_paths.py` is not on the
+Windows CI list; the AST sink guard is a tripwire, not proof; vendor aliases
+google/gemini/riva follow parent Decision 3; `PIPECAT_HUB_TAINTED_REFS` matches
+exactly; refresh cleanup membership is by exact spelling.
