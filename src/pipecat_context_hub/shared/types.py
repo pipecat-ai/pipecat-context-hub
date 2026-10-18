@@ -573,13 +573,16 @@ class HubStatusOutput(BaseModel):
     indexed_repos: list[str] = Field(
         default_factory=list,
         description="Casefolded slugs of repos with at least one indexed record. "
+        "Slug case differs by field: this list is casefolded, configured_no_records "
+        "keeps the configured spelling; compare slugs case-insensitively. "
         "Empty when the per-repo counts could not be read. May name private repos "
         "configured locally; leave it out of public issue reports.",
     )
     configured_no_records: list[str] = Field(
         default_factory=list,
         description="Configured repos that have no indexed records (configured "
-        "but not yet refreshed, or empty). Empty when the counts could not be read. "
+        "but not yet refreshed, or empty), spelled as configured (not casefolded, "
+        "unlike indexed_repos). Empty when the counts could not be read. "
         "May name private repos configured locally; leave it out of public issue reports.",
     )
     catalog_groups_not_indexed: list[str] = Field(

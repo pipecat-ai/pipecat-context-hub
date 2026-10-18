@@ -177,8 +177,10 @@ def corpus_hint(
 
     ``repos_not_indexed`` lists missing repos that are not configured;
     ``repos_configured_no_records`` lists missing repos that are configured (a
-    failed clone), so the two never overlap. ``add_command`` covers only groups
-    with a repo that is neither configured nor tainted.
+    failed clone), so the two never overlap. Both spell slugs as the catalog
+    does (unlike ``get_hub_status``'s casefolded ``indexed_repos``).
+    ``add_command`` covers only groups with a repo that is neither configured
+    nor tainted.
     """
     try:
         text = _query_text(tool, args)

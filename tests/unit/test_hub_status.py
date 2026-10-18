@@ -479,6 +479,20 @@ class TestHubStatusCoverageFields:
         assert "owner/repo" in [s.casefold() for s in output.indexed_repos]
         assert output.configured_no_records == []
 
+    async def test_slug_case_convention_per_field(self, catalog_text):
+        """Pinned: indexed_repos is casefolded; configured_no_records keeps configured case."""
+        store = _StatusStore({"Acme/One": 5})
+        output = await _status(
+            store,
+            configured_repos=frozenset({"ACME/one", "Beta/One"}),
+            tainted_repos=frozenset(),
+        )
+        assert output.indexed_repos == ["acme/one"]
+        assert output.configured_no_records == ["Beta/One"]
+        fields = HubStatusOutput.model_fields
+        assert "casefolded" in (fields["indexed_repos"].description or "")
+        assert "spelled as configured" in (fields["configured_no_records"].description or "")
+
     async def test_tainted_configured_repo_is_not_reported_no_records(self, catalog_text):
         # The tainted skip lives in the shared predicate, case-insensitively.
         store = _StatusStore({"acme/one": 5})
