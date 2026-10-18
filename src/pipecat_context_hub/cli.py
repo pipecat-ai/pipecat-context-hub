@@ -59,12 +59,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.ingest.github_ingest import TagNotFoundError
     from pipecat_context_hub.shared.types import ChunkedRecord
 
-# Back-compat alias: tests/unit/test_cli.py imports the underscored name and
-# the banner call sites below reference it. The redaction helper itself now
-# lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
-# import cycle); this re-export keeps that suite green and the call sites stable.
-_redact_home = redact_home
-
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
 # renderer and the producers cannot drift.
@@ -506,7 +500,7 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             _module_logger.warning(
                 "Could not recreate %s after reset (%s); the symlinked data dir may "
                 "need to be recreated manually",
-                redact_home(resolved_data_dir),
+                shown_path(resolved_data_dir),
                 exc,
             )
 
@@ -917,7 +911,7 @@ def serve(ctx: click.Context) -> None:
     logger.info(
         "pipecat-context-hub v%s starting: data_dir=%s total=%d counts_by_type={%s}",
         _SERVER_VERSION,
-        _redact_home(config.storage.data_dir),
+        shown_path(config.storage.data_dir),
         stats.get("total", 0),
         counts_repr or ("(deferred: refresh running)" if deferred_open else "(empty)"),
     )
@@ -957,7 +951,7 @@ def serve(ctx: click.Context) -> None:
                     "Unset the env var (or set it to 1) to re-enable."
                 )
             elif startup_disabled_reason == "not_cached":
-                probed = _redact_home(CrossEncoderReranker.resolve_hf_cache_dir())
+                probed = shown_path(CrossEncoderReranker.resolve_hf_cache_dir())
                 hint = (
                     f"model not downloaded (checked HF cache: {probed}). "
                     "Run 'pipecat-context-hub refresh' to pre-download, or set "
@@ -1005,7 +999,7 @@ def serve(ctx: click.Context) -> None:
                     "Deprecation map %s (%s); check_deprecation cannot report "
                     "deprecations until `refresh` rebuilds it",
                     retriever.deprecation_map.load_error,
-                    redact_home(dep_map_path),
+                    shown_path(dep_map_path),
                 )
             if retriever.deprecation_map.entries:
                 logger.info(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import sys
@@ -26,7 +27,6 @@ from pipecat_context_hub.cli import (
     _prewarm_models,
     _print_refresh_summary,
     _prune_enabled,
-    _redact_home,
     _safe_hr,
     _warmup_enabled,
     _write_serve_debug_probe,
@@ -37,6 +37,7 @@ from pipecat_context_hub.services.ingest.github_ingest import CloneResult, TagNo
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_global_config
+from pipecat_context_hub.shared.paths import redact_home as _redact_home
 
 
 @pytest.fixture(autouse=True)
@@ -6699,6 +6700,32 @@ class TestDataDirSafetyFloor:
         _delete_local_index_storage(data_dir)
 
         assert not data_dir.exists()
+
+    def test_recreate_warning_names_the_data_dir_by_shown_path(
+        self, monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The reset warning names the data dir like the refusals do: repr
+        tagged ``[invalid]`` when it is not printable."""
+        self._no_config_file(monkeypatch, tmp_path)
+        real = tmp_path / "real\x1b[2J"
+        real.mkdir()
+        link = tmp_path / "hub-data"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        def _fail(self: Path, *args: object, **kwargs: object) -> None:
+            raise OSError("no")
+
+        monkeypatch.setattr(Path, "mkdir", _fail)
+        with caplog.at_level(logging.WARNING, logger="pipecat_context_hub.cli"):
+            _delete_local_index_storage(link)
+        messages = [
+            r.getMessage() for r in caplog.records if "Could not recreate" in r.getMessage()
+        ]
+        assert len(messages) == 1
+        assert f"{str(real.resolve())!r} [invalid]" in messages[0]
 
     def test_refuses_home_reached_through_a_symlinked_ancestor(
         self, monkeypatch, tmp_path: Path
