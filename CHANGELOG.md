@@ -7,6 +7,16 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **PyPI project links and classifiers.** The PyPI page now links to the
+  docs (docs.pipecat.ai), source, issues, and changelog, and lists supported
+  Python versions and topics.
+
+### Fixed
+- **README links on PyPI.** Relative links in the PyPI project description
+  (setup guides, config templates, security docs) pointed nowhere; they now
+  use absolute GitHub URLs.
+
 ## [0.8.0] - 2026-09-11
 
 ### Changed
