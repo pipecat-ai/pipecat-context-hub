@@ -166,47 +166,108 @@ class TestNoBareEcho:
         name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
         return name in cls._JSON_PRODUCERS
 
+    # Modules whose sink spellings are checked, and the names each forbids
+    # importing directly (``from click import echo as e`` included).
+    _SINK_MODULES = {"click", "typer", "rich", "sys", "os"}
+    _FORBIDDEN_FROM = {
+        "click": {"echo", "secho"},
+        "typer": {"echo", "secho"},
+        "rich": {"print"},
+        "sys": {"stdout", "stderr", "__stdout__", "__stderr__"},
+        "os": {"write"},
+    }
+    _STREAMS = ("stdout", "stderr", "__stdout__", "__stderr__")
+
+    @classmethod
+    def _sink_offenders(cls, rel: str, tree: ast.AST) -> list[str]:
+        """Bare sink calls in one module. A tripwire on spelling, not proof:
+        plain ``import X as Y`` aliases are resolved, but a sink reached by
+        ``getattr(click, "echo")``, a stream bound to a variable
+        (``s = sys.stderr; s.write``) or a non-constant ``os.write`` fd is not
+        seen, and the group test below sees only ``@x.group(...)`` on a plain
+        ``def``."""
+        aliases: dict[str, str] = {}
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name in cls._SINK_MODULES:
+                        aliases[a.asname or a.name] = a.name
+            elif isinstance(node, ast.ImportFrom) and node.module in cls._FORBIDDEN_FROM:
+                for a in node.names:
+                    if a.name in cls._FORBIDDEN_FROM[node.module]:
+                        offenders.append(f"{rel}: from {node.module} import {a.name}")
+        for call in cls._calls(tree):
+            func = call.func
+            owner = (
+                aliases.get(func.value.id, func.value.id)
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                else None
+            )
+            if (
+                owner in ("click", "typer")
+                and isinstance(func, ast.Attribute)
+                and func.attr in ("echo", "secho")
+                and not (owner == "click" and rel == "shared/terminal.py")
+            ):
+                offenders.append(f"{rel}:{call.lineno} {owner}.{func.attr}")
+            if owner == "rich" and isinstance(func, ast.Attribute) and func.attr == "print":
+                offenders.append(f"{rel}:{call.lineno} rich.print")
+            if isinstance(func, ast.Attribute) and func.attr == "show":
+                offenders.append(f"{rel}:{call.lineno} .show()")
+            if (
+                isinstance(func, ast.Name)
+                and func.id == "echo"
+                and call.args
+                and cls._is_json(call.args[0])
+            ):
+                offenders.append(f"{rel}:{call.lineno} echo(<json>): use echo_json")
+            if rel in cls._PRINT_ALLOWED:
+                continue
+            if isinstance(func, ast.Name) and func.id == "print":
+                offenders.append(f"{rel}:{call.lineno} print")
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "write"
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr in cls._STREAMS
+            ):
+                offenders.append(f"{rel}:{call.lineno} sys.{func.value.attr}.write")
+            if (
+                owner == "os"
+                and isinstance(func, ast.Attribute)
+                and func.attr == "write"
+                and call.args
+                and isinstance(call.args[0], ast.Constant)
+                and call.args[0].value in (1, 2)
+            ):
+                offenders.append(f"{rel}:{call.lineno} os.write({call.args[0].value!r}, ...)")
+        return offenders
+
     def test_click_echo_is_called_only_by_the_boundary(self) -> None:
         root = Path(pipecat_context_hub.__file__).parent
         offenders: list[str] = []
         for path in sorted(root.rglob("*.py")):
             rel = path.relative_to(root).as_posix()
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module == "click":
-                    if any(a.name in ("echo", "secho") for a in node.names):
-                        offenders.append(f"{rel}: from click import echo")
-            for call in self._calls(tree):
-                func = call.func
-                if (
-                    isinstance(func, ast.Attribute)
-                    and func.attr in ("echo", "secho")
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id == "click"
-                    and rel != "shared/terminal.py"
-                ):
-                    offenders.append(f"{rel}:{call.lineno} click.{func.attr}")
-                if isinstance(func, ast.Attribute) and func.attr == "show":
-                    offenders.append(f"{rel}:{call.lineno} .show()")
-                if (
-                    isinstance(func, ast.Name)
-                    and func.id == "echo"
-                    and call.args
-                    and self._is_json(call.args[0])
-                ):
-                    offenders.append(f"{rel}:{call.lineno} echo(<json>): use echo_json")
-                if rel in self._PRINT_ALLOWED:
-                    continue
-                if isinstance(func, ast.Name) and func.id == "print":
-                    offenders.append(f"{rel}:{call.lineno} print")
-                if (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == "write"
-                    and isinstance(func.value, ast.Attribute)
-                    and func.value.attr in ("stdout", "stderr")
-                ):
-                    offenders.append(f"{rel}:{call.lineno} sys.{func.value.attr}.write")
+            offenders += self._sink_offenders(rel, ast.parse(path.read_text(encoding="utf-8")))
         assert offenders == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "import click as c\nc.echo(x)",
+            "import typer\ntyper.echo(x)",
+            "import rich\nrich.print(x)",
+            "from rich import print\n",
+            "from click import echo as e\n",
+            "import sys\nsys.__stderr__.write(x)",
+            "import sys as s\ns.__stdout__.write(x)",
+            "import os\nos.write(2, b'x')",
+            "import os as o\no.write(1, b'x')",
+        ],
+    )
+    def test_the_guard_sees_each_sink_spelling(self, source: str) -> None:
+        assert self._sink_offenders("mod.py", ast.parse(source))
 
 
 # Non-printable characters plausible in indexed docs text or a configured
