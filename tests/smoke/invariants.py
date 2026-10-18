@@ -26,6 +26,7 @@ from pipecat_context_hub.services.ingest.github_ingest import (
     _CODE_EXTENSIONS,
     _find_example_dirs,
 )
+from pipecat_context_hub.services.ingest.ingest_filters import is_plain_file
 from pipecat_context_hub.services.ingest.taxonomy import TaxonomyBuilder
 
 
@@ -42,8 +43,10 @@ def _iter_discovered_dirs(repo_root: Path) -> list[Path]:
 
 
 def _dir_contains_code_file(directory: Path) -> bool:
+    # ``is_plain_file`` (not ``Path.is_file``, which follows links) so a symlinked
+    # code file does not count: the ingesters refuse it, and this must agree.
     for entry in directory.rglob("*"):
-        if entry.is_file() and entry.suffix in _CODE_EXTENSIONS:
+        if is_plain_file(entry) and entry.suffix in _CODE_EXTENSIONS:
             return True
     return False
 

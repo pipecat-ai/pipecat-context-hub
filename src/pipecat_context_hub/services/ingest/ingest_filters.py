@@ -19,9 +19,15 @@ independent file walk. These two helpers are the single source of truth for
 both ingesters going forward, so a future fix here can't drift the same way.
 
 The same module owns ``is_plain_file`` / ``is_plain_dir``, the one rule for which
-filesystem entries an example walk may follow (real files and directories, never
-a symlink or junction). ``github_ingest.py``, ``taxonomy.py`` and
-``source_ingest.py`` all apply it to the entries they discover.
+filesystem entries an example walk may discover and follow (real files and
+directories, never a symlink or junction). ``github_ingest.py``, ``taxonomy.py``
+and ``source_ingest.py`` all apply it to the entries they discover.
+
+That is a different question from containment, which is deliberately a separate,
+defense-in-depth rule: the per-file ``resolve()``-within-root checks
+(``github_ingest._is_safe_file`` and the read sites in ``github_ingest.py`` and
+``source_ingest.py``) still run on every file actually read, so a path that
+slips past discovery (a linked parent, a race) still cannot leave the clone.
 """
 
 from __future__ import annotations
@@ -41,6 +47,9 @@ _STORYBOOK_SUFFIXES: tuple[str, ...] = (".stories.ts", ".stories.tsx")
 def is_plain_file(path: Path) -> bool:
     """True for a regular file that is not a link. Never raises.
 
+    The discovery rule only: it does not check the file lies inside the clone
+    (that is the separate ``resolve()``-within-root containment check).
+
     One ``lstat`` (does not follow links), so it can neither be fooled by nor
     trip over a link's target. ``Path.is_file()`` follows the link first and
     raises ``PermissionError`` for a link into a directory the user cannot
@@ -55,8 +64,9 @@ def is_plain_file(path: Path) -> bool:
 def is_plain_dir(path: Path) -> bool:
     """True for a real directory that is not a symlink or Windows junction. Never raises.
 
-    The rule for every directory an ingester treats as an example (or as the
-    ``examples/`` tree holding them). A committed directory symlink can point
+    The discovery rule for every directory an ingester treats as an example (or
+    as the ``examples/`` tree holding them); containment of the files read from it
+    is the separate ``resolve()``-within-root check. A committed directory symlink can point
     outside the clone, so following it reads files that were never part of the
     repo; ``github_ingest`` and the taxonomy builder must refuse the same ones, or
     one indexes what the other skipped.

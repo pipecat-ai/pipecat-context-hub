@@ -522,6 +522,14 @@ def _discover_under_examples(examples_dir: Path) -> list[Path]:
        ``examples/rag/<name>/``, ``examples/function-calling/<name>/`` …).
     3. Flat code files directly in ``examples/`` (e.g. ``examples/single_agent.py``)
        — returns ``examples/`` itself so the files are indexed.
+
+    Guarantee: every returned path is ``examples_dir`` itself or a real directory
+    (``is_plain_dir``: never a symlink or junction) one or two levels below it, so
+    callers such as ``taxonomy._scan_topic_tree`` need not re-check for links.
+    Precondition: ``is_plain_dir`` inspects only the last path component, so the
+    caller must already have validated ``examples_dir`` and its ancestors (both
+    callers check ``is_plain_dir(examples_dir)`` first). Pinned by
+    ``TestSymlinkedExampleDirs`` in ``tests/unit/test_github_ingest.py``.
     """
     result: list[Path] = []
     has_flat_code = False

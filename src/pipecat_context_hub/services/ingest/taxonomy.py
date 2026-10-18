@@ -625,7 +625,9 @@ class TaxonomyBuilder:
         for ex_dir in _discover_under_examples(examples_dir):
             # ``_discover_under_examples`` only yields real directories (never a
             # symlink or junction, as the example dir or as its enclosing topic
-            # dir), so nothing here needs to re-check for links.
+            # dir), so nothing here needs to re-check for links. See its
+            # docstring for the guarantee and the ``examples_dir`` precondition
+            # (checked by the ``is_plain_dir`` guard above).
             try:
                 rel_parts = ex_dir.relative_to(examples_dir).parts
             except ValueError:
