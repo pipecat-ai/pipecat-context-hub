@@ -48,8 +48,12 @@ def _catalog_picks() -> tuple[str, str, str]:
     return parseable, unparseable, group_name
 
 
-@pytest.mark.skipif(not _SCRIPT.exists(), reason="console script not installed next to python")
 def test_repos_round_trip_through_the_console_script(tmp_path: Path) -> None:
+    # Not a skip: a missing script is the very entry-point wiring failure this test detects.
+    assert _SCRIPT.exists(), (
+        f"console script {_SCRIPT} is missing; run `uv sync --extra dev` so the "
+        "`pipecat-context-hub` entry point is installed next to python"
+    )
     parseable, unparseable, group = _catalog_picks()
 
     home = tmp_path / "home"

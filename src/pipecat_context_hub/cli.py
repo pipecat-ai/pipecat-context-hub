@@ -774,11 +774,16 @@ def main(ctx: click.Context, log_level: str) -> None:
 
 @contextlib.contextmanager
 def _loader_info_muted(mute: bool) -> Iterator[None]:
-    """Raise the env loader's logger to WARNING for the block when ``mute``."""
+    """Raise the env loader's effective threshold to WARNING for the block when ``mute``.
+
+    Uses the *effective* (inherited) level, not the logger's own ``.level`` (``NOTSET`` = 0
+    when it inherits): otherwise ``--log-level ERROR`` would be lowered to WARNING. The
+    raw own level is what gets restored.
+    """
     loader_logger = logging.getLogger(env_loading.__name__)
     previous = loader_logger.level
     if mute:
-        loader_logger.setLevel(max(previous, logging.WARNING))
+        loader_logger.setLevel(max(loader_logger.getEffectiveLevel(), logging.WARNING))
     try:
         yield
     finally:

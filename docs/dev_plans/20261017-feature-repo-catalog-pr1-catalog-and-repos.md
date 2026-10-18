@@ -314,9 +314,10 @@ Windows CI list; the AST sink guard is a tripwire, not proof; vendor aliases
 google/gemini/riva follow parent Decision 3; `PIPECAT_HUB_TAINTED_REFS` matches
 exactly; refresh cleanup membership is by exact spelling.
 
-Follow-up #145 (fix/repos-parseable-and-polish): `parseable = false` handling.
-`repos add <slug>` accepted such a repo silently while `repos remove --group`
-skipped it, so a repo added one by one could not be removed by group. Resolved by
-amending parent Decision 7: positional `add` warns, `remove --group` acts on
-`parseable = false` members, `add --group` keeps skipping them (PR 2's hints rely
-on that).
+Deferred to a follow-up issue: `parseable = false` handling. `repos add <slug>`
+accepts such a repo silently while `repos remove --group` skips it, so a repo
+added one by one cannot be removed by group. Fixing it changes behaviour the
+signed-off parent plan specifies, and PR 2's hints rely on the skip, so it needs
+the parent plan re-opened.
+
+Resolved in #145 by amending parent Decision 7: positional `add` warns, `remove --group` acts on `parseable = false` members, `add --group` still skips them.

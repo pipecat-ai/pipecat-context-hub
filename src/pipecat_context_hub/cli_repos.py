@@ -52,6 +52,7 @@ from pipecat_context_hub.shared.paths import redact_home_in_text, shown_path
 from pipecat_context_hub.shared.repo_catalog import (
     Catalog,
     CatalogGroup,
+    CatalogRepo,
     load_catalog,
     member_skip_reason,
 )
@@ -158,8 +159,14 @@ def _hand_edit_note(slug: str) -> str:
     )
 
 
-def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> tuple[str, bool]:
-    """Checks 1 and 2 for a positional slug; returns ``(slug to act on, parseable)``."""
+def _resolve_positional(
+    ctx: click.Context, slug: str, *, unlisted: bool
+) -> tuple[str, CatalogRepo | None]:
+    """Checks 1 and 2 for a positional slug; returns ``(slug to act on, catalog entry)``.
+
+    The entry is ``None`` for an unlisted slug (``--unlisted``): the catalog says nothing
+    about it.
+    """
     config = _config(ctx)
     # 1. default or tainted repo
     if config.sources.is_default(slug):
@@ -179,12 +186,12 @@ def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> tup
                 f"{slug} is not in the repo catalog. Pass --unlisted to act on a repo "
                 "that is not listed there."
             )
-        return slug, True
+        return slug, None
     if unlisted:
         _fail(
             f"{entry.slug} is in the repo catalog; drop --unlisted (the catalog spelling is used)."
         )
-    return entry.slug, entry.parseable
+    return entry.slug, entry
 
 
 def _resolve_group(catalog: Catalog, name: str) -> CatalogGroup:
@@ -264,17 +271,15 @@ def _skipped_lines(
 ) -> tuple[list[str], list[str]]:
     """``(actionable, skipped_lines)`` for a group's members.
 
-    ``add`` uses ``member_skip_reason`` (tainted and ``parseable = false`` are skipped, as
-    the corpus hint expects). ``remove`` skips only tainted members: it must be able to
-    clear any repo the CLI could have added.
+    Both modes go through ``member_skip_reason``: ``add`` skips tainted and
+    ``parseable = false`` members (as the corpus hint expects); ``remove``
+    (``for_removal``) skips only tainted ones, so it can clear any repo the CLI could
+    have added.
     """
     actionable: list[str] = []
     skipped: list[str] = []
     for repo in group.repos:
-        if adding:
-            reason = member_skip_reason(repo, sources.is_tainted)
-        else:
-            reason = "tainted" if sources.is_tainted(repo.slug) else None
+        reason = member_skip_reason(repo, sources.is_tainted, for_removal=not adding)
         if reason is None:
             actionable.append(repo.slug)
         else:
@@ -323,7 +328,7 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
 def _run_positional(
     ctx: click.Context, slug: str, *, unlisted: bool, config_only: bool, adding: bool
 ) -> None:
-    target, parseable = _resolve_positional(ctx, slug, unlisted=unlisted)  # checks 1, 2
+    target, entry = _resolve_positional(ctx, slug, unlisted=unlisted)  # checks 1, 2
     layer = _refuse_if_shadowed(ctx, config_only)  # check 3
     note = _shadow_note(layer)
     if adding:  # checks 4, 5
@@ -332,7 +337,7 @@ def _run_positional(
             echo(f"Already in config.toml: {target}" + note)
             return
         echo(f"Added {target}")
-        if not parseable:
+        if entry is not None and not entry.parseable:
             echo(_UNPARSEABLE_NOTICE.format(slug=target), err=True)
         if unlisted:
             owner = target.split("/", 1)[0]
@@ -369,7 +374,8 @@ def repos_group() -> None:
     """List, add and remove extra repos (PIPECAT_HUB_EXTRA_REPOS in config.toml).
 
     \b
-    `add` and `remove` edit ~/.config/pipecat-context-hub/config.toml only, offline;
+    `add` and `remove` edit config.toml only (default
+    ~/.config/pipecat-context-hub/config.toml, or $PIPECAT_HUB_CONFIG_FILE), offline;
     run `pipecat-context-hub refresh` afterwards to (re)index.
     """
 

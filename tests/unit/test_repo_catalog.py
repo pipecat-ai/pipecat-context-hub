@@ -24,7 +24,9 @@ from pipecat_context_hub.shared.config import SourceConfig
 from pipecat_context_hub.shared.repo_catalog import (
     Catalog,
     CatalogError,
+    CatalogRepo,
     load_catalog,
+    member_skip_reason,
     parse_catalog,
 )
 from pipecat_context_hub.shared.repo_catalog_render import (
@@ -489,6 +491,40 @@ class TestCatalogLookups:
                 assert shipped_catalog.lists(repo.slug.casefold())
         assert not shipped_catalog.lists("nobody/nothing")
         assert not hasattr(shipped_catalog, "slugs")  # no accessor leaks slug_key values
+
+
+class TestMemberSkipReason:
+    """The one group-member eligibility rule: ``for_removal`` ignores ``parseable``."""
+
+    @staticmethod
+    def _tainted(slug: str) -> bool:
+        return slug == "acme/tainted"
+
+    def test_add_skips_tainted_and_unparseable(self) -> None:
+        assert member_skip_reason(CatalogRepo("acme/tainted"), self._tainted) == "tainted"
+        assert (
+            member_skip_reason(CatalogRepo("acme/ios", parseable=False), self._tainted)
+            == "parseable = false"
+        )
+        assert member_skip_reason(CatalogRepo("acme/ok"), self._tainted) is None
+
+    def test_tainted_wins_over_unparseable(self) -> None:
+        repo = CatalogRepo("acme/tainted", parseable=False)
+        assert member_skip_reason(repo, self._tainted) == "tainted"
+        assert member_skip_reason(repo, self._tainted, for_removal=True) == "tainted"
+
+    def test_removal_skips_only_tainted(self) -> None:
+        assert (
+            member_skip_reason(CatalogRepo("acme/tainted"), self._tainted, for_removal=True)
+            == "tainted"
+        )
+        assert (
+            member_skip_reason(
+                CatalogRepo("acme/ios", parseable=False), self._tainted, for_removal=True
+            )
+            is None
+        )
+        assert member_skip_reason(CatalogRepo("acme/ok"), self._tainted, for_removal=True) is None
 
 
 class TestLoadCatalog:

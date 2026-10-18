@@ -802,6 +802,16 @@ class TestGroup:
         assert "Skipped (tainted): acme/alpha-taint" in result.output
         assert hub.in_toml() == ["acme/alpha-taint"]
 
+    def test_remove_group_skips_a_tainted_parseable_false_member(self, hub: Hub):
+        """Taint outranks the removal exemption for ``parseable = false``."""
+        hub.env(PIPECAT_HUB_TAINTED_REPOS="acme/alpha-ios")
+        hub.config_list("acme/alpha-ios", ALPHA_ONE)
+        result = hub.run("remove", "--group", "alpha")
+        assert result.exit_code == 0, result.output
+        assert "Skipped (tainted): acme/alpha-ios" in result.output
+        assert "Removed acme/alpha-ios" not in result.output
+        assert hub.in_toml() == ["acme/alpha-ios"]
+
     def test_positional_add_of_parseable_false_repo_warns_but_adds(self, hub: Hub):
         """#145: add singly succeeds (exit 0, written) with a stderr warning."""
         result = hub.run("add", "acme/alpha-ios")
@@ -811,6 +821,13 @@ class TestGroup:
         assert "search_api" in result.stderr
         assert "parseable" not in result.stdout
         assert hub.in_toml() == ["acme/alpha-ios"]
+
+    def test_positional_add_of_unlisted_repo_has_no_parseable_warning(self, hub: Hub):
+        """An unlisted slug has no catalog entry, so only the unlisted notice is printed."""
+        result = hub.run("add", "--unlisted", "someone/not-in-catalog")
+        assert result.exit_code == 0, result.output
+        assert "parseable" not in result.output
+        assert "not vetted" in result.stderr
 
     def test_positional_add_of_parseable_repo_does_not_warn(self, hub: Hub):
         result = hub.run("add", ALPHA_ONE)
@@ -1513,10 +1530,55 @@ class TestLoaderChatter:
         assert len(self._loaded(caplog)) == 1
 
     def test_the_loader_logger_level_is_restored(self, hub: Hub):
+        """Pin a known non-WARNING level first: a logger already sitting at WARNING
+        (left by an earlier test) would make the restore vacuous."""
         loader_logger = logging.getLogger("pipecat_context_hub.shared.env_loading")
         before = loader_logger.level
-        hub.run("list")
-        assert loader_logger.level == before
+        loader_logger.setLevel(logging.DEBUG)
+        try:
+            assert hub.run("list").exit_code == 0
+            assert loader_logger.level == logging.DEBUG
+        finally:
+            loader_logger.setLevel(before)
+
+    @staticmethod
+    def _loader_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "pipecat_context_hub.shared.env_loading" and r.levelno >= logging.WARNING
+        ]
+
+    def test_muting_never_lowers_a_quieter_effective_level(
+        self, hub: Hub, caplog: pytest.LogCaptureFixture
+    ):
+        """``--log-level ERROR`` suppresses loader warnings for ``repos`` too: the mute
+        raises the effective threshold to WARNING at most, it never lowers it."""
+        hub.write_config(f'{KEY} = ["{ALPHA_ONE}"]\nNOT_A_HUB_KEY = "x"\n')
+        hub._fresh_process_env()
+        # `--log-level` goes through logging.basicConfig, a no-op while pytest's capture
+        # handler sits on the root logger; set the level it would have set ourselves.
+        root = logging.getLogger()
+        previous_root = root.level
+        root.setLevel(logging.ERROR)
+        caplog.handler.setLevel(logging.DEBUG)
+        try:
+            quiet = hub.runner.invoke(main, ["--log-level", "ERROR", "repos", "list"])
+        finally:
+            root.setLevel(previous_root)
+        assert quiet.exit_code == 0, quiet.output
+        assert self._loader_warnings(caplog) == []
+
+    def test_the_stray_key_does_warn_at_the_default_level(
+        self, hub: Hub, caplog: pytest.LogCaptureFixture
+    ):
+        """Control for the test above: the same config does warn when not suppressed."""
+        hub.write_config(f'{KEY} = ["{ALPHA_ONE}"]\nNOT_A_HUB_KEY = "x"\n')
+        hub._fresh_process_env()
+        with caplog.at_level(logging.DEBUG):
+            result = hub.runner.invoke(main, ["repos", "list"])
+        assert result.exit_code == 0, result.output
+        assert any("NOT_A_HUB_KEY" in m for m in self._loader_warnings(caplog))
 
 
 @pytest.mark.usefixtures("no_network")
