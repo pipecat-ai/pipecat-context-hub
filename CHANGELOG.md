@@ -17,6 +17,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   effective repos tagged `default` / `catalog` / `unlisted`, the cwd whose
   `.env` was consulted, and repos `config.toml` holds but a higher layer hides;
   `--groups` lists the catalog groups. Refusals exit 1 with the file untouched.
+  A tainted or malformed slug already in `config.toml` cannot be removed through
+  the CLI; its refusal says to edit the file by hand.
   `--group` skips (and lists) tainted and `parseable = false` members; a group
   with nothing left to act on exits 0 with `Nothing to add` / `Nothing to
   remove` and the skipped list, without a shadowing refusal or reading
