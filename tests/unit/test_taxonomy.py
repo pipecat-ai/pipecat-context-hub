@@ -1401,3 +1401,76 @@ class TestSymlinkedPythonFiles:
         entries = TaxonomyBuilder().build_from_foundational(foundational, repo="o/r")
 
         assert [e.example_id for e in entries] == ["foundational-01-real"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
+class TestSymlinkedExampleDirectories:
+    """A committed directory symlink is never an example: its README and code stay unread.
+
+    Frozen from a security review: ``my-example -> /somewhere/outside`` was followed
+    by ``build_from_foundational`` and ``build_from_examples_repo``, so the outside
+    directory's ``README.md`` reached ``readme_content`` (returned by
+    ``get_example``) and its ``.py`` files fed the capability tags.
+    """
+
+    _SECRET = "TOP-SECRET-OUTSIDE-THE-CLONE"
+
+    def _outside(self, tmp_path: Path) -> Path:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "README.md").write_text(self._SECRET + "\n")
+        (outside / "bot.py").write_text("from pipecat.services.elevenlabs import X\n")
+        return outside
+
+    def _assert_unread(self, entries: list[TaxonomyEntry], linked_id: str) -> None:
+        assert linked_id not in {e.example_id for e in entries}
+        for e in entries:
+            assert self._SECRET not in (e.readme_content or "")
+            assert "elevenlabs" not in {t.name for t in e.capabilities}
+
+    def test_examples_repo_layout(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        (repo / "real").mkdir(parents=True)
+        (repo / "real" / "bot.py").write_text("x = 1\n")
+        (repo / "linked").symlink_to(self._outside(tmp_path))
+
+        entries = TaxonomyBuilder().build_from_examples_repo(repo, repo="o/r")
+
+        assert [e.example_id for e in entries] == ["example-real"]
+        self._assert_unread(entries, "example-linked")
+
+    def test_foundational_layout(self, tmp_path: Path):
+        foundational = tmp_path / "foundational"
+        (foundational / "01-real").mkdir(parents=True)
+        (foundational / "01-real" / "bot.py").write_text("x = 1\n")
+        (foundational / "02-linked").symlink_to(self._outside(tmp_path))
+
+        entries = TaxonomyBuilder().build_from_foundational(foundational, repo="o/r")
+
+        assert [e.example_id for e in entries] == ["foundational-01-real"]
+        self._assert_unread(entries, "foundational-02-linked")
+
+    def test_topic_layout_through_build_from_directory(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        topic = repo / "examples" / "voice"
+        (topic / "real").mkdir(parents=True)
+        (topic / "real" / "bot.py").write_text("x = 1\n")
+        (topic / "linked").symlink_to(self._outside(tmp_path))
+
+        entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+
+        assert {e.example_id for e in entries if "linked" in e.example_id} == set()
+        self._assert_unread(entries, "voice-linked")
+
+    def test_symlinked_foundational_root_is_not_scanned(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        (repo / "examples").mkdir(parents=True)
+        outside = tmp_path / "outside-foundational"
+        (outside / "01-x").mkdir(parents=True)
+        (outside / "01-x" / "README.md").write_text(self._SECRET + "\n")
+        (repo / "examples" / "foundational").symlink_to(outside)
+
+        entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+
+        assert all(self._SECRET not in (e.readme_content or "") for e in entries)
+        assert not any(e.example_id.startswith("foundational-") for e in entries)

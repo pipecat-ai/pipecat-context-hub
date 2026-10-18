@@ -8,12 +8,12 @@ tags. Fully automated — no manual curation file required.
 from __future__ import annotations
 
 import re
-import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from pipecat_context_hub.services.ingest.github_ingest import _discover_under_examples
+from pipecat_context_hub.services.ingest.ingest_filters import is_plain_dir, is_plain_file
 from pipecat_context_hub.shared.types import CapabilityTag, TaxonomyEntry
 
 # ---------------------------------------------------------------------------
@@ -153,20 +153,6 @@ def _make_tag(name: str, confidence: float, source: CapabilitySource) -> Capabil
     return CapabilityTag(name=name, confidence=confidence, source=source)
 
 
-def _is_plain_file(path: Path) -> bool:
-    """True for a regular file that is not a symlink. Never raises.
-
-    One ``lstat`` (does not follow links), so it can neither be fooled by nor
-    trip over a link's target. ``Path.is_file()`` follows the link first and
-    raises ``PermissionError`` for a link into a directory the user cannot
-    traverse, which would abort the whole refresh just as a dangling link did.
-    """
-    try:
-        return stat.S_ISREG(path.lstat().st_mode)
-    except (OSError, ValueError):
-        return False
-
-
 def _scannable_py_files(directory: Path, *, recursive: bool = False) -> list[Path]:
     """Python files under *directory* that are safe to read, in sorted order.
 
@@ -176,7 +162,7 @@ def _scannable_py_files(directory: Path, *, recursive: bool = False) -> list[Pat
     the clone. The same rule applies to the README and ``key_files`` listing.
     """
     found = directory.rglob("*.py") if recursive else directory.glob("*.py")
-    return sorted(p for p in found if _is_plain_file(p))
+    return sorted(p for p in found if is_plain_file(p))
 
 
 def _dedup_tags(tags: list[CapabilityTag]) -> list[CapabilityTag]:
@@ -269,7 +255,7 @@ def _find_key_files(example_dir: Path) -> list[str]:
     """Return list of notable files in an example directory."""
     key_files: list[str] = []
     for p in sorted(example_dir.iterdir()):
-        if _is_plain_file(p):
+        if is_plain_file(p):
             name = p.name
             if name.endswith(".py") or name == "README.md" or name == "requirements.txt":
                 key_files.append(name)
@@ -324,13 +310,13 @@ class TaxonomyBuilder:
             List of TaxonomyEntry objects, one per subdirectory or flat file.
         """
         entries: list[TaxonomyEntry] = []
-        if not root.is_dir():
+        if not is_plain_dir(root):
             return entries
         for child in sorted(root.iterdir()):
-            if child.is_dir():
+            if is_plain_dir(child):
                 entry = self._build_entry_for_foundational(child, repo=repo, commit_sha=commit_sha)
                 entries.append(entry)
-            elif child.suffix == ".py" and _is_plain_file(child):
+            elif child.suffix == ".py" and is_plain_file(child):
                 entry = self._build_entry_for_foundational_file(
                     child, repo=repo, commit_sha=commit_sha
                 )
@@ -389,7 +375,7 @@ class TaxonomyBuilder:
             List of TaxonomyEntry objects, one per subdirectory.
         """
         entries: list[TaxonomyEntry] = []
-        if not root.is_dir():
+        if not is_plain_dir(root):
             return entries
         packaged_project_skip = {
             "src",
@@ -401,7 +387,7 @@ class TaxonomyBuilder:
             ".claude",
         }
         for child in sorted(root.iterdir()):
-            if not child.is_dir():
+            if not is_plain_dir(child):
                 continue
             # Skip hidden dirs and common non-example dirs
             if child.name.startswith(".") or child.name in ("__pycache__", "node_modules"):
@@ -473,7 +459,7 @@ class TaxonomyBuilder:
         """
         examples_dir = root / "examples"
         foundational_dir = examples_dir / "foundational"
-        if foundational_dir.is_dir():
+        if is_plain_dir(foundational_dir):
             entries = self.build_from_foundational(
                 foundational_dir, repo=repo, commit_sha=commit_sha
             )
@@ -490,7 +476,7 @@ class TaxonomyBuilder:
             entries.extend(sibling_entries)
             self._entries.extend(sibling_entries)
             return entries
-        if examples_dir.is_dir() and any(p.is_dir() for p in examples_dir.iterdir()):
+        if is_plain_dir(examples_dir) and any(is_plain_dir(p) for p in examples_dir.iterdir()):
             return self.build_from_topic_dirs(examples_dir, repo=repo, commit_sha=commit_sha)
         # Root-level fallback (``pipecat-examples`` layout). When the repo
         # root also looks like a packaged project (contains ``src/`` or
@@ -548,7 +534,7 @@ class TaxonomyBuilder:
         readme_content: str | None = None
         summary = ""
         readme_path = example_dir / "README.md"
-        if _is_plain_file(readme_path):
+        if is_plain_file(readme_path):
             readme_content = readme_path.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_readme(readme_content))
             summary = _extract_summary_from_readme(readme_content)
@@ -628,7 +614,7 @@ class TaxonomyBuilder:
         mixed legacy layouts where the caller handles it separately).
         """
         entries: list[TaxonomyEntry] = []
-        if not examples_dir.is_dir():
+        if not is_plain_dir(examples_dir):
             return entries
         skip = set(skip_names) if skip_names else set()
         for ex_dir in _discover_under_examples(examples_dir):
@@ -693,7 +679,7 @@ class TaxonomyBuilder:
         readme_content: str | None = None
         summary = ""
         readme_path = example_dir / "README.md"
-        if _is_plain_file(readme_path):
+        if is_plain_file(readme_path):
             readme_content = readme_path.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_readme(readme_content))
             summary = _extract_summary_from_readme(readme_content)
@@ -744,7 +730,7 @@ class TaxonomyBuilder:
         readme_content: str | None = None
         summary = ""
         readme_path = example_dir / "README.md"
-        if _is_plain_file(readme_path):
+        if is_plain_file(readme_path):
             readme_content = readme_path.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_readme(readme_content))
             summary = _extract_summary_from_readme(readme_content)

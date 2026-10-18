@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import stat
 import sys
 from datetime import datetime
@@ -1673,3 +1674,112 @@ class TestInferDomain:
 
     def test_pcc_deploy_toml_is_config(self):
         assert _infer_domain("server/pcc-deploy.toml", "toml") == "config"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
+class TestSymlinkedExampleDirs:
+    """A committed directory symlink must never be discovered as an example.
+
+    It can point outside the clone, so following it would index (and, through the
+    taxonomy, return) files that were never part of the repo.
+    """
+
+    @staticmethod
+    def _outside(tmp_path: Path) -> Path:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "bot.py").write_text("SECRET = 1\n")
+        return outside
+
+    @staticmethod
+    def _assert_confined(found: list[Path], repo: Path) -> None:
+        for d in found:
+            assert not d.is_symlink(), d
+            assert d.resolve().is_relative_to(repo.resolve()), d
+
+    def test_symlinked_example_under_examples(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        (repo / "examples" / "real").mkdir(parents=True)
+        (repo / "examples" / "real" / "bot.py").write_text("x = 1\n")
+        (repo / "examples" / "linked").symlink_to(self._outside(tmp_path))
+
+        found = _find_example_dirs(repo)
+
+        assert [d.name for d in found] == ["real"]
+        self._assert_confined(found, repo)
+
+    def test_symlinked_example_inside_a_topic_dir(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        topic = repo / "examples" / "voice"
+        (topic / "real").mkdir(parents=True)
+        (topic / "real" / "bot.py").write_text("x = 1\n")
+        (topic / "linked").symlink_to(self._outside(tmp_path))
+
+        found = _find_example_dirs(repo)
+
+        assert [d.name for d in found] == ["real"]
+        self._assert_confined(found, repo)
+
+    def test_symlinked_topic_dir(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        (repo / "examples" / "real").mkdir(parents=True)
+        (repo / "examples" / "real" / "bot.py").write_text("x = 1\n")
+        outside = tmp_path / "outside-topic"
+        (outside / "inner").mkdir(parents=True)
+        (outside / "inner" / "bot.py").write_text("SECRET = 1\n")
+        (repo / "examples" / "topic").symlink_to(outside)
+
+        found = _find_example_dirs(repo)
+
+        assert [d.name for d in found] == ["real"]
+        self._assert_confined(found, repo)
+
+    def test_symlinked_examples_dir_itself(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside-examples"
+        (outside / "one").mkdir(parents=True)
+        (outside / "one" / "bot.py").write_text("SECRET = 1\n")
+        (repo / "examples").symlink_to(outside)
+
+        found = _find_example_dirs(repo)
+
+        self._assert_confined(found, repo)
+
+    def test_symlinked_root_level_example(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        (repo / "real").mkdir(parents=True)
+        (repo / "real" / "bot.py").write_text("x = 1\n")
+        (repo / "linked").symlink_to(self._outside(tmp_path))
+
+        found = _discover_root_level_examples(repo)
+
+        assert [d.name for d in found] == ["real"]
+        self._assert_confined(found, repo)
+
+    def test_symlinked_file_does_not_make_a_dir_look_like_an_example(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        (repo / "examples" / "only-a-link").mkdir(parents=True)
+        outside = tmp_path / "outside.py"
+        outside.write_text("SECRET = 1\n")
+        (repo / "examples" / "only-a-link" / "bot.py").symlink_to(outside)
+
+        assert _find_example_dirs(repo) == []
+
+    def test_iter_code_files_skips_links_before_stat(self, tmp_path: Path):
+        """A link into an untraversable directory must not abort the walk."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root can traverse any directory")
+        ex = tmp_path / "ex"
+        ex.mkdir()
+        (ex / "bot.py").write_text("x = 1\n")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "t.py").write_text("y = 2\n")
+        (ex / "linked.py").symlink_to(locked / "t.py")
+        locked.chmod(0o000)
+        try:
+            assert [p.name for p in _iter_code_files(ex)] == ["bot.py"]
+            assert [p.name for p in _iter_root_level_code_files(ex)] == ["bot.py"]
+        finally:
+            locked.chmod(0o700)

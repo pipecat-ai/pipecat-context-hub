@@ -22,12 +22,44 @@ both ingesters going forward, so a future fix here can't drift the same way.
 from __future__ import annotations
 
 import hashlib
+import stat
 from pathlib import Path
+
+from pipecat_context_hub.shared.paths import is_reparse_link
 
 # Storybook Component Story Format files. Fixture/demo code co-located next
 # to the real component they document, not excludable by directory the way
 # tests/examples dirs are.
 _STORYBOOK_SUFFIXES: tuple[str, ...] = (".stories.ts", ".stories.tsx")
+
+
+def is_plain_file(path: Path) -> bool:
+    """True for a regular file that is not a link. Never raises.
+
+    One ``lstat`` (does not follow links), so it can neither be fooled by nor
+    trip over a link's target. ``Path.is_file()`` follows the link first and
+    raises ``PermissionError`` for a link into a directory the user cannot
+    traverse, which aborts the whole refresh just as a dangling link did.
+    """
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except (OSError, ValueError):
+        return False
+
+
+def is_plain_dir(path: Path) -> bool:
+    """True for a real directory that is not a symlink or Windows junction. Never raises.
+
+    The rule for every directory an ingester treats as an example (or as the
+    ``examples/`` tree holding them). A committed directory symlink can point
+    outside the clone, so following it reads files that were never part of the
+    repo; both ingesters and the taxonomy builder must refuse the same ones, or
+    one indexes what another skipped.
+    """
+    try:
+        return not is_reparse_link(path) and stat.S_ISDIR(path.lstat().st_mode)
+    except (OSError, ValueError):
+        return False
 
 
 def is_storybook_file(path: Path) -> bool:

@@ -102,6 +102,12 @@ This changelog retains repository and Context Hub package history.
   terminal escape sequences: `repos` and `refresh` output, errors, logs and uncaught
   tracebacks escape non-printable characters. JSON on stdout stays valid with the
   same value.
+- **A symlinked example directory is no longer followed.** An indexed repo could
+  commit `examples/foo -> /somewhere/else`, and its `README.md` and `.py` files were
+  read from outside the clone, so the README text reached `get_example` output.
+  Example discovery and the taxonomy builder now skip directory symlinks and junctions
+  (one shared rule, `is_plain_dir`) and no longer stat a file through a link, so a link
+  into a directory you cannot traverse cannot abort `refresh` either.
 - **The config writer will not follow a swapped symlink.** It refuses, leaving the
   original file untouched, if the path was retargeted while an edit was in flight.
 - **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`
