@@ -386,6 +386,37 @@ class TestCurate:
         assert code == curate.EXIT_REPORT_INCOMPLETE
         assert "page cap" in capsys.readouterr().out
 
+    @pytest.mark.parametrize("n", [29, 30, 31, curate.SEARCH_PAGES * curate.SEARCH_PER_PAGE])
+    def test_clean_run_lists_every_candidate(
+        self, n: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A clean run (exit 0) shows every candidate it read: no top-N cut hides
+        # one, below, at or above the old 30-row cap, up to the most discovery
+        # can return.
+        path = tmp_path / "catalog.toml"
+        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
+        candidates = [_vendor(i) for i in range(n)]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                page = int(request.url.params["page"])
+                per = curate.SEARCH_PER_PAGE
+                return _resp(200, _search(candidates[(page - 1) * per : page * per], total=n))
+            if request.url.path == "/repos/a/known":
+                return _resp(200, _meta())
+            return _resp(200, _tree([]))
+
+        code = curate.main(
+            ["--catalog", str(path)],
+            transport=httpx.MockTransport(handler),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        out = capsys.readouterr().out
+        assert code == curate.EXIT_OK
+        assert re.findall(r"^- `v/r\d+`: 1 matching files$", out, re.MULTILINE) == [
+            f"- `v/r{i}`: 1 matching files" for i in range(n)
+        ]
+
     def test_candidates_are_counted_by_slug_key(self) -> None:
         items = [
             {"repository": {"full_name": "Owner/Repo"}},

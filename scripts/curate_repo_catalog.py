@@ -21,6 +21,7 @@ tree, ``incomplete_results``, a search item without a repository name, or
 fewer results read than ``total_count`` reports, whether the search stopped
 at a short page, an empty page or the page cap) is recorded and exits 2 with
 the report still printed: "none found" or a count is then not a clean result.
+The report lists every candidate it read, so a complete report omits none.
 
 Usage::
 
@@ -287,7 +288,9 @@ def render_report(
             )
     lines += ["", "## Candidate repos not in the catalog (code-search hits)", ""]
     if vendors:
-        lines += [f"- `{name}`: {n} matching files" for name, n in vendors.most_common(30)]
+        # Every candidate, most matches first: no top-N cut, so a complete
+        # (exit 0) report never hides one (at most SEARCH_PAGES * SEARCH_PER_PAGE).
+        lines += [f"- `{name}`: {n} matching files" for name, n in vendors.most_common()]
     elif problems:
         lines.append("- none found (code search incomplete, see below)")
     else:
