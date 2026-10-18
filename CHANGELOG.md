@@ -64,13 +64,15 @@ This project uses [Semantic Versioning](https://semver.org/).
 - **`get_hub_status` repo coverage:** `indexed_repos`, `configured_no_records`
   and `catalog_groups_not_indexed` (all empty when the per-repo counts cannot be
   read). The first two may name private local repos; the retrieval-quality issue
-  template now tells the agent to leave them out of the public report.
+  template and the MCP instructions' degraded-hub bug-report step now tell the
+  agent to leave them out of the public report.
 - **Catalog health:** a weekly `catalog-health.yml` workflow (and
   `just catalog-health`) flags private, missing, archived or renamed catalog
   entries and opens or updates one tracking issue; PR CI never touches the
   network for it. `just catalog-curate` prints a read-only curation report
   (source-file counts, vendor candidates from GitHub code search) and exits 2
-  when the code search was incomplete.
+  when the code search was incomplete or a catalog repo's metadata or file tree
+  could not be read.
 - New runtime dependency: `tomlkit` (comment-preserving TOML edits), loaded
   only by `repos add` / `repos remove`.
 - Plugin-specific release notes live in
