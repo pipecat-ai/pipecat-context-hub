@@ -43,7 +43,7 @@ async def handle_get_hub_status(
     configured_repos: Set[str],
     tainted_repos: Set[str],
 ) -> str:
-    """Return index health metadata: freshness, record counts, commit SHAs.
+    """Return index health metadata: freshness, record counts, commit SHAs, repo coverage.
 
     *reranker_status* reflects live runtime state (not configured intent),
     built by the CLI after the reranker is constructed or skipped. When
