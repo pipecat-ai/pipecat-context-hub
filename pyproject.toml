@@ -16,6 +16,20 @@ license = "BSD-2-Clause"
 # anyone installing alongside `pipecat-ai[cli]`. A new Python without wheels
 # fails clearly at install time; that is not a reason to re-add one.
 requires-python = ">=3.11"
+keywords = ["pipecat", "mcp", "model-context-protocol", "rag", "voice-ai", "claude-code", "cursor"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "pydantic>=2.0,<3.0",
     "mcp>=2.0,<3.0",
@@ -48,6 +62,13 @@ dependencies = [
     # admitted 49.0.0).
     "cryptography>=50.0.0",
 ]
+
+[project.urls]
+Homepage = "https://docs.pipecat.ai/api-reference/context-hub"
+Source = "https://github.com/pipecat-ai/pipecat-context-hub"
+Issues = "https://github.com/pipecat-ai/pipecat-context-hub/issues"
+Changelog = "https://github.com/pipecat-ai/pipecat-context-hub/blob/main/CHANGELOG.md"
+Documentation = "https://docs.pipecat.ai/api-reference/context-hub"
 
 [project.optional-dependencies]
 dev = [
