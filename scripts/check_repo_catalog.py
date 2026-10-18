@@ -11,8 +11,8 @@ classify the answer:
 - ``renamed``       a 301/308 redirect, or a 200 whose ``full_name`` differs from
                     the slug beyond case. The new name is reported; GitHub's real
                     redirect target is ``/repositories/{id}``, so one more
-                    non-following GET resolves it (failure keeps ``renamed``
-                    with no new name).
+                    non-following GET resolves it (failure, or a private
+                    target, keeps ``renamed`` with no new name).
 - ``inconclusive``  403/429 (rate limit), 5xx, timeout, network error, or any
                     other unexpected answer, including a 200 that is not a fully
                     valid repository object. Reported in its own section, never
@@ -134,7 +134,9 @@ def resolve_repositories_redirect(client: httpx.Client, response: httpx.Response
     """New ``full_name`` behind a 301/308 to ``/repositories/{id}``, else ``None``.
 
     One extra GET that does not follow redirects (the client never does). Any
-    failure (non-200, non-JSON, no string ``full_name``, httpx error) is ``None``.
+    failure (non-200, non-JSON, no string ``full_name`` or boolean ``private``,
+    httpx error) is ``None``. So is a private target: a token that can read a
+    private repository must not put its name in the report or issue body.
     """
     location = response.headers.get("location", "")
     if not _is_repositories_target(location):
@@ -143,8 +145,10 @@ def resolve_repositories_redirect(client: httpx.Client, response: httpx.Response
         second = client.get(urlparse(location).path)
     except httpx.HTTPError:
         return None
-    body, _ = validated_body(second, {"full_name": non_empty_str})
-    return str(body["full_name"]) if body is not None else None
+    body, _ = validated_body(second, {"full_name": non_empty_str, "private": is_bool})
+    if body is None or body["private"] is not False:
+        return None
+    return str(body["full_name"])
 
 
 def classify_response(

@@ -17,11 +17,19 @@ through ``_get`` (``catalog_script_common.validated_body``), which hands back
 data only when the status is 200, the body is a JSON object and every field
 the caller reads is present with the right type. Anything else (a failed
 request, a non-200, a wrong shape, a missing or mistyped field, a truncated
-tree, ``incomplete_results``, a search item without a repository name, or
-fewer results read than ``total_count`` reports, whether the search stopped
-at a short page, an empty page or the page cap) is recorded and exits 2 with
-the report still printed: "none found" or a count is then not a clean result.
-The report lists every candidate it read, so a complete report omits none.
+tree, ``incomplete_results``, a search item without a repository name or a
+boolean ``private`` flag, or fewer results read than ``total_count`` reports,
+whether the search stopped at a short page, an empty page or the page cap) is
+recorded and exits 2 with the report still printed: "none found" or a count is
+then not a clean result. The report lists every candidate it read, so a
+complete report omits none.
+
+A candidate is only a repository the catalog could list publicly: code search
+runs with the caller's token, so it can return private repositories that
+token can read. A hit whose repository is ``private: true`` is never a
+candidate and is never named; the report says only how many such hits were
+excluded. That is a deliberate exclusion, not a problem, so it does not change
+the exit code.
 
 Usage::
 
@@ -203,16 +211,24 @@ def stats_incomplete(stats: Sequence[dict[str, object]]) -> bool:
 
 
 def discover_vendors(
-    client: httpx.Client, known: set[str], problems: list[str] | None = None
+    client: httpx.Client,
+    known: set[str],
+    problems: list[str] | None = None,
+    notes: list[str] | None = None,
 ) -> Counter[str]:
-    """Repos whose code matches the search and are not in ``known`` (``slug_key`` form).
+    """Public repos whose code matches the search and are not in ``known`` (``slug_key`` form).
 
     Problems are recorded in ``problems`` (when given), never raised, since the
     candidate set may then be partial: a page that is not fully valid (it ends
     discovery), a page GitHub flags ``incomplete_results`` (its search timed
-    out), an item without a string repository ``full_name``, and fewer results
-    read than the last page's ``total_count``, however the search stopped (a
-    short page, an empty page or the ``SEARCH_PAGES`` cap).
+    out), an item without a string repository ``full_name`` or a boolean
+    ``private`` (visibility unconfirmed, so it cannot be a candidate), and fewer
+    results read than the last page's ``total_count``, however the search
+    stopped (a short page, an empty page or the ``SEARCH_PAGES`` cap).
+
+    A hit in a ``private: true`` repository is excluded and never named: only
+    their count goes into ``notes`` (when given), since a private repository is
+    never a catalog candidate.
 
     Candidates are counted by ``slug_key`` (the one slug identity), shown in
     the first spelling seen, so ``Owner/Repo`` and ``owner/repo`` are one row.
@@ -221,6 +237,7 @@ def discover_vendors(
         problems = []
     found: Counter[str] = Counter()
     spelling: dict[str, str] = {}
+    private_hits = 0
     read = 0
     total = 0
     for page in range(1, SEARCH_PAGES + 1):
@@ -245,14 +262,21 @@ def discover_vendors(
         for item in items:
             repo = item.get("repository") if isinstance(item, dict) else None
             name = repo.get("full_name") if isinstance(repo, dict) else None
-            if not isinstance(name, str) or not name:
+            private = repo.get("private") if isinstance(repo, dict) else None
+            if not isinstance(name, str) or not name or not isinstance(private, bool):
                 malformed += 1
+                continue
+            if private:
+                private_hits += 1
                 continue
             key = slug_key(name)
             if key not in known:
                 found[spelling.setdefault(key, name)] += 1
         if malformed:
-            problems.append(f"page {page}: {malformed} item(s) without a repository full_name")
+            problems.append(
+                f"page {page}: {malformed} item(s) without a repository full_name"
+                " and boolean private flag"
+            )
         if read >= total or len(items) < SEARCH_PER_PAGE:
             break  # all read, or a short/empty page: GitHub has no further page
     if read < total:
@@ -262,6 +286,11 @@ def discover_vendors(
             else f"page {page} came back short"
         )
         problems.append(f"{where}: read {read} of {total} results (search may have missed repos)")
+    if private_hits and notes is not None:
+        notes.append(
+            f"{private_hits} code-search hit(s) in private repositories excluded"
+            " (a private repository is never a catalog candidate)"
+        )
     return found
 
 
@@ -269,6 +298,7 @@ def render_report(
     stats: Sequence[dict[str, object]],
     vendors: Counter[str],
     problems: Sequence[str] = (),
+    notes: Sequence[str] = (),
 ) -> str:
     lines = ["# Repo catalog curation report (read-only)", "", "## Catalog repos", ""]
     for s in stats:
@@ -295,6 +325,8 @@ def render_report(
         lines.append("- none found (code search incomplete, see below)")
     else:
         lines.append("- none found")
+    if notes:
+        lines += ["", *notes]
     if problems:
         lines += ["", "## Code-search problems", ""]
         lines += [f"- {p}" for p in problems]
@@ -329,10 +361,11 @@ def main(
     # parser rejects them), yet they match the code search heavily.
     known = {slug_key(s) for s in [*slugs, *SourceConfig().repos]}
     problems: list[str] = []
+    notes: list[str] = []
     with make_client(token, transport) as client:
         stats = [repo_stats(client, slug) for slug in slugs]
-        vendors = discover_vendors(client, known, problems)
-    print(render_report(stats, vendors, problems))
+        vendors = discover_vendors(client, known, problems, notes)
+    print(render_report(stats, vendors, problems, notes))
     return EXIT_REPORT_INCOMPLETE if problems or stats_incomplete(stats) else EXIT_OK
 
 

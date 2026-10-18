@@ -77,8 +77,13 @@ def _catalog_text(slugs: list[str], verified: str = "2026-10-16") -> str:
     )
 
 
+def _hit(name: object, private: object = False) -> dict[str, object]:
+    """One code-search item; GitHub's carries the repository's ``private`` flag."""
+    return {"repository": {"full_name": name, "private": private}}
+
+
 def _vendor(i: int) -> dict[str, object]:
-    return {"repository": {"full_name": f"v/r{i}"}}
+    return _hit(f"v/r{i}")
 
 
 class TestCurate:
@@ -130,8 +135,8 @@ class TestCurate:
                 return _resp(200, _tree(tree))
             if p == "/search/code":
                 items = [
-                    {"repository": {"full_name": "new/vendor"}},
-                    {"repository": {"full_name": "A/Known"}},
+                    _hit("new/vendor"),
+                    _hit("A/Known"),
                 ]
                 return _resp(200, _search(items))
             return _resp(404)
@@ -195,7 +200,7 @@ class TestCurate:
             {"repository": None},
             {"repository": "str"},
             "junk",
-            {"repository": {"full_name": "new/vendor"}},
+            _hit("new/vendor"),
         ]
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -260,9 +265,9 @@ class TestCurate:
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/search/code":
                 items = [
-                    {"repository": {"full_name": "pipecat-ai/pipecat"}},
-                    {"repository": {"full_name": "Pipecat-AI/Pipecat-Examples"}},
-                    {"repository": {"full_name": "new/vendor"}},
+                    _hit("pipecat-ai/pipecat"),
+                    _hit("Pipecat-AI/Pipecat-Examples"),
+                    _hit("new/vendor"),
                 ]
                 return _resp(200, _search(items))
             if request.url.path == "/repos/a/known":
@@ -331,10 +336,7 @@ class TestCurate:
     def _full_pages(total_count: object) -> httpx.MockTransport:
         def handler(request: httpx.Request) -> httpx.Response:
             page = request.url.params["page"]
-            items = [
-                {"repository": {"full_name": f"v{page}/r{i}"}}
-                for i in range(curate.SEARCH_PER_PAGE)
-            ]
+            items = [_hit(f"v{page}/r{i}") for i in range(curate.SEARCH_PER_PAGE)]
             return _resp(200, _search(items, total=total_count))
 
         return httpx.MockTransport(handler)
@@ -419,9 +421,9 @@ class TestCurate:
 
     def test_candidates_are_counted_by_slug_key(self) -> None:
         items = [
-            {"repository": {"full_name": "Owner/Repo"}},
-            {"repository": {"full_name": "owner/repo"}},
-            {"repository": {"full_name": "OWNER/REPO"}},
+            _hit("Owner/Repo"),
+            _hit("owner/repo"),
+            _hit("OWNER/REPO"),
         ]
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -432,7 +434,13 @@ class TestCurate:
         assert dict(found) == {"Owner/Repo": 3}  # one row, first spelling seen
 
     @pytest.mark.parametrize(
-        "repository", [{}, {"full_name": None}, {"full_name": 5}, {"full_name": ""}]
+        "repository",
+        [
+            {"private": False},
+            {"full_name": None, "private": False},
+            {"full_name": 5, "private": False},
+            {"full_name": "", "private": False},
+        ],
     )
     def test_item_without_a_full_name_is_malformed(self, repository: object) -> None:
         items = [{"repository": repository}]
@@ -444,7 +452,77 @@ class TestCurate:
             problems: list[str] = []
             found = curate.discover_vendors(client, set(), problems)
         assert not found
-        assert problems == ["page 1: 1 item(s) without a repository full_name"]
+        assert problems == [
+            "page 1: 1 item(s) without a repository full_name and boolean private flag"
+        ]
+
+    _MISSING = object()
+
+    @pytest.mark.parametrize(
+        ("private", "candidate", "excluded", "malformed"),
+        [
+            pytest.param(False, True, False, False, id="public"),
+            pytest.param(True, False, True, False, id="private"),
+            pytest.param(_MISSING, False, False, True, id="missing"),
+            pytest.param(None, False, False, True, id="null"),
+            pytest.param("false", False, False, True, id="str-false"),
+            pytest.param("true", False, False, True, id="str-true"),
+            pytest.param(0, False, False, True, id="int-0"),
+            pytest.param(1, False, False, True, id="int-1"),
+        ],
+    )
+    def test_only_a_confirmed_public_repository_is_a_candidate(
+        self, private: object, candidate: bool, excluded: bool, malformed: bool
+    ) -> None:
+        # Regression: code search runs with the caller's token and can return
+        # private repositories; every item used to become a candidate by name.
+        repo: dict[str, object] = {"full_name": "secret/private-repo"}
+        if private is not self._MISSING:
+            repo["private"] = private
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _resp(200, _search([{"repository": repo}]))
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            problems: list[str] = []
+            notes: list[str] = []
+            found = curate.discover_vendors(client, set(), problems, notes)
+        assert ("secret/private-repo" in found) is candidate
+        assert bool(notes) is excluded
+        assert bool(problems) is malformed
+        report = curate.render_report([], found, problems, notes)
+        assert ("secret/private-repo" in report) is candidate
+
+    def test_private_hits_are_counted_never_named_and_keep_a_clean_exit(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = tmp_path / "catalog.toml"
+        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
+        items = [
+            _hit("secret/private-repo", private=True),
+            _hit("Secret/Private-Repo", private=True),
+            _hit("other/hidden", private=True),
+            _hit("new/vendor"),
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                return _resp(200, _search(items))
+            if request.url.path == "/repos/a/known":
+                return _resp(200, _meta())
+            return _resp(200, _tree([]))
+
+        code = curate.main(
+            ["--catalog", str(path)],
+            transport=httpx.MockTransport(handler),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        out = capsys.readouterr().out
+        assert code == curate.EXIT_OK  # a deliberate exclusion, not a problem
+        assert "secret" not in out.casefold() and "hidden" not in out
+        assert "3 code-search hit(s) in private repositories excluded" in out
+        assert "`new/vendor`: 1 matching files" in out
+        assert "Code-search problems" not in out
 
     def test_non_utf8_catalog_exits_catalog_code(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -464,7 +542,7 @@ class TestCurate:
         # hits it did return still count, but "none found" is no longer clean.
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.params["page"] == "1":
-                items = [{"repository": {"full_name": "new/vendor"}}]
+                items = [_hit("new/vendor")]
                 return _resp(200, _search(items, incomplete=True))
             return _resp(200, _search([]))
 

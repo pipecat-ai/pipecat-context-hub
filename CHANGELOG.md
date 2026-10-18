@@ -74,7 +74,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   validated; anything else is inconclusive. An inconclusive-only run comments
   on the tracking issue and keeps its body, the last conclusive report.
   `just catalog-curate` prints a read-only curation report (source-file counts,
-  vendor candidates from GitHub code search) and exits 2 when any GitHub answer
+  vendor candidates from GitHub code search; hits in private repositories are
+  only counted, never named or listed) and exits 2 when any GitHub answer
   it used was not fully validated or results were left unread (fewer read than
   `total_count`, however the search stopped), or a tree was truncated; 1 without
   a GitHub token, 3 catalog unloadable.
