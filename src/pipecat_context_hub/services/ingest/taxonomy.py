@@ -152,6 +152,18 @@ def _make_tag(name: str, confidence: float, source: CapabilitySource) -> Capabil
     return CapabilityTag(name=name, confidence=confidence, source=source)
 
 
+def _scannable_py_files(directory: Path, *, recursive: bool = False) -> list[Path]:
+    """Python files under *directory* that are safe to read, in sorted order.
+
+    Symlinks are skipped, as everywhere else in the ingest layer: a committed
+    symlink can dangle (an absolute path that exists only on the author's machine,
+    which makes ``read_text`` raise and abort the whole refresh) or point outside
+    the clone.
+    """
+    found = directory.rglob("*.py") if recursive else directory.glob("*.py")
+    return sorted(p for p in found if p.is_file() and not p.is_symlink())
+
+
 def _dedup_tags(tags: list[CapabilityTag]) -> list[CapabilityTag]:
     """Keep highest-confidence tag per name, prefer code > readme > directory."""
     source_priority: dict[str, int] = {"manual": 4, "code": 3, "readme": 2, "directory": 1}
@@ -303,7 +315,7 @@ class TaxonomyBuilder:
             if child.is_dir():
                 entry = self._build_entry_for_foundational(child, repo=repo, commit_sha=commit_sha)
                 entries.append(entry)
-            elif child.is_file() and child.suffix == ".py":
+            elif child.is_file() and not child.is_symlink() and child.suffix == ".py":
                 entry = self._build_entry_for_foundational_file(
                     child, repo=repo, commit_sha=commit_sha
                 )
@@ -527,7 +539,7 @@ class TaxonomyBuilder:
             summary = _extract_summary_from_readme(readme_content)
 
         # Scan Python files for code-level tags
-        for py_file in sorted(example_dir.glob("*.py")):
+        for py_file in _scannable_py_files(example_dir):
             code = py_file.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_code(code))
 
@@ -672,7 +684,7 @@ class TaxonomyBuilder:
             summary = _extract_summary_from_readme(readme_content)
 
         # Scan Python files (including subdirectories) for code-level tags.
-        for py_file in sorted(example_dir.rglob("*.py")):
+        for py_file in _scannable_py_files(example_dir, recursive=True):
             code = py_file.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_code(code))
 
@@ -723,7 +735,7 @@ class TaxonomyBuilder:
             summary = _extract_summary_from_readme(readme_content)
 
         # Scan Python files (including subdirectories) for code-level tags
-        for py_file in sorted(example_dir.rglob("*.py")):
+        for py_file in _scannable_py_files(example_dir, recursive=True):
             code = py_file.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_code(code))
 

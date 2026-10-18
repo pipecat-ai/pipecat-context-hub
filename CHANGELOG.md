@@ -5,213 +5,89 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+Plugin-specific release notes live in
+[`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
+This changelog retains repository and Context Hub package history.
+
 ## [Unreleased]
 
 ### Added
-- **`repos list|add|remove`** (also `pipecat context-hub repos ...`) manages
-  `PIPECAT_HUB_EXTRA_REPOS` in `~/.config/pipecat-context-hub/config.toml`,
-  offline, keeping comments and other keys and writing atomically. `add`
-  takes a catalog slug, `--unlisted owner/repo`, or `--group NAME`;
-  `--config-only` edits the file even when a real env var or the cwd `.env`
-  overrides the key (the command names that layer). `repos list` shows the
-  effective repos tagged `default` / `catalog` / `unlisted`, the cwd whose
-  `.env` was consulted, and repos `config.toml` holds but a higher layer hides;
-  `--groups` lists the catalog groups. Refusals exit 1 with the file untouched.
-  A tainted or malformed slug already in `config.toml` cannot be removed through
-  the CLI; when the file lists it, the refusal names the resolved file
-  (`PIPECAT_HUB_CONFIG_FILE` honoured) and says to edit it by hand.
-  `add --group` skips (and lists) tainted and `parseable = false` members;
-  `remove --group` skips only tainted ones, so a `parseable = false` repo added
-  by slug can be removed by group. A positional `add` of a `parseable = false`
-  repo still adds it but warns on stderr that it can never produce `search_api`
-  results. A group with nothing left to act on exits 0 with `Nothing to add` /
-  `Nothing to remove` and the skipped list, without a shadowing refusal or
-  reading `config.toml`. `repos` commands no longer print the config loader's
-  `Loaded N key(s)` INFO line at the default log level (warnings still show;
-  an explicit `--log-level` brings it back).
-  The writer reads through the loader's trust checks and never creates a file
-  the loader would ignore. It walks the path as the kernel does (refusing a
-  dangling symlink whose target ends in `/`, which the kernel's open would fail)
-  and re-walks it just before the atomic rename, refusing with the original
-  untouched if a symlink was retargeted in between; the reader vets the same
-  walked target. No configured string reaches the terminal raw: every line of
-  `repos` and `refresh` output, every refusal (click's own error messages
-  included), every log line (load-time warnings, tracebacks and stack text
-  included) and an uncaught traceback (through `pipecat context-hub` too) pass
-  through one output boundary
-  (`shared/terminal.py`) that escapes any non-printable character (an escape
-  sequence from a hostile `.env`, say) other than the message's own newlines
-  and tabs, and a configured entry or a `config.toml` / `.env` / data-dir path
-  that holds one is also flagged as its `repr()` tagged `[invalid]` where it is
-  named. The query commands' JSON on stdout (and `install --print-config`'s
-  block) stays valid JSON with the same value: a non-printable character in
-  indexed text is written as a JSON `\uXXXX` escape. Run `refresh` afterwards
-  to index.
-- **Repo catalog** (`src/pipecat_context_hub/data/repo_catalog.toml`): curated
-  public repos grouped by vendor or topic. It generates the extras block in
-  `.env.example` and the "Repo catalog" section of `docs/configuration.md`
-  (`just catalog-regen`; `--check` fails on drift, `--bump-verified` records a
-  manual audit); a test fails when they differ. The parser rejects any string
-  that holds a control character (C0, DEL, C1), a line or paragraph separator
-  or anything else `str.splitlines()` breaks on, or a bidi or zero-width format
-  character, and a `description` holding `|` or any string holding `BEGIN
-  GENERATED` / `END GENERATED`, so no catalog text can start an uncommented
-  assignment in the generated `.env.example` block or break a splice.
+- **`repos list|add|remove`** (also `pipecat context-hub repos ...`) edits your
+  `config.toml` for you, so adding a vendor's repos no longer means hand-editing
+  `PIPECAT_HUB_EXTRA_REPOS`. `add` takes a catalog slug, `--unlisted owner/repo`
+  or `--group NAME`; `list` shows the effective repos and where each came from.
+  Comments in the file are kept. It refuses (exit 1) rather than write an edit
+  that a higher-priority env var or `.env` would override (`--config-only` writes
+  anyway). `--unlisted` notes that the repo is not vetted by the catalog and names
+  its owner. Run `refresh` afterwards to index.
+- **Repo catalog**: a curated list of public repos grouped by vendor or topic,
+  behind `repos add --group`. It also generates the extras block in `.env.example`
+  and the "Repo catalog" section of `docs/configuration.md` (`just catalog-regen`).
 - **`corpus_hint` on search responses.** When a `search_docs`, `search_examples`,
-  `search_api` or `get_code_snippet` query names a catalog group alias whose
-  parseable, untainted repos have no indexed records, the response carries a
-  top-level `corpus_hint` (`matched_groups`, `repos_not_indexed`,
-  `repos_configured_no_records`, `add_command`, `refresh_command`,
-  `report_issue_url`); the key is absent otherwise. Deterministic: no network, no
-  embeddings, independent of result confidence. Both front doors attach it after
-  the staleness footer; the CLI's stderr poor-results hint is suppressed when a
-  `corpus_hint` is present. Configured and tainted repos are read once at process
-  start, so a running `serve` sees a later `repos add` / `remove` only after a restart.
-- **`get_hub_status` repo coverage:** `indexed_repos`, `configured_no_records`
-  and `catalog_groups_not_indexed` (all empty when the per-repo counts cannot be
-  read). The first two may name private local repos; the retrieval-quality issue
-  template and the MCP instructions' degraded-hub bug-report step now tell the
-  agent to leave them out of the public report.
-- **Catalog health:** a weekly `catalog-health.yml` workflow (and
-  `just catalog-health`) flags private, missing, archived or renamed catalog
-  entries and opens or updates one tracking issue; PR CI never touches the
-  network for it (exit 0 ok, 1 a flagged entry, 2 only inconclusive lookups,
-  3 catalog unloadable). An entry is ok only when its GitHub answer is fully
-  validated; anything else is inconclusive. Only a flagged-entry run (exit 1)
-  replaces the tracking issue's body; any other failing run (inconclusive,
-  catalog unloadable) comments and keeps the body, the last conclusive report.
-  `just catalog-curate` prints a read-only curation report (source-file counts,
-  vendor candidates from GitHub code search; hits in private repositories are
-  only counted, never named or listed) and exits 2 when any GitHub answer
-  it used was not fully validated or results were left unread (fewer read than
-  `total_count`, however the search stopped), or a tree was truncated; 1 without
-  a GitHub token, 3 catalog unloadable.
-- `repos add --unlisted` prints a stderr note that the repo is not vetted by
-  the catalog and names its owner; the MCP instructions tell the agent to say
-  the same before suggesting it.
-- New runtime dependency: `tomlkit` (comment-preserving TOML edits), loaded
-  only by `repos add` / `repos remove`.
-- Plugin-specific release notes live in
-  [`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
-  This changelog retains repository and Context Hub package history.
-- **No reads while a refresh rewrites the index.** `serve` answers tool calls with
-  a "retry in 60-120 seconds" error while a refresh holds the lock (and still starts,
-  with the index unopened, if launched mid-refresh), then reopens the rebuilt index
-  itself and reloads the deprecation map, so no MCP client restart is needed.
-  One-shot CLI queries exit 75 (`EX_TEMPFAIL`); so does a `refresh` refused by the
-  lock. Readers hold `refresh.lock` shared only while opening. Closing `serve`'s
-  index handle at shutdown is final: later calls are answered "shutting down".
+  `search_api` or `get_code_snippet` query names a vendor or topic from the catalog
+  whose repos are not indexed, the response says so and gives the `repos add` and
+  `refresh` commands to fix it, instead of returning confident-looking results that
+  lack that content. It also matches identifiers such as `TavusVideoService` and
+  `aws_bedrock`. A running `serve` sees a later `repos add` / `remove` after a restart.
+- **`get_hub_status` repo coverage:** `indexed_repos`, `configured_no_records` and
+  `catalog_groups_not_indexed`. The first two may name private local repos, so the
+  bug-report template and MCP instructions tell the agent to leave them out of
+  public reports.
+- **Weekly catalog health check** (`catalog-health.yml`, `just catalog-health`) flags
+  private, missing, archived or renamed catalog repos in one tracking issue.
+  `just catalog-curate` prints a read-only report of source-file counts and vendor
+  candidates for new entries.
+- **Reads wait out a refresh.** While `refresh` rewrites the index, `serve` answers
+  tool calls with a "retry in 60-120 seconds" error, then reopens the rebuilt index
+  itself, with no MCP client restart. One-shot CLI queries exit 75.
 - **A half-missing index is refused, not papered over.** Readers never create the
-  index (only `refresh` does).
-  - Vector collection lost or empty beside a populated keyword database: exit 2,
-    "run `refresh --force`". A plain `refresh` refuses too, without touching the
-    vector half.
-  - Keyword database missing, incomplete, empty, corrupt or with an unusable schema
-    beside vector records: exit 2, "run `refresh --force --reset-index`", for readers
-    and for every `refresh`, `--force` included.
-  - Nothing indexed at all: "run `refresh`".
-  - Writes add keyword rows before their vectors, so an interrupted `refresh` leaves
-    keyword records ahead of the vectors, which `refresh --force` rebuilds.
-  - The dashboard scripts open the index the same way and exit with the operator
-    message instead of a traceback.
-- **Index write guards.** After a Chroma HNSW `link_lists.bin` ballooned to
-  ~325 GB on disk (upstream chroma#7510): `refresh` checks free disk first (default
-  5 GB, `PIPECAT_HUB_MIN_FREE_GB`), takes an exclusive `refresh.lock`, and warns when
-  a `serve` has the index open. Vector writes re-run a bounded HNSW size check after
-  every batch and abort on a runaway file; the open-time check adds a structural walk
-  of `link_lists.bin` that rejects a graph of healthy size that would crash on load.
-  On a chromadb release other than the verified 1.5.x, structure mismatches are
-  logged and skipped (the size bound still applies). Lock files that are symlinks,
-  foreign-owned or not regular files are ignored with a warning.
-- **`FatalIndexError` (`shared.interfaces`).** Raised when the on-disk index is
-  unsafe to keep using; ingesters re-raise it, so a guard failure stops `refresh`
-  (exit 2) instead of letting the remaining sources keep writing.
+  index; a vector or keyword half lost beside the other exits 2 with the exact
+  `refresh` command to run.
+- **Index write guards.** A Chroma HNSW `link_lists.bin` once ballooned to ~325 GB
+  (upstream chroma#7510). `refresh` now checks free disk first (default 5 GB,
+  `PIPECAT_HUB_MIN_FREE_GB`), takes an exclusive lock, and aborts on a runaway
+  or structurally broken graph file (exit 2) instead of continuing to write.
 
 ### Changed
-- **Taint matching is case-insensitive.** A `PIPECAT_HUB_TAINTED_REPOS` entry
-  now excludes a repo whatever its spelling (`Foo/Bar` taints `foo/bar`); it was
-  exact set membership. `refresh`'s cleanup, the effective repo list and `repos`
-  all decide through `SourceConfig.is_tainted`, and the warning about a
-  `config.toml` taint list shadowed by a higher layer compares the same way.
-  `PIPECAT_HUB_TAINTED_REFS` matching stays exact. The effective repo list and
-  the taint list also drop a case variant of an entry already listed (first
-  spelling wins), so `Foo/Bar` and `foo/bar` are cloned and indexed once.
+- **Taint matching is case-insensitive.** A `PIPECAT_HUB_TAINTED_REPOS` entry now
+  excludes a repo whatever its spelling (`Foo/Bar` taints `foo/bar`), and a case
+  variant of an already-listed repo is cloned and indexed once.
+  `PIPECAT_HUB_TAINTED_REFS` stays exact.
 - **`refresh --force` compacts the vector graph.** Delete + re-add left deleted
-  elements in the persisted HNSW graph, growing it by the whole corpus on every
-  forced refresh (20k -> 80k elements for 20k live records over four rounds). A
-  forced refresh now rebuilds the collection from the live records and removes the
-  old segment directory (verified chromadb 1.5.x only). Non-fatal if it fails,
-  except an HNSW guard trip or a failed swap that leaves no `latest` collection
-  (exit 2, nothing deleted; the next `refresh` restores the index). A swap
-  interrupted by a crash is restored by the next `refresh`; readers report it and
-  never write. Prefer `refresh --force` after a pipecat upgrade: a plain refresh
-  leaves the replaced framework records as dead graph elements.
-- **`serve` and the one-shot CLI open the index the same way**, so an empty,
-  unreadable or incompatible index gets the same message from either.
-- **Opening an initialized keyword database no longer writes to it.** `refresh`
-  completes an incomplete one and rebuilds its full-text table in one transaction.
+  elements in the HNSW graph, growing it by the whole corpus on every forced
+  refresh (20k -> 80k elements for 20k live records over four rounds). Prefer
+  `refresh --force` after a pipecat upgrade.
 - **`refresh --reset-index` exits 1 instead of rebuilding when an index file
-  survives the delete** (the keyword database or its WAL/shared-memory/journal
-  file, the vector directory, or the deprecation map). On Windows a running `serve`
-  holds them open: stop it, then retry.
+  survives the delete.** On Windows a running `serve` holds them open: stop it,
+  then retry.
 
 ### Fixed
-- **`corpus_hint` now fires for identifier-shaped queries.** `TavusVideoService`,
-  `AWSBedrockLLMService`, `GeminiLiveLLMService` and `aws_bedrock` carried no hint,
-  because CamelCase runs and underscores defeated the alias word boundary. An
-  alias now also matches the query with CamelCase and underscores split into
-  words (a run of underscores is one separator), on top of the text as typed, so no query that hinted before stops
-  hinting. A whole word must equal an alias: `LawsOfRobotics`, `ClawsClient` and
-  `claws_of_x` still do not match `aws`. `get_code_snippet` also reads
-  `class_name` and `module` (valid beside `symbol`), as does `search_api`, so
-  `symbol="__init__", class_name="TavusVideoService"` hints. The scanned
-  arguments of one call are joined with a newline, so a multi-word alias
-  (`nova sonic`) cannot span two of them. Known limits: an
-  alias spelled in CamelCase by the vendor still misses once other words attach
-  (`SageMakerSTTService`), as do back-to-back acronyms (`AWSLLMService`) and a
-  digit glued to an alias (`Gemini2Flash`).
-- **`refresh` no longer deletes README-fallback chunks when it re-crawls the docs.**
-  The stale-docs delete matched on `content_type="doc"` alone, so a repo's README
-  fallback (also `doc`, but with a repo) vanished from both stores until that repo
-  was next re-ingested. It now removes docs-site records only
-  (`delete_by_content_type(..., without_repo=True)`: `repo IS NULL` in FTS, no
-  `repo` key in Chroma). The Chroma delete refuses to run (raises) when Chroma returns
-  missing, short or null metadata. Closes #146.
-- **`get_counts_by_repo` counts each chunk once.** The synthetic `docs.pipecat.ai`
-  key counted every `doc` chunk, including a repo's README fallback, which is
-  also counted under its repo. It now counts only crawled doc chunks (no repo), so
-  `refresh`'s docs "existing" figure and the per-repo figures no longer overlap.
-- **Search ranking no longer changes with `limit`.** Each backend was asked for
-  exactly `limit` candidates, so `search_api("PipecatClientProvider",
-  chunk_type="function")` lost its definition to files that merely mention the name
-  at `limit` 15 or less (the default is 10) and found it at 20 or more. Both
-  backends now return a fixed pool of 50 (the largest `limit` a tool accepts) and
-  `limit` only truncates the ranking. `tests/unit/test_retrieval.py::TestCandidatePool`
-  pins it.
-- **A reader with no keyword database no longer prescribes a reset when nothing is
-  indexed**; it says "run `refresh`". The reset remedy stays for a keyword database
-  lost beside populated vectors. `tests/unit/test_index_state_matrix.py` pins every
-  keyword x vector state against every open mode.
+- **`refresh` no longer aborts on a symlinked `.py` file in an example.** A
+  committed symlink can dangle, which made the taxonomy scan raise and stopped the
+  whole refresh; symlinks are now skipped, as elsewhere in ingest.
+- **`refresh` no longer deletes README-fallback chunks when it re-crawls the docs**;
+  only docs-site records are replaced. Closes #146.
+- **`refresh`'s docs and per-repo "existing" counts no longer overlap**; a README
+  fallback is counted once, under its repo.
+- **Search ranking no longer changes with `limit`.** `search_api("PipecatClientProvider",
+  chunk_type="function")` lost its definition at `limit` 15 or less (default 10) and
+  found it at 20 or more. Ranking now draws on a fixed pool of 50 candidates and
+  `limit` only truncates it.
 - **`check_deprecation` no longer reports a missing or unreadable deprecation map
-  as "not deprecated".** It returns a null `status` and a note to run `refresh`, and
-  `serve` logs a startup warning. A file that parses but is not a deprecation map
-  counts as unreadable; an empty map that loaded still answers `current`. `refresh`
-  can no longer publish a map its own reader rejects: untrusted registry records are
-  skipped (and logged), and `save` refuses what `load` would reject.
-- **Open-time index checks read what Chroma will open.** With a hot SQLite rollback
-  journal present, the format and HNSW checks now roll it back first instead of
-  validating segments Chroma's own open would roll back.
-- **A failed or interrupted delete no longer leaves a stale "unchanged" marker.**
-  The marker is invalidated before the delete; if that write fails, the records stay
-  and the source is reported as errored.
-- **A repo whose refresh failed stays findable by `--prune`.** It keeps its
-  `repo:<slug>:commit_sha` marker and is flagged `cleanup_failed`, so stale-repo
-  cleanup still finds its records.
+  as "not deprecated".** It returns a null `status` with a note to run `refresh`.
+- **A failed or interrupted delete no longer leaves a stale "unchanged" marker**, and
+  a repo whose refresh failed stays findable by `--prune`.
 - **`.env.example` lists only public, non-archived repos.** It offered nine private
-  repos (a clone fails without access) and the archived `pipecat-cli`; those are gone,
-  and the file gains NVIDIA, Google, AWS and other-provider sections.
+  repos (a clone fails without access) and the archived `pipecat-cli`; it also gains
+  NVIDIA, Google, AWS and other-provider sections.
 
 ### Security
+- **Terminal-safe output.** Config values and indexed text can no longer inject
+  terminal escape sequences: `repos` and `refresh` output, errors, logs and uncaught
+  tracebacks escape non-printable characters. JSON on stdout stays valid with the
+  same value.
+- **The config writer will not follow a swapped symlink.** It refuses, leaving the
+  original file untouched, if the path was retargeted while an edit was in flight.
 - **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`
   (via `huggingface-hub`) to clear PYSEC-2026-4217 from `pip-audit`. Lock-only.
 
