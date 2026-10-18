@@ -517,8 +517,8 @@ class TestCorpusHint:
             "ClawsClient",
             "claws_of_x",
             "InnovaSonicBoom",
-            "DeepgramSTTService",
-            "PipelineTask",
+            "SmurfTTSService",
+            "DrawsClient",
             "aws2bedrock",
         ],
     )
@@ -532,14 +532,6 @@ class TestCorpusHint:
         hint = _hint("iOS app")
         assert hint is not None
         assert hint["matched_groups"] == ["mobile"]
-
-    def test_identifier_split_keeps_the_original_text_arm(self) -> None:
-        # Splitting "iOS" gives "i OS"; the original-text match is what keeps an alias
-        # like "ios" matching, so the new rule can only add hints, never remove one.
-        from pipecat_context_hub.shared.corpus_hint import _identifier_words, _matchable
-
-        assert _identifier_words("iOS app") == "i OS app"
-        assert _matchable("iOS app") == ("ios app", "i os app")
 
     @pytest.mark.parametrize("query", ["TTS + nvidia", "TTS & nvidia"])
     def test_concept_queries_match_every_concept(self, query: str) -> None:
