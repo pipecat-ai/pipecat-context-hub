@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from pipecat_context_hub.services.ingest.taxonomy import (
     _infer_tags_from_readme,
 )
 from pipecat_context_hub.shared.types import CapabilityTag, TaxonomyEntry
+
 
 # ---------------------------------------------------------------------------
 # Fixtures — temp directory structures mimicking real repos
@@ -1338,3 +1340,67 @@ class TestSymlinkedPythonFiles:
 
         (entry,) = [e for e in entries if e.example_id == "example-my-example"]
         assert "elevenlabs" not in self._code_tags(entry)
+
+    def test_a_symlink_into_an_untraversable_directory_does_not_abort(self, tmp_path: Path):
+        """``Path.is_file()`` follows the link and raises ``PermissionError``; ``lstat`` does not."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root can traverse any directory")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "secret.py").write_text(self._CODE)
+        example = tmp_path / "repo" / "my-example"
+        example.mkdir(parents=True)
+        (example / "bot.py").write_text("from pipecat.services.deepgram import X\n")
+        (example / "linked.py").symlink_to(locked / "secret.py")
+        (example / "README.md").symlink_to(locked / "secret.py")
+        locked.chmod(0)
+        try:
+            entries = TaxonomyBuilder().build_from_directory(tmp_path / "repo", repo="o/r")
+        finally:
+            locked.chmod(0o700)
+
+        (entry,) = [e for e in entries if e.example_id == "example-my-example"]
+        assert "deepgram" in self._code_tags(entry)
+        assert entry.readme_content is None
+        assert entry.key_files == ["bot.py"]
+
+    @pytest.mark.parametrize("layout", ["root", "topic", "foundational"])
+    def test_a_symlinked_readme_is_not_read(self, tmp_path: Path, layout: str):
+        """A README symlink would otherwise copy an outside file into ``readme_content``."""
+        outside = tmp_path / "outside.txt"
+        outside.write_text("# stolen\n\nlocal secret\n")
+        repo = tmp_path / "repo"
+        builder = TaxonomyBuilder()
+        if layout == "root":
+            example = repo / "my-example"
+        elif layout == "topic":
+            example = repo / "examples" / "voice" / "agent"
+        else:
+            example = repo / "01-hello"
+        example.mkdir(parents=True)
+        (example / "bot.py").write_text("x = 1\n")
+        (example / "README.md").symlink_to(outside)
+
+        if layout == "root":
+            entries = builder.build_from_directory(repo, repo="o/r")
+        elif layout == "topic":
+            entries = builder.build_from_topic_dirs(repo / "examples", repo="o/r")
+        else:
+            entries = builder.build_from_foundational(repo, repo="o/r")
+
+        (entry,) = entries
+        assert entry.readme_content is None
+        assert entry.summary == ""
+        assert "README.md" not in entry.key_files
+
+    def test_a_symlinked_flat_foundational_file_is_skipped(self, tmp_path: Path):
+        outside = tmp_path / "outside.py"
+        outside.write_text(self._CODE)
+        foundational = tmp_path / "foundational"
+        foundational.mkdir()
+        (foundational / "01-real.py").write_text("x = 1\n")
+        (foundational / "02-linked.py").symlink_to(outside)
+
+        entries = TaxonomyBuilder().build_from_foundational(foundational, repo="o/r")
+
+        assert [e.example_id for e in entries] == ["foundational-01-real"]

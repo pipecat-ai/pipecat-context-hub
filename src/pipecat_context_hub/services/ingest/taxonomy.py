@@ -8,6 +8,7 @@ tags. Fully automated — no manual curation file required.
 from __future__ import annotations
 
 import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -152,16 +153,30 @@ def _make_tag(name: str, confidence: float, source: CapabilitySource) -> Capabil
     return CapabilityTag(name=name, confidence=confidence, source=source)
 
 
+def _is_plain_file(path: Path) -> bool:
+    """True for a regular file that is not a symlink. Never raises.
+
+    One ``lstat`` (does not follow links), so it can neither be fooled by nor
+    trip over a link's target. ``Path.is_file()`` follows the link first and
+    raises ``PermissionError`` for a link into a directory the user cannot
+    traverse, which would abort the whole refresh just as a dangling link did.
+    """
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except (OSError, ValueError):
+        return False
+
+
 def _scannable_py_files(directory: Path, *, recursive: bool = False) -> list[Path]:
     """Python files under *directory* that are safe to read, in sorted order.
 
     Symlinks are skipped, as everywhere else in the ingest layer: a committed
     symlink can dangle (an absolute path that exists only on the author's machine,
     which makes ``read_text`` raise and abort the whole refresh) or point outside
-    the clone.
+    the clone. The same rule applies to the README and ``key_files`` listing.
     """
     found = directory.rglob("*.py") if recursive else directory.glob("*.py")
-    return sorted(p for p in found if p.is_file() and not p.is_symlink())
+    return sorted(p for p in found if _is_plain_file(p))
 
 
 def _dedup_tags(tags: list[CapabilityTag]) -> list[CapabilityTag]:
@@ -254,7 +269,7 @@ def _find_key_files(example_dir: Path) -> list[str]:
     """Return list of notable files in an example directory."""
     key_files: list[str] = []
     for p in sorted(example_dir.iterdir()):
-        if p.is_file():
+        if _is_plain_file(p):
             name = p.name
             if name.endswith(".py") or name == "README.md" or name == "requirements.txt":
                 key_files.append(name)
@@ -315,7 +330,7 @@ class TaxonomyBuilder:
             if child.is_dir():
                 entry = self._build_entry_for_foundational(child, repo=repo, commit_sha=commit_sha)
                 entries.append(entry)
-            elif child.is_file() and not child.is_symlink() and child.suffix == ".py":
+            elif child.suffix == ".py" and _is_plain_file(child):
                 entry = self._build_entry_for_foundational_file(
                     child, repo=repo, commit_sha=commit_sha
                 )
@@ -533,7 +548,7 @@ class TaxonomyBuilder:
         readme_content: str | None = None
         summary = ""
         readme_path = example_dir / "README.md"
-        if readme_path.is_file():
+        if _is_plain_file(readme_path):
             readme_content = readme_path.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_readme(readme_content))
             summary = _extract_summary_from_readme(readme_content)
@@ -678,7 +693,7 @@ class TaxonomyBuilder:
         readme_content: str | None = None
         summary = ""
         readme_path = example_dir / "README.md"
-        if readme_path.is_file():
+        if _is_plain_file(readme_path):
             readme_content = readme_path.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_readme(readme_content))
             summary = _extract_summary_from_readme(readme_content)
@@ -729,7 +744,7 @@ class TaxonomyBuilder:
         readme_content: str | None = None
         summary = ""
         readme_path = example_dir / "README.md"
-        if readme_path.is_file():
+        if _is_plain_file(readme_path):
             readme_content = readme_path.read_text(encoding="utf-8", errors="replace")
             tags.extend(_infer_tags_from_readme(readme_content))
             summary = _extract_summary_from_readme(readme_content)

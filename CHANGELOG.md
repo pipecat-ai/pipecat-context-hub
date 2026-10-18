@@ -67,8 +67,10 @@ This changelog retains repository and Context Hub package history.
 
 ### Fixed
 - **`refresh` no longer aborts on a symlinked `.py` file in an example.** A
-  committed symlink can dangle, which made the taxonomy scan raise and stopped the
-  whole refresh; symlinks are now skipped, as elsewhere in ingest.
+  committed symlink can dangle (or point into a directory you cannot traverse), which
+  made the taxonomy scan raise and stopped the whole refresh; symlinks are now
+  skipped, as elsewhere in ingest. A symlinked `README.md` is no longer read into the
+  example's `readme_content` either.
 - **`refresh` no longer deletes README-fallback chunks when it re-crawls the docs**;
   only docs-site records are replaced. Closes #146.
 - **`refresh`'s docs and per-repo "existing" counts no longer overlap**; a README
