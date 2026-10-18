@@ -453,7 +453,7 @@ class TestRecordReadSideEscaping:
             "t", logging.WARNING, __file__, 1, "msg %s", (HOSTILE,), None
         )
         if host == "slotted":
-            record.req_id = "R42"  # type: ignore[attr-defined]
+            record.req_id = "R42"
         if copier == "pickle":
             clone = pickle.loads(pickle.dumps(record))
         else:
@@ -461,7 +461,7 @@ class TestRecordReadSideEscaping:
         assert type(clone) is type(record)
         assert isinstance(clone, cls) and isinstance(clone, terminal.TerminalSafeLogRecord)
         if host == "slotted":
-            assert clone.req_id == "R42"  # type: ignore[attr-defined]
+            assert clone.req_id == "R42"
         else:
             assert clone.__dict__.pop("restored_by_host") is True
         assert clone.__dict__ == record.__dict__

@@ -255,7 +255,8 @@ def _reduce_foreign(self: logging.LogRecord, protocol: int) -> Any:
     # reduces by the host's own class (which must be importable anyway): the
     # host's own reduction, with that class standing in for the runtime one.
     base = type(self).__bases__[1]
-    reduced = base.__reduce_ex__(self, protocol)
+    host_reduce_ex: Any = base.__reduce_ex__  # unbound: the host class's, not ours
+    reduced = host_reduce_ex(self, protocol)
     if not isinstance(reduced, tuple):
         return reduced
     func, args, state = (*reduced, None)[:3]
