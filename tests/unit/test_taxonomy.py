@@ -1051,7 +1051,8 @@ class TestTaxonomyBuilderTopicLayout:
     def test_lookup_key_parity_topic_layout(self, topic_repo_dir: Path):
         """Seam 1 contract: every dir returned by ``_discover_under_examples``
         must have a matching ``taxonomy_lookup[rel]`` entry built from the
-        builder output. This is the unit contract for Seam 1.
+        builder output. This is the unit contract for Seam 1 on the topic-layout
+        walk; the smoke invariants check the same contract over ``_find_example_dirs``.
         """
         from pipecat_context_hub.services.ingest.github_ingest import (
             _discover_under_examples,

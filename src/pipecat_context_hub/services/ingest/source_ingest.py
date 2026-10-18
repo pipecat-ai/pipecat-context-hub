@@ -201,7 +201,8 @@ class SourceIngester:
             )
 
             for py_file in py_files:
-                # Skip symlinks and files that resolve outside the repo
+                # Defense in depth beyond the is_plain_file discovery filter: skip
+                # symlinks and files that resolve outside the repo
                 if py_file.is_symlink():
                     continue
                 try:

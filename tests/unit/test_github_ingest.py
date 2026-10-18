@@ -1744,6 +1744,10 @@ class TestSymlinkedExampleDirs:
 
         found = _find_example_dirs(repo)
 
+        # A linked ``examples/`` is refused and the root-level fallback finds no
+        # other directory, so it returns the repo root itself (its single-project
+        # fallback), never the link's target or ``examples/``.
+        assert found == [repo]
         self._assert_confined(found, repo)
 
     def test_symlinked_root_level_example(self, tmp_path: Path):

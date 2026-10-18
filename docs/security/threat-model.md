@@ -85,7 +85,7 @@ Current controls:
 
 - repo slug sanitization and resolved-path containment for clones
 - source-ingest guards against symlinks and resolved paths outside the clone
-- example discovery and the taxonomy builder never follow a symlinked (or junctioned) example, topic or `examples/` directory, nor a symlinked file
+- example discovery, the taxonomy builder and the source ingester refuse a symlinked example, topic or `examples/` directory and a symlinked file (tested on POSIX; Windows junctions are skipped by the same check but untested, and the nested-junction walk in the taxonomy builder is unverified: dev plan `20261015` W9/R8)
 - tainted upstream repos can be skipped via `PIPECAT_HUB_TAINTED_REPOS`
 - tainted upstream refs can be skipped via `PIPECAT_HUB_TAINTED_REFS`
 - fetched refs are now evaluated before local checkout is updated

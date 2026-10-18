@@ -156,8 +156,8 @@ def _make_tag(name: str, confidence: float, source: CapabilitySource) -> Capabil
 def _scannable_py_files(directory: Path, *, recursive: bool = False) -> list[Path]:
     """Python files under *directory* that are safe to read, in sorted order.
 
-    Symlinks are skipped, as everywhere else in the ingest layer: a committed
-    symlink can dangle (an absolute path that exists only on the author's machine,
+    Non-regular entries (symlinks, FIFOs, devices) are skipped by ``is_plain_file``,
+    the shared discovery rule: a committed symlink can dangle (an absolute path that exists only on the author's machine,
     which makes ``read_text`` raise and abort the whole refresh) or point outside
     the clone. The same rule applies to the README and ``key_files`` listing.
     """

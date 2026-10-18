@@ -1309,7 +1309,8 @@ class GitHubRepoIngester:
                 repo_slug,
             )
 
-        # For Layout B repos (no examples/ dir) where subdirectory examples
+        # For Layout B repos (no real examples/ directory: absent, or a symlink/
+        # junction, which is refused) where subdirectory examples
         # were found, also capture root-level code files (e.g. entry-point
         # scripts like sidekick.py) that would otherwise be missed.
         examples_dir = repo_path / "examples"
