@@ -1238,3 +1238,57 @@ def test_query_exits_75_while_a_refresh_is_running(tmp_path: Path) -> None:
     assert result.exit_code == 75
     assert "Retry in 60-120 seconds" in result.output
     store_cls.assert_not_called()
+
+
+# Plausible in indexed docs text; each became invalid JSON when stdout went
+# through the human escaper (\xNN / \UNNNNNNNN are not JSON escapes).
+_JSON_HOSTILE = "nbsp\xa0 shy\xad del\x7f nel\x85 esc\x1b tag\U000e0001"
+
+
+class TestStdoutStaysJson:
+    """Contract: query stdout is valid JSON parsing to the handler's exact value,
+    with no raw non-printable character (the terminal boundary for JSON)."""
+
+    @staticmethod
+    def _document() -> str:
+        from pydantic import BaseModel
+
+        class Out(BaseModel):
+            text: str
+            items: list[str]
+
+        return Out(text=_JSON_HOSTILE, items=[_JSON_HOSTILE]).model_dump_json()
+
+    @pytest.mark.parametrize(
+        ("argv", "fresh"),
+        [
+            (["status"], False),
+            (["get-doc", "--path", "/guides/x"], True),
+            # The staleness footer re-serialises with json.dumps(ensure_ascii).
+            (["get-doc", "--path", "/guides/x"], False),
+        ],
+        ids=["get-hub-status", "get-doc-fresh", "get-doc-with-staleness-footer"],
+    )
+    def test_hostile_text_prints_valid_json(
+        self, argv: list[str], fresh: bool, tmp_path: Path
+    ) -> None:
+        from datetime import UTC, datetime
+
+        document = self._document()
+        store = _index_store_mock(total=10)
+        if fresh:
+            store.get_all_metadata.return_value = {
+                "last_refresh_at": datetime.now(UTC).isoformat(),
+                "last_refresh_duration_seconds": "1.0",
+            }
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore", return_value=store),
+            patch("pipecat_context_hub.cli_query._dispatch", return_value=document),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, argv)
+        assert result.exit_code == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["text"] == _JSON_HOSTILE
+        assert payload["items"] == [_JSON_HOSTILE]
+        assert not any(not (ch in "\n\t" or ch.isprintable()) for ch in result.stdout)

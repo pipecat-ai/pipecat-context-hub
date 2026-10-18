@@ -37,6 +37,8 @@ from collections import deque
 from pathlib import Path
 from typing import Final, NamedTuple
 
+from pipecat_context_hub.shared.terminal import shown
+
 # Upper bound on symlink hops followed by `_walk`, the one walk behind
 # :func:`resolution_chain` and :func:`lookup_target`. Chosen to
 # sit above any legitimate layout (the kernel's own ELOOP limit is typically
@@ -378,6 +380,19 @@ def redact_home(path: Path | str) -> str:
         return s
     except Exception:
         return str(path)
+
+
+def shown_path(path: Path | str) -> str:
+    """A configured path, whole, for a message: home-redacted, flagged when not printable.
+
+    The one presentation rule for naming a configured path (``config.toml``, a
+    cwd ``.env``, the data dir...): :func:`redact_home` (prefix match, since the
+    argument is the whole path) then :func:`terminal.shown`. Terminal safety is
+    not this helper's job: the sinks escape every message (``shared/terminal``).
+    A path embedded in other text (an ``OSError`` message) goes through
+    :func:`redact_home_in_text` instead.
+    """
+    return shown(redact_home(path))
 
 
 def redact_home_in_text(text: str) -> str:

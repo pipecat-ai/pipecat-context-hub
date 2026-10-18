@@ -1969,14 +1969,8 @@ class TestLoadTimeWarningsAreTerminalSafe:
 
     _HOSTILE = "evil/x\x1b]52;c;cHduZWQ=\x07\x1b[2J"
 
-    @pytest.fixture(autouse=True)
-    def _default_record_factory(self):
-        import logging
-
-        previous = logging.getLogRecordFactory()
-        logging.setLogRecordFactory(logging.LogRecord)
-        yield
-        logging.setLogRecordFactory(previous)
+    # Each test starts with the stdlib record factory: the suite-wide autouse
+    # fixture ``_stdlib_output_hooks`` (tests/conftest.py).
 
     @staticmethod
     def _raw(text: str) -> bool:

@@ -44,7 +44,7 @@ from pipecat_context_hub.shared.env_loading import (
     resolve_global_config_path,
 )
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
-from pipecat_context_hub.shared.paths import redact_home, redact_home_in_text
+from pipecat_context_hub.shared.paths import redact_home_in_text, shown_path
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
 from pipecat_context_hub.shared.terminal import echo, shown
@@ -368,10 +368,10 @@ def _configured_in_toml() -> tuple[list[str], str | None]:
     try:
         data = parse_global_config(path)
     except ConfigNotTrusted as exc:
-        return [], f"ignoring {shown(redact_home(path))}: not trusted ({exc.reason})"
+        return [], f"ignoring {shown_path(path)}: not trusted ({exc.reason})"
     except tomllib.TOMLDecodeError as exc:
         return [], (
-            f"ignoring {shown(redact_home(path))}: not valid TOML ({redact_home_in_text(str(exc))})"
+            f"ignoring {shown_path(path)}: not valid TOML ({redact_home_in_text(str(exc))})"
         )
     if EXTRA_REPOS_ENV not in data:
         return [], None
@@ -379,13 +379,15 @@ def _configured_in_toml() -> tuple[list[str], str | None]:
     if configured is None:
         return (
             [],
-            f"ignoring {EXTRA_REPOS_ENV} in {shown(redact_home(path))}: a value the loader ignores",
+            f"ignoring {EXTRA_REPOS_ENV} in {shown_path(path)}: a value the loader ignores",
         )
     return configured, None
 
 
 def _cwd_line() -> str:
     try:
+        # The cwd is not a configured path: printed unredacted (the user is
+        # standing in it), flagged by `shown` like any named value.
         return f"Consulted .env in cwd: {shown(str(Path.cwd()))}"
     except (OSError, RuntimeError):
         # Same guard as `load_cwd_dotenv`: no cwd means no cwd `.env` was read.

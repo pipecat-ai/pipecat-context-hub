@@ -43,9 +43,10 @@ from pipecat_context_hub.shared.paths import (
     redact_home,
     redact_home_in_text,
     same_dir,
+    shown_path,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
-from pipecat_context_hub.shared.terminal import echo, shown
+from pipecat_context_hub.shared.terminal import echo, escaped_click_errors, shown
 from pipecat_context_hub.shared.versioning import (
     canonicalize_framework_pin,
     exact_release_version,
@@ -224,7 +225,7 @@ def _require_free_disk(data_dir: Path, *, min_free: int | None = None) -> None:
     if free < required:
         raise click.ClickException(
             f"Refusing to refresh: only {free / 1024**3:.1f} GB free on the volume holding "
-            f"{redact_home(data_dir)} (need {required / 1024**3:.1f} GB). Free up space, or set "
+            f"{shown_path(data_dir)} (need {required / 1024**3:.1f} GB). Free up space, or set "
             f"{_MIN_FREE_GB_ENV}=0 to skip this check."
         )
 
@@ -259,11 +260,11 @@ def _acquire_refresh_lock_or_exit(data_dir: Path, logger: logging.Logger) -> Ind
         # holder (another refresh) from readers that kept it busy.
         if not refresh_in_progress(data_dir):
             raise _RefreshLockBusy(
-                f"Processes reading the index on {redact_home(data_dir)} (`serve` or CLI "
+                f"Processes reading the index on {shown_path(data_dir)} (`serve` or CLI "
                 "queries opening it) kept the refresh lock busy. Retry the refresh."
             ) from exc
         raise _RefreshLockBusy(
-            f"Another `refresh` is already running on {redact_home(data_dir)}. "
+            f"Another `refresh` is already running on {shown_path(data_dir)}. "
             "Wait for it to finish; concurrent refreshes can corrupt the vector index."
         ) from exc
     click.get_current_context().call_on_close(lock.release)
@@ -412,7 +413,7 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
 
     if any(_is_unsafe(candidate) for candidate in unsafe):
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it is a filesystem root or "
+            f"Refusing to delete {shown_path(data_dir)}: it is a filesystem root or "
             "home directory, not an index directory. Point PIPECAT_HUB_DATA_DIR at a "
             "dedicated directory before retrying --reset-index."
         )
@@ -480,15 +481,15 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
     if colliding_config_path is not None:
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
-            f"config.toml ({redact_home(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
+            f"Refusing to delete {shown_path(data_dir)}: it contains the active "
+            f"config.toml ({shown_path(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
             "or the config file so they don't collide, then retry --reset-index."
         )
     colliding_dotenv_path = env_loading.dotenv_collides_with_dir(resolved_data_dir)
     if colliding_dotenv_path is not None:
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
-            f"project .env ({redact_home(colliding_dotenv_path)}). Point PIPECAT_HUB_DATA_DIR "
+            f"Refusing to delete {shown_path(data_dir)}: it contains the active "
+            f"project .env ({shown_path(colliding_dotenv_path)}). Point PIPECAT_HUB_DATA_DIR "
             "at a directory outside your project (or run from elsewhere), then retry "
             "--reset-index."
         )
@@ -709,7 +710,36 @@ def _write_serve_debug_probe() -> None:
         )
 
 
-@click.group(invoke_without_command=True)
+class TerminalSafeGroup(click.Group):
+    """The hub's root group: click's own error rendering is terminal-safe.
+
+    Click prints a ``ClickException`` itself (``ClickException.show`` in
+    ``main``), bypassing ``terminal.echo``, and several embed configured paths
+    (the data dir, a colliding ``config.toml``). Root-level parsing
+    (``make_context``) and dispatch (``invoke``: every subcommand's parsing and
+    callback, nested groups included) run inside
+    :func:`terminal.escaped_click_errors`, so the message is escaped before
+    ``main`` shows it. ``plugin.py``'s bridge calls this group's ``main``, so
+    both front doors share it. A source test pins that every group in ``src/``
+    is this class or reachable from it.
+    """
+
+    def make_context(
+        self,
+        info_name: str | None,
+        args: list[str],
+        parent: click.Context | None = None,
+        **extra: Any,
+    ) -> click.Context:
+        with escaped_click_errors():
+            return super().make_context(info_name, args, parent=parent, **extra)
+
+    def invoke(self, ctx: click.Context) -> Any:
+        with escaped_click_errors():
+            return super().invoke(ctx)
+
+
+@click.group(cls=TerminalSafeGroup, invoke_without_command=True)
 @click.version_option(package_name="pipecat-ai-context-hub", prog_name="pipecat-context-hub")
 @click.option("--log-level", default="INFO", help="Logging level.")
 @click.pass_context
@@ -1205,7 +1235,7 @@ def refresh(
         # The deprecation map counts too: a stale one would be served beside
         # the rebuilt index when this run does not republish it.
         undeleted = [
-            redact_home(path) for path in config.storage.index_artifact_paths if path.exists()
+            shown_path(path) for path in config.storage.index_artifact_paths if path.exists()
         ]
         if undeleted:
             raise click.ClickException(

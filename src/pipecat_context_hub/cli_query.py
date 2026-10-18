@@ -60,7 +60,7 @@ from pipecat_context_hub.shared.support_links import (
     RETRIEVAL_QUALITY_ISSUE_URL,
     bug_report_hint,
 )
-from pipecat_context_hub.shared.terminal import echo
+from pipecat_context_hub.shared.terminal import echo, echo_json
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -459,7 +459,8 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         # must still be open to read its metadata.
         if tool != "get_hub_status":
             result = annotate_response(result, runtime.index_store)
-    echo(result)
+    # Machine output: JSON stays JSON (never the human escaper).
+    echo_json(result)
 
 
 # ── Commands ─────────────────────────────────────────────────────────────────

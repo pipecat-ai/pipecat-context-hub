@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 import click
 
-from pipecat_context_hub.shared.terminal import echo
+from pipecat_context_hub.shared.terminal import echo, echo_json
 
 # MCP server name registered with the client. Matches the command name, and the
 # name the agent guides tell coding agents to look for.
@@ -415,7 +415,7 @@ def install_command(
 
     if print_config:
         echo(f"Server command: {' '.join(command)}")
-        echo(_mcp_json(command))
+        echo_json(_mcp_json(command))
         return
 
     selected = list(clients) or _detect_cli_clients()
@@ -430,12 +430,12 @@ def install_command(
         )
         for name, location in sorted(_FILE_CLIENTS.items()):
             echo(f"{name}: add this to {location}")
-            echo(_mcp_json(command, name))
+            echo_json(_mcp_json(command, name))
     else:
         for client in selected:
             if client in _FILE_CLIENTS:
                 echo(f"{client}: add this to {_FILE_CLIENTS[client]}")
-                echo(_mcp_json(command, client))
+                echo_json(_mcp_json(command, client))
                 continue
             echo(f"Registering '{_SERVER_NAME}' with {client}:")
             outcome = _register_with_cli(client, command)

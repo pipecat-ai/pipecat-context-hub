@@ -53,9 +53,13 @@ from pipecat_context_hub.shared.env_loading import (
     read_trusted_config,
     resolve_global_config_path,
 )
-from pipecat_context_hub.shared.paths import LookupMismatch, lookup_target, redact_home_in_text
+from pipecat_context_hub.shared.paths import (
+    LookupMismatch,
+    lookup_target,
+    redact_home_in_text,
+    shown_path,
+)
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
-from pipecat_context_hub.shared.terminal import shown
 
 __all__ = [
     "ConfigWriteRefused",
@@ -183,13 +187,12 @@ def _require_same_target(path: Path, target: Path) -> None:
         now = lookup_target(path)
     except LookupMismatch as exc:
         raise ConfigWriteRefused(
-            f"{shown(redact_home_in_text(str(path)))} changed while it was being edited: "
-            f"{redact_home_in_text(str(exc))}"
+            f"{shown_path(path)} changed while it was being edited: {redact_home_in_text(str(exc))}"
         ) from exc
     if now != target:
         raise ConfigWriteRefused(
-            f"{shown(redact_home_in_text(str(path)))} changed while it was being edited (it now "
-            f"leads to {shown(redact_home_in_text(str(now)))}, not {shown(redact_home_in_text(str(target)))})"
+            f"{shown_path(path)} changed while it was being edited (it now "
+            f"leads to {shown_path(now)}, not {shown_path(target)})"
         )
 
 
@@ -248,7 +251,7 @@ def update_extra_repos(*, add: Iterable[str] = (), remove: Iterable[str] = ()) -
         target = lookup_target(path)
     except LookupMismatch as exc:
         raise ConfigWriteRefused(
-            f"{shown(redact_home_in_text(str(path)))}: {redact_home_in_text(str(exc))}, so the "
+            f"{shown_path(path)}: {redact_home_in_text(str(exc))}, so the "
             "file written would not be the one the loader reads"
         ) from exc
 
