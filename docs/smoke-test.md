@@ -418,6 +418,20 @@ the indexed pipecat version; re-verify against the current registry if they drif
     Confirm no network access happens (works offline) and that the scratch
     file keeps its comments. Unit-side counterpart: `tests/unit/test_cli_repos.py`.
 
+54. **Configured text never reaches the terminal raw (PR 1).** From the repo
+    root, `uv run pipecat-context-hub check-deprecation PipelineTask | python -m json.tool`
+    still parses. Then build a throwaway project whose `.env` carries an ESC
+    byte (`HOME` is pointed into it too, so the reset target is a scratch
+    "home"):
+    `hub="$PWD/.venv/bin/pipecat-context-hub"; d="$(mktemp -d)"; mkdir "$d/home" "$d/proj"; cd "$d/proj"`,
+    `printf 'PIPECAT_HUB_DATA_DIR=../home/\033[2J/..\nPIPECAT_HUB_EXTRA_REPOS=a/b\033[2J\n' > .env`.
+    Run `HOME="$d/home" "$hub" status 2>&1 | cat -v` (exit 2, the path shown
+    escaped as `\x1b[2J`), `HOME="$d/home" "$hub" repos list 2>&1 | cat -v`
+    (`'a/b\x1b[2J' [invalid]  [unlisted]`) and
+    `HOME="$d/home" "$hub" refresh --reset-index 2>&1 | cat -v` (exit 1,
+    `Refusing to delete '../home/\x1b[2J/..' [invalid]`). No output line may
+    contain a raw `^[`. Unit-side counterpart: `tests/unit/test_terminal.py`.
+
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
 

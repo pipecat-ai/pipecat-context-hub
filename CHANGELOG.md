@@ -29,7 +29,8 @@ This project uses [Semantic Versioning](https://semver.org/).
   walked target. No configured string reaches the terminal raw: every line of
   `repos` and `refresh` output, every refusal (click's own error messages
   included), every log line (load-time warnings, tracebacks and stack text
-  included) and an uncaught traceback pass through one output boundary
+  included) and an uncaught traceback (through `pipecat context-hub` too) pass
+  through one output boundary
   (`shared/terminal.py`) that escapes any non-printable character (an escape
   sequence from a hostile `.env`, say) other than the message's own newlines
   and tabs, and a configured entry or a `config.toml` / `.env` / data-dir path

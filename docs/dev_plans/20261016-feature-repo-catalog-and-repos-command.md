@@ -464,7 +464,7 @@ and both child plans in the same commit.
 | `tests/unit/test_cli_query.py` | Phase 2d rewrites its line-16 `_EXIT_BAD_INPUT` import | Phases 3c and 4 extend the same module | keep both sides on rebase |
 | `cli.py` | `register_repos_commands`, `ctx.obj` provenance | provider wiring in `serve` | PR 2 rebases |
 | `.github/workflows/ci.yml` (Windows file list) | catalog, writer, repos test modules | `test_corpus_hint.py`, `test_check_repo_catalog.py` (`test_repos_hint_seam.py` is not listed: it opens a real `IndexStore`, which fails closed on Windows, and carries a POSIX `skipif`) | PR 2 rebases and keeps both |
-| `docs/smoke-test.md` | Phase 2d adds a numbered live-smoke item (11) | Phase 4 adds another numbered after the highest existing item (expect 12) | keep both; renumber on rebase |
+| `docs/smoke-test.md` | Phase 2d adds numbered live-smoke items (53, and 54 from review) | Phase 4 adds another numbered after the highest existing item (expect 55) | keep both; renumber on rebase |
 | `docs/configuration.md`, `AGENTS.md` layout, changelog, `justfile` | both edit | both edit | `/update-docs` per PR; PR 2 rebases |
 | `pyproject.toml`, `uv.lock` | `tomlkit` | none | none |
 

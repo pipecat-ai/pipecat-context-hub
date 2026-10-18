@@ -218,7 +218,7 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
   query record the matched group, its aliases and its parseable members; then fix the table below and the
   smoke-test expectations from that data, and record any changed verdict in the PR description.
 - A new numbered item in `docs/smoke-test.md` reuses the four queries. PR 1 Phase 2d also adds an item
-  there, so number this one after the highest existing item on rebase (11 is PR 1's, expect 12).
+  there, so number this one after the highest existing item on rebase (53 and 54 are PR 1's, expect 55).
 - Expected outcomes for the four frozen queries (provenance: the maintainer's live index, 2026-10-17).
   **Provisional** until the catalog read above; the verdicts hold only under the stated catalog condition:
 

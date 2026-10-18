@@ -107,8 +107,9 @@ Retrieval:
       `topic`), a non-empty `description`, a non-empty `aliases` list of
       non-empty strings, and at least one `[[repos]]` entry; no other keys.
     - Each repo has a `slug` (`owner/repo`, the grammar `refresh` clones) and
-      optionally `note`, `parseable` and `maintainer` (booleans). `private`,
-      `archived` and `status` are refused: visibility is the health check's job.
+      optionally `note` (a non-empty string), `parseable` and `maintainer`
+      (booleans). `private`, `archived` and `status` are refused: visibility
+      is the health check's job.
     - A slug appears in one group only and is never a default repo; an alias
       belongs to one group only. Both compare case-insensitively.
     - No text (slug, note, kind, description, alias) may hold any control
