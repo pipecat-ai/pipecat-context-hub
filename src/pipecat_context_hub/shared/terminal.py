@@ -31,7 +31,15 @@ controls. Each kind has one enforcement point, at the sink:
   ``logging.makeLogRecord`` included, sees escaped text) and, when no host has
   replaced it, wraps ``sys.excepthook`` so an uncaught traceback is escaped.
   ``shared/env_loading.load_env_layers`` (the bootstrap every entry point calls
-  first) installs it, before any load-time warning.
+  first) installs it, before any load-time warning. ``plugin.py``'s bridge
+  prints an uncaught exception through :func:`terminal_safe_excepthook` itself,
+  since the host's Typer installs its own excepthook first.
+
+Stated limits: a ``\\n`` inside a configured value is kept like the program's
+own layout (a ``.env`` value cannot hold one; ``config.toml`` and the real
+environment are owner-trusted). Escaping is applied where a formatter reads
+the record, so a handler must render ``%(message)s`` (the hub's own do), not
+``record.msg``/``record.args`` directly.
 
 :func:`shown` is a presentation rule on top, not the safety mechanism: it flags
 one configured *value* (a slug or a path) as ``repr() [invalid]`` where a
@@ -217,6 +225,20 @@ class TerminalSafeLogRecord(logging.LogRecord):
 _SAFE_CLASSES: dict[type[logging.LogRecord], type[logging.LogRecord]] = {}
 
 
+def _rebuild_record(base: type[logging.LogRecord], state: dict[str, Any]) -> logging.LogRecord:
+    """Unpickle a re-classed foreign record: ``base`` plus the escaping, ``state``."""
+    safe = _safe_class(base)
+    record = safe.__new__(safe)
+    record.__dict__.update(state)
+    return record
+
+
+def _reduce_foreign(self: logging.LogRecord, protocol: int) -> Any:
+    # The re-classed type is built at runtime and has no importable name, so it
+    # pickles by the host's own class instead (which must be importable anyway).
+    return _rebuild_record, (type(self).__bases__[1], self.__dict__.copy())
+
+
 def _safe_class(cls: type[logging.LogRecord]) -> type[logging.LogRecord]:
     """``cls`` with :class:`TerminalSafeLogRecord`'s behaviour mixed in (cached)."""
     if issubclass(cls, TerminalSafeLogRecord):
@@ -225,7 +247,11 @@ def _safe_class(cls: type[logging.LogRecord]) -> type[logging.LogRecord]:
         return TerminalSafeLogRecord
     safe = _SAFE_CLASSES.get(cls)
     if safe is None:
-        safe = type(f"TerminalSafe{cls.__name__}", (TerminalSafeLogRecord, cls), {})
+        safe = type(
+            f"TerminalSafe{cls.__name__}",
+            (TerminalSafeLogRecord, cls),
+            {"__reduce_ex__": _reduce_foreign},
+        )
         _SAFE_CLASSES[cls] = safe
     return safe
 

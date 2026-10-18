@@ -341,6 +341,23 @@ class TestRecordReadSideEscaping:
         with pytest.raises(TypeError):
             record.getMessage()
 
+    @pytest.mark.parametrize("factory", ["default", "foreign"])
+    def test_records_survive_a_pickle_round_trip(self, factory: str) -> None:
+        """A host's ``QueueHandler`` over a ``multiprocessing.Queue`` pickles
+        each record; a re-classed foreign record must pickle like the host's."""
+        import pickle
+
+        self._install(factory)
+        record = logging.getLogger("t").makeRecord(
+            "t", logging.WARNING, __file__, 1, "msg %s", (HOSTILE,), None
+        )
+        record.exc_text = f"Traceback {HOSTILE}"
+        clone = pickle.loads(pickle.dumps(record))
+        assert type(clone) is type(record)
+        assert clone.__dict__ == record.__dict__
+        assert clone.getMessage() == record.getMessage()
+        assert not _raw(self._FORMAT.format(clone))
+
     def test_a_foreign_record_keeps_its_class_behaviour(self) -> None:
         self._install("foreign")
         record = logging.getLogger("t").makeRecord(
