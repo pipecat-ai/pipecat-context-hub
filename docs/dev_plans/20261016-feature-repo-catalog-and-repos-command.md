@@ -190,13 +190,19 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    - Case: `add` writes the catalog's spelling (as typed, with `--unlisted`), and treats a case-variant of
      a configured slug as already configured; `remove` matches casefolded and removes whatever spelling
      is configured.
-   - `--group <name>` (on `add` and `remove`; mutually exclusive with a positional slug and `--unlisted`)
-     acts on the catalog group's `parseable`, non-tainted repos: `add` skips repos already in
-     `config.toml` and prints the `parseable = false` and tainted ones it skipped; `remove` removes only
-     the group's repos present in `config.toml`. Checks 3 to 5 apply as above. When nothing changes
-     (including a group whose members are all tainted or `parseable = false`) it exits 0 and prints
-     `Nothing to add` / `Nothing to remove` plus the skipped list; an unknown group exits 1 listing the
-     valid groups.
+   - `--group <name>` (on `add` and `remove`; mutually exclusive with a positional slug and `--unlisted`):
+     `add` acts on the catalog group's `parseable`, non-tainted repos: it skips repos already in
+     `config.toml` and prints the `parseable = false` and tainted ones it skipped (PR 2's corpus hints rely
+     on `add --group` never adding a `parseable = false` repo). `remove` acts on the group's non-tainted
+     repos **including `parseable = false` ones** (amended for #145: a repo added singly must be removable by
+     group, and `client-sdks` is all `parseable = false`) and removes only those present in `config.toml`;
+     it still skips and reports tainted members (a separate decision, #145 comment). Checks 3 to 5 apply as
+     above. When nothing changes (including an `add` on a group whose members are all tainted or
+     `parseable = false`) it exits 0 and prints `Nothing to add` / `Nothing to remove` plus the skipped
+     list; an unknown group exits 1 listing the valid groups.
+   - A positional `repos add <slug>` of a `parseable = false` catalog repo still adds it (amended for #145)
+     but prints a warning on stderr after `Added <slug>`: the repo clones yet yields no `search_api`
+     chunks. The exit code stays 0. A positional `remove` is unaffected.
    - `repos list` shows the effective list and the consulted cwd (a `serve` launched from another
      directory reads a different `.env`), tags each slug `default`, `catalog` or `unlisted`, and names
      the shadowing layer for any repo that `config.toml` holds but a higher layer hides.
@@ -556,7 +562,9 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   malformed `--unlisted` slug under a shadowing env), a case-variant add (no-op) and remove, a well-formed non-catalog slug without `--unlisted` (exit 1),
   `--unlisted` on a catalog slug (exit 1), `repos list` tags (`default`/`catalog`/`unlisted`), golden
   stdout for add/no-op/remove including the `refresh` reminder, `--group` (partial membership,
-  `parseable = false` and tainted skipped and reported, an all-tainted group (exit 0, `Nothing to
+  `parseable = false` and tainted skipped and reported on `add`, `remove --group` removing
+  `parseable = false` members (and still skipping tainted), a positional `add` of a `parseable = false`
+  repo warning on stderr, an all-tainted group (exit 0, `Nothing to
   add`), unknown group, nothing to change, mutual
   exclusion with a slug and `--unlisted`, shadow with and without `--config-only`), refusals use
   `EXIT_INVALID_INPUT` (mirror `test_refresh_in_progress_exit_code_is_shared`), a cross-cwd case, each
@@ -591,6 +599,8 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   the default/tainted refusal, the check order (default/tainted before shadow before no-op), the writer's
   failed-re-parse abort, the `--unlisted` rules, the casefold in the `repos add` no-op, and the
   provenance overlap merge.
+- **[#145]** Mutation checks: the `parseable = false` warning on positional `add`, and `remove --group`
+  acting on `parseable = false` members (revert either and its test fails); `add --group` keeps skipping them.
 - **[PR2]** Mutation checks: the alias word boundary, the `parseable = false` skip, the tainted skip in
   the hint, the catalog-load-failure fallback, the casefold in `indexed_repos`, the CLI stderr-hint
   suppression, and the `add_command` format (contract C1, including `--config-only`).

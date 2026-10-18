@@ -57,8 +57,9 @@ Facts a phase worker needs and cannot cheaply rediscover:
 - The provenance map records the layer that supplied the FINAL NON-BLANK value of each key; a key whose
   final value is blank or absent is omitted (parent Decision 9). The overlap row is the likely bug.
 - The `repos` check order (parent Decision 7 table) is an invariant for a positional slug. Checks 1 and 2
-  apply to a positional slug only. `--group` skips tainted and `parseable = false` members and applies
-  checks 3 to 5 in order.
+  apply to a positional slug only. `add --group` skips tainted and `parseable = false` members;
+  `remove --group` skips only tainted ones (amended for #145, see parent Decision 7); both apply
+  checks 3 to 5 in order to the members left.
 
 ## Implementation Checklist
 
@@ -313,8 +314,9 @@ Windows CI list; the AST sink guard is a tripwire, not proof; vendor aliases
 google/gemini/riva follow parent Decision 3; `PIPECAT_HUB_TAINTED_REFS` matches
 exactly; refresh cleanup membership is by exact spelling.
 
-Deferred to a follow-up issue: `parseable = false` handling. `repos add <slug>`
-accepts such a repo silently while `repos remove --group` skips it, so a repo
-added one by one cannot be removed by group. Fixing it changes behaviour the
-signed-off parent plan specifies, and PR 2's hints rely on the skip, so it needs
-the parent plan re-opened.
+Follow-up #145 (fix/repos-parseable-and-polish): `parseable = false` handling.
+`repos add <slug>` accepted such a repo silently while `repos remove --group`
+skipped it, so a repo added one by one could not be removed by group. Resolved by
+amending parent Decision 7: positional `add` warns, `remove --group` acts on
+`parseable = false` members, `add --group` keeps skipping them (PR 2's hints rely
+on that).
