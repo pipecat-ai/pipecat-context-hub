@@ -114,6 +114,14 @@ def _catalog_or_fail() -> Catalog:
     return catalog
 
 
+# Appended to the check-1/2 refusals of a slug `repos` will not touch: if it is already in the
+# file (hand-written, or tainted after it was added), the CLI cannot remove it either.
+_HAND_EDIT = (
+    "If it is already listed in config.toml, remove it by editing "
+    "~/.config/pipecat-context-hub/config.toml by hand; `repos` will not change it."
+)
+
+
 def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str:
     """Checks 1 and 2 for a positional slug; returns the slug to act on."""
     config = _config(ctx)
@@ -121,10 +129,10 @@ def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str
     if config.sources.is_default(slug):
         _fail(f"{slug} is a default repo; it is always indexed and cannot be added or removed.")
     if config.sources.is_tainted(slug):
-        _fail(f"{slug} is tainted (PIPECAT_HUB_TAINTED_REPOS) and is never indexed.")
+        _fail(f"{slug} is tainted (PIPECAT_HUB_TAINTED_REPOS) and is never indexed. {_HAND_EDIT}")
     # 2. syntax and catalog membership
     if not is_valid_repo_slug(slug):
-        _fail(f"{slug!r} is not a valid repo slug; expected owner/repo.")
+        _fail(f"{slug!r} is not a valid repo slug; expected owner/repo. {_HAND_EDIT}")
     catalog = _catalog_or_fail()
     entry = catalog.find_repo(slug)
     if entry is None:

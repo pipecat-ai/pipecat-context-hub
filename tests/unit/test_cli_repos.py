@@ -487,6 +487,17 @@ class TestCheckOrder:
         assert "tainted" in result.output
         assert "not in the repo catalog" not in result.output
 
+    @pytest.mark.parametrize("verb", ["add", "remove"])
+    def test_tainted_and_malformed_refusals_say_to_edit_the_file_by_hand(self, hub: Hub, verb: str):
+        """A tainted or malformed entry already in config.toml cannot be removed through
+        the CLI; the refusal must say so and point at the file."""
+        hub.env(PIPECAT_HUB_TAINTED_REPOS=UNLISTED)
+        for args in ((UNLISTED,), ("--unlisted", "ac me/repo")):
+            result = hub.run(verb, *args)
+            assert result.exit_code == EXIT_INVALID_INPUT
+            assert "by hand" in result.output
+            assert "~/.config/pipecat-context-hub/config.toml" in result.output
+
     @pytest.mark.parametrize("bad", ["noslash", "a/b/c", "acme/", "/repo", "ac me/repo", "a/.."])
     def test_malformed_slug_beats_shadow(self, hub: Hub, bad: str):
         hub.env(**{KEY: BETA_ONE})
