@@ -1,6 +1,6 @@
 # Repo catalog PR 1: catalog, generator and the `repos` command
 
-**Branch:** `feature/repo-catalog-pr1` | **Review Gates:** full | **Component:** config | **Status:** In progress (signed off by `/review-plan` 2026-10-17; Phases 1, 2a-2d implemented)
+**Branch:** `feature/repo-catalog-pr1` | **Review Gates:** full | **Component:** config | **Status:** Complete (signed off by `/review-plan` 2026-10-17; Phases 1, 2a-2d implemented; merged as #144, `5733f06`)
 
 ## Objective
 
