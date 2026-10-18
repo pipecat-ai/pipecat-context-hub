@@ -8,6 +8,11 @@ name: Catalog health
 # Two jobs: the check (which runs project code and its dependencies) holds a
 # read-only token; only the issue job, which runs `gh` and no project code,
 # gets `issues: write`.
+#
+# The issue body is the last conclusive report. An inconclusive-only run
+# (script exit 2: rate limit, 5xx, timeout) posts its report as a comment and
+# leaves the body alone, so a stale entry reported earlier is never erased by
+# a flaky re-run.
 
 on:
   schedule:
@@ -34,6 +39,7 @@ jobs:
       contents: read
     outputs:
       outcome: ${{ steps.health.outcome }}
+      exit-code: ${{ steps.health.outputs.exit-code }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -58,7 +64,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
-          uv run python scripts/check_repo_catalog.py | tee "${REPORT_PATH}"
+          code=0
+          uv run python scripts/check_repo_catalog.py | tee "${REPORT_PATH}" || code=$?
+          echo "exit-code=${code}" >> "${GITHUB_OUTPUT}"
+          exit "${code}"
 
       - name: Upload report
         if: steps.health.outcome == 'failure'
@@ -96,6 +105,7 @@ jobs:
           LABEL: catalog-health
           TITLE: "catalog-health: repo catalog needs attention"
           RUN_ID: ${{ github.run_id }}
+          EXIT_CODE: ${{ needs.health.outputs.exit-code }}
         run: |
           set -euo pipefail
           if [ ! -s "${REPORT_PATH}" ]; then
@@ -111,7 +121,16 @@ jobs:
             --label "${LABEL}" \
             --json number \
             --jq '.[0].number // empty')"
-          if [ -n "${existing}" ]; then
+          if [ -n "${existing}" ] && [ "${EXIT_CODE}" = "2" ]; then
+            # Inconclusive only: keep the body (the last conclusive report).
+            {
+              echo "Inconclusive catalog health run $(date -u +%FT%TZ) in run ${RUN_ID}" \
+                "(re-run it; the issue body keeps the last conclusive report)."
+              echo
+              cat "${REPORT_PATH}"
+            } > comment.md
+            gh issue comment "${existing}" --body-file comment.md
+          elif [ -n "${existing}" ]; then
             gh issue edit "${existing}" --body-file "${REPORT_PATH}"
             gh issue comment "${existing}" \
               --body "Catalog health failed $(date -u +%FT%TZ) in run ${RUN_ID}."
