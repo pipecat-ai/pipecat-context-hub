@@ -502,7 +502,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
 | PR 2 worktree started / conduct state file | |
 | PR 1 gauntlet converged / `/update-docs` done / PR number | |
 | PR 1 merged (merge commit) | |
-| PR 2 rebased onto PR 1 (before Phase 4b) / onto `main` | |
+| PR 2 rebased onto PR 1 (before Phase 4b) / onto `main` | 2026-10-17, onto `main` (`5733f06`, PR #144 merged); run by the user (`git rebase origin/main`). Conflicts kept both sides: parent plan smoke note, `ci.yml` Windows file list, `test_cli_query.py`, `cli_query.py` (`attach_corpus_hint` + PR 1's `echo_json`), `docs/smoke-test.md` (PR 2 item renumbered 53 -> 55). Backup `backup/pr2-before-rebase-20261017` (`bcac0b9`); new tip `8f73c7f` |
 | PR 2 gauntlet converged / `/update-docs` done / PR number | |
 | PR 2 merged (merge commit) | |
 | Dogfood migration done | |
