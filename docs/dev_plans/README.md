@@ -10,6 +10,7 @@
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-10-18 | fix | `refresh` docs re-crawl no longer deletes README-fallback chunks (issue #146) | Complete (PR #150) | vr000m | fix/refresh-readme-chunks | _(no plan file)_ |
 | 2026-10-17 | feature | Repo catalog PR 2: indexed-repo status, corpus hints and catalog health (merges after PR 1) | Complete (phases 3a, 3b, 3c, 4, 5 and 4b implemented; PR #147) | vr000m | `feature/repo-catalog-pr2` | `20261017-feature-repo-catalog-pr2-hints-and-health.md` |
 | 2026-10-14 | fix | Index write guards: post-write HNSW size check, refresh disk preflight, refresh/serve locks (runaway 325 GB `link_lists.bin`) | Complete (PR #139) | Claude | `fix/index-write-guards` | `20261014-fix-index-write-guards.md` |
 | 2026-10-16 | feature | ChatGPT plugin 0.2.4 visibility and setup refinement | Complete — candidate ready for consolidated review | Codex | `feature/chatgpt-local-plugin` | `20261016-feature-chatgpt-plugin-0-2-4.md` |
