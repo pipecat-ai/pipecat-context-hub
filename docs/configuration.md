@@ -135,7 +135,7 @@ Last audited 2026-10-16. Public repos only. A repo marked *no source chunks* clo
 | `audio-and-benchmarks` | topic | Audio, turn detection and benchmarks | `pipecat-ai/smart-turn`<br>`pipecat-ai/stt-benchmark`<br>`pipecat-ai/gb-benchmarks` |
 | `example-apps` | topic | Example apps and demos | `pipecat-ai/peekaboo`<br>`pipecat-ai/pipecat-mcp-server`<br>`pipecat-ai/pipecat-music-player`<br>`pipecat-ai/yc-voice-agents-hackathon`<br>`pipecat-ai/pipecat-deepgram-webinar-demo` |
 | `gradient-bang` | topic | Gradient Bang ecosystem | `pipecat-ai/gradient-bang`<br>`pipecat-ai/gb-context-viewer` |
-| `nvidia` | vendor | NVIDIA Nemotron speech and voice agents | `NVIDIA-AI-Blueprints/nemotron-voice-agent`<br>`pipecat-ai/nemotron-january-2026`<br>`pipecat-ai/nemotron-voicechat-dgx-spark`<br>`pipecat-ai/nemo3-battleships` |
+| `nvidia` | vendor | NVIDIA Nemotron speech and voice agents | `NVIDIA-AI-Blueprints/nemotron-voice-agent`<br>`pipecat-ai/nemotron-january-2026`<br>`pipecat-ai/nemo3-battleships` |
 | `google` | vendor | Google Gemini Live | `pipecat-ai/gemini-live-web-starter`<br>`askjohngeorge/askjg-demo-gemini-pcc`<br>`daily-co/pcc-gemini-screen-voice-ui-kit` |
 | `aws` | vendor | AWS Bedrock, SageMaker and Nova Sonic | `aws-samples/build-intelligent-ai-voice-agents-with-pipecat-and-amazon-bedrock`<br>`pipecat-ai/aws-workshops`<br>`pipecat-ai/aws-deepgram-workshop`<br>`deepgram/rxconnect-deepgram-pipecat-sagemaker-demo`<br>`chadbailey59/aws-telephony-bot`<br>`aws-solutions-library-samples/guidance-for-voice-agents-on-aws`<br>`aws-samples/sample-voice-agent-on-aws` |
 | `tavus` | vendor | Tavus avatars | `aws-samples/sample-voice-ai-tavus-avatar-demo` |
