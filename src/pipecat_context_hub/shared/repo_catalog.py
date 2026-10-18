@@ -104,9 +104,10 @@ class Catalog:
 def member_skip_reason(repo: CatalogRepo, is_tainted: Callable[[str], bool]) -> str | None:
     """Why a group member is not actionable (``"tainted"``, ``"parseable = false"``), or ``None``.
 
-    The one eligibility rule: ``repos add|remove --group`` acts on exactly the
+    The one eligibility rule for adding: ``repos add --group`` acts on exactly the
     members this passes, and the corpus hint (whose ``add_command`` advertises
-    that command) considers exactly the same ones.
+    that command) considers exactly the same ones. ``repos remove --group`` skips
+    only tainted members, so it can also clear a ``parseable = false`` repo.
     """
     if is_tainted(repo.slug):
         return "tainted"

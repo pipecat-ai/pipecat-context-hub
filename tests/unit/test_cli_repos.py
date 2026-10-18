@@ -491,13 +491,27 @@ class TestCheckOrder:
     @pytest.mark.parametrize("verb", ["add", "remove"])
     def test_tainted_and_malformed_refusals_say_to_edit_the_file_by_hand(self, hub: Hub, verb: str):
         """A tainted or malformed entry already in config.toml cannot be removed through
-        the CLI; the refusal must say so and point at the file."""
+        the CLI; the refusal must say so and name the resolved file (not a hard-coded path)."""
         hub.env(PIPECAT_HUB_TAINTED_REPOS=UNLISTED)
+        hub.config_list(UNLISTED, "ac me/repo")
         for args in ((UNLISTED,), ("--unlisted", "ac me/repo")):
             result = hub.run(verb, *args)
             assert result.exit_code == EXIT_INVALID_INPUT
             assert "by hand" in result.output
-            assert "~/.config/pipecat-context-hub/config.toml" in result.output
+            assert redact_home(hub.config) in result.output
+            assert "~/.config/pipecat-context-hub/config.toml" not in result.output
+
+    @pytest.mark.parametrize("verb", ["add", "remove"])
+    def test_a_typo_nothing_lists_gets_no_hand_edit_advice(self, hub: Hub, verb: str):
+        """A refused slug that config.toml does not hold has nothing to hand-edit."""
+        hub.env(PIPECAT_HUB_TAINTED_REPOS=UNLISTED)
+        hub.config_list(ALPHA_ONE)
+        for args in ((UNLISTED,), ("--unlisted", "ac me/repo")):
+            result = hub.run(verb, *args)
+            assert result.exit_code == EXIT_INVALID_INPUT
+            assert "by hand" not in result.output
+        hub.config.unlink()  # no config.toml at all: still no advice
+        assert "by hand" not in hub.run(verb, "--unlisted", "ac me/repo").output
 
     @pytest.mark.parametrize("bad", ["noslash", "a/b/c", "acme/", "/repo", "ac me/repo", "a/.."])
     def test_malformed_slug_beats_shadow(self, hub: Hub, bad: str):
@@ -763,6 +777,45 @@ class TestGroup:
         assert f"Removed {ALPHA_ONE}" in result.output
         assert f"Removed {ALPHA_TWO}" in result.output
         assert hub.in_toml() == [BETA_ONE, UNLISTED]
+
+    def test_remove_group_removes_parseable_false_members(self, hub: Hub):
+        """#145: a ``parseable = false`` repo added singly can be removed by group."""
+        hub.config_list("acme/alpha-ios", BETA_ONE)
+        result = hub.run("remove", "--group", "alpha")
+        assert result.exit_code == 0, result.output
+        assert "Removed acme/alpha-ios" in result.output
+        assert "Skipped (parseable = false)" not in result.output
+        assert hub.in_toml() == [BETA_ONE]
+
+    def test_remove_group_of_only_parseable_false_members_removes_them(self, hub: Hub):
+        hub.config_list("acme/gamma-ios")
+        result = hub.run("remove", "--group", "gamma")
+        assert result.exit_code == 0, result.output
+        assert "Removed acme/gamma-ios" in result.output
+        assert hub.in_toml() == []
+
+    def test_remove_group_still_skips_tainted_members(self, hub: Hub):
+        hub.env(PIPECAT_HUB_TAINTED_REPOS="acme/alpha-taint")
+        hub.config_list("acme/alpha-taint", ALPHA_ONE)
+        result = hub.run("remove", "--group", "alpha")
+        assert result.exit_code == 0, result.output
+        assert "Skipped (tainted): acme/alpha-taint" in result.output
+        assert hub.in_toml() == ["acme/alpha-taint"]
+
+    def test_positional_add_of_parseable_false_repo_warns_but_adds(self, hub: Hub):
+        """#145: add singly succeeds (exit 0, written) with a stderr warning."""
+        result = hub.run("add", "acme/alpha-ios")
+        assert result.exit_code == 0, result.output
+        assert "Added acme/alpha-ios" in result.stdout
+        assert "parseable = false" in result.stderr
+        assert "search_api" in result.stderr
+        assert "parseable" not in result.stdout
+        assert hub.in_toml() == ["acme/alpha-ios"]
+
+    def test_positional_add_of_parseable_repo_does_not_warn(self, hub: Hub):
+        result = hub.run("add", ALPHA_ONE)
+        assert result.exit_code == 0, result.output
+        assert "parseable" not in result.output
 
     def test_remove_with_nothing_present_is_nothing_to_remove(self, hub: Hub):
         hub.config_list(BETA_ONE)
@@ -1384,25 +1437,33 @@ class TestErrorBoundary:
 
 @pytest.mark.usefixtures("no_network")
 class TestGroupWithNothingActionable:
-    @pytest.mark.parametrize("verb", ["add", "remove"])
-    def test_does_not_read_config_toml(self, hub: Hub, verb: str):
-        """gamma has only ``parseable = false`` members: nothing to write, so a
+    def test_does_not_read_config_toml(self, hub: Hub):
+        """gamma has only ``parseable = false`` members: ``add`` has nothing to write, so a
         broken config.toml is not consulted and the run exits 0."""
         hub.write_config("this is = = not toml\n")
         before = hub.snapshot()
-        result = hub.run(verb, "--group", "gamma")
+        result = hub.run("add", "--group", "gamma")
         assert result.exit_code == 0, result.output
-        assert ("Nothing to add" if verb == "add" else "Nothing to remove") in result.output
+        assert "Nothing to add" in result.output
         assert "Skipped (parseable = false): acme/gamma-ios" in result.output
         assert hub.snapshot() == before
 
-    @pytest.mark.parametrize("verb", ["add", "remove"])
+    def test_remove_of_a_parseable_false_group_reads_config_toml(self, hub: Hub):
+        """``remove`` acts on gamma's members, so a write could happen: a broken
+        config.toml is refused (exit 1) rather than skipped."""
+        hub.write_config("this is = = not toml\n")
+        before = hub.snapshot()
+        result = hub.run("remove", "--group", "gamma")
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert hub.snapshot() == before
+
     @pytest.mark.parametrize("layer", sorted(SHADOWED))
     @pytest.mark.parametrize(
-        ("group", "skipped"),
+        ("verb", "group", "skipped"),
         [
-            ("gamma", "Skipped (parseable = false): acme/gamma-ios"),
-            ("delta", "Skipped (tainted): acme/delta-one"),
+            ("add", "gamma", "Skipped (parseable = false): acme/gamma-ios"),
+            ("add", "delta", "Skipped (tainted): acme/delta-one"),
+            ("remove", "delta", "Skipped (tainted): acme/delta-one"),
         ],
     )
     def test_nothing_actionable_under_a_shadow_exits_0(
@@ -1425,6 +1486,37 @@ class TestGroupWithNothingActionable:
         result = hub.run("add", "--group", "beta")
         assert result.exit_code == EXIT_INVALID_INPUT
         assert "--config-only" in result.output
+
+
+@pytest.mark.usefixtures("no_network")
+class TestLoaderChatter:
+    """The loader's "Loaded N key(s)" INFO line is muted for ``repos`` only."""
+
+    @staticmethod
+    def _loaded(caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [r.getMessage() for r in caplog.records if "Loaded" in r.getMessage()]
+
+    def test_repos_commands_do_not_log_the_loaded_line(
+        self, hub: Hub, caplog: pytest.LogCaptureFixture
+    ):
+        hub.config_list(ALPHA_ONE)
+        with caplog.at_level(logging.INFO, logger="pipecat_context_hub.shared.env_loading"):
+            for args in (("list",), ("add", BETA_ONE), ("remove", BETA_ONE)):
+                assert hub.run(*args).exit_code == 0
+        assert self._loaded(caplog) == []
+
+    def test_other_commands_still_log_it(self, hub: Hub, caplog: pytest.LogCaptureFixture):
+        hub.config_list(ALPHA_ONE)
+        hub._fresh_process_env()
+        with caplog.at_level(logging.INFO, logger="pipecat_context_hub.shared.env_loading"):
+            hub.runner.invoke(main, ["install", "--print-config"])
+        assert len(self._loaded(caplog)) == 1
+
+    def test_the_loader_logger_level_is_restored(self, hub: Hub):
+        loader_logger = logging.getLogger("pipecat_context_hub.shared.env_loading")
+        before = loader_logger.level
+        hub.run("list")
+        assert loader_logger.level == before
 
 
 @pytest.mark.usefixtures("no_network")
