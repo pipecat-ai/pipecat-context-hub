@@ -137,12 +137,21 @@ Part of the [Pipecat Context Hub README](README.md).
   front doors surface it themselves. The one-shot CLI prints a remediation-first
   hint on stderr (never on stdout, so piped JSON stays clean) whenever a
   semantic command returns poor/empty results or the reranker model is
-  uncached; `serve`'s MCP `initialize` response gives a connecting agent the
+  uncached (the poor-results hint is skipped when the response carries a
+  `corpus_hint`, which names the missing repos instead); `serve`'s MCP
+  `initialize` response gives a connecting agent the
   same guidance. If you're filing directly: poor or missing search results go
   to [retrieval-quality.yml](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=retrieval-quality.yml)
   (the template includes a diagnostic prompt your coding agent can run to
   generate a structured report); crashes, incorrect behavior, or anything else
   go to [bug-report.yml](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml).
+- **A search response carries `corpus_hint`** — the query names a vendor or
+  topic whose catalog repos are not indexed, so the results cannot cover it.
+  Run the hint's `add_command` (adds them to `config.toml`), then its
+  `refresh_command`; restart `serve` afterwards, since it reads configured
+  repos once at start. Repos under `repos_configured_no_records` are already
+  configured but have no records: run `refresh` and check its log for a failed
+  clone.
 
 ## Windows
 
