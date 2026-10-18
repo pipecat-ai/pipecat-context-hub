@@ -1,6 +1,6 @@
 # Repo catalog, `repos` command and corpus hints
 
-**Branch:** `feature/repo-catalog-pr1` (PR 1; PR 2 gets its own branch) | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs, PR 1 implemented)
+**Branch:** `feature/repo-catalog-pr1` (PR 1; PR 2 gets its own branch) | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs: PR 1 merged (#144, `5733f06`), PR 2 built on `feature/repo-catalog-pr2`, awaiting merge)
 
 **Delivery:** two PRs, each from its own conduct-format plan (see *Delivery*): PR 1 =
 [`20261017-feature-repo-catalog-pr1-catalog-and-repos.md`](20261017-feature-repo-catalog-pr1-catalog-and-repos.md),
@@ -440,7 +440,8 @@ and both child plans in the same commit.
   --config-only --group <group-name>`, joined with `; `. Plain `repos add` is refused when a real env var or
   cwd `.env` sets `PIPECAT_HUB_EXTRA_REPOS` (Decision 7 check 3), and the hint must work for that user,
   the maintainer's own `.env`. `--group` skips repos already in `config.toml`, tainted repos and
-  `parseable = false` repos, so the command is always accepted and never adds more than the hint listed.
+  `parseable = false` repos, so the command is always accepted. It acts on the whole group, so it may add repos beyond the ones the
+  hint named (for example an indexed repo that was removed from the config without `refresh --prune`).
   Catalog slugs use `--group`, never `--unlisted`; the `--unlisted` form appears only in the agent-assist
   text. (This format is chosen here, not earlier; the review of this section may revisit it.)
 - **C2: configured state.** PR 2 reads configured and tainted repos only through
@@ -501,8 +502,8 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
 | PR 1 Phase 1 `commit_sha` (PR 2 branches from here) | |
 | PR 2 worktree started / conduct state file | |
 | PR 1 gauntlet converged / `/update-docs` done / PR number | |
-| PR 1 merged (merge commit) | |
-| PR 2 rebased onto PR 1 (before Phase 4b) / onto `main` | |
+| PR 1 merged (merge commit) | `5733f06` (PR #144) |
+| PR 2 rebased onto PR 1 (before Phase 4b) / onto `main` | 2026-10-17, onto `main` (`5733f06`, PR #144 merged); run by the user (`git rebase origin/main`). Conflicts kept both sides: parent plan smoke note, `ci.yml` Windows file list, `test_cli_query.py`, `cli_query.py` (`attach_corpus_hint` + PR 1's `echo_json`), `docs/smoke-test.md` (PR 2 item renumbered 53 -> 55). Backup `backup/pr2-before-rebase-20261017` (`bcac0b9`); new tip `8f73c7f` |
 | PR 2 gauntlet converged / `/update-docs` done / PR number | |
 | PR 2 merged (merge commit) | |
 | Dogfood migration done | |
@@ -621,7 +622,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-17 @ 5ef11629f28da79ad241071f67a05c60ef94b599 -->
+<!-- reviewed: 2026-10-17 @ 6a383e6a8d24be2081e355278f5190224a3c1d6a -->
 
 ## Progress
 

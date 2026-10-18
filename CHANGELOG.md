@@ -51,6 +51,38 @@ This project uses [Semantic Versioning](https://semver.org/).
   character, and a `description` holding `|` or any string holding `BEGIN
   GENERATED` / `END GENERATED`, so no catalog text can start an uncommented
   assignment in the generated `.env.example` block or break a splice.
+- **`corpus_hint` on search responses.** When a `search_docs`, `search_examples`,
+  `search_api` or `get_code_snippet` query names a catalog group alias whose
+  parseable, untainted repos have no indexed records, the response carries a
+  top-level `corpus_hint` (`matched_groups`, `repos_not_indexed`,
+  `repos_configured_no_records`, `add_command`, `refresh_command`,
+  `report_issue_url`); the key is absent otherwise. Deterministic: no network, no
+  embeddings, independent of result confidence. Both front doors attach it after
+  the staleness footer; the CLI's stderr poor-results hint is suppressed when a
+  `corpus_hint` is present. Configured and tainted repos are read once at process
+  start, so a running `serve` sees a later `repos add` / `remove` only after a restart.
+- **`get_hub_status` repo coverage:** `indexed_repos`, `configured_no_records`
+  and `catalog_groups_not_indexed` (all empty when the per-repo counts cannot be
+  read). The first two may name private local repos; the retrieval-quality issue
+  template and the MCP instructions' degraded-hub bug-report step now tell the
+  agent to leave them out of the public report.
+- **Catalog health:** a weekly `catalog-health.yml` workflow (and
+  `just catalog-health`) flags private, missing, archived or renamed catalog
+  entries and opens or updates one tracking issue; PR CI never touches the
+  network for it (exit 0 ok, 1 a flagged entry, 2 only inconclusive lookups,
+  3 catalog unloadable). An entry is ok only when its GitHub answer is fully
+  validated; anything else is inconclusive. Only a flagged-entry run (exit 1)
+  replaces the tracking issue's body; any other failing run (inconclusive,
+  catalog unloadable) comments and keeps the body, the last conclusive report.
+  `just catalog-curate` prints a read-only curation report (source-file counts,
+  vendor candidates from GitHub code search; hits in private repositories are
+  only counted, never named or listed) and exits 2 when any GitHub answer
+  it used was not fully validated or results were left unread (fewer read than
+  `total_count`, however the search stopped), or a tree was truncated; 1 without
+  a GitHub token, 3 catalog unloadable.
+- `repos add --unlisted` prints a stderr note that the repo is not vetted by
+  the catalog and names its owner; the MCP instructions tell the agent to say
+  the same before suggesting it.
 - New runtime dependency: `tomlkit` (comment-preserving TOML edits), loaded
   only by `repos add` / `repos remove`.
 - Plugin-specific release notes live in
@@ -118,6 +150,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   holds them open: stop it, then retry.
 
 ### Fixed
+- **`get_counts_by_repo` counts each chunk once.** The synthetic `docs.pipecat.ai`
+  key counted every `doc` chunk, including a repo's README fallback, which is
+  also counted under its repo. It now counts only crawled doc chunks (no repo), so
+  `refresh`'s docs "existing" figure and the per-repo figures no longer overlap.
 - **Search ranking no longer changes with `limit`.** Each backend was asked for
   exactly `limit` candidates, so `search_api("PipecatClientProvider",
   chunk_type="function")` lost its definition to files that merely mention the name

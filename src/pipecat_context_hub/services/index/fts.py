@@ -20,6 +20,7 @@ from pipecat_context_hub.services.index.errors import (
     CorruptKeywordIndexError,
     MissingKeywordIndexError,
 )
+from pipecat_context_hub.shared.interfaces import DOCS_COUNT_KEY
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
@@ -581,14 +582,17 @@ class FTSIndex:
             return dict(cursor.fetchall())
 
     def get_counts_by_repo(self) -> dict[str, int]:
-        """Return record counts grouped by repo. Includes a 'docs' key for doc chunks."""
+        """Return record counts grouped by repo, plus ``DOCS_COUNT_KEY`` for crawled doc chunks."""
         with self._lock:
             counts: dict[str, int] = {}
-            # Doc chunks have no repo — count them separately
-            cursor = self._conn.execute("SELECT COUNT(*) FROM chunks WHERE content_type = 'doc'")
+            # Crawled doc chunks have no repo: count them separately. A repo's
+            # README fallback is a doc chunk with a repo; it counts under its repo.
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM chunks WHERE content_type = 'doc' AND repo IS NULL"
+            )
             doc_count = cursor.fetchone()[0]
             if doc_count:
-                counts["docs.pipecat.ai"] = doc_count
+                counts[DOCS_COUNT_KEY] = doc_count
             # Repo-scoped chunks
             cursor = self._conn.execute(
                 "SELECT repo, COUNT(*) FROM chunks WHERE repo IS NOT NULL GROUP BY repo"

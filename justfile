@@ -56,6 +56,14 @@ ci: check test audit
 catalog-regen *args:
     uv run python -m pipecat_context_hub.shared.repo_catalog_render {{args}}
 
+# Weekly catalog health check (same invocation as .github/workflows/catalog-health.yml)
+catalog-health:
+    uv run python scripts/check_repo_catalog.py
+
+# Report-only catalog curation (needs GITHUB_TOKEN or `gh auth login`); never edits the catalog
+catalog-curate:
+    uv run python scripts/curate_repo_catalog.py
+
 # Dependency vulnerability audit
 audit-deps:
     # KEEP IN SYNC with the "Dependency Audit" step in .github/workflows/ci.yml —

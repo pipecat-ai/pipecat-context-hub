@@ -6,7 +6,7 @@ import logging
 import re
 import contextlib
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Set
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,7 @@ from pipecat_context_hub.server.dispatch import (
     iter_tool_definitions,
 )
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError, Retriever, ServingIndex
-from pipecat_context_hub.shared.staleness import annotate_response
+from pipecat_context_hub.shared.response_finish import finish_response
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
     RETRIEVAL_QUALITY_ISSUE_URL,
@@ -140,6 +140,22 @@ If none of these work, suggest the user file a retrieval quality issue at \
 — the issue template includes a diagnostic prompt that you can run to generate \
 a structured report for the maintainers.
 
+**Corpus hint:** A search response may carry a top-level ``corpus_hint`` \
+object (absent when it does not apply). It means the question names a vendor \
+or topic from the repo catalog whose repos are not indexed, so the results may \
+be missing that content even when they look confident. Tell the user, and \
+offer its ``add_command`` (run by the user, never by you) followed by \
+``refresh``; ``repos_configured_no_records`` repos are already configured \
+and only need ``refresh_command``. If you find a relevant public GitHub repo \
+that is not in the catalog, you may suggest the user run \
+``pipecat-context-hub repos add <owner/repo> --unlisted`` (it edits only their \
+own config, never the shared catalog), but say plainly that the repo is not \
+vetted by the catalog, name its owner so the user can judge whether to trust \
+it, and note that once indexed its content reaches you unfiltered. Prefer \
+offering to draft a retrieval-quality issue listing the candidate repos, so \
+the maintainers can vet them for the catalog. Draft the issue text for the \
+user to file; do not file it yourself.
+
 **When the hub itself is degraded after initialization:** If ``get_hub_status`` reports \
 ``reranker_disabled_reason`` of ``not_cached`` or ``load_failed``, the \
 hub is running in a degraded mode.
@@ -159,7 +175,10 @@ re-checking ``get_hub_status`` on the current connection, or on a \
 reconnect that did not restart the process, will still show \
 ``not_cached`` even after a successful ``refresh``. If \
 restarting doesn't resolve it, or the reason is \
-``load_failed``, share the full ``get_hub_status`` response and any \
+``load_failed``, share the ``get_hub_status`` response, leaving out \
+``indexed_repos`` and ``configured_no_records`` (they name every repo \
+configured on this machine, which may include private ones, and the bug \
+report is public), and any \
 ``pipecat-context-hub`` startup log lines (look for \
 ``Reranker disabled at startup`` and the ``pipecat-context-hub vX.Y.Z \
 starting`` banner) with the user and suggest they file a bug report at \
@@ -193,6 +212,9 @@ def create_server(
     reranker_status_provider: Callable[[], RerankerStatus] | None = None,
     idle_tracker: IdleTracker | None = None,
     unavailable_reason: Callable[[], str | None] | None = None,
+    *,
+    configured_repos: Set[str],
+    tainted_repos: Set[str],
 ) -> Server:
     """Create and configure the MCP server with all tool handlers.
 
@@ -208,6 +230,12 @@ def create_server(
     call. When it returns a message (e.g. an index rebuild is in progress),
     the call is answered with that message as a tool error instead of touching
     the index, so the calling agent can retry later.
+
+    *configured_repos* and *tainted_repos* are the repo slugs captured once at
+    process start by ``config.sources.repo_sets()`` (as the CLI door does);
+    ``get_hub_status`` and the corpus hint compare against them. Required, with
+    no default, as in ``cli_query._QueryRuntime``: an empty set would silently
+    misclassify every configured repo and let the hint suggest tainted ones.
     """
     tool_registry = tuple(iter_tool_definitions(include_hub_status=index_store is not None))
 
@@ -231,20 +259,29 @@ def create_server(
             ]
         )
 
-    async def _annotate(result_json: str) -> str:
-        """Attach the index_staleness footer when the index is old.
+    async def _finish_response(name: str, args: dict[str, Any], result_json: str) -> str:
+        """``finish_response`` (the step the CLI door shares), in one worker thread.
 
-        Skipped for get_hub_status (it *is* the staleness report) by virtue
-        of that branch returning before this is called, and a no-op when no
-        index_store was provided. Best-effort: annotate_response never
-        raises.
+        Attaches the index_staleness footer and, for search tools, the corpus
+        hint. Skipped for get_hub_status (it *is* the staleness report) by
+        virtue of that branch returning before this is called, and a no-op
+        when no index_store was provided. Best-effort: neither step raises.
         """
         if index_store is None:
             return result_json
         # Metadata reads acquire the cross-process generation lock.  Keep
         # that synchronous wait out of the MCP event loop so an in-progress
         # refresh cannot stall unrelated requests or watchdog progress.
-        return await asyncio.to_thread(annotate_response, result_json, index_store)
+        finished, _hint = await asyncio.to_thread(
+            finish_response,
+            index_store,
+            tool=name,
+            args=args,
+            result_json=result_json,
+            configured_repos=configured_repos,
+            tainted_repos=tainted_repos,
+        )
+        return finished
 
     async def call_tool(_ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
         # Mark the call in-flight so the idle watchdog treats the whole
@@ -270,7 +307,13 @@ def create_server(
             # get_hub_status has a different dispatch signature (needs index_store)
             if name == "get_hub_status" and index_store is not None:
                 status = reranker_status_provider() if reranker_status_provider else None
-                result_json = await handle_get_hub_status(args, index_store, status)
+                result_json = await handle_get_hub_status(
+                    args,
+                    index_store,
+                    status,
+                    configured_repos=configured_repos,
+                    tainted_repos=tainted_repos,
+                )
                 return types.CallToolResult(
                     content=[types.TextContent(type="text", text=result_json)]
                 )
@@ -309,7 +352,11 @@ def create_server(
                 dep_map, fw_version = await asyncio.to_thread(load_deprecation_context)
                 result_json = await handle_check_deprecation(args, dep_map, fw_version)
                 return types.CallToolResult(
-                    content=[types.TextContent(type="text", text=await _annotate(result_json))]
+                    content=[
+                        types.TextContent(
+                            type="text", text=await _finish_response(name, args, result_json)
+                        )
+                    ]
                 )
 
             handler = get_tool_handler(name)
@@ -318,7 +365,11 @@ def create_server(
 
             result_json = await handler(args, retriever)
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=await _annotate(result_json))]
+                content=[
+                    types.TextContent(
+                        type="text", text=await _finish_response(name, args, result_json)
+                    )
+                ]
             )
         except (ValidationError, IndexUnavailableError) as exc:
             # IndexUnavailableError: the index became unusable mid-call (e.g. a

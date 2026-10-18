@@ -137,7 +137,8 @@ NO_STORE_SERVER = textwrap.dedent(
     from pipecat_context_hub.server.main import create_server
     from pipecat_context_hub.server.transport import run_stdio
 
-    asyncio.run(run_stdio(create_server(MagicMock())))
+    server = create_server(MagicMock(), configured_repos=frozenset(), tainted_repos=frozenset())
+    asyncio.run(run_stdio(server))
     """
 )
 

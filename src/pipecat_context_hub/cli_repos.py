@@ -45,7 +45,12 @@ from pipecat_context_hub.shared.env_loading import (
 )
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
 from pipecat_context_hub.shared.paths import redact_home_in_text, shown_path
-from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
+from pipecat_context_hub.shared.repo_catalog import (
+    Catalog,
+    CatalogGroup,
+    load_catalog,
+    member_skip_reason,
+)
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
 from pipecat_context_hub.shared.terminal import echo, shown
 
@@ -53,6 +58,14 @@ _RUNNING_SERVE = "A running `serve` reopens the rebuilt index itself."
 _REFRESH_REMINDER = f"Run `pipecat-context-hub refresh` to index it. {_RUNNING_SERVE}"
 _REMOVE_REMINDER = (
     f"Run `pipecat-context-hub refresh --prune` to drop its indexed data. {_RUNNING_SERVE}"
+)
+
+# Printed to stderr after `add --unlisted` writes: an indexed repo's text reaches the
+# coding agent verbatim, and only catalog repos were vetted by the maintainers.
+_UNLISTED_NOTICE = (
+    "Note: {slug} is not vetted by the repo catalog. After `refresh`, its content "
+    "reaches your coding agent unfiltered in tool responses; keep it only if you "
+    "trust its owner ({owner})."
 )
 
 _F = TypeVar("_F", bound=Callable[..., Any])
@@ -222,16 +235,15 @@ def _validate_selector(slug: str | None, group: str | None, unlisted: bool) -> N
 
 
 def _skipped_lines(group: CatalogGroup, sources: SourceConfig) -> tuple[list[str], list[str]]:
-    """``(actionable, skipped_lines)`` for a group's members."""
+    """``(actionable, skipped_lines)`` for a group's members (``member_skip_reason``)."""
     actionable: list[str] = []
     skipped: list[str] = []
     for repo in group.repos:
-        if sources.is_tainted(repo.slug):
-            skipped.append(f"Skipped (tainted): {repo.slug}")
-        elif not repo.parseable:
-            skipped.append(f"Skipped (parseable = false): {repo.slug}")
-        else:
+        reason = member_skip_reason(repo, sources.is_tainted)
+        if reason is None:
             actionable.append(repo.slug)
+        else:
+            skipped.append(f"Skipped ({reason}): {repo.slug}")
     return actionable, skipped
 
 
@@ -285,6 +297,9 @@ def _run_positional(
             echo(f"Already in config.toml: {target}" + note)
             return
         echo(f"Added {target}")
+        if unlisted:
+            owner = target.split("/", 1)[0]
+            echo(_UNLISTED_NOTICE.format(slug=target, owner=owner), err=True)
     else:
         before, changed = _apply(remove=[target])
         if not changed:

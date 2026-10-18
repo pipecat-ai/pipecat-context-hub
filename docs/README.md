@@ -165,10 +165,18 @@ install and how `serve` exits when the client goes away, see
 | `search_api` | Class definitions, method signatures, frame types, inheritance |
 | `get_code_snippet` | Get targeted code by symbol name, intent, or file path + line range |
 | `check_deprecation` | Verify whether a pipecat import path is deprecated or removed (supports `--at-version` for lifecycle at a specific version) |
-| `get_hub_status` | Index health, reranker runtime state, record counts, framework version, commit SHAs |
+| `get_hub_status` | Index health, reranker runtime state, record counts, framework version, commit SHAs, repo coverage (`indexed_repos`, `configured_no_records`, `catalog_groups_not_indexed`) |
 
 All search results include an **EvidenceReport** with confidence scores,
 source-grounded facts, unresolved questions, and suggested follow-up queries.
+
+A search response may also carry a top-level **`corpus_hint`** when the query
+names a [repo catalog](configuration.md#repo-catalog) group whose repos are not indexed: it
+lists the missing repos and the `repos add` / `refresh` commands that would add
+them. The key is absent when no hint applies, and the hint does not depend on
+result confidence. The one-shot CLI prints its generic stderr poor-results hint
+only when there is no `corpus_hint`. `serve` reads configured and tainted repos
+once at startup, so restart it after `repos add` / `repos remove`.
 
 ### Filters
 
@@ -230,6 +238,21 @@ The default index includes:
 - **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `pipecat-client-react-native-transports`, `pipecat-ui`, `pipecat-prebuilt` (tree-sitter-indexed)
 
 To add repos or pin the framework version, see [Adding repos](configuration.md#adding-repos). Only Python, TypeScript, and RST are parsed.
+
+The `repos` command edits `PIPECAT_HUB_EXTRA_REPOS` in `config.toml` for you
+(rules in [Managing repos from the CLI](configuration.md#managing-repos-from-the-cli));
+run `refresh` afterwards to index the change:
+
+```bash
+pipecat-context-hub repos list [--groups]            # effective repos (default / catalog / unlisted)
+pipecat-context-hub repos add <owner/repo>           # also --group NAME, --unlisted, --config-only
+pipecat-context-hub repos remove <owner/repo>        # same options as add
+```
+
+Maintainers keep the [repo catalog](configuration.md#repo-catalog) current with two
+network-only recipes, never run in PR CI: `just catalog-health` (private, missing,
+archived or renamed entries; run weekly by `catalog-health.yml`) and
+`just catalog-curate` (report-only per-repo stats and vendor candidates).
 
 ## Security
 

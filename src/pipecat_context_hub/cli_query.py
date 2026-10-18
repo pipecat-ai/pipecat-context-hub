@@ -268,6 +268,11 @@ class _QueryRuntime:
     # caller can check ``.enabled`` *after* dispatch — see
     # ``_maybe_warn_reranker_load_failed``.
     cross_encoder: CrossEncoderReranker | None
+    # Repo slugs captured once by ``config.sources.repo_sets()``, as ``serve``
+    # does; see ``handle_get_hub_status``. No defaults: an empty set would
+    # silently misclassify every configured repo.
+    configured_repos: frozenset[str]
+    tainted_repos: frozenset[str]
 
 
 def _quiet_query_logging(ctx: click.Context) -> None:
@@ -363,12 +368,15 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
         retriever.deprecation_map = DeprecationMap.load(config.storage.deprecation_map_path)
+        configured_repos, tainted_repos = config.sources.repo_sets()
 
         yield _QueryRuntime(
             retriever=retriever,
             index_store=index_store,
             reranker_status=reranker_status,
             cross_encoder=cross_encoder,
+            configured_repos=configured_repos,
+            tainted_repos=tainted_repos,
         )
     finally:
         index_store.close()
@@ -385,7 +393,13 @@ def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
 
     if tool == "get_hub_status":
         return asyncio.run(
-            handle_get_hub_status(args, runtime.index_store, runtime.reranker_status)
+            handle_get_hub_status(
+                args,
+                runtime.index_store,
+                runtime.reranker_status,
+                configured_repos=runtime.configured_repos,
+                tainted_repos=runtime.tainted_repos,
+            )
         )
     if tool == "check_deprecation":
         dep_map = getattr(runtime.retriever, "deprecation_map", None)
@@ -408,7 +422,7 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
     """
     from pydantic import ValidationError
 
-    from pipecat_context_hub.shared.staleness import annotate_response
+    from pipecat_context_hub.shared.response_finish import finish_response
 
     _quiet_query_logging(ctx)
     quiet_model_loading()
@@ -451,14 +465,23 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         reranker_uncached = _maybe_warn_reranker_not_cached(
             needs_embeddings, runtime.reranker_status
         ) or _maybe_warn_reranker_load_failed(needs_embeddings, runtime.cross_encoder)
-        _maybe_warn_poor_results(
-            tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
+        # The same corpus hint and staleness footer the MCP door attaches, from
+        # the one shared step (status excluded: it *is* the staleness report).
+        # Inside the runtime block: the store must still be open to read its
+        # metadata. The poor-results stderr hint yields to a corpus hint: a
+        # vendor miss gets one hint, not two.
+        result, hint = finish_response(
+            runtime.index_store,
+            tool=tool,
+            args=cleaned,
+            result_json=result,
+            configured_repos=runtime.configured_repos,
+            tainted_repos=runtime.tainted_repos,
         )
-        # Same staleness footer the MCP door attaches (status excluded — it
-        # *is* the staleness report). Inside the runtime block: the store
-        # must still be open to read its metadata.
-        if tool != "get_hub_status":
-            result = annotate_response(result, runtime.index_store)
+        if hint is None:
+            _maybe_warn_poor_results(
+                tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
+            )
     # Machine output: JSON stays JSON (never the human escaper).
     echo_json(result)
 

@@ -19,7 +19,7 @@ from pipecat_context_hub.shared.env_keys import (
     TAINTED_REPOS_ENV,
     split_csv,
 )
-from pipecat_context_hub.shared.exclusion_folds import exclusion_fold
+from pipecat_context_hub.shared.exclusion_folds import taint_matcher
 from pipecat_context_hub.shared.repo_slug import dedupe_slugs, slug_key
 from pipecat_context_hub.shared.versioning import DEFAULT_FRAMEWORK_PIN
 
@@ -482,6 +482,15 @@ class SourceConfig(BaseModel):
         result = dedupe_slugs(list(self.repos) + split_csv(os.environ.get(EXTRA_REPOS_ENV, "")))
         return [slug for slug in result if not self.is_tainted(slug)]
 
+    def repo_sets(self) -> tuple[frozenset[str], frozenset[str]]:
+        """``(configured, tainted)``: :attr:`effective_repos` and :attr:`tainted_repos`.
+
+        The repo inputs of ``get_hub_status`` and the corpus hint. Both front
+        doors (``serve`` and the one-shot CLI) capture them through this one
+        accessor, so the two cannot drift on what they compare against.
+        """
+        return frozenset(self.effective_repos), frozenset(self.tainted_repos)
+
     def is_default(self, slug: str) -> bool:
         """The one default-repo rule: ``slug`` is in *this instance's* ``repos``.
 
@@ -498,12 +507,11 @@ class SourceConfig(BaseModel):
         """The one taint-matching rule: compared by :func:`slug_key` (the one
         slug identity), so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.
         Every consumer of ``tainted_repos`` (``effective_repos``, refresh's
-        cleanup, ``repos``) decides through this method. The fold is
-        ``exclusion_folds.EXCLUSION_FOLDS``'s, which the loader's shadowed-taint
-        warning also uses."""
-        fold = exclusion_fold(TAINTED_REPOS_ENV)
-        key = fold(slug)
-        return any(fold(t) == key for t in self.tainted_repos)
+        cleanup, ``repos``) decides through this method; ``corpus_hint`` (the
+        corpus hint and ``get_hub_status``) takes the taint list as data. Both
+        call ``exclusion_folds.taint_matcher``, whose fold the loader's
+        shadowed-taint warning also uses."""
+        return taint_matcher(self.tainted_repos)(slug)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

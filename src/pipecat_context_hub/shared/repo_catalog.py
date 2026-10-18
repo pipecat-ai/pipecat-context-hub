@@ -18,6 +18,7 @@ import logging
 import re
 import tomllib
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from importlib import resources
@@ -98,6 +99,25 @@ class Catalog:
     def lists(self, slug: str) -> bool:
         """True when the catalog lists ``slug`` (matched by :func:`slug_key`)."""
         return self.find_repo(slug) is not None
+
+
+def member_skip_reason(repo: CatalogRepo, is_tainted: Callable[[str], bool]) -> str | None:
+    """Why a group member is not actionable (``"tainted"``, ``"parseable = false"``), or ``None``.
+
+    The one eligibility rule: ``repos add|remove --group`` acts on exactly the
+    members this passes, and the corpus hint (whose ``add_command`` advertises
+    that command) considers exactly the same ones.
+    """
+    if is_tainted(repo.slug):
+        return "tainted"
+    if not repo.parseable:
+        return "parseable = false"
+    return None
+
+
+def actionable_members(group: CatalogGroup, is_tainted: Callable[[str], bool]) -> list[CatalogRepo]:
+    """``group``'s members in catalog order that :func:`member_skip_reason` passes."""
+    return [r for r in group.repos if member_skip_reason(r, is_tainted) is None]
 
 
 def _check_keys(where: str, table: dict[str, object], allowed: frozenset[str]) -> None:

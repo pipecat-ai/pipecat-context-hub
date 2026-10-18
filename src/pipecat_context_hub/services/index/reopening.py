@@ -203,6 +203,10 @@ class ReopeningIndexStore:
         with self._using() as store:
             return store.get_all_metadata()
 
+    def get_counts_by_repo(self) -> dict[str, int]:
+        with self._using() as store:
+            return store.get_counts_by_repo()
+
     def close(self) -> None:
         """Close the current store now (shutdown), even if a call is using it.
 
