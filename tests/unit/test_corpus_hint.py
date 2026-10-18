@@ -19,13 +19,13 @@ from pipecat_context_hub.shared.corpus_hint import (
     attach_corpus_hint,
     configured_no_records,
     corpus_hint,
-    finish_response,
     groups_not_indexed,
     indexed_repos,
     missing_repos,
 )
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, CatalogRepo
+from pipecat_context_hub.shared.response_finish import finish_response
 from pipecat_context_hub.shared.support_links import RETRIEVAL_QUALITY_ISSUE_URL
 
 
@@ -277,6 +277,44 @@ class TestTaintedSkipInThePredicate:
         assert configured_no_records(["acme/bad", "acme/x"], set(), tainted=tainted) == ["acme/x"]
         catalog = Catalog(verified=date(2026, 10, 17), groups=(_group("g", _repo("acme/bad")),))
         assert groups_not_indexed(catalog, set(), tainted=tainted) == []
+
+    def test_one_taint_matcher_for_config_and_hint(self) -> None:
+        # The comparison itself lives once, in exclusion_folds.taint_matcher;
+        # neither SourceConfig nor corpus_hint re-implements it.
+        import inspect
+
+        from pipecat_context_hub.shared import config, corpus_hint
+
+        assert "taint_matcher(" in inspect.getsource(config.SourceConfig.is_tainted)
+        hint_src = inspect.getsource(corpus_hint)
+        assert "taint_matcher(" in hint_src
+        assert "exclusion_fold(" not in hint_src
+
+    def test_hint_and_repos_add_group_pick_the_same_members(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``add_command`` advertises ``repos add --group G``: with nothing indexed,
+        # the hint's missing set must be exactly the set that command adds.
+        from pipecat_context_hub.cli_repos import _skipped_lines
+        from pipecat_context_hub.shared.config import SourceConfig
+        from pipecat_context_hub.shared.env_keys import TAINTED_REPOS_ENV
+
+        monkeypatch.setenv(TAINTED_REPOS_ENV, "ACME/Bad")
+        sources = SourceConfig()
+        group = _group(
+            "g",
+            _repo("acme/bad"),
+            _repo("acme/raw", parseable=False),
+            _repo("acme/ok"),
+            _repo("Acme/Also"),
+        )
+        actionable, skipped = _skipped_lines(group, sources)
+        hint_missing = missing_repos(group, set(), tainted=frozenset(sources.tainted_repos))
+        assert hint_missing == actionable == ["acme/ok", "Acme/Also"]
+        assert skipped == [
+            "Skipped (tainted): acme/bad",
+            "Skipped (parseable = false): acme/raw",
+        ]
 
 
 # --- corpus_hint ---------------------------------------------------------------------------
@@ -714,3 +752,37 @@ class TestFinishResponse:
             assert "finish_response(" in src, module.__name__
             for private_step in ("corpus_hint(", "attach_corpus_hint(", "annotate_response("):
                 assert private_step not in src, (module.__name__, private_step)
+
+    def test_both_front_doors_capture_repo_sets_through_one_accessor(self) -> None:
+        # Two-door parity on the hint/status inputs rests on one expression, not two copies.
+        import inspect
+
+        from pipecat_context_hub import cli, cli_query
+
+        for module in (cli, cli_query):
+            src = inspect.getsource(module)
+            assert "config.sources.repo_sets()" in src, module.__name__
+            assert "frozenset(config.sources.effective_repos)" not in src, module.__name__
+            assert "frozenset(config.sources.tainted_repos)" not in src, module.__name__
+
+    def test_repo_sets_is_effective_and_tainted_as_frozensets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pipecat_context_hub.shared.config import SourceConfig
+
+        monkeypatch.setenv("PIPECAT_HUB_EXTRA_REPOS", "acme/one,taint/me")
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "taint/me")
+        sources = SourceConfig()
+        configured, tainted = sources.repo_sets()
+        assert configured == frozenset(sources.effective_repos)
+        assert "acme/one" in configured and "taint/me" not in configured
+        assert tainted == frozenset({"taint/me"})
+
+    def test_cli_runtime_has_no_empty_repo_set_defaults(self) -> None:
+        import dataclasses
+
+        from pipecat_context_hub.cli_query import _QueryRuntime
+
+        fields = {f.name: f for f in dataclasses.fields(_QueryRuntime)}
+        for name in ("configured_repos", "tainted_repos"):
+            assert fields[name].default is dataclasses.MISSING, name

@@ -268,9 +268,11 @@ class _QueryRuntime:
     # caller can check ``.enabled`` *after* dispatch — see
     # ``_maybe_warn_reranker_load_failed``.
     cross_encoder: CrossEncoderReranker | None
-    # Repo slugs captured once from ``config.sources``; see ``handle_get_hub_status``.
-    configured_repos: frozenset[str] = frozenset()
-    tainted_repos: frozenset[str] = frozenset()
+    # Repo slugs captured once by ``config.sources.repo_sets()``, as ``serve``
+    # does; see ``handle_get_hub_status``. No defaults: an empty set would
+    # silently misclassify every configured repo.
+    configured_repos: frozenset[str]
+    tainted_repos: frozenset[str]
 
 
 def _quiet_query_logging(ctx: click.Context) -> None:
@@ -366,14 +368,15 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
         retriever.deprecation_map = DeprecationMap.load(config.storage.deprecation_map_path)
+        configured_repos, tainted_repos = config.sources.repo_sets()
 
         yield _QueryRuntime(
             retriever=retriever,
             index_store=index_store,
             reranker_status=reranker_status,
             cross_encoder=cross_encoder,
-            configured_repos=frozenset(config.sources.effective_repos),
-            tainted_repos=frozenset(config.sources.tainted_repos),
+            configured_repos=configured_repos,
+            tainted_repos=tainted_repos,
         )
     finally:
         index_store.close()
@@ -419,7 +422,7 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
     """
     from pydantic import ValidationError
 
-    from pipecat_context_hub.shared.corpus_hint import finish_response
+    from pipecat_context_hub.shared.response_finish import finish_response
 
     _quiet_query_logging(ctx)
     quiet_model_loading()

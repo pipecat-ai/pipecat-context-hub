@@ -28,7 +28,7 @@ from pipecat_context_hub.server.dispatch import (
     iter_tool_definitions,
 )
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError, Retriever, ServingIndex
-from pipecat_context_hub.shared.corpus_hint import finish_response
+from pipecat_context_hub.shared.response_finish import finish_response
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
     RETRIEVAL_QUALITY_ISSUE_URL,
@@ -229,7 +229,8 @@ def create_server(
     the index, so the calling agent can retry later.
 
     *configured_repos* and *tainted_repos* are the repo slugs captured once at
-    process start from ``config.sources``; ``get_hub_status`` reports against them.
+    process start by ``config.sources.repo_sets()`` (as the CLI door does);
+    ``get_hub_status`` and the corpus hint compare against them.
     """
     tool_registry = tuple(iter_tool_definitions(include_hub_status=index_store is not None))
 
@@ -253,13 +254,22 @@ def create_server(
             ]
         )
 
-    def _finish(store: ServingIndex, name: str, args: dict[str, Any], result_json: str) -> str:
-        """``finish_response``, the step the CLI door shares, run in one worker thread.
+    async def _finish_response(name: str, args: dict[str, Any], result_json: str) -> str:
+        """``finish_response`` (the step the CLI door shares), in one worker thread.
 
-        Both of its steps read index metadata under the generation lock.
+        Attaches the index_staleness footer and, for search tools, the corpus
+        hint. Skipped for get_hub_status (it *is* the staleness report) by
+        virtue of that branch returning before this is called, and a no-op
+        when no index_store was provided. Best-effort: neither step raises.
         """
-        finished, _hint = finish_response(
-            store,
+        if index_store is None:
+            return result_json
+        # Metadata reads acquire the cross-process generation lock.  Keep
+        # that synchronous wait out of the MCP event loop so an in-progress
+        # refresh cannot stall unrelated requests or watchdog progress.
+        finished, _hint = await asyncio.to_thread(
+            finish_response,
+            index_store,
             tool=name,
             args=args,
             result_json=result_json,
@@ -267,20 +277,6 @@ def create_server(
             tainted_repos=tainted_repos,
         )
         return finished
-
-    async def _annotate(name: str, args: dict[str, Any], result_json: str) -> str:
-        """Attach the index_staleness footer (and, for search tools, the corpus hint).
-
-        Skipped for get_hub_status (it *is* the staleness report) by virtue
-        of that branch returning before this is called, and a no-op when no
-        index_store was provided. Best-effort: neither step raises.
-        """
-        if index_store is None:
-            return result_json
-        # Metadata reads acquire the cross-process generation lock.  Keep
-        # that synchronous wait out of the MCP event loop so an in-progress
-        # refresh cannot stall unrelated requests or watchdog progress.
-        return await asyncio.to_thread(_finish, index_store, name, args, result_json)
 
     async def call_tool(_ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
         # Mark the call in-flight so the idle watchdog treats the whole
@@ -353,7 +349,7 @@ def create_server(
                 return types.CallToolResult(
                     content=[
                         types.TextContent(
-                            type="text", text=await _annotate(name, args, result_json)
+                            type="text", text=await _finish_response(name, args, result_json)
                         )
                     ]
                 )
@@ -365,7 +361,9 @@ def create_server(
             result_json = await handler(args, retriever)
             return types.CallToolResult(
                 content=[
-                    types.TextContent(type="text", text=await _annotate(name, args, result_json))
+                    types.TextContent(
+                        type="text", text=await _finish_response(name, args, result_json)
+                    )
                 ]
             )
         except (ValidationError, IndexUnavailableError) as exc:

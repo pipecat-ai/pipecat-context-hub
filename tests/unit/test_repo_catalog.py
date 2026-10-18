@@ -448,8 +448,9 @@ class TestSlugGrammar:
         # env_loading compares taint entries only through the one fold map.
         for mod in (config, config_writer, exclusion_folds, repo_catalog, cli_repos):
             assert mod.slug_key is repo_slug.slug_key, mod.__name__
-        for mod in (env_loading, config):
-            assert getattr(mod, "exclusion_fold") is exclusion_folds.exclusion_fold, mod.__name__
+        assert getattr(env_loading, "exclusion_fold") is exclusion_folds.exclusion_fold
+        # config (and corpus_hint) match taints through the one matcher built on that fold.
+        assert getattr(config, "taint_matcher") is exclusion_folds.taint_matcher
         assert getattr(config, "dedupe_slugs") is repo_slug.dedupe_slugs
 
     def test_no_slug_list_keeps_a_raw_string_dedupe(self) -> None:

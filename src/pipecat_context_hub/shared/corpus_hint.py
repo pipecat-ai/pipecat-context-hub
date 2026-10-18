@@ -13,7 +13,8 @@ passed in and typed against a narrow protocol exposing only ``get_counts_by_repo
 vendor question whose catalog repos are not indexed carries one compact,
 deterministic ``corpus_hint`` object. No network, no embeddings, and no
 dependence on result confidence (a 0.95 answer can still be a miss).
-:func:`finish_response` is the one post-handler step both front doors call.
+``shared/response_finish.py`` runs it as part of the one post-handler step
+both front doors call.
 """
 
 from __future__ import annotations
@@ -21,19 +22,19 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable, Iterable, Mapping, Set
-from typing import TYPE_CHECKING, Any, Protocol
+from collections.abc import Iterable, Mapping, Set
+from typing import Any, Protocol
 
-from pipecat_context_hub.shared.env_keys import TAINTED_REPOS_ENV
-from pipecat_context_hub.shared.exclusion_folds import exclusion_fold
+from pipecat_context_hub.shared.exclusion_folds import taint_matcher
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
-from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
+from pipecat_context_hub.shared.repo_catalog import (
+    Catalog,
+    CatalogGroup,
+    actionable_members,
+    load_catalog,
+)
 from pipecat_context_hub.shared.repo_slug import slug_key
-from pipecat_context_hub.shared.staleness import annotate_response
 from pipecat_context_hub.shared.support_links import RETRIEVAL_QUALITY_ISSUE_URL
-
-if TYPE_CHECKING:
-    from pipecat_context_hub.shared.interfaces import ServingIndex
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def configured_no_records(
     """
     if indexed is None:
         return []
-    is_tainted = _taint_matcher(tainted)
+    is_tainted = taint_matcher(tainted)
     return sorted(
         slug for slug in configured if slug_key(slug) not in indexed and not is_tainted(slug)
     )
@@ -98,30 +99,20 @@ def _fold(slugs: Iterable[str]) -> frozenset[str]:
     return frozenset(slug_key(s) for s in slugs)
 
 
-def _taint_matcher(tainted: Iterable[str]) -> Callable[[str], bool]:
-    """``SourceConfig.is_tainted``'s rule over an explicit taint list.
-
-    Both sides go through ``exclusion_fold(TAINTED_REPOS_ENV)``, the one taint
-    fold, so the hint and ``get_hub_status`` cannot drift from refresh,
-    ``repos`` and ``effective_repos`` if that fold changes.
-    """
-    fold = exclusion_fold(TAINTED_REPOS_ENV)
-    keys = frozenset(fold(t) for t in tainted)
-    return lambda slug: fold(slug) in keys
-
-
 def missing_repos(
     group: CatalogGroup, indexed: Set[str], *, tainted: Set[str] = frozenset()
 ) -> list[str]:
-    """Parseable, untainted catalog slugs of ``group`` that have no indexed records.
+    """Actionable catalog slugs of ``group`` that have no indexed records.
 
-    ``tainted`` is folded here, so callers may pass raw slugs.
+    "Actionable" is ``repo_catalog.actionable_members`` (parseable, untainted),
+    the set ``repos add --group`` acts on. ``tainted`` is matched by
+    ``exclusion_folds.taint_matcher`` (the one taint rule), so callers may pass
+    raw slugs.
     """
-    is_tainted = _taint_matcher(tainted)
     return [
         r.slug
-        for r in group.repos
-        if r.parseable and slug_key(r.slug) not in indexed and not is_tainted(r.slug)
+        for r in actionable_members(group, taint_matcher(tainted))
+        if slug_key(r.slug) not in indexed
     ]
 
 
@@ -257,36 +248,3 @@ def attach_corpus_hint(result_json: str, hint: dict[str, Any] | None) -> str:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to attach the corpus hint")
         return result_json
-
-
-# The status tool *is* the staleness report and never hints.
-_UNFINISHED_TOOLS = frozenset({"get_hub_status"})
-
-
-def finish_response(
-    index_store: ServingIndex,
-    *,
-    tool: str,
-    args: Mapping[str, Any],
-    result_json: str,
-    configured_repos: Set[str],
-    tainted_repos: Set[str],
-) -> tuple[str, dict[str, Any] | None]:
-    """The one post-handler step of both front doors: the finished JSON and the hint.
-
-    Computes the corpus hint, adds the staleness footer (``annotate_response``),
-    then attaches the hint, so MCP's ``call_tool`` and the CLI's ``_invoke``
-    give identical JSON by construction. ``get_hub_status`` comes back
-    untouched. The hint is returned too, so the CLI can let its stderr
-    poor-results hint yield to it. Never raises (neither step does).
-    """
-    if tool in _UNFINISHED_TOOLS:
-        return result_json, None
-    hint = corpus_hint(
-        index_store,
-        tool=tool,
-        args=args,
-        configured_repos=configured_repos,
-        tainted_repos=tainted_repos,
-    )
-    return attach_corpus_hint(annotate_response(result_json, index_store), hint), hint

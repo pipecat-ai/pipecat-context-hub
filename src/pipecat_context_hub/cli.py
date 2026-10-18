@@ -1010,6 +1010,7 @@ def serve(ctx: click.Context) -> None:
         index_store.add_open_listener(_load_deprecation_map)
 
         idle_tracker = IdleTracker()
+        configured_repos, tainted_repos = config.sources.repo_sets()
 
         server = create_server(
             retriever,
@@ -1018,8 +1019,8 @@ def serve(ctx: click.Context) -> None:
             idle_tracker=idle_tracker,
             # Back off while a refresh runs; reopen after any refresh.
             unavailable_reason=index_store.unavailable_reason,
-            configured_repos=frozenset(config.sources.effective_repos),
-            tainted_repos=frozenset(config.sources.tainted_repos),
+            configured_repos=configured_repos,
+            tainted_repos=tainted_repos,
         )
 
         def _close_index_store_on_watchdog_shutdown() -> None:

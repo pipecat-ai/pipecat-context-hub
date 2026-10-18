@@ -45,7 +45,12 @@ from pipecat_context_hub.shared.env_loading import (
 )
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
 from pipecat_context_hub.shared.paths import redact_home_in_text, shown_path
-from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
+from pipecat_context_hub.shared.repo_catalog import (
+    Catalog,
+    CatalogGroup,
+    load_catalog,
+    member_skip_reason,
+)
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
 from pipecat_context_hub.shared.terminal import echo, shown
 
@@ -222,16 +227,15 @@ def _validate_selector(slug: str | None, group: str | None, unlisted: bool) -> N
 
 
 def _skipped_lines(group: CatalogGroup, sources: SourceConfig) -> tuple[list[str], list[str]]:
-    """``(actionable, skipped_lines)`` for a group's members."""
+    """``(actionable, skipped_lines)`` for a group's members (``member_skip_reason``)."""
     actionable: list[str] = []
     skipped: list[str] = []
     for repo in group.repos:
-        if sources.is_tainted(repo.slug):
-            skipped.append(f"Skipped (tainted): {repo.slug}")
-        elif not repo.parseable:
-            skipped.append(f"Skipped (parseable = false): {repo.slug}")
-        else:
+        reason = member_skip_reason(repo, sources.is_tainted)
+        if reason is None:
             actionable.append(repo.slug)
+        else:
+            skipped.append(f"Skipped ({reason}): {repo.slug}")
     return actionable, skipped
 
 
