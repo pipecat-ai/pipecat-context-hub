@@ -131,7 +131,9 @@ recommendation, the change is stated. Review history and grilled outcomes are in
      `WhiskerObserver`). `get_code_snippet` and `search_api` also scan their `class_name` and `module` filters
      (valid only beside `symbol` on `get_code_snippet`), so `symbol="__init__", class_name="TavusVideoService"` and
      `search_api(query="connect", class_name="TavusVideoService")` hint; the other two search tools have no such
-     filters. **Known limits (accepted, `/review-gauntlet` round 1):** an alias is matched whole, never as a run of
+     filters. The scanned arguments of one call are
+     joined with a newline, so a multi-word alias never spans two arguments (`query="nova"` beside
+     `class_name="SonicThing"` is not `nova sonic`). **Known limits (accepted, `/review-gauntlet` round 1):** an alias is matched whole, never as a run of
      adjacent split tokens, so an alias the vendor spells in CamelCase misses once other words attach
      (`SageMakerSTTService`, `SuperMemoryClient`, `super_memory` against `sagemaker` / `supermemory`; the bare
      `SageMaker` still hints); back-to-back acronyms do not split (`AWSLLMService`); a digit glued to an alias
@@ -651,7 +653,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-18 @ a33d34e9dfcf69e8030d1534675a763d126e06fb -->
+<!-- reviewed: 2026-10-18 @ 5559349392fa4a818ae3699dc2531a9d3764592d -->
 
 ## Progress
 

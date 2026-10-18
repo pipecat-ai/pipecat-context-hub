@@ -148,7 +148,8 @@ def _query_text(tool: str, args: Mapping[str, Any]) -> str | None:
     if keys is None:
         return None
     parts = [v for k in keys if isinstance(v := args.get(k), str) and v.strip()]
-    return " ".join(parts) if parts else None
+    # A newline, not a space: a multi-word alias ("nova sonic") must not span two arguments.
+    return "\n".join(parts) if parts else None
 
 
 # A lower-case letter or digit followed by an upper-case one ("TavusVideo"), and an

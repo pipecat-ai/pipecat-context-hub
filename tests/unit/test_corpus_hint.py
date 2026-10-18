@@ -664,6 +664,20 @@ class TestCorpusHintPerTool:
         args = {"symbol": "__init__", "module": "pipecat.services.nvidia.stt"}
         assert _hint("", tool="get_code_snippet", args=args)
 
+    @pytest.mark.parametrize(
+        ("tool", "args"),
+        [
+            ("search_api", {"query": "nova", "class_name": "SonicThing"}),
+            ("get_code_snippet", {"symbol": "nova", "intent": "sonic"}),
+            ("get_code_snippet", {"symbol": "nova", "module": "sonic.thing"}),
+        ],
+    )
+    def test_a_multi_word_alias_never_spans_two_arguments(
+        self, tool: str, args: dict[str, str]
+    ) -> None:
+        # "nova sonic" is one alias; "nova" in one argument and "sonic" in the next is not it.
+        assert _hint("", tool=tool, args=args) is None
+
     def test_get_code_snippet_path_alone_never_hints(self) -> None:
         args = {"path": "src/pipecat/services/nvidia/stt.py"}
         assert _hint("", tool="get_code_snippet", args=args) is None
