@@ -35,17 +35,30 @@ def _catalog_picks() -> tuple[str, str, str]:
     catalog = load_catalog()
     assert catalog is not None
     defaults = SourceConfig()
-    parseable = unparseable = group_name = None
+    unparseable_group = None
+    unparseable = None
     for group in catalog.groups:
         for repo in group.repos:
-            if defaults.is_default(repo.slug):
-                continue
-            if repo.parseable and parseable is None:
-                parseable = repo.slug
-            if not repo.parseable and unparseable is None:
-                unparseable, group_name = repo.slug, group.name
-    assert parseable and unparseable and group_name, "catalog needs both repo kinds"
-    return parseable, unparseable, group_name
+            if not defaults.is_default(repo.slug) and not repo.parseable:
+                unparseable, unparseable_group = repo.slug, group
+                break
+        if unparseable:
+            break
+    assert unparseable and unparseable_group, "catalog needs a parseable = false repo"
+    # `remove --group` removes every non-tainted member, so the parseable pick must sit
+    # outside that group or the later `remove <parseable>` would find nothing to remove.
+    in_group = {repo.slug for repo in unparseable_group.repos}
+    parseable = next(
+        (
+            repo.slug
+            for group in catalog.groups
+            for repo in group.repos
+            if repo.parseable and repo.slug not in in_group and not defaults.is_default(repo.slug)
+        ),
+        None,
+    )
+    assert parseable, "catalog needs a parseable repo outside the parseable = false repo's group"
+    return parseable, unparseable, unparseable_group.name
 
 
 def test_repos_round_trip_through_the_console_script(tmp_path: Path) -> None:

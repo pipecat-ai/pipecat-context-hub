@@ -187,6 +187,10 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    - "Already configured" means present in `config.toml`, never "effective through another layer".
      Check 3 precedes check 4, so a slug present only in a shadowing `.env` also exits 1 without
      `--config-only`.
+   - Hand-edit advice (amended for #145): the check 1 and malformed-slug refusals add "it is listed in
+     <resolved config path>; remove it by editing that file by hand" only when `config.toml` literally lists
+     the slug (casefolded), since `repos` will not change it. The path is the resolved one
+     (`PIPECAT_HUB_CONFIG_FILE` honoured), never a hard-coded default; a typo the file does not list gets no advice.
    - Case: `add` writes the catalog's spelling (as typed, with `--unlisted`), and treats a case-variant of
      a configured slug as already configured; `remove` matches casefolded and removes whatever spelling
      is configured.
