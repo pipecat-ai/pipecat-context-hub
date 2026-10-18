@@ -339,7 +339,7 @@ Put the result and the mutation-check results in the PR description. Restore the
 - [x] Phase 3c: config values and `get_hub_status`
 - [x] Phase 4: corpus hints
 - [x] Phase 5: catalog health and curation scripts
-- [ ] Phase 4b: seam test against the real `repos` command
+- [x] Phase 4b: seam test against the real `repos` command
 
 ## Findings
 
@@ -372,3 +372,7 @@ _(none yet; this plan has not been through `/review-plan`)_
   - The workflow grants `issues: write` job-wide (matches `smoke-drift.yml`). In-phase: actions are SHA-pinned (security-review finding), each token is scoped to its step, and checkout uses `persist-credentials: false`.
 - **Phase 5 (note):** the packaged catalog is `src/pipecat_context_hub/data/repo_catalog.toml`, not `data/repo_catalog.toml` as phase 4's text says. Phase 4's frozen-query tests read the shipped catalog; both phases are consistent with the real path. Phase 5 ran test-writer after implementer (sequential, interface coupling: the scripts are new and the plan names behaviours, not function names).
 - **Phase 5 follow-up (resolved, coordinator-directed):** the rename shape was confirmed live (`curl -I https://api.github.com/repos/joyent/node` gives 301 with `location: .../repositories/211666`). `check_repo_catalog` now makes one more non-following GET on an `/repositories/{id}` target (API host only) and reads `full_name`; verified end to end against the real redirect (`joyent/node` -> `nodejs/node-v0.x-archive`), and disabling the second hop fails 2 tests. Also fixed: a 200 without a JSON-object body or string `full_name` is `inconclusive`; catalog-load failure has its own exit code (3) and a stdout line in both scripts; `discover_vendors` and `repo_stats` record malformed responses; a truncated git tree is marked. `TestFrozenRealQueries` is documented as deliberately pinning the shipped catalog. The Phase 5 Minor notes above for these items are closed; the rest stay open.
+- **Phase 4b (mutation check, run by the conductor):** dropping `--config-only` from `_ADD_COMMAND` fails 4 of 9 seam tests, including the shadowing-`.env` case; source restored.
+- **Phase 4b (open, Minor):**
+  - `test_tainted_slug_yields_neither_field` asserts `MIX_TAINT not in hint["add_command"]`, which always passes because `add_command` names only the group; the test never runs that command for a group with a tainted member. Suggested: run it, assert exit 0 and that `layout.written() == {MIX_OK}`.
+  - The only tainted case is a slug `repos add` refuses, so absence from `configured_repos` is trivially true. The realistic path, a slug already in `config.toml` that is tainted later, is untested. Suggested: write it into the temp `config.toml`, set `PIPECAT_HUB_TAINTED_REPOS`, and assert it is absent from `configured_repos`, `repos_not_indexed` and `repos_configured_no_records`.
