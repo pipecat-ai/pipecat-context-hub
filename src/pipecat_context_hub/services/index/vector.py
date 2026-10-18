@@ -753,11 +753,14 @@ class VectorIndex:
                     # Fail closed: a missing, short or null metadata entry is not proof
                     # that a record has no repo, and guessing would delete repo-owned
                     # chunks. (The content_type filter guarantees every match has metadata.)
-                    n_meta = "no" if metadatas is None else len(metadatas)
-                    n_null = 0 if metadatas is None else sum(m is None for m in metadatas)
+                    got = (
+                        "no metadatas"
+                        if metadatas is None
+                        else f"{len(metadatas)} metadatas ({sum(m is None for m in metadatas)} null)"
+                    )
                     raise RuntimeError(
-                        f"Chroma returned {len(existing['ids'])} ids but {n_meta} metadatas "
-                        f"({n_null} null) for content_type={content_type!r}; refusing to delete."
+                        f"Chroma returned {len(existing['ids'])} ids but {got} "
+                        f"for content_type={content_type!r}; refusing to delete."
                     )
                 ids = [
                     id_
