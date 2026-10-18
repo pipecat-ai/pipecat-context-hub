@@ -53,6 +53,11 @@ This changelog retains repository and Context Hub package history.
   instead of continuing to write.
 
 ### Changed
+- **One repo left the repo catalog.** Its content was mostly captured tool output
+  rather than code, about a quarter of a full index, and it drowned out unrelated
+  queries. `repos add --group` no longer adds it. Removing it from an index that
+  already held it was tested and works (`repos remove --unlisted <slug>`, then
+  `refresh --prune`).
 - **Taint matching is case-insensitive.** A `PIPECAT_HUB_TAINTED_REPOS` entry now
   excludes a repo whatever its spelling (`Foo/Bar` taints `foo/bar`), and a case
   variant of an already-listed repo is cloned and indexed once.
