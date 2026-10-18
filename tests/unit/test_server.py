@@ -1379,6 +1379,17 @@ class TestCorpusHintInstructionsAndTemplate:
         assert "draft" in lowered
         assert "user files" in lowered or "do not file" in lowered or "never file" in lowered
 
+    def test_server_instructions_flag_unlisted_repos_as_unvetted(self):
+        # An agent-found repo may be planted; once indexed, its text reaches the
+        # agent verbatim. The guidance must say so and name the owner.
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        hint = _SERVER_INSTRUCTIONS.split("**Corpus hint:**", 1)[1].split("**When the hub", 1)[0]
+        lowered = " ".join(hint.lower().split())
+        assert "not vetted" in lowered
+        assert "owner" in lowered
+        assert "unfiltered" in lowered
+
     def test_server_instructions_keep_local_repo_names_out_of_bug_reports(self):
         # The degraded-hub paragraph routes the get_hub_status response into a
         # public bug report; the fields naming local (possibly private) repos stay out.

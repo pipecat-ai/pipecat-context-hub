@@ -147,11 +147,14 @@ be missing that content even when they look confident. Tell the user, and \
 offer its ``add_command`` (run by the user, never by you) followed by \
 ``refresh``; ``repos_configured_no_records`` repos are already configured \
 and only need ``refresh_command``. If you find a relevant public GitHub repo \
-that is not in the catalog, suggest the user run \
+that is not in the catalog, you may suggest the user run \
 ``pipecat-context-hub repos add <owner/repo> --unlisted`` (it edits only their \
-own config, never the shared catalog), and offer to draft a retrieval-quality \
-issue listing the candidate repos. Draft the issue text for the user to file; \
-do not file it yourself.
+own config, never the shared catalog), but say plainly that the repo is not \
+vetted by the catalog, name its owner so the user can judge whether to trust \
+it, and note that once indexed its content reaches you unfiltered. Prefer \
+offering to draft a retrieval-quality issue listing the candidate repos, so \
+the maintainers can vet them for the catalog. Draft the issue text for the \
+user to file; do not file it yourself.
 
 **When the hub itself is degraded after initialization:** If ``get_hub_status`` reports \
 ``reranker_disabled_reason`` of ``not_cached`` or ``load_failed``, the \

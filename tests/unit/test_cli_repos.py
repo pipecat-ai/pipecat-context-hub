@@ -611,6 +611,18 @@ class TestUnlistedRules:
         assert "Someone/Unlisted-Repo" in hub.effective()
         assert _tags(hub.run("list").stdout)["Someone/Unlisted-Repo"] == "unlisted"
 
+    def test_unlisted_add_warns_on_stderr_that_the_repo_is_unvetted(self, hub: Hub):
+        result = hub.run("add", "--unlisted", "Someone/Unlisted-Repo")
+        assert result.exit_code == 0, result.output
+        assert "not vetted" in result.stderr
+        assert "(Someone)" in result.stderr  # the owner, so the user can judge trust
+        assert "not vetted" not in result.stdout
+
+    def test_catalog_add_and_unlisted_noop_do_not_warn(self, hub: Hub):
+        assert "not vetted" not in hub.run("add", ALPHA_ONE).stderr
+        hub.config_list(UNLISTED)
+        assert "not vetted" not in hub.run("add", "--unlisted", UNLISTED).stderr
+
     @pytest.mark.parametrize("bad", ["noslash", "a/b/c", "owner/"])
     def test_malformed_unlisted_slug_is_refused(self, hub: Hub, bad: str):
         result = hub.run("add", "--unlisted", bad)
