@@ -16,19 +16,22 @@ This changelog retains repository and Context Hub package history.
   `config.toml` for you, so adding a vendor's repos no longer means hand-editing
   `PIPECAT_HUB_EXTRA_REPOS`. `add` takes a catalog slug, `--unlisted owner/repo`
   or `--group NAME`; `list` shows the effective repos and where each came from.
-  Comments in the file are kept. It refuses (exit 1) rather than write an edit
-  that a higher-priority env var or `.env` would override (`--config-only` writes
-  anyway). `--unlisted` notes that the repo is not vetted by the catalog and names
-  its owner. Run `refresh` afterwards to index.
+  Comments in the file are kept. `add` and `remove` refuse (exit 1) rather than
+  write an edit that a higher-priority env var or `.env` would override
+  (`--config-only` writes anyway). `--group` skips tainted repos, and on `add`
+  also repos that cannot produce `search_api` results. `--unlisted` notes that
+  the repo is not vetted by the catalog and names its owner. Run `refresh`
+  afterwards to index.
 - **Repo catalog**: a curated list of public repos grouped by vendor or topic,
   behind `repos add --group`. It also generates the extras block in `.env.example`
   and the "Repo catalog" section of `docs/configuration.md` (`just catalog-regen`).
 - **`corpus_hint` on search responses.** When a `search_docs`, `search_examples`,
   `search_api` or `get_code_snippet` query names a vendor or topic from the catalog
-  whose repos are not indexed, the response says so and gives the `repos add` and
-  `refresh` commands to fix it, instead of returning confident-looking results that
-  lack that content. It also matches identifiers such as `TavusVideoService` and
-  `aws_bedrock`. A running `serve` sees a later `repos add` / `remove` after a restart.
+  whose repos are not indexed, the response says so and names the command to run
+  (`repos add` for repos not yet configured, `refresh` for configured repos with no
+  records), instead of returning confident-looking results that lack that content.
+  It also matches identifiers such as `TavusVideoService` and `aws_bedrock`. A
+  running `serve` sees a later `repos add` / `remove` after a restart.
 - **`get_hub_status` repo coverage:** `indexed_repos`, `configured_no_records` and
   `catalog_groups_not_indexed`. The first two may name private local repos, so the
   bug-report template and MCP instructions tell the agent to leave them out of
@@ -45,8 +48,9 @@ This changelog retains repository and Context Hub package history.
   `refresh` command to run.
 - **Index write guards.** A Chroma HNSW `link_lists.bin` once ballooned to ~325 GB
   (upstream chroma#7510). `refresh` now checks free disk first (default 5 GB,
-  `PIPECAT_HUB_MIN_FREE_GB`), takes an exclusive lock, and aborts on a runaway
-  or structurally broken graph file (exit 2) instead of continuing to write.
+  `PIPECAT_HUB_MIN_FREE_GB`), takes an exclusive lock (warning if a `serve` has the
+  index open), and aborts on a runaway or structurally broken graph file (exit 2)
+  instead of continuing to write.
 
 ### Changed
 - **Taint matching is case-insensitive.** A `PIPECAT_HUB_TAINTED_REPOS` entry now
