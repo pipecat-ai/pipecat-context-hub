@@ -124,10 +124,10 @@ To set a client up manually, point its MCP config at
 
 | Client | Setup Guide |
 |--------|-------------|
-| **Claude Code** | [docs/setup/claude-code.md](setup/claude-code.md) |
-| **Cursor** | [docs/setup/cursor.md](setup/cursor.md) |
-| **VS Code** | [docs/setup/vscode.md](setup/vscode.md) |
-| **Zed** | [docs/setup/zed.md](setup/zed.md) |
+| **Claude Code** | [docs/setup/claude-code.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/claude-code.md) |
+| **Cursor** | [docs/setup/cursor.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/cursor.md) |
+| **VS Code** | [docs/setup/vscode.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/vscode.md) |
+| **Zed** | [docs/setup/zed.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/zed.md) |
 
 **Example** (an equivalent manual config — `~/.claude.json` for
 the `user`-scope default above, or `.mcp.json` for the deliberate project-scope
@@ -145,7 +145,7 @@ choice):
 }
 ```
 
-Config templates for all clients are in [`config/clients/`](../config/clients/).
+Config templates for all clients are in [`config/clients/`](https://github.com/pipecat-ai/pipecat-context-hub/tree/main/config/clients).
 
 ### Add CLAUDE.md Instructions (Recommended)
 
@@ -372,8 +372,8 @@ works immediately; version comparison starts working after the next refresh.
 | `PIPECAT_HUB_PARENT_WATCH_INTERVAL` | `2.0` | Hidden tuning knob (primarily for tests): poll interval (seconds) for the parent-death watchdog. Floored at `0.1s` when non-zero. Set to `0` to disable the watchdog. |
 | `PIPECAT_HUB_WARMUP` | `1` | Pre-warm embedding + cross-encoder at `serve` boot so the first MCP query doesn't pay the cold-start cost (matters most on Windows CPU, where cold loads can take 30-130s). Set to `0` to skip (faster boot, slower first query). |
 
-See [`.env.example`](../.env.example) for curated repo bundles you can copy
-into your `.env`, and [`config.toml.example`](../config.toml.example) for the
+See [`.env.example`](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/.env.example) for curated repo bundles you can copy
+into your `.env`, and [`config.toml.example`](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/config.toml.example) for the
 machine-global equivalent described below.
 
 ### Config precedence: env vars, `.env`, and `config.toml`
@@ -392,7 +392,7 @@ layers, first-writer-wins, in this order:
    same `PIPECAT_HUB_*` keys as flat TOML values (a homogeneous array of
    scalars, e.g. `PIPECAT_HUB_EXTRA_REPOS = ["org/repo-a", "org/repo-b"]`, is
    accepted and coerced to the same comma-separated form as the env-var
-   form). See [`config.toml.example`](../config.toml.example).
+   form). See [`config.toml.example`](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/config.toml.example).
    Keep it private — `chmod 600 ~/.config/pipecat-context-hub/config.toml`.
    Its values go straight into the process environment, so on POSIX systems a
    world-writable file, or one owned by another user, is ignored with a
@@ -503,8 +503,8 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 
 ## Security
 
-- Threat model: [docs/security/threat-model.md](security/threat-model.md)
-- Vulnerability reporting: [SECURITY.md](../SECURITY.md)
+- Threat model: [docs/security/threat-model.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/security/threat-model.md)
+- Vulnerability reporting: [SECURITY.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/SECURITY.md)
 - Upstream denylisting: `PIPECAT_HUB_TAINTED_REPOS` and `PIPECAT_HUB_TAINTED_REFS`
 
 ## Troubleshooting
@@ -616,5 +616,5 @@ to go back to the default location.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, development workflow,
+See [CONTRIBUTING.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/CONTRIBUTING.md) for architecture, development workflow,
 benchmarking, and project structure.
