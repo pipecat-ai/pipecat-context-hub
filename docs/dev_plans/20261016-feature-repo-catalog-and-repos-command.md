@@ -1,6 +1,6 @@
 # Repo catalog, `repos` command and corpus hints
 
-**Branch:** `feature/repo-catalog-pr1` (PR 1; PR 2 gets its own branch) | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs: PR 1 merged (#144, `5733f06`), PR 2 in review on `feature/repo-catalog-pr2`)
+**Branch:** `feature/repo-catalog-pr1` (PR 1; PR 2 gets its own branch) | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs: PR 1 merged (#144, `5733f06`), PR 2 built on `feature/repo-catalog-pr2`, awaiting merge)
 
 **Delivery:** two PRs, each from its own conduct-format plan (see *Delivery*): PR 1 =
 [`20261017-feature-repo-catalog-pr1-catalog-and-repos.md`](20261017-feature-repo-catalog-pr1-catalog-and-repos.md),
@@ -440,7 +440,8 @@ and both child plans in the same commit.
   --config-only --group <group-name>`, joined with `; `. Plain `repos add` is refused when a real env var or
   cwd `.env` sets `PIPECAT_HUB_EXTRA_REPOS` (Decision 7 check 3), and the hint must work for that user,
   the maintainer's own `.env`. `--group` skips repos already in `config.toml`, tainted repos and
-  `parseable = false` repos, so the command is always accepted and never adds more than the hint listed.
+  `parseable = false` repos, so the command is always accepted. It acts on the whole group, so it may add repos beyond the ones the
+  hint named (for example an indexed repo that was removed from the config without `refresh --prune`).
   Catalog slugs use `--group`, never `--unlisted`; the `--unlisted` form appears only in the agent-assist
   text. (This format is chosen here, not earlier; the review of this section may revisit it.)
 - **C2: configured state.** PR 2 reads configured and tainted repos only through
