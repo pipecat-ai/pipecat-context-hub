@@ -224,8 +224,12 @@ class TestAddThenHint:
         assert hint is not None
         assert MIX_TAINT not in hint["repos_not_indexed"]
         assert MIX_TAINT not in hint["repos_configured_no_records"]
-        assert MIX_TAINT not in hint["add_command"]
         assert hint["repos_not_indexed"] == [MIX_OK]
+        # add_command names only the group, so the seam is what running it writes:
+        # the group's untainted repo, never the tainted one.
+        for result in layout.run_add_command(hint["add_command"]):
+            assert result.exit_code == 0, result.output
+        assert layout.written() == {MIX_OK}
 
     def test_group_of_only_tainted_repos_has_no_hint(self, layout: Layout):
         layout.env(PIPECAT_HUB_TAINTED_REPOS=TONLY)
