@@ -7,6 +7,7 @@ subcommands registered from :mod:`pipecat_context_hub.cli_query`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ import os
 import shutil
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -756,7 +758,10 @@ def main(ctx: click.Context, log_level: str) -> None:
     # moving both later, and malformed-config warnings are emitted through
     # configured logging instead of Python's last-resort handler.
     _configure_logging(log_level)
-    provenance = env_loading.load_env_layers()
+    # `repos` is a config editor: the loader's "Loaded N key(s) from config.toml" INFO line is
+    # noise there, and `repos add` is about to rewrite that very file. Warnings still show.
+    with _loader_info_muted(ctx.invoked_subcommand == "repos"):
+        provenance = env_loading.load_env_layers()
     ctx.ensure_object(dict)
     ctx.obj["env_provenance"] = provenance
     config = HubConfig()
@@ -765,6 +770,19 @@ def main(ctx: click.Context, log_level: str) -> None:
     )
     if ctx.invoked_subcommand is None:
         ctx.invoke(serve)
+
+
+@contextlib.contextmanager
+def _loader_info_muted(mute: bool) -> Iterator[None]:
+    """Raise the env loader's logger to WARNING for the block when ``mute``."""
+    loader_logger = logging.getLogger(env_loading.__name__)
+    previous = loader_logger.level
+    if mute:
+        loader_logger.setLevel(max(previous, logging.WARNING))
+    try:
+        yield
+    finally:
+        loader_logger.setLevel(previous)
 
 
 def _resolve_watch_and_idle_plan(
