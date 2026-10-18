@@ -8,7 +8,7 @@ tags. Fully automated — no manual curation file required.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -459,7 +459,12 @@ class TaxonomyBuilder:
         """
         examples_dir = root / "examples"
         foundational_dir = examples_dir / "foundational"
-        if is_plain_dir(foundational_dir):
+        # ``examples/`` must itself be a real directory before anything under it
+        # is trusted: ``is_plain_dir`` only inspects the last path component, so
+        # with ``examples -> /elsewhere`` the check on ``examples/foundational``
+        # would resolve through the link and pass.
+        examples_is_real = is_plain_dir(examples_dir)
+        if examples_is_real and is_plain_dir(foundational_dir):
             entries = self.build_from_foundational(
                 foundational_dir, repo=repo, commit_sha=commit_sha
             )
@@ -476,13 +481,13 @@ class TaxonomyBuilder:
             entries.extend(sibling_entries)
             self._entries.extend(sibling_entries)
             return entries
-        if is_plain_dir(examples_dir) and any(is_plain_dir(p) for p in examples_dir.iterdir()):
+        if examples_is_real and any(is_plain_dir(p) for p in examples_dir.iterdir()):
             return self.build_from_topic_dirs(examples_dir, repo=repo, commit_sha=commit_sha)
         # Root-level fallback (``pipecat-examples`` layout). When the repo
         # root also looks like a packaged project (contains ``src/`` or
         # ``pyproject.toml``), require_example_markers=True keeps junk
         # entries for ``src``/``tests``/``docs``/etc. out of the taxonomy.
-        require_markers = (root / "src").is_dir() or (root / "pyproject.toml").is_file()
+        require_markers = is_plain_dir(root / "src") or is_plain_file(root / "pyproject.toml")
         return self.build_from_examples_repo(
             root,
             repo=repo,
@@ -554,7 +559,7 @@ class TaxonomyBuilder:
             summary=summary,
             readme_content=readme_content,
             commit_sha=commit_sha,
-            indexed_at=datetime.now(timezone.utc),
+            indexed_at=datetime.now(UTC),
         )
 
     def _build_entry_for_foundational_file(
@@ -589,7 +594,7 @@ class TaxonomyBuilder:
             summary="",
             readme_content=None,
             commit_sha=commit_sha,
-            indexed_at=datetime.now(timezone.utc),
+            indexed_at=datetime.now(UTC),
         )
 
     def _scan_topic_tree(
@@ -618,11 +623,9 @@ class TaxonomyBuilder:
             return entries
         skip = set(skip_names) if skip_names else set()
         for ex_dir in _discover_under_examples(examples_dir):
-            # Refuse to follow symlinks out of the clone root. Untrusted
-            # upstream repos could land a symlink under examples/ either as
-            # the example dir itself OR as the enclosing topic dir.
-            if ex_dir.is_symlink():
-                continue
+            # ``_discover_under_examples`` only yields real directories (never a
+            # symlink or junction, as the example dir or as its enclosing topic
+            # dir), so nothing here needs to re-check for links.
             try:
                 rel_parts = ex_dir.relative_to(examples_dir).parts
             except ValueError:
@@ -632,11 +635,6 @@ class TaxonomyBuilder:
             # entry still has a meaningful capability tag.
             topic_name = rel_parts[0] if rel_parts else examples_dir.name
             if topic_name in skip:
-                continue
-            # A symlinked topic dir would let ``_discover_under_examples``
-            # reach through it and surface grandchildren that aren't really
-            # under ``examples/``. Reject those too.
-            if rel_parts and (examples_dir / topic_name).is_symlink():
                 continue
             entries.append(
                 self._build_entry_for_topic_example(
@@ -699,7 +697,7 @@ class TaxonomyBuilder:
             summary=summary,
             readme_content=readme_content,
             commit_sha=commit_sha,
-            indexed_at=datetime.now(timezone.utc),
+            indexed_at=datetime.now(UTC),
         )
 
     def _build_entry_for_example(
@@ -750,5 +748,5 @@ class TaxonomyBuilder:
             summary=summary,
             readme_content=readme_content,
             commit_sha=commit_sha,
-            indexed_at=datetime.now(timezone.utc),
+            indexed_at=datetime.now(UTC),
         )

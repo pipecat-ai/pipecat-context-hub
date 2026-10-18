@@ -17,6 +17,11 @@ still present in ``search_examples`` results — the fixture file and the
 vendored duplicate were never filtered from ``github_ingest.py``'s
 independent file walk. These two helpers are the single source of truth for
 both ingesters going forward, so a future fix here can't drift the same way.
+
+The same module owns ``is_plain_file`` / ``is_plain_dir``, the one rule for which
+filesystem entries an example walk may follow (real files and directories, never
+a symlink or junction). ``github_ingest.py`` and ``taxonomy.py`` both apply it;
+``source_ingest.py`` keeps its own link checks and is not yet on this rule.
 """
 
 from __future__ import annotations
@@ -53,8 +58,12 @@ def is_plain_dir(path: Path) -> bool:
     The rule for every directory an ingester treats as an example (or as the
     ``examples/`` tree holding them). A committed directory symlink can point
     outside the clone, so following it reads files that were never part of the
-    repo; both ingesters and the taxonomy builder must refuse the same ones, or
-    one indexes what another skipped.
+    repo; ``github_ingest`` and the taxonomy builder must refuse the same ones, or
+    one indexes what the other skipped.
+
+    Only the final path component is inspected: a real directory reached through
+    a linked *parent* still passes, so a caller must validate each ancestor it
+    does not already trust (``examples/`` before ``examples/foundational``).
     """
     try:
         return not is_reparse_link(path) and stat.S_ISDIR(path.lstat().st_mode)

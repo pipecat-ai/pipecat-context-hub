@@ -1474,3 +1474,58 @@ class TestSymlinkedExampleDirectories:
 
         assert all(self._SECRET not in (e.readme_content or "") for e in entries)
         assert not any(e.example_id.startswith("foundational-") for e in entries)
+
+    def test_symlinked_examples_dir_holding_foundational_is_not_scanned(self, tmp_path: Path):
+        """``examples/foundational`` is a real directory only *through* the link.
+
+        ``is_plain_dir`` inspects the last component alone, so ``examples`` itself must
+        be vetted first; otherwise its outside ``foundational/`` was scanned and read.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside-examples"
+        (outside / "foundational" / "01-x").mkdir(parents=True)
+        (outside / "foundational" / "01-x" / "README.md").write_text(self._SECRET + "\n")
+        (outside / "foundational" / "01-x" / "bot.py").write_text(
+            "from pipecat.services.elevenlabs import X\n"
+        )
+        (repo / "examples").symlink_to(outside)
+
+        entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+
+        assert not any(e.example_id.startswith("foundational-") for e in entries)
+        self._assert_unread(entries, "foundational-01-x")
+
+    def test_symlinked_examples_dir_holding_topics_is_not_scanned(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside-examples"
+        (outside / "voice" / "one").mkdir(parents=True)
+        (outside / "voice" / "one" / "README.md").write_text(self._SECRET + "\n")
+        (repo / "examples").symlink_to(outside)
+
+        entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+
+        assert not any(e.example_id.startswith("voice-") for e in entries)
+        self._assert_unread(entries, "voice-one")
+
+    def test_marker_links_in_the_repo_root_do_not_abort(self, tmp_path: Path):
+        """The packaged-project probe must not stat through ``src`` / ``pyproject.toml`` links."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root can traverse any directory")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "pyproject.toml").write_text("[project]\n")
+        (locked / "src").mkdir()
+        repo = tmp_path / "repo"
+        (repo / "real").mkdir(parents=True)
+        (repo / "real" / "bot.py").write_text("x = 1\n")
+        (repo / "pyproject.toml").symlink_to(locked / "pyproject.toml")
+        (repo / "src").symlink_to(locked / "src")
+        locked.chmod(0)
+        try:
+            entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+        finally:
+            locked.chmod(0o700)
+
+        assert [e.example_id for e in entries] == ["example-real"]
