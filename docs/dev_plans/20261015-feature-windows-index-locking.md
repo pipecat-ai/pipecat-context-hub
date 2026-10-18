@@ -29,6 +29,7 @@ of Windows' file-handle semantics (open files cannot be deleted, no
 | W6 | Refresh generation is `(st_ino, st_mtime_ns, st_size)` of the lock file. NTFS file IDs and timestamp granularity differ from POSIX inodes; whether `st_ino` is non-zero and stable, and whether the size-stepping bump is visible across handles, is untested. | `refresh_generation` (~295) | If it did not change, `serve` would keep a stale handle after a refresh and serve the old graph. |
 | W7 | Windows CI runs only a subset (`tests/unit/test_index_store.py`, `test_format_detection`, `test_metadata_types`, `test_taxonomy`, `test_github_ingest`, `test_cli`, `test_hub_status`, `test_env_loading`, `test_config`). `test_index_lock.py`, the reopening/serve tests and the integration tests are not run there; several are `skipif(win32)` outright. | `.github/workflows/ci.yml` windows-smoke | Nothing automated has ever executed the Windows lock path. |
 | W8 | Lock file deleted or replaced outside the hub while held lets two refreshes overlap. Not Windows-specific (accepted on every platform) but Windows is likelier to see it: antivirus/indexers and "delete the data dir" habits. | dev plan 20261014, accepted residual | Two refreshes interleave HNSW writes (the corruption this branch set out to prevent). |
+| W9 | Symlink and junction skipping in the ingest walkers (`is_plain_dir` / `is_plain_file`, branch `fix/ingest-skip-symlinked-dirs`) was never run against a real Windows link. Every symlink test is `skipif(win32)` because creating symlinks needs privileges, so `is_reparse_link` is untested for junctions (creatable unprivileged with `mklink /J`). `tests/unit/test_source_ingest.py` is not in the windows-smoke list at all. Also unverified: `_scannable_py_files(recursive=True)` in `taxonomy.py` uses `rglob`, which may descend a junction nested inside a plain example directory (only the leaf is `lstat`'d, and unlike `github_ingest` there is no `resolve()` containment check). | `shared/paths.py::is_reparse_link`, `ingest_filters.py`, `taxonomy.py` (~688, ~739), `source_ingest.py` | A repo committing a junction-like directory could have outside files read into taxonomy tags or `readme_content` on Windows, and CHANGELOG can only say junctions are skipped, not that it was tested. |
 
 ## Requirements for the follow-up
 
@@ -87,6 +88,17 @@ lock, a reader gets exit 75, refresh ends, the reader succeeds.
 folder" cannot unlink it while held. Free once R1/R5 use `CreateFileW`; otherwise
 leave as an accepted residual.
 
+**R8 (W9): test junction handling and close the nested-junction walk.** On
+`windows-latest`, add tests that create a junction with `mklink /J` (no privilege
+needed, unlike symlinks) and assert: `is_plain_dir` is False for it; example
+discovery, the taxonomy builder and `source_ingest` do not read through it; and a
+junction nested inside a plain example dir is not walked by
+`_scannable_py_files(recursive=True)`. If the last fails, replace `rglob` with a walk
+that prunes `is_reparse_link` directories, or add the same `resolve()` containment
+check `github_ingest` uses. Add `tests/unit/test_source_ingest.py` to the
+windows-smoke list. Once green, drop the "untested" caveat from the CHANGELOG
+Security entry.
+
 ## Non-goals
 - Changing POSIX behaviour. Every requirement above must leave `fcntl.flock`
   semantics and the existing POSIX tests untouched.
@@ -95,7 +107,7 @@ leave as an accepted residual.
 - A native Windows service or any new process model.
 
 ## Verification plan (cannot be done on macOS)
-All of R1-R6 need a real Windows host or the `windows-latest` runner; none can be
+All of R1-R6 and R8 need a real Windows host or the `windows-latest` runner; none can be
 claimed done from monkeypatched tests. Minimum evidence before closing:
 1. The new lock tests green on `windows-latest` py3.12 and py3.14.
 2. A manual two-terminal run on Windows: `serve` in one, `refresh --force` in the
@@ -104,6 +116,9 @@ claimed done from monkeypatched tests. Minimum evidence before closing:
 3. Two `serve` processes plus `refresh`: confirm `refresh` sees them.
 4. Repeat 2-3 with the data dir on a non-default drive and under OneDrive-synced
    `%USERPROFILE%` if available (sync clients take handles on files).
+5. R8: a junction pointing outside a cloned repo, at `examples/foo`, `examples/`, `src/<pkg>`
+   and nested inside an example, is skipped by `refresh` and nothing from its target
+   appears in `get_example` or `search_api` output.
 
 ## Open questions
 - Is a `ctypes` shim acceptable maintenance-wise versus a small dependency?
