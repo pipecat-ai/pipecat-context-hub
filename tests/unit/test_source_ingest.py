@@ -1049,7 +1049,27 @@ class TestSymlinksAreNotFollowed:
             locked.chmod(0o700)
 
         assert result.errors == []
-        assert "Leaked" not in " ".join(r.content for r in records if "Real" not in r.content)
+        assert any("RealThing" in r.content for r in records)  # control
+        assert not any("Leaked" in r.content for r in records)
+
+    def test_file_walks_skip_symlinked_and_special_files(self, tmp_path: Path):
+        """Discovery itself drops links and FIFOs, not only the read site."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "leak.py").write_text("pass")
+        (outside / "leak.ts").write_text("export const x = 1;")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "real.py").write_text("pass")
+        (root / "real.ts").write_text("export const y = 2;")
+        (root / "linked.py").symlink_to(outside / "leak.py")
+        (root / "linked.ts").symlink_to(outside / "leak.ts")
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(root / "fifo.py")
+            os.mkfifo(root / "fifo.ts")
+
+        assert [p.name for p in _find_python_files(root)] == ["real.py"]
+        assert [p.name for p in _find_ts_files(root)] == ["real.ts"]
 
     async def test_symlinked_docs_dir_is_not_read(self, tmp_path: Path, monkeypatch):
         clone_dir = self._clone(tmp_path)

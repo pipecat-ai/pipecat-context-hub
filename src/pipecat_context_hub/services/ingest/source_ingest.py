@@ -482,6 +482,8 @@ def _find_python_files(src_dir: Path) -> list[Path]:
     """Find all .py files under src_dir, skipping test dirs."""
     files: list[Path] = []
     for p in sorted(src_dir.rglob("*.py")):
+        if not is_plain_file(p):
+            continue
         if any(part in _SKIP_DIRS for part in p.relative_to(src_dir).parts):
             continue
         files.append(p)
@@ -523,7 +525,7 @@ def _find_ts_files(clone_dir: Path) -> list[Path]:
     files: list[Path] = []
     for ext in (".ts", ".tsx"):
         for p in sorted(clone_dir.rglob(f"*{ext}")):
-            if p.is_symlink():
+            if not is_plain_file(p):
                 continue
             rel_parts = p.relative_to(clone_dir).parts
             if any(part in _TS_SKIP_DIRS for part in rel_parts):
