@@ -15,6 +15,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import BaseModel
 
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.shared.corpus_hint import (
@@ -687,6 +688,26 @@ class TestCorpusHintPerTool:
         args = {"query": "nvidia", "symbol": "nvidia", "intent": "nvidia"}
         hinting = {t for t in registered if _hint("", tool=t, args=args) is not None}
         assert hinting == expected
+
+    def test_scanned_keys_are_fields_of_the_tools_input_model(self) -> None:
+        """A renamed input field would otherwise leave the table scanning a key no call carries."""
+        from pipecat_context_hub.shared import corpus_hint as module
+        from pipecat_context_hub.shared.types import (
+            GetCodeSnippetInput,
+            SearchApiInput,
+            SearchDocsInput,
+            SearchExamplesInput,
+        )
+
+        models: dict[str, type[BaseModel]] = {
+            "search_docs": SearchDocsInput,
+            "search_examples": SearchExamplesInput,
+            "search_api": SearchApiInput,
+            "get_code_snippet": GetCodeSnippetInput,
+        }
+        assert set(models) == set(module._HINT_TEXT_ARGS)
+        for tool, model in models.items():
+            assert set(module._HINT_TEXT_ARGS[tool]) <= set(model.model_fields), tool
 
     def test_unknown_tool_never_hints(self) -> None:
         assert _hint("nvidia", tool="not_a_tool") is None

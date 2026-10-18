@@ -608,7 +608,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   door (`add_command` is one `pipecat-context-hub repos add --config-only --group <group>` per matched group with an unconfigured, untainted repo, joined with `; `, and is omitted when none; `refresh_command` appears
   only with a configured-but-empty repo; `report_issue_url` equals `RETRIEVAL_QUALITY_ISSUE_URL`);
   `configured_repos` reflects process start (a later `repos add` does not change a running hint); `get_code_snippet` hints from
-  `symbol`/`intent`/`class_name`/`module` and not from `path` alone; identifier-aware matching (issue #148):
+  `symbol`/`intent`/`class_name`/`module` and not from `path` alone, and `search_api` also from `class_name`/`module`; identifier-aware matching (issue #148):
   `TavusVideoService`, `AWSBedrockLLMService`, `GeminiLiveLLMService` and `aws_bedrock` hint, the original-text
   match is kept (`iOS app`), and the substring negatives above do not hint; a partially indexed group lists only the missing repos
   in `repos_not_indexed`; multi-group queries give catalog-ordered `matched_groups`; the hint coexists
@@ -651,7 +651,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-18 @ 9a2fd1a1fd4f36b74d00e4268992b3cefc4a9e80 -->
+<!-- reviewed: 2026-10-18 @ a33d34e9dfcf69e8030d1534675a763d126e06fb -->
 
 ## Progress
 
