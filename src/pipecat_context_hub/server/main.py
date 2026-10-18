@@ -172,7 +172,10 @@ re-checking ``get_hub_status`` on the current connection, or on a \
 reconnect that did not restart the process, will still show \
 ``not_cached`` even after a successful ``refresh``. If \
 restarting doesn't resolve it, or the reason is \
-``load_failed``, share the full ``get_hub_status`` response and any \
+``load_failed``, share the ``get_hub_status`` response, leaving out \
+``indexed_repos`` and ``configured_no_records`` (they name every repo \
+configured on this machine, which may include private ones, and the bug \
+report is public), and any \
 ``pipecat-context-hub`` startup log lines (look for \
 ``Reranker disabled at startup`` and the ``pipecat-context-hub vX.Y.Z \
 starting`` banner) with the user and suggest they file a bug report at \

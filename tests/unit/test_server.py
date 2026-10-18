@@ -1379,6 +1379,18 @@ class TestCorpusHintInstructionsAndTemplate:
         assert "draft" in lowered
         assert "user files" in lowered or "do not file" in lowered or "never file" in lowered
 
+    def test_server_instructions_keep_local_repo_names_out_of_bug_reports(self):
+        # The degraded-hub paragraph routes the get_hub_status response into a
+        # public bug report; the fields naming local (possibly private) repos stay out.
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        flat = " ".join(_SERVER_INSTRUCTIONS.split())
+        assert "share the full ``get_hub_status`` response" not in flat
+        assert (
+            "share the ``get_hub_status`` response, leaving out ``indexed_repos`` "
+            "and ``configured_no_records``" in flat
+        )
+
     def test_retrieval_quality_template_has_the_candidate_repos_field(self):
         from pathlib import Path
 
