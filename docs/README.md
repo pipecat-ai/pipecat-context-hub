@@ -174,11 +174,12 @@ A search response may also carry a top-level **`corpus_hint`** when the query
 names a [repo catalog](configuration.md#repo-catalog) group whose repos are not indexed: it
 lists the missing repos and the `repos add` / `refresh` commands that would add
 them. An alias matches whole words, including the words of a CamelCase or
-snake_case identifier (`TavusVideoService`, `aws_bedrock`); for `get_code_snippet`
-the text checked is `symbol`, `intent`, `class_name` and `module`, and for
-`search_api` it is `query`, `class_name` and `module`. The key is
-absent when no hint applies, and the hint does not depend on result confidence. The one-shot CLI prints its generic stderr poor-results hint
-only when there is no `corpus_hint`. `serve` reads configured and tainted repos
+snake_case identifier (`TavusVideoService`, `aws_bedrock`). The text checked is
+`query` for `search_docs` and `search_examples`; `query`, `class_name` and
+`module` for `search_api`; and `symbol`, `intent`, `class_name` and `module` for
+`get_code_snippet`. The key is absent when no hint applies, and the hint does
+not depend on result confidence. The one-shot CLI prints its generic stderr
+poor-results hint only when there is no `corpus_hint`. `serve` reads configured and tainted repos
 once at startup, so restart it after `repos add` / `repos remove`.
 
 ### Filters
