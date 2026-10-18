@@ -52,6 +52,7 @@ import httpx
 from catalog_script_common import (
     API_BASE,
     EXIT_CATALOG,
+    catalog_slugs,
     github_headers,
     is_bool,
     load_catalog_arg,
@@ -59,7 +60,6 @@ from catalog_script_common import (
     validated_body,
 )
 
-from pipecat_context_hub.shared.repo_catalog import Catalog
 from pipecat_context_hub.shared.repo_slug import slug_key
 
 ADVISORY_DAYS = 90
@@ -109,7 +109,11 @@ def make_client(token: str | None, transport: httpx.BaseTransport | None = None)
 
 
 def _name_from_api_url(url: str) -> str | None:
-    """``owner/repo`` from ``.../repos/owner/repo`` (or ``.../repositories/{id}``)."""
+    """``owner/repo`` from ``.../repos/owner/repo``; ``None`` for anything else.
+
+    ``.../repositories/{id}`` (GitHub's real rename target) names no repo, so it
+    is ``None`` too: ``resolve_repositories_redirect`` looks that one up.
+    """
     parts = [unquote(p) for p in urlparse(url).path.split("/") if p]
     if "repos" in parts:
         tail = parts[parts.index("repos") + 1 :]
@@ -209,10 +213,6 @@ def check_slug(client: httpx.Client, slug: str) -> EntryResult:
 
 def check_slugs(client: httpx.Client, slugs: Sequence[str]) -> list[EntryResult]:
     return [check_slug(client, slug) for slug in slugs]
-
-
-def catalog_slugs(catalog: Catalog) -> list[str]:
-    return [repo.slug for group in catalog.groups for repo in group.repos]
 
 
 def verified_age_days(verified: date, today: date) -> int:

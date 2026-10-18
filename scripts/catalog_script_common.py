@@ -108,6 +108,11 @@ def load_catalog_arg(path: Path | None) -> Catalog | None:
     return catalog
 
 
+def catalog_slugs(catalog: Catalog) -> list[str]:
+    """Every catalog repo slug, in catalog order (both scripts walk the same list)."""
+    return [repo.slug for group in catalog.groups for repo in group.repos]
+
+
 def _catalog_failure(message: str) -> None:
     print(message)
     print(message, file=sys.stderr)

@@ -53,6 +53,7 @@ from catalog_script_common import (
     API_BASE,
     EXIT_CATALOG,
     FieldCheck,
+    catalog_slugs,
     github_headers,
     is_bool,
     is_list,
@@ -240,6 +241,7 @@ def discover_vendors(
     private_hits = 0
     read = 0
     total = 0
+    failed = False
     for page in range(1, SEARCH_PAGES + 1):
         payload, problem = _get(
             client,
@@ -249,7 +251,8 @@ def discover_vendors(
         )
         if payload is None:
             problems.append(f"page {page}: {problem}")
-            return found
+            failed = True  # the problem is recorded; the earlier pages' private count still is
+            break
         if payload["incomplete_results"] is True:
             # GitHub answers 200 with ``incomplete_results: true`` when the search
             # timed out, so this page may be missing matches.
@@ -279,7 +282,7 @@ def discover_vendors(
             )
         if read >= total or len(items) < SEARCH_PER_PAGE:
             break  # all read, or a short/empty page: GitHub has no further page
-    if read < total:
+    if read < total and not failed:
         where = (
             f"stopped at the {SEARCH_PAGES}-page cap"
             if page == SEARCH_PAGES and len(items) == SEARCH_PER_PAGE
@@ -356,7 +359,7 @@ def main(
     if catalog is None:
         return EXIT_CATALOG
 
-    slugs = [r.slug for g in catalog.groups for r in g.repos]
+    slugs = catalog_slugs(catalog)
     # The shipped default repos are always indexed and never in the catalog (the
     # parser rejects them), yet they match the code search heavily.
     known = {slug_key(s) for s in [*slugs, *SourceConfig().repos]}

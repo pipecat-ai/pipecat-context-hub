@@ -524,6 +524,30 @@ class TestCurate:
         assert "`new/vendor`: 1 matching files" in out
         assert "Code-search problems" not in out
 
+    def test_a_failing_later_page_keeps_the_earlier_private_count(self) -> None:
+        # Page 1 is full and carries private hits; page 2 fails. The failure is a
+        # problem, and the private hits already read are still counted (not named).
+        page_one = [_hit("secret/private-repo", private=True)] + [
+            _vendor(i) for i in range(curate.SEARCH_PER_PAGE - 1)
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.params["page"] == "1":
+                return _resp(200, _search(page_one, total=500))
+            return _resp(500)
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            problems: list[str] = []
+            notes: list[str] = []
+            found = curate.discover_vendors(client, set(), problems, notes)
+        assert problems == ["page 2: HTTP 500"]  # no second "read x of y" problem
+        assert len(found) == curate.SEARCH_PER_PAGE - 1
+        assert notes == [
+            "1 code-search hit(s) in private repositories excluded"
+            " (a private repository is never a catalog candidate)"
+        ]
+        assert "secret" not in curate.render_report([], found, problems, notes)
+
     def test_non_utf8_catalog_exits_catalog_code(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

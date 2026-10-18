@@ -91,7 +91,8 @@ def _catalog(monkeypatch: pytest.MonkeyPatch):
 
 
 def _record(slug: str, n: int = 0) -> ChunkedRecord:
-    rng = random.Random(hash((slug, n)) % 10000)
+    # A str seed is hashed deterministically; hash() of a tuple of str is salted per process.
+    rng = random.Random(f"{slug}:{n}")
     return ChunkedRecord(
         chunk_id=f"{slug}-{n}",
         content=f"Content of {slug} chunk {n}.",

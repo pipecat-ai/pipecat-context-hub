@@ -150,6 +150,10 @@ This project uses [Semantic Versioning](https://semver.org/).
   holds them open: stop it, then retry.
 
 ### Fixed
+- **`get_counts_by_repo` counts each chunk once.** The synthetic `docs.pipecat.ai`
+  key counted every `doc` chunk, including a repo's README fallback, which is
+  also counted under its repo. It now counts only crawled doc chunks (no repo), so
+  `refresh`'s docs "existing" figure and the per-repo figures no longer overlap.
 - **Search ranking no longer changes with `limit`.** Each backend was asked for
   exactly `limit` candidates, so `search_api("PipecatClientProvider",
   chunk_type="function")` lost its definition to files that merely mention the name
