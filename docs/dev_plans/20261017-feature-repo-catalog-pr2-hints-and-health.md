@@ -194,8 +194,9 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
   per parent Decision 4.
 - The parent Hints bullet in full, by file:
   - `test_corpus_hint.py`: text matching (alias negatives such as "laws" vs "aws", the verbatim concept
-    queries `TTS + nvidia` and `TTS & nvidia`, uppercase alias), `get_code_snippet` from `symbol`/`intent`
-    and not `path` alone, a partial group listing only missing repos, catalog-ordered `matched_groups`, the
+    queries `TTS + nvidia` and `TTS & nvidia`, uppercase alias), `get_code_snippet` from `symbol`/`intent`/`class_name`/`module` and
+    `search_api` also from `class_name`/`module` (not `path` alone), identifier queries (`TavusVideoService`,
+    `aws_bedrock`; parent Decision 3 amendment, issue #148), a partial group listing only missing repos, catalog-ordered `matched_groups`, the
     `parseable = false` and tainted skips, `repos_configured_no_records` (the hint field; `configured_no_records`
     is the status field), and 0.95 confidence still hinting. Unreadable counts: a store whose
     `get_counts_by_repo` raises, a fake lacking the method and a bare `MagicMock()` store each give
@@ -239,6 +240,7 @@ expected-outcome table in Phase 4 is provisional until that read (a Phase 4 step
   only as provenance.
 - Mutation checks (revert, confirm the named test fails):
   - Alias word boundary: the "laws" negative.
+  - Identifier split and its original-text arm (keeps `iOS app`): the `TavusVideoService` positive and the `iOS app` test.
   - Skip `parseable = false`: the `parseable = false` skip test.
   - Skip tainted: the tainted-in-neither-field test, on both doors.
   - CLI stderr suppression: the one-hint-not-two test.
@@ -330,7 +332,7 @@ exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.
 (`/mcp`). Run the new numbered `docs/smoke-test.md` item for one unindexed and one indexed vendor query.
 Put the result and the mutation-check results in the PR description. Restore the released tool afterwards.
 
-<!-- reviewed: 2026-10-18 @ dc6c339d9f3d78e5d2367a9725579d3628b1cc2e -->
+<!-- reviewed: 2026-10-18 @ d735bc025f13814c6bf6d958847359736e2a6ccb -->
 
 ## Progress
 

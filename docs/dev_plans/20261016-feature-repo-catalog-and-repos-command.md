@@ -118,7 +118,7 @@ recommendation, the change is stated. Review history and grilled outcomes are in
      missed the normal way `search_api` is used: `TavusVideoService`, `AWSBedrockLLMService`,
      `GeminiLiveLLMService` and `aws_bedrock` carried no hint, because `\w` joins CamelCase runs and
      underscores. Invariant: **an alias matches when it matches the original casefolded text OR the
-     identifier-split text** (underscores to spaces; a break between a lowercase letter or digit and an
+     identifier-split text** (each run of underscores to one space; a break between a lowercase letter or digit and an
      uppercase letter, and between an acronym and a following capitalised word; then casefolded), each under
      the unchanged `(?<!\w)alias(?!\w)` boundary. Matching the original too makes the new rule a strict
      superset of the old, so no query that hinted stops hinting (`iOS app` splits to `i OS app` and would
@@ -654,7 +654,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-18 @ a49c258b27c39ff6e4236a22790cbe06736142c6 -->
+<!-- reviewed: 2026-10-18 @ c7e26bfc83082b60d40ad14ca63b3488e4e5f3fa -->
 
 ## Progress
 

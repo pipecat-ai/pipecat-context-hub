@@ -154,11 +154,13 @@ This project uses [Semantic Versioning](https://semver.org/).
   `AWSBedrockLLMService`, `GeminiLiveLLMService` and `aws_bedrock` carried no hint,
   because CamelCase runs and underscores defeated the alias word boundary. An
   alias now also matches the query with CamelCase and underscores split into
-  words, on top of the text as typed, so no query that hinted before stops
+  words (a run of underscores is one separator), on top of the text as typed, so no query that hinted before stops
   hinting. A whole word must equal an alias: `LawsOfRobotics`, `ClawsClient` and
   `claws_of_x` still do not match `aws`. `get_code_snippet` also reads
   `class_name` and `module` (valid beside `symbol`), as does `search_api`, so
-  `symbol="__init__", class_name="TavusVideoService"` hints. Known limits: an
+  `symbol="__init__", class_name="TavusVideoService"` hints. The scanned
+  arguments of one call are joined with a newline, so a multi-word alias
+  (`nova sonic`) cannot span two of them. Known limits: an
   alias spelled in CamelCase by the vendor still misses once other words attach
   (`SageMakerSTTService`), as do back-to-back acronyms (`AWSLLMService`) and a
   digit glued to an alias (`Gemini2Flash`).

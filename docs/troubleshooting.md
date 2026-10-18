@@ -146,7 +146,8 @@ Part of the [Pipecat Context Hub README](README.md).
   generate a structured report); crashes, incorrect behavior, or anything else
   go to [bug-report.yml](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml).
 - **A search response carries `corpus_hint`** — the query names a vendor or
-  topic whose catalog repos are not indexed, so the results cannot cover it.
+  topic (also inside an identifier such as `TavusVideoService` or `aws_bedrock`)
+  whose catalog repos are not indexed, so the results cannot cover it.
   Run the hint's `add_command` (it only adds them to `config.toml`), then
   `pipecat-context-hub refresh`; restart `serve` afterwards, since it reads
   configured repos once at start. The hint carries `refresh_command` only when
