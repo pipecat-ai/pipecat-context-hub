@@ -459,7 +459,8 @@ the indexed pipecat version; re-verify against the current registry if they drif
     - `aws_bedrock` -- includes `aws`.
     - `GeminiLiveLLMService` -- includes `google`.
     - `get-code-snippet --symbol __init__ --class-name TavusVideoService` --
-      includes `tavus` (`class_name` and `module` are scanned beside `symbol`).
+      includes `tavus` (`class_name` and `module` are scanned beside `symbol`;
+      `search-api` scans its `--class-name` and `--module` filters too).
     Negatives, never a hint from any group: `LawsOfRobotics`, `FlawsInCode`,
     `claws_of_x`, `ClipSyncer`. With a group's repos indexed, its identifier
     query carries no hint. Item 55's verdicts are unchanged. Verdicts hold only

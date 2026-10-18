@@ -157,8 +157,11 @@ This project uses [Semantic Versioning](https://semver.org/).
   words, on top of the text as typed, so no query that hinted before stops
   hinting. A whole word must equal an alias: `LawsOfRobotics`, `ClawsClient` and
   `claws_of_x` still do not match `aws`. `get_code_snippet` also reads
-  `class_name` and `module` (valid beside `symbol`), so `symbol="__init__",
-  class_name="TavusVideoService"` hints.
+  `class_name` and `module` (valid beside `symbol`), as does `search_api`, so
+  `symbol="__init__", class_name="TavusVideoService"` hints. Known limits: an
+  alias spelled in CamelCase by the vendor still misses once other words attach
+  (`SageMakerSTTService`), as do back-to-back acronyms (`AWSLLMService`) and a
+  digit glued to an alias (`Gemini2Flash`).
 - **`get_counts_by_repo` counts each chunk once.** The synthetic `docs.pipecat.ai`
   key counted every `doc` chunk, including a repo's README fallback, which is
   also counted under its repo. It now counts only crawled doc chunks (no repo), so

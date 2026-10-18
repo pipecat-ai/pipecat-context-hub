@@ -634,8 +634,20 @@ class TestCorpusHintPerTool:
         assert _hint("nvidia", tool=tool) is not None
         # A symbol/intent on these tools is not the matched text.
         assert _hint("x", tool=tool, args={"query": "x", "symbol": "nvidia"}) is None
+        # The ``class_name`` / ``module`` filters are topic text only where the tool has them.
         for key in ("class_name", "module"):
-            assert _hint("x", tool=tool, args={"query": "x", key: "nvidia"}) is None
+            hinted = _hint("x", tool=tool, args={"query": "x", key: "nvidia"}) is not None
+            assert hinted == (tool == "search_api"), (tool, key)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            {"query": "__init__", "class_name": "NvidiaSTTService"},
+            {"query": "connect", "module": "pipecat.services.nvidia.stt"},
+        ],
+    )
+    def test_search_api_reads_its_class_and_module_filters(self, args: dict[str, str]) -> None:
+        assert _hint("", tool="search_api", args=args)
 
     def test_get_code_snippet_reads_symbol(self) -> None:
         assert _hint("", tool="get_code_snippet", args={"symbol": "NvidiaSTTService nvidia"})

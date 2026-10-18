@@ -135,7 +135,7 @@ def groups_not_indexed(
 _HINT_TEXT_ARGS: dict[str, tuple[str, ...]] = {
     "search_docs": ("query",),
     "search_examples": ("query",),
-    "search_api": ("query",),
+    "search_api": ("query", "class_name", "module"),
     "get_code_snippet": ("symbol", "intent", "class_name", "module"),
 }
 

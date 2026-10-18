@@ -104,8 +104,9 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    ` + ` / ` & ` concept; **identifier-aware**, see the amendment below) **and** at least one `parseable` repo of that group is not indexed
    (decision 10), and the repo is not tainted. Applies to the four search tools only (`search_docs`, `search_examples`,
    `search_api`, `get_code_snippet`). The text matched is per tool, from one table in
-   `shared/corpus_hint.py`: `query` for the three search tools; `symbol`, `intent`, `class_name` and
-   `module` for `get_code_snippet` (a path-only lookup never hints). `matched_groups` follows catalog order, so
+   `shared/corpus_hint.py`: `query` for `search_docs` and `search_examples`; `query`, `class_name` and
+   `module` for `search_api`; `symbol`, `intent`, `class_name` and `module` for
+   `get_code_snippet` (a path-only lookup never hints). `matched_groups` follows catalog order, so
    multi-group output is deterministic. No embeddings, no network. Changed from the grilled "low
    confidence or empty" gate after `/review-plan`: on the maintainer's live index (2026-10-17)
    `search_docs` reported a not-low confidence (0.95) for three of four unindexed-vendor queries, and
@@ -127,8 +128,15 @@ recommendation, the change is stated. Review history and grilled outcomes are in
      list, minimum alias length or catalog symbol-safe flag**, and no symbol aliases in the catalog (they
      would need upkeep per service class). Accepted cost: an identifier containing a generic alias word
      hints exactly as the same word in prose already did (`SmartTurnAnalyzerV3`, `WebinarMode`,
-     `WhiskerObserver`). `get_code_snippet` also scans `class_name` and `module` (valid only beside `symbol`),
-     so `symbol="__init__", class_name="TavusVideoService"` hints. The change lives in
+     `WhiskerObserver`). `get_code_snippet` and `search_api` also scan their `class_name` and `module` filters
+     (valid only beside `symbol` on `get_code_snippet`), so `symbol="__init__", class_name="TavusVideoService"` and
+     `search_api(query="connect", class_name="TavusVideoService")` hint; the other two search tools have no such
+     filters. **Known limits (accepted, `/review-gauntlet` round 1):** an alias is matched whole, never as a run of
+     adjacent split tokens, so an alias the vendor spells in CamelCase misses once other words attach
+     (`SageMakerSTTService`, `SuperMemoryClient`, `super_memory` against `sagemaker` / `supermemory`; the bare
+     `SageMaker` still hints); back-to-back acronyms do not split (`AWSLLMService`); a digit glued to an alias
+     defeats it (`Gemini2Flash`); `iOSApp` splits to `i OS App`; a hyphenated alias does not match its CamelCase
+     spelling (`DumE` against `dum-e`). The change lives in
      `shared/corpus_hint.py` only; both front doors reach it through `finish_response`, and the catalog and
      `repo_catalog.py` are untouched. `docs/smoke-test.md` item 55's verdicts cannot change (superset, and
      its queries contain no identifier tokens); the identifier queries are frozen as item 56.
@@ -643,7 +651,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-18 @ e76308dee76f2c1a6b2342205096ed28774b5816 -->
+<!-- reviewed: 2026-10-18 @ 9a2fd1a1fd4f36b74d00e4268992b3cefc4a9e80 -->
 
 ## Progress
 
