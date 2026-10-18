@@ -1,6 +1,6 @@
 # Repo catalog PR 2: indexed-repo status, corpus hints and catalog health
 
-**Branch:** `feature/repo-catalog-pr2` | **Review Gates:** full | **Component:** retrieval | **Status:** Complete (phases 3a, 3b, 3c, 4, 5 and 4b implemented)
+**Branch:** `feature/repo-catalog-pr2` | **Review Gates:** full | **Component:** retrieval | **Status:** Complete (phases 3a, 3b, 3c, 4, 5 and 4b implemented; merged as #147, `05aaff3`)
 
 ## Objective
 

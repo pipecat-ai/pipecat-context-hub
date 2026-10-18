@@ -2918,7 +2918,7 @@ class TestRefreshFtsFaultInjection:
         mock_store.delete_metadata = MagicMock(side_effect=lambda key: meta.pop(key, None))
         hash_present_at_delete: list[bool] = []
 
-        async def _delete_by_content_type(content_type):
+        async def _delete_by_content_type(content_type, *, without_repo=False):
             hash_present_at_delete.append("docs:content_hash" in meta)
             raise RuntimeError("FTS delete_by_content_type failed")
 
@@ -3023,7 +3023,7 @@ class TestRefreshFtsFaultInjection:
 
         result2 = CliRunner().invoke(main, ["refresh"])
         assert result2.exit_code == 0, result2.output
-        mock_store.delete_by_content_type.assert_awaited_once_with("doc")
+        mock_store.delete_by_content_type.assert_awaited_once_with("doc", without_repo=True)
         mock_crawler.ingest.assert_awaited_once()
         assert meta.get("docs:content_hash") == content_hash
 

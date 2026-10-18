@@ -184,11 +184,15 @@ class IndexStore:
             logger.warning("Index divergence: vector=%d fts=%d records", vector_count, fts_count)
         return vector_count
 
-    async def delete_by_content_type(self, content_type: str) -> int:
-        """Delete records by content type from both indexes. Returns count deleted."""
-        vector_count = self._vector.delete_by_content_type(content_type)
+    async def delete_by_content_type(self, content_type: str, *, without_repo: bool = False) -> int:
+        """Delete records by content type from both indexes. Returns count deleted.
+
+        ``without_repo`` limits the delete to records with no repo, so repo-owned
+        records of the same type (README-fallback chunks) survive.
+        """
+        vector_count = self._vector.delete_by_content_type(content_type, without_repo=without_repo)
         try:
-            fts_count = self._fts.delete_by_content_type(content_type)
+            fts_count = self._fts.delete_by_content_type(content_type, without_repo=without_repo)
         except Exception:
             logger.exception("FTS delete_by_content_type failed; indexes may have diverged")
             raise
