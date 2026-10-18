@@ -147,11 +147,12 @@ Part of the [Pipecat Context Hub README](README.md).
   go to [bug-report.yml](https://github.com/pipecat-ai/pipecat-context-hub/issues/new?template=bug-report.yml).
 - **A search response carries `corpus_hint`** — the query names a vendor or
   topic whose catalog repos are not indexed, so the results cannot cover it.
-  Run the hint's `add_command` (adds them to `config.toml`), then its
-  `refresh_command`; restart `serve` afterwards, since it reads configured
-  repos once at start. Repos under `repos_configured_no_records` are already
-  configured but have no records: run `refresh` and check its log for a failed
-  clone.
+  Run the hint's `add_command` (it only adds them to `config.toml`), then
+  `pipecat-context-hub refresh`; restart `serve` afterwards, since it reads
+  configured repos once at start. The hint carries `refresh_command` only when
+  `repos_configured_no_records` is non-empty: those repos are already
+  configured but have no records, so run `refresh` and check its log for a
+  failed clone.
 
 ## Windows
 

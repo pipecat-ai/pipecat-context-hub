@@ -195,6 +195,11 @@ src/pipecat_context_hub/
     ├── transport.py          # stdio transport + parent-death / grandparent-death watchdogs (idle = fallback)
     └── tools/                # Per-tool handler modules
 
+scripts/                      # Not packaged; scripts run by `just` recipes and workflows (partial list)
+├── check_repo_catalog.py     # `just catalog-health` / catalog-health.yml: weekly existence check of catalog repos
+├── curate_repo_catalog.py    # `just catalog-curate`: report-only curation (file counts, code-search vendor candidates)
+└── catalog_script_common.py  # shared by both: catalog loading, GitHub headers, validated_body (the one response validator)
+
 dashboard/
 ├── public/                   # Served by `just dashboard-serve`
 │   ├── index.html            # Stats dashboard (loads dashboard_data.json)

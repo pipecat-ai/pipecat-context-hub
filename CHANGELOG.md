@@ -70,11 +70,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   `just catalog-health`) flags private, missing, archived or renamed catalog
   entries and opens or updates one tracking issue; PR CI never touches the
   network for it (exit 0 ok, 1 a flagged entry, 2 only inconclusive lookups,
-  3 catalog unloadable). `just catalog-curate` prints a read-only curation
-  report (source-file counts, vendor candidates from GitHub code search) and
-  exits 2 when the code search was incomplete, malformed or stopped at its page
-  cap, or a catalog repo's metadata or file tree could not be read in full (a
-  truncated tree included); 1 without a GitHub token, 3 catalog unloadable.
+  3 catalog unloadable). An entry is ok only when its GitHub answer is fully
+  validated; anything else is inconclusive. An inconclusive-only run comments
+  on the tracking issue and keeps its body, the last conclusive report.
+  `just catalog-curate` prints a read-only curation report (source-file counts,
+  vendor candidates from GitHub code search) and exits 2 when any GitHub answer
+  it used was not fully validated or results were left unread (fewer read than
+  `total_count`, however the search stopped), or a tree was truncated; 1 without
+  a GitHub token, 3 catalog unloadable.
 - `repos add --unlisted` prints a stderr note that the repo is not vetted by
   the catalog and names its owner; the MCP instructions tell the agent to say
   the same before suggesting it.
