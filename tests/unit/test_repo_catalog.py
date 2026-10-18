@@ -522,7 +522,9 @@ class TestLoadCatalog:
         home = str(Path.home())
 
         def boom() -> str:
-            raise OSError(f"[Errno 2] No such file: '{home}/site-packages/repo_catalog.toml'")
+            raise OSError(
+                f"[Errno 2] No such file: '{home}{os.sep}site-packages{os.sep}repo_catalog.toml'"
+            )
 
         monkeypatch.setattr(repo_catalog, "_read_catalog_text", boom)
         load_catalog.cache_clear()

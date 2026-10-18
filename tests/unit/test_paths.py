@@ -166,6 +166,20 @@ class TestRedactHomeInText:
         assert str(tmp_path) not in result
         assert "~" in result
 
+    def test_repr_escaped_windows_path_is_redacted(self, monkeypatch):
+        """An OSError renders its filename with repr(), doubling each backslash."""
+        from pathlib import PureWindowsPath
+
+        home = PureWindowsPath("C:\\Users\\x")
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(os, "sep", "\\")
+        text = f"[Errno 5] I/O error: {str(home / 'y')!r}"
+        assert "C:\\\\Users" in text  # the doubled form is what an OSError renders
+        assert redact_home_in_text(text) == "[Errno 5] I/O error: '~\\\\y'"
+        # a longer sibling of home is left alone
+        sibling = f"[Errno 5] I/O error: {str(PureWindowsPath('C:/Users/xavier/y'))!r}"
+        assert redact_home_in_text(sibling) == sibling
+
     def test_bare_home_occurrence_is_redacted(self, monkeypatch, tmp_path):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert redact_home_in_text(str(tmp_path)) == "~"

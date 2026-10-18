@@ -427,6 +427,13 @@ def redact_home_in_text(text: str) -> str:
         # longer sibling like `/Users/xavier` when home is `/Users/x`: that
         # path has no separator right after `home`, so it is left intact.
         result = text.replace(home + os.sep, "~" + os.sep)
+        # An OSError renders its filename with repr(), which doubles every
+        # backslash on Windows (`'C:\\Users\\x\\y'`); the plain form above
+        # misses that. Same anchoring on the trailing separator. `home` holds no
+        # backslash on POSIX, so there the escaped form is the plain form.
+        if "\\" in home:
+            escaped = home.replace("\\", "\\\\")
+            result = result.replace(escaped + "\\\\", "~\\\\")
         # Handle a bare `home` occurrence (no trailing separator) only when it
         # is the exact whole message — the `== home` case. A raw substring
         # replace here would reintroduce the partial-username over-match, so it

@@ -6701,6 +6701,9 @@ class TestDataDirSafetyFloor:
 
         assert not data_dir.exists()
 
+    @pytest.mark.skipif(
+        os.name != "posix", reason="a control character cannot be in a Windows filename"
+    )
     def test_recreate_warning_names_the_data_dir_by_shown_path(
         self, monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

@@ -2022,7 +2022,7 @@ class TestReadTrustedConfig:
 
     def test_returns_text_of_a_trusted_file(self, tmp_path: Path):
         path = tmp_path / "config.toml"
-        path.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')
+        path.write_bytes(b'PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')  # bytes: no \r\n translation
         path.chmod(0o600)
         assert env_loading.read_trusted_config(path) == 'PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n'
 
@@ -2031,7 +2031,7 @@ class TestReadTrustedConfig:
 
     def test_invalid_toml_is_not_this_functions_concern(self, tmp_path: Path):
         path = tmp_path / "config.toml"
-        path.write_text("this is = = not toml\n")
+        path.write_bytes(b"this is = = not toml\n")  # bytes: no \r\n translation
         path.chmod(0o600)
         assert env_loading.read_trusted_config(path) == "this is = = not toml\n"
 

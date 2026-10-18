@@ -34,6 +34,7 @@ from pipecat_context_hub.cli import main
 from pipecat_context_hub.shared import env_loading, repo_catalog
 from pipecat_context_hub.shared.config import HubConfig, SourceConfig
 from pipecat_context_hub.shared.exit_codes import EXIT_INVALID_INPUT
+from pipecat_context_hub.shared.paths import redact_home
 from pipecat_context_hub.shared.repo_catalog import load_catalog, parse_catalog
 from tests.unit._config_trust_cases import TRUST_REFUSAL_CASES
 
@@ -1100,6 +1101,7 @@ class TestConfiguredPathIsNeverPrintedRaw:
     def _raw(text: str) -> bool:
         return "\x1b" in text or "\x07" in text
 
+    @_posix_only
     def test_list_escapes_the_path(self, hub: Hub, caplog: pytest.LogCaptureFixture):
         self._arrange(hub, self._NAME)
         with caplog.at_level(logging.WARNING):
@@ -1125,7 +1127,9 @@ class TestConfiguredPathIsNeverPrintedRaw:
         path = self._arrange(hub, "plain.toml")
         result = hub.run("list")
         assert result.exit_code == 0, result.output
-        assert f"config.toml: ignoring {path}: not valid TOML" in result.stdout
+        # The path as the message names it: home-redacted (a Windows runner's temp
+        # dir is under the home directory; a POSIX one is not).
+        assert f"config.toml: ignoring {redact_home(path)}: not valid TOML" in result.stdout
         assert "[invalid]" not in result.stdout
 
     @_posix_only
@@ -1352,7 +1356,9 @@ class TestErrorBoundary:
         result = hub.run("list")
         _clean_exit(result)
         assert result.exit_code == EXIT_INVALID_INPUT
-        assert str(Path.home()) not in result.output
+        leaked = str(Path.home() / "x")
+        assert leaked not in result.output
+        assert repr(leaked)[1:-1] not in result.output  # the doubled-backslash form on Windows
 
     def test_a_missing_provenance_map_fails_loudly(self, hub: Hub):
         """``main()`` always sets it; without it the shadow check must not fail open."""
