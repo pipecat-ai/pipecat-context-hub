@@ -756,7 +756,7 @@ def check_deprecation_command(ctx: click.Context, symbol: str, at_version: str |
 @click.command("status")
 @click.pass_context
 def status_command(ctx: click.Context) -> None:
-    """Index health: freshness, record counts, reranker state.
+    """Index health: freshness, record counts, repo coverage, reranker state.
 
     Check ``last_refresh_at`` — if it is stale (or predates a pipecat-ai
     upgrade), run 'pipecat-context-hub refresh'.
