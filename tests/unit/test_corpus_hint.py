@@ -19,6 +19,7 @@ from pipecat_context_hub.shared.corpus_hint import (
     attach_corpus_hint,
     configured_no_records,
     corpus_hint,
+    finish_response,
     groups_not_indexed,
     indexed_repos,
     missing_repos,
@@ -193,6 +194,17 @@ class TestConfiguredNoRecords:
 
     def test_nothing_configured(self) -> None:
         assert list(configured_no_records([], {"acme/real"})) == []
+
+    def test_tainted_configured_repo_is_never_listed(self) -> None:
+        # Same keyword-only casefolded ``tainted`` as ``missing_repos`` /
+        # ``groups_not_indexed``: no caller filters tainted slugs by hand.
+        result = configured_no_records(
+            ["acme/empty", "Acme/Bad"], set(), tainted=frozenset({"acme/BAD"})
+        )
+        assert result == ["acme/empty"]
+
+    def test_tainted_is_ignored_when_counts_are_unreadable(self) -> None:
+        assert configured_no_records(["acme/x"], None, tainted=frozenset({"acme/x"})) == []
 
 
 class TestTaintedSkipInThePredicate:
@@ -613,3 +625,62 @@ class TestFrozenRealQueries:
         hint = _hint(_FROZEN_SUPERMEMORY, {})
         assert hint is not None
         assert hint["matched_groups"] == ["supermemory"]
+
+
+class _FinishIndex(_CountsIndex):
+    """Counts plus the metadata ``annotate_response`` reads (a 30-day-old refresh)."""
+
+    def get_all_metadata(self) -> dict[str, str]:
+        return {"last_refresh_at": "2000-01-01T00:00:00+00:00"}
+
+    def get_metadata(self, key: str) -> str | None:
+        return self.get_all_metadata().get(key)
+
+
+def _finish(tool: str, result_json: str, counts: Any = None) -> tuple[str, Any]:
+    return finish_response(
+        cast(Any, _FinishIndex({} if counts is None else counts)),
+        tool=tool,
+        args={"query": "nvidia voice agent"},
+        result_json=result_json,
+        configured_repos=frozenset(),
+        tainted_repos=frozenset(),
+    )
+
+
+@pytest.mark.usefixtures("hint_catalog")
+class TestFinishResponse:
+    """The one post-handler step both front doors call (hint, footer, then attach)."""
+
+    def test_search_tool_gets_footer_then_hint(self) -> None:
+        text, hint = _finish("search_docs", '{"hits": []}')
+        assert hint is not None and hint["matched_groups"] == ["nvidia"]
+        out = json.loads(text)
+        assert out["corpus_hint"] == hint
+        assert "index_staleness" in out
+        # The hint is attached after the footer.
+        assert list(out) == ["hits", "index_staleness", "corpus_hint"]
+
+    def test_no_hint_still_gets_the_footer(self) -> None:
+        text, hint = _finish("search_docs", '{"hits": []}', {"nv/one": 3})
+        assert hint is None
+        out = json.loads(text)
+        assert "corpus_hint" not in out and "index_staleness" in out
+
+    def test_hub_status_is_returned_untouched(self) -> None:
+        raw = '{"total_records": 1}'
+        text, hint = _finish("get_hub_status", raw)
+        assert text is raw and hint is None
+
+    def test_both_front_doors_call_the_shared_step(self) -> None:
+        # Parity by structure: neither door composes the hint and footer by hand.
+        import inspect
+
+        from pipecat_context_hub import cli_query
+        from pipecat_context_hub.server import main
+
+        for module in (main, cli_query):
+            src = inspect.getsource(module)
+            assert "finish_response(" in src, module.__name__
+            for private_step in ("corpus_hint(", "attach_corpus_hint(", "annotate_response("):
+                assert private_step not in src, (module.__name__, private_step)

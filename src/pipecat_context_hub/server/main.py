@@ -28,8 +28,7 @@ from pipecat_context_hub.server.dispatch import (
     iter_tool_definitions,
 )
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError, Retriever, ServingIndex
-from pipecat_context_hub.shared.corpus_hint import attach_corpus_hint, corpus_hint
-from pipecat_context_hub.shared.staleness import annotate_response
+from pipecat_context_hub.shared.corpus_hint import finish_response
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
     RETRIEVAL_QUALITY_ISSUE_URL,
@@ -252,19 +251,19 @@ def create_server(
         )
 
     def _finish(store: ServingIndex, name: str, args: dict[str, Any], result_json: str) -> str:
-        """Compute the corpus hint, add the staleness footer, then attach the hint.
+        """``finish_response``, the step the CLI door shares, run in one worker thread.
 
-        The same order as the CLI door, so both give identical JSON. Runs in one
-        worker thread: both steps read index metadata under the generation lock.
+        Both of its steps read index metadata under the generation lock.
         """
-        hint = corpus_hint(
+        finished, _hint = finish_response(
             store,
             tool=name,
             args=args,
+            result_json=result_json,
             configured_repos=configured_repos,
             tainted_repos=tainted_repos,
         )
-        return attach_corpus_hint(annotate_response(result_json, store), hint)
+        return finished
 
     async def _annotate(name: str, args: dict[str, Any], result_json: str) -> str:
         """Attach the index_staleness footer (and, for search tools, the corpus hint).

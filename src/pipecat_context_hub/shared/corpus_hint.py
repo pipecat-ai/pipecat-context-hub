@@ -13,6 +13,7 @@ passed in and typed against a narrow protocol exposing only ``get_counts_by_repo
 vendor question whose catalog repos are not indexed carries one compact,
 deterministic ``corpus_hint`` object. No network, no embeddings, and no
 dependence on result confidence (a 0.95 answer can still be a miss).
+:func:`finish_response` is the one post-handler step both front doors call.
 """
 
 from __future__ import annotations
@@ -21,12 +22,16 @@ import json
 import logging
 import re
 from collections.abc import Iterable, Mapping, Set
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
 from pipecat_context_hub.shared.repo_slug import slug_key
+from pipecat_context_hub.shared.staleness import annotate_response
 from pipecat_context_hub.shared.support_links import RETRIEVAL_QUALITY_ISSUE_URL
+
+if TYPE_CHECKING:
+    from pipecat_context_hub.shared.interfaces import ServingIndex
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +74,22 @@ def indexed_repos(index_store: _CountsSource) -> frozenset[str] | None:
     )
 
 
-def configured_no_records(configured: Iterable[str], indexed: Set[str] | None) -> list[str]:
-    """Configured slugs (original case) with no indexed records; ``[]`` if unreadable."""
+def configured_no_records(
+    configured: Iterable[str],
+    indexed: Set[str] | None,
+    *,
+    tainted: Set[str] = frozenset(),
+) -> list[str]:
+    """Untainted configured slugs (original case) with no indexed records; ``[]`` if unreadable.
+
+    ``tainted`` is casefolded here, so callers may pass raw slugs.
+    """
     if indexed is None:
         return []
-    return sorted(slug for slug in configured if slug_key(slug) not in indexed)
+    skip = _fold(tainted)
+    return sorted(
+        slug for slug in configured if (key := slug_key(slug)) not in indexed and key not in skip
+    )
 
 
 def _fold(slugs: Iterable[str]) -> frozenset[str]:
@@ -173,15 +189,16 @@ def corpus_hint(
         indexed = indexed_repos(index_store)
         if indexed is None:
             return None
-        tainted = _fold(tainted_repos)
-        configured = _fold(configured_repos) - tainted
+        # Tainted repos never reach ``missing`` (``missing_repos`` drops them),
+        # so ``configured`` needs no tainted subtraction of its own.
+        configured = _fold(configured_repos)
 
         groups: list[str] = []
         not_indexed: list[str] = []
         no_records: list[str] = []
         add_commands: list[str] = []
         for group in matched:
-            missing = missing_repos(group, indexed, tainted=tainted)
+            missing = missing_repos(group, indexed, tainted=tainted_repos)
             if not missing:
                 continue
             groups.append(group.name)
@@ -226,3 +243,36 @@ def attach_corpus_hint(result_json: str, hint: dict[str, Any] | None) -> str:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to attach the corpus hint")
         return result_json
+
+
+# The status tool *is* the staleness report and never hints.
+_UNFINISHED_TOOLS = frozenset({"get_hub_status"})
+
+
+def finish_response(
+    index_store: ServingIndex,
+    *,
+    tool: str,
+    args: Mapping[str, Any],
+    result_json: str,
+    configured_repos: Set[str],
+    tainted_repos: Set[str],
+) -> tuple[str, dict[str, Any] | None]:
+    """The one post-handler step of both front doors: the finished JSON and the hint.
+
+    Computes the corpus hint, adds the staleness footer (``annotate_response``),
+    then attaches the hint, so MCP's ``call_tool`` and the CLI's ``_invoke``
+    give identical JSON by construction. ``get_hub_status`` comes back
+    untouched. The hint is returned too, so the CLI can let its stderr
+    poor-results hint yield to it. Never raises (neither step does).
+    """
+    if tool in _UNFINISHED_TOOLS:
+        return result_json, None
+    hint = corpus_hint(
+        index_store,
+        tool=tool,
+        args=args,
+        configured_repos=configured_repos,
+        tainted_repos=tainted_repos,
+    )
+    return attach_corpus_hint(annotate_response(result_json, index_store), hint), hint

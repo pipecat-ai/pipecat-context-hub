@@ -13,7 +13,6 @@ from pipecat_context_hub.shared.corpus_hint import (
 )
 from pipecat_context_hub.shared.interfaces import ServingIndex
 from pipecat_context_hub.shared.repo_catalog import load_catalog
-from pipecat_context_hub.shared.repo_slug import slug_key
 from pipecat_context_hub.shared.types import HubStatusOutput, RerankerStatus
 
 logger = logging.getLogger(__name__)
@@ -69,9 +68,6 @@ async def handle_get_hub_status(
         reranker_status = RerankerStatus(enabled=False)
 
     indexed = indexed_repos(index_store)
-    # Tainted slugs are never reported as missing coverage.
-    tainted = {slug_key(s) for s in tainted_repos}
-    configured = [s for s in configured_repos if slug_key(s) not in tainted]
 
     output = HubStatusOutput(
         server_version=_SERVER_VERSION,
@@ -85,8 +81,13 @@ async def handle_get_hub_status(
         indexed_framework_version=metadata.get("indexed_framework_version"),
         indexed_framework_commits_ahead=commits_ahead,
         indexed_repos=sorted(indexed) if indexed is not None else [],
-        configured_no_records=configured_no_records(configured, indexed),
-        catalog_groups_not_indexed=groups_not_indexed(load_catalog(), indexed, tainted=tainted),
+        # Tainted slugs are never reported as missing coverage.
+        configured_no_records=configured_no_records(
+            configured_repos, indexed, tainted=tainted_repos
+        ),
+        catalog_groups_not_indexed=groups_not_indexed(
+            load_catalog(), indexed, tainted=tainted_repos
+        ),
         reranker_enabled=reranker_status.enabled,
         reranker_model=reranker_status.model,
         reranker_configured_model=reranker_status.configured_model,

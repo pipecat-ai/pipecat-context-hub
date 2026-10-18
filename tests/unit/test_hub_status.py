@@ -461,6 +461,17 @@ class TestHubStatusCoverageFields:
         assert "owner/repo" in [s.casefold() for s in output.indexed_repos]
         assert output.configured_no_records == []
 
+    async def test_tainted_configured_repo_is_not_reported_no_records(self, catalog_text):
+        # The tainted skip lives in the shared predicate, case-insensitively.
+        store = _StatusStore({"acme/one": 5})
+        output = await _status(
+            store,
+            configured_repos=frozenset({"acme/one", "Beta/One"}),
+            tainted_repos=frozenset({"beta/ONE"}),
+        )
+        assert output.configured_no_records == []
+        assert "beta" not in output.catalog_groups_not_indexed
+
     async def test_fully_indexed_catalog_has_no_uncovered_groups(self, catalog_text):
         store = _StatusStore({"acme/one": 1, "beta/one": 1, "gamma/one": 1})
         output = await _status(store, configured_repos=frozenset(), tainted_repos=frozenset())
