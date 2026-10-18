@@ -699,6 +699,109 @@ class TestCurate:
             stats = curate.repo_stats(client, "a/b")
         assert stats["truncated"] is True
         assert "1 (truncated) source files" in curate.render_report([stats], curate.Counter())
+        # A truncated tree undercounts: the report is incomplete, not clean.
+        assert curate.stats_incomplete([stats])
+
+    def test_truncated_tree_exits_incomplete(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = tmp_path / "catalog.toml"
+        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                return _resp(200, {"incomplete_results": False, "items": []})
+            if request.url.path == "/repos/a/known":
+                return _resp(200, {"default_branch": "main"})
+            return _resp(200, {"truncated": True, "tree": [{"type": "blob", "path": "x.py"}]})
+
+        code = curate.main(
+            ["--catalog", str(path)],
+            transport=httpx.MockTransport(handler),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        assert code == curate.EXIT_REPORT_INCOMPLETE
+        assert "1 (truncated) source files" in capsys.readouterr().out
+
+    @staticmethod
+    def _full_pages(total_count: object) -> httpx.MockTransport:
+        def handler(request: httpx.Request) -> httpx.Response:
+            page = request.url.params["page"]
+            items = [
+                {"repository": {"full_name": f"v{page}/r{i}"}}
+                for i in range(curate.SEARCH_PER_PAGE)
+            ]
+            return _resp(200, {"total_count": total_count, "items": items})
+
+        return httpx.MockTransport(handler)
+
+    @pytest.mark.parametrize("total_count", [400, None, "400", True])
+    def test_page_cap_with_unread_results_is_recorded(self, total_count: object) -> None:
+        # Every capped page full and GitHub reporting more (or not saying how
+        # many): the unread results must not read as a complete candidate set.
+        with curate.make_client("t", self._full_pages(total_count)) as client:
+            problems: list[str] = []
+            found = curate.discover_vendors(client, set(), problems)
+        assert len(found) == curate.SEARCH_PAGES * curate.SEARCH_PER_PAGE
+        assert len(problems) == 1 and f"{curate.SEARCH_PAGES}-page cap" in problems[0]
+
+    def test_page_cap_reached_exactly_is_clean(self) -> None:
+        total = curate.SEARCH_PAGES * curate.SEARCH_PER_PAGE
+        with curate.make_client("t", self._full_pages(total)) as client:
+            problems: list[str] = []
+            curate.discover_vendors(client, set(), problems)
+        assert problems == []
+
+    def test_page_cap_with_unread_results_exits_incomplete(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = tmp_path / "catalog.toml"
+        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
+        full = self._full_pages(400)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                return full.handle_request(request)
+            if request.url.path == "/repos/a/known":
+                return _resp(200, {"default_branch": "main"})
+            return _resp(200, {"tree": []})
+
+        code = curate.main(
+            ["--catalog", str(path)],
+            transport=httpx.MockTransport(handler),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        assert code == curate.EXIT_REPORT_INCOMPLETE
+        assert "page cap" in capsys.readouterr().out
+
+    def test_candidates_are_counted_by_slug_key(self) -> None:
+        items = [
+            {"repository": {"full_name": "Owner/Repo"}},
+            {"repository": {"full_name": "owner/repo"}},
+            {"repository": {"full_name": "OWNER/REPO"}},
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            found = curate.discover_vendors(client, set(), [])
+        assert dict(found) == {"Owner/Repo": 3}  # one row, first spelling seen
+
+    @pytest.mark.parametrize(
+        "repository", [{}, {"full_name": None}, {"full_name": 5}, {"full_name": ""}]
+    )
+    def test_item_without_a_full_name_is_malformed(self, repository: object) -> None:
+        items = [{"repository": repository}]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            problems: list[str] = []
+            found = curate.discover_vendors(client, set(), problems)
+        assert not found
+        assert problems == ["page 1: 1 item(s) without a repository full_name"]
 
     def test_non_utf8_catalog_exits_catalog_code(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

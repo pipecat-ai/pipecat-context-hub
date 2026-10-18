@@ -10,9 +10,11 @@ read, and a test asserts the file is byte-identical after a run.
 A GitHub token is required (code search rejects unauthenticated requests):
 ``GITHUB_TOKEN``, else ``gh auth token``; exits nonzero with a message when
 neither exists. Exits 2 (report still printed) when code search failed,
-answered malformed or flagged its results incomplete, or when a catalog
-repo's metadata or file tree could not be read: the report is then missing
-data, so "none found" or a missing count is not a clean result.
+answered malformed, flagged its results incomplete or had more results than
+the page cap reads, or when a catalog repo's metadata or file tree could not
+be read in full (a truncated tree included): the report is then missing data,
+so "none found" or a count is not a clean result. Exits 3 when the catalog
+cannot be loaded.
 
 Usage::
 
@@ -44,12 +46,14 @@ API_BASE = "https://api.github.com"
 SOURCE_SUFFIXES = (".py", ".ts", ".tsx")
 SEARCH_QUERY = "pipecat.services extension:py"
 SEARCH_PAGES = 3
+SEARCH_PER_PAGE = 100
 
 EXIT_OK = 0
 EXIT_NO_TOKEN = 1
-# The report printed, but code search failed, answered malformed or flagged
-# incomplete results, or a catalog repo's stats could not be read: the report
-# is missing data, so "none found" or an absent count is not a clean result.
+# The report printed, but code search failed, answered malformed, flagged
+# incomplete results or stopped at the page cap, or a catalog repo's stats
+# could not be read in full: the report is missing data, so "none found" or a
+# count is not a clean result.
 EXIT_REPORT_INCOMPLETE = 2
 EXIT_CATALOG = 3
 
@@ -154,8 +158,12 @@ def repo_stats(client: httpx.Client, slug: str) -> dict[str, object]:
 
 
 def stats_incomplete(stats: Sequence[dict[str, object]]) -> bool:
-    """True when any repo's metadata or file tree could not be read."""
-    return any("error" in s or "tree_error" in s for s in stats)
+    """True when any repo's metadata or file tree could not be read in full.
+
+    A truncated tree (GitHub's recursive-tree size limit) undercounts the
+    source files, so it is incomplete just like a failed tree.
+    """
+    return any("error" in s or "tree_error" in s or s.get("truncated") is True for s in stats)
 
 
 def discover_vendors(
@@ -167,15 +175,23 @@ def discover_vendors(
     rate limit) or a malformed response is recorded in ``problems`` (when
     given), never raised: it ends discovery early, so it must not read as
     "no candidates". A page GitHub flags ``incomplete_results`` (its search
-    timed out) is recorded too, since its candidate set may be partial.
+    timed out), an item without a string ``full_name``, and a search that
+    still has unread results after the last of ``SEARCH_PAGES`` pages are
+    recorded too, since the candidate set may then be partial.
+
+    Candidates are counted by ``slug_key`` (the one slug identity), shown in
+    the first spelling seen, so ``Owner/Repo`` and ``owner/repo`` are one row.
     """
     if problems is None:
         problems = []
     found: Counter[str] = Counter()
+    spelling: dict[str, str] = {}
+    read = 0
     for page in range(1, SEARCH_PAGES + 1):
         try:
             resp = client.get(
-                "/search/code", params={"q": SEARCH_QUERY, "per_page": 100, "page": page}
+                "/search/code",
+                params={"q": SEARCH_QUERY, "per_page": SEARCH_PER_PAGE, "page": page},
             )
         except httpx.HTTPError as exc:
             problems.append(f"page {page}: {type(exc).__name__}: {exc}")
@@ -201,17 +217,29 @@ def discover_vendors(
             break
         if not items:
             break
+        read += len(items)
         malformed = 0
         for item in items:
             repo = item.get("repository") if isinstance(item, dict) else None
-            if not isinstance(repo, dict):
+            name = repo.get("full_name") if isinstance(repo, dict) else None
+            if not isinstance(name, str) or not name:
                 malformed += 1
                 continue
-            name = repo.get("full_name")
-            if isinstance(name, str) and slug_key(name) not in known:
-                found[name] += 1
+            key = slug_key(name)
+            if key not in known:
+                found[spelling.setdefault(key, name)] += 1
         if malformed:
-            problems.append(f"page {page}: {malformed} item(s) without a repository object")
+            problems.append(f"page {page}: {malformed} item(s) without a repository full_name")
+    else:
+        # Every capped page came back non-empty: results may remain unread unless
+        # GitHub's total_count says this was all of them.
+        total = payload.get("total_count")
+        if not (isinstance(total, int) and not isinstance(total, bool) and total <= read):
+            shown_total = total if isinstance(total, int) and not isinstance(total, bool) else "?"
+            problems.append(
+                f"stopped at the {SEARCH_PAGES}-page cap: read {read} of {shown_total} "
+                "results (search may have missed repos)"
+            )
     return found
 
 
