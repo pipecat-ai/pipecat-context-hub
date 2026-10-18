@@ -30,6 +30,12 @@ just catalog-health                                 # network: flag private/miss
 just catalog-curate                                 # network, report-only: per-repo stats + code-search vendor candidates (needs a GitHub token)
 ```
 
+Exit codes: `catalog-health` 0 all ok, 1 a private/missing/archived/renamed
+entry, 2 only inconclusive lookups (rate limit, 5xx, network), 3 catalog
+unloadable. `catalog-curate` 0 complete report, 1 no GitHub token, 2 report
+printed but incomplete (search failed, capped or malformed; a repo's stats
+unreadable or its tree truncated), 3 catalog unloadable.
+
 Installed alongside `pipecat-ai[cli]`, every command is also reachable as
 `pipecat context-hub <command>` — the same click group, bridged into the Pipecat CLI by
 `plugin.py`. See "Typer bridge" below.
@@ -159,9 +165,9 @@ src/pipecat_context_hub/
 │   ├── config.py             # HubConfig + env-aware computed fields
 │   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule)
 │   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
-│   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants)
+│   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants); member_skip_reason / actionable_members — the one group-member eligibility rule (`repos add --group` and the corpus hint)
 │   ├── repo_slug.py          # REPO_SLUG_RE / is_valid_repo_slug / slug_key / dedupe_slugs — the one owner/repo grammar, the one slug identity (casefolded; every default/taint/dedupe/writer/catalog comparison) and the one slug-list dedupe (leaf: ingester, catalog, repos, writer)
-│   ├── exclusion_folds.py    # EXCLUSION_FOLDS / exclusion_fold — the one per-key entry fold for the taint lists (slug_key for repos, exact for refs; unknown key raises); SourceConfig and the loader's shadowed-exclusion warning both use it
+│   ├── exclusion_folds.py    # EXCLUSION_FOLDS / exclusion_fold — the one per-key entry fold for the taint lists (slug_key for repos, exact for refs; unknown key raises); SourceConfig and the loader's shadowed-exclusion warning both use it; taint_matcher — the one taint-matching rule (SourceConfig.is_tainted and corpus_hint)
 │   ├── env_keys.py           # EXTRA_REPOS_ENV / TAINTED_REPOS_ENV / TAINTED_REFS_ENV / split_csv — the list-key literals and CSV rule (leaf: config model and env loader both import it)
 │   ├── repo_catalog_render.py # pure renderers + splice for the generated catalog sections; `python -m` entry behind `just catalog-regen`
 │   ├── interfaces.py         # IndexWriter/Reader, ServingIndex, Retriever, Ingester; FatalIndexError (ingesters re-raise: stops refresh), IndexUnavailableError (message for the caller)
@@ -173,7 +179,8 @@ src/pipecat_context_hub/
 │   ├── index_lock.py         # refresh.lock (exclusive for refresh; readers hold it shared while opening: refresh_excluded) / serve.lock (shared) advisory flocks; serve_is_running
 │   ├── exit_codes.py         # EXIT_INVALID_INPUT (1) / EXIT_INDEX_UNREADY (2) / EXIT_REFRESH_IN_PROGRESS (75), shared by serve, refresh and the CLI queries
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
-│   ├── corpus_hint.py        # indexed_repos / groups_not_indexed (the one "not indexed" predicate, shared with get_hub_status) + corpus_hint; finish_response is the one post-handler step (hint, staleness footer) both front doors call
+│   ├── corpus_hint.py        # indexed_repos / groups_not_indexed (the one "not indexed" predicate, shared with get_hub_status) + corpus_hint / attach_corpus_hint
+│   ├── response_finish.py    # finish_response — the one post-handler step (corpus hint, staleness footer) both front doors call; inputs from SourceConfig.repo_sets()
 │   ├── support_links.py      # RETRIEVAL_QUALITY_ISSUE_URL / BUG_REPORT_ISSUE_URL — single source for MCP + CLI report-hint URLs
 │   ├── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
 │   └── versioning.py         # LATEST_SENTINEL / HEAD_SENTINEL / DEFAULT_FRAMEWORK_PIN / is_latest_sentinel / is_head_sentinel / canonicalize_framework_pin / parse_release_version / exact_release_version — shared tag/version helpers for `--framework-version` (pin, the `latest`/`head` sentinels, the default pin, and provenance stamping)
