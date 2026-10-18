@@ -158,9 +158,13 @@ class Hub:
             del os.environ[k]
         os.environ.update(self._baseline)
 
-    def run(self, *args: str) -> Result:
+    def invoke(self, *argv: str) -> Result:
+        """Run the top-level CLI with raw ``argv`` (no ``repos`` prefix) in a fresh env."""
         self._fresh_process_env()
-        return self.runner.invoke(main, ["repos", *args])
+        return self.runner.invoke(main, list(argv))
+
+    def run(self, *args: str) -> Result:
+        return self.invoke("repos", *args)
 
     # -- observing -------------------------------------------------------
     def in_toml(self) -> list[str] | None:
@@ -513,6 +517,20 @@ class TestCheckOrder:
         hub.config.unlink()  # no config.toml at all: still no advice
         assert "by hand" not in hub.run(verb, "--unlisted", "ac me/repo").output
 
+    @pytest.mark.parametrize("verb", ["add", "remove"])
+    def test_a_comma_bearing_entry_the_loader_ignores_still_gets_hand_edit_advice(
+        self, hub: Hub, verb: str
+    ):
+        """The loader skips a whole array holding a comma-bearing element, so the reader's
+        list is empty; the file still lists the slug, and the refusal must say to edit it."""
+        hub.write_config(f'{KEY} = ["bad,slug/repo"]\n')
+        before = hub.snapshot()
+        result = hub.run(verb, "--unlisted", "bad,slug/repo")
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "by hand" in result.output
+        assert redact_home(hub.config) in result.output
+        assert hub.snapshot() == before
+
     @pytest.mark.parametrize("bad", ["noslash", "a/b/c", "acme/", "/repo", "ac me/repo", "a/.."])
     def test_malformed_slug_beats_shadow(self, hub: Hub, bad: str):
         hub.env(**{KEY: BETA_ONE})
@@ -856,6 +874,26 @@ class TestGroup:
             assert result.exit_code == EXIT_INVALID_INPUT
             assert f"layer `{SHADOWED[layer]}`" in result.output
         assert hub.snapshot() is None
+
+    @pytest.mark.parametrize("layer", list(SHADOWED))
+    def test_remove_group_of_only_parseable_false_members_is_shadow_refused(
+        self, hub: Hub, layer: str
+    ):
+        """#145: ``remove --group gamma`` acts on gamma's ``parseable = false`` members,
+        so a shadowing layer refuses it (naming the layer) unless ``--config-only``;
+        config.toml is untouched either way on the refusal."""
+        _arrange(hub, layer)
+        hub.config_list("acme/gamma-ios", BETA_TWO)
+        before = hub.snapshot()
+        result = hub.run("remove", "--group", "gamma")
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert f"layer `{SHADOWED[layer]}`" in result.output
+        assert "--config-only" in result.output
+        assert hub.snapshot() == before
+        forced = hub.run("remove", "--config-only", "--group", "gamma")
+        assert forced.exit_code == 0, forced.output
+        assert "Removed acme/gamma-ios" in forced.output
+        assert hub.in_toml() == [BETA_TWO]
 
     @pytest.mark.parametrize("layer", list(SHADOWED))
     def test_shadow_with_config_only_writes_but_is_not_in_effect(self, hub: Hub, layer: str):
@@ -1524,9 +1562,8 @@ class TestLoaderChatter:
 
     def test_other_commands_still_log_it(self, hub: Hub, caplog: pytest.LogCaptureFixture):
         hub.config_list(ALPHA_ONE)
-        hub._fresh_process_env()
         with caplog.at_level(logging.INFO, logger="pipecat_context_hub.shared.env_loading"):
-            hub.runner.invoke(main, ["install", "--print-config"])
+            hub.invoke("install", "--print-config")
         assert len(self._loaded(caplog)) == 1
 
     def test_the_loader_logger_level_is_restored(self, hub: Hub):
@@ -1555,7 +1592,6 @@ class TestLoaderChatter:
         """``--log-level ERROR`` suppresses loader warnings for ``repos`` too: the mute
         raises the effective threshold to WARNING at most, it never lowers it."""
         hub.write_config(f'{KEY} = ["{ALPHA_ONE}"]\nNOT_A_HUB_KEY = "x"\n')
-        hub._fresh_process_env()
         # `--log-level` goes through logging.basicConfig, a no-op while pytest's capture
         # handler sits on the root logger; set the level it would have set ourselves.
         root = logging.getLogger()
@@ -1563,7 +1599,7 @@ class TestLoaderChatter:
         root.setLevel(logging.ERROR)
         caplog.handler.setLevel(logging.DEBUG)
         try:
-            quiet = hub.runner.invoke(main, ["--log-level", "ERROR", "repos", "list"])
+            quiet = hub.invoke("--log-level", "ERROR", "repos", "list")
         finally:
             root.setLevel(previous_root)
         assert quiet.exit_code == 0, quiet.output
@@ -1574,9 +1610,8 @@ class TestLoaderChatter:
     ):
         """Control for the test above: the same config does warn when not suppressed."""
         hub.write_config(f'{KEY} = ["{ALPHA_ONE}"]\nNOT_A_HUB_KEY = "x"\n')
-        hub._fresh_process_env()
         with caplog.at_level(logging.DEBUG):
-            result = hub.runner.invoke(main, ["repos", "list"])
+            result = hub.invoke("repos", "list")
         assert result.exit_code == 0, result.output
         assert any("NOT_A_HUB_KEY" in m for m in self._loader_warnings(caplog))
 

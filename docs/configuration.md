@@ -83,8 +83,9 @@ CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `do
 ## Managing repos from the CLI
 
 `pipecat-context-hub repos` (also `pipecat context-hub repos`) edits only the
-`PIPECAT_HUB_EXTRA_REPOS` key of `~/.config/pipecat-context-hub/config.toml`,
-preserving comments (including those on and between array entries), other keys
+`PIPECAT_HUB_EXTRA_REPOS` key of `~/.config/pipecat-context-hub/config.toml`
+(or the file `PIPECAT_HUB_CONFIG_FILE` points at, which `repos add|remove|list`
+all honour), preserving comments (including those on and between array entries), other keys
 and CRLF line endings; a removed entry's own trailing comment goes with it, and
 a comma-separated string value is rewritten as an array. It works offline; run
 `pipecat-context-hub refresh` afterwards to index (or `refresh --prune` to drop

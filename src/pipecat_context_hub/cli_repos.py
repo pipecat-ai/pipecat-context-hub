@@ -38,7 +38,7 @@ from typing import Any, NoReturn, TypeVar
 import click
 
 from pipecat_context_hub.shared.config import HubConfig, SourceConfig
-from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, split_csv
 from pipecat_context_hub.shared.env_loading import (
     LAYER_ENV,
     SHADOWING_LAYERS,
@@ -147,16 +147,29 @@ def _hand_edit_note(slug: str) -> str:
     resolved file (``PIPECAT_HUB_CONFIG_FILE`` honoured). A typo that was never
     written gets no hand-edit advice.
     """
-    configured, _problem = _configured_in_toml()
-    if slug_key(slug) not in {slug_key(s) for s in configured}:
-        return ""
     path = resolve_global_config_path()
-    if path is None:
+    if path is None or slug_key(slug) not in {slug_key(s) for s in _literally_listed(path)}:
         return ""
     return (
         f" It is listed in {shown_path(path)}; `repos` will not change it, "
         "so remove it by editing that file by hand."
     )
+
+
+def _literally_listed(path: Path) -> list[str]:
+    """Every slug the file's ``PIPECAT_HUB_EXTRA_REPOS`` value literally lists; read-only.
+
+    Unlike :func:`_configured_in_toml` (what the loader yields), this keeps the
+    elements of an array the loader skips whole, e.g. one with a comma-bearing entry:
+    the file still holds that slug, and only a hand edit can remove it.
+    """
+    try:
+        value = parse_global_config(path).get(EXTRA_REPOS_ENV)
+    except (ConfigNotTrusted, tomllib.TOMLDecodeError):
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if isinstance(v, (str, int, float, bool))]
+    return split_csv(value) if isinstance(value, str) else []
 
 
 def _resolve_positional(

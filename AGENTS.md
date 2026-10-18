@@ -24,7 +24,7 @@ uv run pipecat-context-hub refresh --framework-version head     # ...or at its d
 uv run pipecat-context-hub serve                    # start MCP server (`start` is an alias)
 uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
 uv run pipecat-context-hub repos list [--groups]    # effective repos (default/catalog/unlisted) and the catalog groups
-uv run pipecat-context-hub repos add <slug>         # edit PIPECAT_HUB_EXTRA_REPOS in config.toml (--unlisted, --group NAME, --config-only); also `remove`
+uv run pipecat-context-hub repos add <slug>         # edit PIPECAT_HUB_EXTRA_REPOS in config.toml, or the file PIPECAT_HUB_CONFIG_FILE names (--unlisted, --group NAME, --config-only); also `remove`
 just catalog-regen                                  # regenerate .env.example / docs from data/repo_catalog.toml (--check, --bump-verified)
 just catalog-health                                 # network: flag private/missing/archived/renamed catalog repos (weekly in catalog-health.yml)
 just catalog-curate                                 # network, report-only: per-repo stats + code-search vendor candidates (needs a GitHub token)
@@ -98,7 +98,7 @@ just dashboard-serve    # serve dashboard on localhost:8765
 
 `PIPECAT_HUB_*` settings resolve in three layers, first-writer-wins: real env
 vars > cwd `.env` > `~/.config/pipecat-context-hub/config.toml` (machine-global,
-optional, see `config.toml.example`) > `HubConfig` field defaults. Every entry
+optional, see `config.toml.example`; `PIPECAT_HUB_CONFIG_FILE` overrides the path, `repos add|remove` included) > `HubConfig` field defaults. Every entry
 point — `cli.py:main()`, the dashboard scripts, `scripts/smoke_check_removals.py`
 — calls `shared/env_loading.py`'s `load_env_layers()` (which runs
 `load_cwd_dotenv()` then `load_global_config()`) before constructing config, so
