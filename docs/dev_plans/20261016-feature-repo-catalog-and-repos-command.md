@@ -138,7 +138,8 @@ recommendation, the change is stated. Review history and grilled outcomes are in
      (`SageMakerSTTService`, `SuperMemoryClient`, `super_memory` against `sagemaker` / `supermemory`; the bare
      `SageMaker` still hints); back-to-back acronyms do not split (`AWSLLMService`); a digit glued to an alias
      defeats it (`Gemini2Flash`); `iOSApp` splits to `i OS App`; a hyphenated alias does not match its CamelCase
-     spelling (`DumE` against `dum-e`). The change lives in
+     spelling (`DumE` against `dum-e`); the split sees ASCII capitals only, so a non-ASCII capital
+     (`GeminiÜber`) does not break a word (no catalog alias or Pipecat identifier needs one). The change lives in
      `shared/corpus_hint.py` only; both front doors reach it through `finish_response`, and the catalog and
      `repo_catalog.py` are untouched. `docs/smoke-test.md` item 55's verdicts cannot change (superset, and
      its queries contain no identifier tokens); the identifier queries are frozen as item 56.
@@ -653,7 +654,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-18 @ b2cbfe0f0060db43ac50f7ff5d60113a55a25a34 -->
+<!-- reviewed: 2026-10-18 @ a49c258b27c39ff6e4236a22790cbe06736142c6 -->
 
 ## Progress
 
