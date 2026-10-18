@@ -84,8 +84,8 @@ class ServingIndex(IndexReader, Protocol):
         """Return the number of indexed records per repo.
 
         Keys are each repo's configured slug verbatim (not casefolded), plus the
-        synthetic :data:`DOCS_COUNT_KEY` for doc chunks when any exist; that key
-        is not a repo.
+        synthetic :data:`DOCS_COUNT_KEY` for crawled doc chunks (no repo) when any
+        exist; that key is not a repo. Each record is counted under one key.
         """
         ...
 

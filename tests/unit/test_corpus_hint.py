@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.shared.corpus_hint import (
     attach_corpus_hint,
     configured_no_records,
@@ -24,7 +25,6 @@ from pipecat_context_hub.shared.corpus_hint import (
     indexed_repos,
     missing_repos,
 )
-from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.shared.interfaces import DOCS_COUNT_KEY, IndexUnavailableError
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, CatalogRepo
 from pipecat_context_hub.shared.response_finish import finish_response
@@ -110,6 +110,40 @@ class TestIndexedRepos:
             )
             assert DOCS_COUNT_KEY in fts.get_counts_by_repo()
             assert indexed_repos(fts) == frozenset({"acme/full-one"})
+        finally:
+            fts.close()
+
+    def test_every_chunk_is_counted_exactly_once(self, tmp_path: Path) -> None:
+        # Crawled doc chunks (no repo) count under DOCS_COUNT_KEY only; a repo's
+        # README fallback is content_type "doc" too but carries its repo, so it
+        # counts under that repo and not again under DOCS_COUNT_KEY.
+        fts = FTSIndex(tmp_path / "metadata.db", create=True)
+        try:
+            common: dict[str, Any] = {
+                "content": "pipecat",
+                "source_url": "https://example.invalid/x",
+                "path": "/x.md",
+                "indexed_at": datetime.now(tz=UTC),
+                "embedding": [0.0],
+            }
+            fts.upsert(
+                [
+                    ChunkedRecord(chunk_id="c-doc", content_type="doc", repo=None, **common),
+                    ChunkedRecord(
+                        chunk_id="c-code", content_type="code", repo="acme/full-one", **common
+                    ),
+                    ChunkedRecord(
+                        chunk_id="c-readme",
+                        content_type="doc",
+                        repo="acme/full-two",
+                        metadata={"is_readme_fallback": True},
+                        **common,
+                    ),
+                ]
+            )
+            counts = fts.get_counts_by_repo()
+            assert counts == {DOCS_COUNT_KEY: 1, "acme/full-one": 1, "acme/full-two": 1}
+            assert sum(counts.values()) == fts.get_index_stats()["total"]
         finally:
             fts.close()
 
