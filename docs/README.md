@@ -165,10 +165,18 @@ install and how `serve` exits when the client goes away, see
 | `search_api` | Class definitions, method signatures, frame types, inheritance |
 | `get_code_snippet` | Get targeted code by symbol name, intent, or file path + line range |
 | `check_deprecation` | Verify whether a pipecat import path is deprecated or removed (supports `--at-version` for lifecycle at a specific version) |
-| `get_hub_status` | Index health, reranker runtime state, record counts, framework version, commit SHAs |
+| `get_hub_status` | Index health, reranker runtime state, record counts, framework version, commit SHAs, repo coverage (`indexed_repos`, `configured_no_records`, `catalog_groups_not_indexed`) |
 
 All search results include an **EvidenceReport** with confidence scores,
 source-grounded facts, unresolved questions, and suggested follow-up queries.
+
+A search response may also carry a top-level **`corpus_hint`** when the query
+names a [repo catalog](configuration.md#repo-catalog) group whose repos are not indexed: it
+lists the missing repos and the `repos add` / `refresh` commands that would add
+them. The key is absent when no hint applies, and the hint does not depend on
+result confidence. The one-shot CLI prints its generic stderr poor-results hint
+only when there is no `corpus_hint`. `serve` reads configured and tainted repos
+once at startup, so restart it after `repos add` / `repos remove`.
 
 ### Filters
 

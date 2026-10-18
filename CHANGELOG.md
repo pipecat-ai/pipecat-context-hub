@@ -51,6 +51,26 @@ This project uses [Semantic Versioning](https://semver.org/).
   character, and a `description` holding `|` or any string holding `BEGIN
   GENERATED` / `END GENERATED`, so no catalog text can start an uncommented
   assignment in the generated `.env.example` block or break a splice.
+- **`corpus_hint` on search responses.** When a `search_docs`, `search_examples`,
+  `search_api` or `get_code_snippet` query names a catalog group alias whose
+  parseable, untainted repos have no indexed records, the response carries a
+  top-level `corpus_hint` (`matched_groups`, `repos_not_indexed`,
+  `repos_configured_no_records`, `add_command`, `refresh_command`,
+  `report_issue_url`); the key is absent otherwise. Deterministic: no network, no
+  embeddings, independent of result confidence. Both front doors attach it after
+  the staleness footer; the CLI's stderr poor-results hint is suppressed when a
+  `corpus_hint` is present. Configured and tainted repos are read once at process
+  start, so a running `serve` sees a later `repos add` / `remove` only after a restart.
+- **`get_hub_status` repo coverage:** `indexed_repos`, `configured_no_records`
+  and `catalog_groups_not_indexed` (all empty when the per-repo counts cannot be
+  read). The first two may name private local repos; the retrieval-quality issue
+  template now tells the agent to leave them out of the public report.
+- **Catalog health:** a weekly `catalog-health.yml` workflow (and
+  `just catalog-health`) flags private, missing, archived or renamed catalog
+  entries and opens or updates one tracking issue; PR CI never touches the
+  network for it. `just catalog-curate` prints a read-only curation report
+  (source-file counts, vendor candidates from GitHub code search) and exits 2
+  when the code search was incomplete.
 - New runtime dependency: `tomlkit` (comment-preserving TOML edits), loaded
   only by `repos add` / `repos remove`.
 - Plugin-specific release notes live in

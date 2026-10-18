@@ -26,6 +26,8 @@ uv run pipecat-context-hub install --print-config   # show MCP client config; ch
 uv run pipecat-context-hub repos list [--groups]    # effective repos (default/catalog/unlisted) and the catalog groups
 uv run pipecat-context-hub repos add <slug>         # edit PIPECAT_HUB_EXTRA_REPOS in config.toml (--unlisted, --group NAME, --config-only); also `remove`
 just catalog-regen                                  # regenerate .env.example / docs from data/repo_catalog.toml (--check, --bump-verified)
+just catalog-health                                 # network: flag private/missing/archived/renamed catalog repos (weekly in catalog-health.yml)
+just catalog-curate                                 # network, report-only: per-repo stats + code-search vendor candidates (needs a GitHub token)
 ```
 
 Installed alongside `pipecat-ai[cli]`, every command is also reachable as
@@ -171,6 +173,7 @@ src/pipecat_context_hub/
 │   ├── index_lock.py         # refresh.lock (exclusive for refresh; readers hold it shared while opening: refresh_excluded) / serve.lock (shared) advisory flocks; serve_is_running
 │   ├── exit_codes.py         # EXIT_INVALID_INPUT (1) / EXIT_INDEX_UNREADY (2) / EXIT_REFRESH_IN_PROGRESS (75), shared by serve, refresh and the CLI queries
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
+│   ├── corpus_hint.py        # indexed_repos / groups_not_indexed (the one "not indexed" predicate, shared with get_hub_status) + corpus_hint; finish_response is the one post-handler step (hint, staleness footer) both front doors call
 │   ├── support_links.py      # RETRIEVAL_QUALITY_ISSUE_URL / BUG_REPORT_ISSUE_URL — single source for MCP + CLI report-hint URLs
 │   ├── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
 │   └── versioning.py         # LATEST_SENTINEL / HEAD_SENTINEL / DEFAULT_FRAMEWORK_PIN / is_latest_sentinel / is_head_sentinel / canonicalize_framework_pin / parse_release_version / exact_release_version — shared tag/version helpers for `--framework-version` (pin, the `latest`/`head` sentinels, the default pin, and provenance stamping)
