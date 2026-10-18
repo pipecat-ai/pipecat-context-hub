@@ -120,6 +120,8 @@ Curated public repos you can add beyond the defaults, via `PIPECAT_HUB_EXTRA_REP
 
 Two maintainer recipes keep it current, both network-only and never run in PR CI: `just catalog-health` flags private, missing, archived or renamed entries (the weekly `catalog-health.yml` workflow runs it and files an issue), and `just catalog-curate` prints a report-only review of per-repo stats and code-search vendor candidates. `catalog-curate` needs a GitHub token (`GITHUB_TOKEN`, else `gh auth token`); neither edits the catalog. Exit codes are listed in `AGENTS.md`.
 
+A renamed entry is always reported as `renamed`, but its new name only sometimes: GitHub answers with a redirect to `/repositories/{id}`, and the check follows it with one more lookup. When that lookup fails (rate limit, network error, an unexpected answer), the entry is still `renamed` but has no new name; find it on GitHub. The second lookup has been checked by hand against one real renamed repo (`joyent/node`), not yet on a weekly run against a catalog entry.
+
 <!-- BEGIN GENERATED: repo catalog (edit data/repo_catalog.toml, run `just catalog-regen`) -->
 Last audited 2026-10-16. Public repos only. A repo marked *no source chunks* clones but yields nothing to search (Swift/Kotlin/C++ are not parsed).
 
