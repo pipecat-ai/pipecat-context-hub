@@ -280,3 +280,14 @@ Facts a phase worker needs and cannot cheaply rediscover:
 ### Review Waivers
 
 _(none: signed off by `/review-plan` on 2026-10-17, see the marker above)_
+
+### Modules added during review
+
+Review-gauntlet rounds 4-8 added four `shared/` leaves the checklist above does
+not name: `repo_slug.py` (the one slug grammar, `slug_key` identity and
+`dedupe_slugs`), `env_keys.py` (the list-key literals and CSV rule),
+`exclusion_folds.py` (the per-key taint-entry fold) and `terminal.py` (the
+output boundary: `echo` for human text, `echo_json` for the query commands'
+JSON, `escaped_click_errors` behind `cli.TerminalSafeGroup`, and the log record
+class and excepthook `load_env_layers` installs). `paths.shown_path` is the one
+rule for naming a configured path in a message.

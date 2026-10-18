@@ -94,7 +94,12 @@ optional, see `config.toml.example`) > `HubConfig` field defaults. Every entry
 point — `cli.py:main()`, the dashboard scripts, `scripts/smoke_check_removals.py`
 — calls `shared/env_loading.py`'s `load_env_layers()` (which runs
 `load_cwd_dotenv()` then `load_global_config()`) before constructing config, so
-they all resolve identically. Don't hand-replicate the two calls in a new entry
+they all resolve identically. It also has one process-wide side effect, first:
+it installs the terminal-safe output boundary (`shared/terminal.py`'s
+`install_output_escaping`: a log record class and, unless a host replaced it,
+`sys.excepthook`), since it is the one bootstrap every entry point already calls
+before anything logs; tests reset both around every test
+(`tests/conftest.py::_stdlib_output_hooks`). Don't hand-replicate the two calls in a new entry
 point — a source-parity test (`tests/unit/test_config.py`) fails if you do. Full precedence
 details and the Windows lookup path: `docs/configuration.md`'s "Config precedence"
 section (the variable table sits just above it).
@@ -161,8 +166,8 @@ src/pipecat_context_hub/
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision
 │   ├── model_loading.py      # quiet_model_loading — offline-first HF env defaults (serve + CLI)
-│   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside / resolution_chain / lookup_target (filesystem-identity predicates shared by every deletion, trust and write guard; lookup_target is the config writer's target, walked as the kernel does)
-│   ├── terminal.py           # the output boundary for configured text (leaf, stdlib only): echo (the only click.echo in src/, pinned by test_terminal) and install_log_escaping (log record factory; load_env_layers installs it first) both escape non-printable characters but newline/tab (escape_controls); shown flags one configured slug/path as repr + [invalid]
+│   ├── paths.py              # redact_home / redact_home_in_text (log redaction), shown_path (the one rule for naming a configured path: redact_home + shown) + same_dir / is_inside / resolution_chain / lookup_target (filesystem-identity predicates shared by every deletion, trust and write guard; lookup_target is the config writer's target, walked as the kernel does)
+│   ├── terminal.py           # the output boundary, one enforcement point per kind (leaf, stdlib only at import): echo (human text: escape_controls, every non-printable char but newline/tab) and echo_json (JSON stdout: escape_json, \uXXXX inside strings, value-preserving) are the only click.echo in src/ (pinned by test_terminal); escaped_click_errors behind cli.TerminalSafeGroup (click's own ClickException rendering); install_output_escaping (record class escaping message/exc_text/stack_info on read, a foreign factory's records re-classed; default sys.excepthook wrapped; load_env_layers installs it first); shown flags one configured slug/path as repr + [invalid]
 │   ├── index_lock.py         # refresh.lock (exclusive for refresh; readers hold it shared while opening: refresh_excluded) / serve.lock (shared) advisory flocks; serve_is_running
 │   ├── exit_codes.py         # EXIT_INDEX_UNREADY (2) / EXIT_REFRESH_IN_PROGRESS (75), shared by serve, refresh and the CLI queries
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
