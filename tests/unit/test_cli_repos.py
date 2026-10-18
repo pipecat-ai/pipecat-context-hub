@@ -531,6 +531,20 @@ class TestCheckOrder:
         assert redact_home(hub.config) in result.output
         assert hub.snapshot() == before
 
+    @pytest.mark.parametrize("verb", ["add", "remove"])
+    def test_a_tainted_slug_inside_a_comma_joined_element_gets_hand_edit_advice(
+        self, hub: Hub, verb: str
+    ):
+        """One array element ``"a,b"`` is two entries to the CSV rule: the tainted half is
+        held by the file even though the loader skips the whole array."""
+        hub.env(PIPECAT_HUB_TAINTED_REPOS=UNLISTED)
+        hub.write_config(f'{KEY} = ["{UNLISTED},{ALPHA_ONE}"]\n')
+        before = hub.snapshot()
+        result = hub.run(verb, UNLISTED)
+        assert result.exit_code == EXIT_INVALID_INPUT
+        assert "by hand" in result.output
+        assert hub.snapshot() == before
+
     @pytest.mark.parametrize("bad", ["noslash", "a/b/c", "acme/", "/repo", "ac me/repo", "a/.."])
     def test_malformed_slug_beats_shadow(self, hub: Hub, bad: str):
         hub.env(**{KEY: BETA_ONE})

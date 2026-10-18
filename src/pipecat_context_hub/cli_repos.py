@@ -38,11 +38,12 @@ from typing import Any, NoReturn, TypeVar
 import click
 
 from pipecat_context_hub.shared.config import HubConfig, SourceConfig
-from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, split_csv
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.env_loading import (
     LAYER_ENV,
     SHADOWING_LAYERS,
     ConfigNotTrusted,
+    config_list_entries,
     config_list_value,
     parse_global_config,
     resolve_global_config_path,
@@ -148,7 +149,11 @@ def _hand_edit_note(slug: str) -> str:
     written gets no hand-edit advice.
     """
     path = resolve_global_config_path()
-    if path is None or slug_key(slug) not in {slug_key(s) for s in _literally_listed(path)}:
+    if path is None:
+        return ""
+    raw, _problem = _raw_extra_repos(path)
+    held = config_list_entries(raw) if raw is not None else []
+    if slug_key(slug) not in {slug_key(s) for s in held}:
         return ""
     return (
         f" It is listed in {shown_path(path)}; `repos` will not change it, "
@@ -156,20 +161,21 @@ def _hand_edit_note(slug: str) -> str:
     )
 
 
-def _literally_listed(path: Path) -> list[str]:
-    """Every slug the file's ``PIPECAT_HUB_EXTRA_REPOS`` value literally lists; read-only.
+def _raw_extra_repos(path: Path) -> tuple[object | None, str | None]:
+    """``(raw PIPECAT_HUB_EXTRA_REPOS value, problem)``; the value is ``None`` when absent.
 
-    Unlike :func:`_configured_in_toml` (what the loader yields), this keeps the
-    elements of an array the loader skips whole, e.g. one with a comma-bearing entry:
-    the file still holds that slug, and only a hand edit can remove it.
+    The one read of config.toml for this key, via ``parse_global_config`` only (the
+    trust seam); read-only. TOML has no null, so ``None`` is unambiguous.
     """
     try:
-        value = parse_global_config(path).get(EXTRA_REPOS_ENV)
-    except (ConfigNotTrusted, tomllib.TOMLDecodeError):
-        return []
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if isinstance(v, (str, int, float, bool))]
-    return split_csv(value) if isinstance(value, str) else []
+        data = parse_global_config(path)
+    except ConfigNotTrusted as exc:
+        return None, f"ignoring {shown_path(path)}: not trusted ({exc.reason})"
+    except tomllib.TOMLDecodeError as exc:
+        return None, (
+            f"ignoring {shown_path(path)}: not valid TOML ({redact_home_in_text(str(exc))})"
+        )
+    return data.get(EXTRA_REPOS_ENV), None
 
 
 def _resolve_positional(
@@ -444,17 +450,12 @@ def _configured_in_toml() -> tuple[list[str], str | None]:
     path = resolve_global_config_path()
     if path is None:
         return [], "no config.toml location could be resolved"
-    try:
-        data = parse_global_config(path)
-    except ConfigNotTrusted as exc:
-        return [], f"ignoring {shown_path(path)}: not trusted ({exc.reason})"
-    except tomllib.TOMLDecodeError as exc:
-        return [], (
-            f"ignoring {shown_path(path)}: not valid TOML ({redact_home_in_text(str(exc))})"
-        )
-    if EXTRA_REPOS_ENV not in data:
+    raw, problem = _raw_extra_repos(path)
+    if problem is not None:
+        return [], problem
+    if raw is None:
         return [], None
-    configured = config_list_value(EXTRA_REPOS_ENV, data[EXTRA_REPOS_ENV])  # the loader's own rule
+    configured = config_list_value(EXTRA_REPOS_ENV, raw)  # the loader's own rule
     if configured is None:
         return (
             [],

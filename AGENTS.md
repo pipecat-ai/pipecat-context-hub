@@ -163,7 +163,7 @@ src/pipecat_context_hub/
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
-│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule)
+│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule: what the loader uses) / config_list_entries (its lenient view: what the file holds, for naming an entry the loader skips)
 │   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
 │   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants); member_skip_reason / actionable_members — the one group-member eligibility rule (`repos add --group` and the corpus hint skip tainted and `parseable = false`; `for_removal=True`, used by `repos remove --group`, skips tainted only)
 │   ├── repo_slug.py          # REPO_SLUG_RE / is_valid_repo_slug / slug_key / dedupe_slugs — the one owner/repo grammar, the one slug identity (casefolded; every default/taint/dedupe/writer/catalog comparison) and the one slug-list dedupe (leaf: ingester, catalog, repos, writer)
