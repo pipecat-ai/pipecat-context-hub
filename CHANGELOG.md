@@ -71,8 +71,9 @@ This project uses [Semantic Versioning](https://semver.org/).
   entries and opens or updates one tracking issue; PR CI never touches the
   network for it (exit 0 ok, 1 a flagged entry, 2 only inconclusive lookups,
   3 catalog unloadable). An entry is ok only when its GitHub answer is fully
-  validated; anything else is inconclusive. An inconclusive-only run comments
-  on the tracking issue and keeps its body, the last conclusive report.
+  validated; anything else is inconclusive. Only a flagged-entry run (exit 1)
+  replaces the tracking issue's body; any other failing run (inconclusive,
+  catalog unloadable) comments and keeps the body, the last conclusive report.
   `just catalog-curate` prints a read-only curation report (source-file counts,
   vendor candidates from GitHub code search; hits in private repositories are
   only counted, never named or listed) and exits 2 when any GitHub answer

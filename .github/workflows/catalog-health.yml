@@ -9,10 +9,11 @@ name: Catalog health
 # read-only token; only the issue job, which runs `gh` and no project code,
 # gets `issues: write`.
 #
-# The issue body is the last conclusive report. An inconclusive-only run
-# (script exit 2: rate limit, 5xx, timeout) posts its report as a comment and
-# leaves the body alone, so a stale entry reported earlier is never erased by
-# a flaky re-run.
+# The issue body is the last conclusive report: only a stale-entry run
+# (script exit 1) replaces it. Any other failing run (exit 2: inconclusive
+# lookups; exit 3: catalog unloadable; anything unexpected) posts its report as
+# a comment and leaves the body alone, so a stale entry reported earlier is
+# never erased by a run that says nothing about the repos.
 
 on:
   schedule:
@@ -121,19 +122,25 @@ jobs:
             --label "${LABEL}" \
             --json number \
             --jq '.[0].number // empty')"
-          if [ -n "${existing}" ] && [ "${EXIT_CODE}" = "2" ]; then
-            # Inconclusive only: keep the body (the last conclusive report).
+          if [ -n "${existing}" ] && [ "${EXIT_CODE}" = "1" ]; then
+            # Conclusive (a stale entry): the report becomes the body.
+            gh issue edit "${existing}" --body-file "${REPORT_PATH}"
+            gh issue comment "${existing}" \
+              --body "Catalog health failed $(date -u +%FT%TZ) in run ${RUN_ID}."
+          elif [ -n "${existing}" ]; then
+            # Not conclusive: keep the body (the last conclusive report).
+            case "${EXIT_CODE}" in
+              2) what="Inconclusive catalog health run (re-run it)" ;;
+              3) what="Catalog health run could not load the catalog (fix it)" ;;
+              *) what="Catalog health run ended with unexpected exit '${EXIT_CODE}'" ;;
+            esac
             {
-              echo "Inconclusive catalog health run $(date -u +%FT%TZ) in run ${RUN_ID}" \
-                "(re-run it; the issue body keeps the last conclusive report)."
+              echo "${what} $(date -u +%FT%TZ) in run ${RUN_ID}" \
+                "(the issue body keeps the last conclusive report)."
               echo
               cat "${REPORT_PATH}"
             } > comment.md
             gh issue comment "${existing}" --body-file comment.md
-          elif [ -n "${existing}" ]; then
-            gh issue edit "${existing}" --body-file "${REPORT_PATH}"
-            gh issue comment "${existing}" \
-              --body "Catalog health failed $(date -u +%FT%TZ) in run ${RUN_ID}."
           else
             gh issue create \
               --title "${TITLE}" \

@@ -709,12 +709,24 @@ class TestIssueStep:
         calls = self._run(tmp_path, exit_code="1", existing="7")
         assert "issue edit 7 --body-file report.md" in calls
 
-    def test_catalog_failure_replaces_the_body(self, tmp_path: Path) -> None:
-        calls = self._run(tmp_path, exit_code="3", existing="7")
-        assert "issue edit 7 --body-file report.md" in calls
+    @pytest.mark.parametrize("exit_code", ["3", "137", ""])
+    def test_non_conclusive_run_comments_and_keeps_the_body(
+        self, tmp_path: Path, exit_code: str
+    ) -> None:
+        # Only a stale-entry run (exit 1) is conclusive. A catalog-load failure
+        # (exit 3) or an unexpected code says nothing about any repo, so it must
+        # not erase the last conclusive report in the body.
+        calls = self._run(tmp_path, exit_code=exit_code, existing="7")
+        assert not any(c.startswith("issue edit") for c in calls)
+        assert "issue comment 7 --body-file comment.md" in calls
+        comment = (tmp_path / "comment.md").read_text(encoding="utf-8")
+        assert "INCONCLUSIVE-REPORT" in comment and "run 42" in comment
 
-    def test_inconclusive_run_without_an_issue_opens_one(self, tmp_path: Path) -> None:
-        calls = self._run(tmp_path, exit_code="2", existing="")
+    @pytest.mark.parametrize("exit_code", ["2", "3"])
+    def test_non_conclusive_run_without_an_issue_opens_one(
+        self, tmp_path: Path, exit_code: str
+    ) -> None:
+        calls = self._run(tmp_path, exit_code=exit_code, existing="")
         assert any(c.startswith("issue create") for c in calls)
 
     def test_scripts_have_no_permission_bit_dependence(self) -> None:
