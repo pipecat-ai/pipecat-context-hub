@@ -28,6 +28,8 @@ from pipecat_context_hub.services.ingest.ast_extractor import (
 )
 from pipecat_context_hub.services.ingest.ingest_filters import (
     hash_source,
+    is_plain_dir,
+    is_plain_file,
     is_storybook_file,
 )
 from pipecat_context_hub.services.ingest.rst_type_parser import parse_rst_types
@@ -146,25 +148,21 @@ class SourceIngester:
         # Root-only glob (not recursive) — stubs are at repo root for known
         # targets like daily-python. .pyi files are NOT in _CODE_EXTENSIONS
         # to avoid duplicate indexing by GitHubRepoIngester.
-        pyi_files: list[Path] = sorted(
-            f for f in clone_dir.glob("*.pyi") if f.is_file() and not f.is_symlink()
-        )
+        pyi_files: list[Path] = sorted(f for f in clone_dir.glob("*.pyi") if is_plain_file(f))
 
         # 3. Discover Python packages under src/
         src_dir = clone_dir / "src"
         pkg_dirs: list[Path] = []
-        if src_dir.is_dir():
+        if is_plain_dir(src_dir):
             pkg_dirs = sorted(
-                d for d in src_dir.iterdir() if d.is_dir() and (d / "__init__.py").is_file()
+                d for d in src_dir.iterdir() if is_plain_dir(d) and is_plain_file(d / "__init__.py")
             )
 
         # 2b. Check for RST type docs in docs/
         rst_files: list[Path] = []
         docs_dir = clone_dir / "docs"
-        if docs_dir.is_dir() and not docs_dir.is_symlink():
-            rst_files = sorted(
-                f for f in docs_dir.rglob("*.rst") if f.is_file() and not f.is_symlink()
-            )
+        if is_plain_dir(docs_dir):
+            rst_files = sorted(f for f in docs_dir.rglob("*.rst") if is_plain_file(f))
 
         # 2c. Detect TypeScript repo (package.json or tsconfig.json at root
         # or in any immediate subdirectory — handles nested-package repos
@@ -500,11 +498,15 @@ def _has_ts_markers(clone_dir: Path) -> bool:
     if not clone_dir.is_dir():
         return False
     for marker in ("package.json", "tsconfig.json"):
-        if (clone_dir / marker).is_file():
+        if is_plain_file(clone_dir / marker):
             return True
         # Check immediate subdirectories (not recursive — avoids node_modules)
         for child in clone_dir.iterdir():
-            if child.is_dir() and child.name not in _TS_SKIP_DIRS and (child / marker).is_file():
+            if (
+                is_plain_dir(child)
+                and child.name not in _TS_SKIP_DIRS
+                and is_plain_file(child / marker)
+            ):
                 return True
     return False
 

@@ -20,8 +20,8 @@ both ingesters going forward, so a future fix here can't drift the same way.
 
 The same module owns ``is_plain_file`` / ``is_plain_dir``, the one rule for which
 filesystem entries an example walk may follow (real files and directories, never
-a symlink or junction). ``github_ingest.py`` and ``taxonomy.py`` both apply it;
-``source_ingest.py`` keeps its own link checks and is not yet on this rule.
+a symlink or junction). ``github_ingest.py``, ``taxonomy.py`` and
+``source_ingest.py`` all apply it to the entries they discover.
 """
 
 from __future__ import annotations
