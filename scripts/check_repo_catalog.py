@@ -14,9 +14,14 @@ classify the answer:
                     non-following GET resolves it (failure keeps ``renamed``
                     with no new name).
 - ``inconclusive``  403/429 (rate limit), 5xx, timeout, network error, or any
-                    other unexpected answer, including a 200 that is not a repository
-                    object (no string ``full_name``). Reported in its own section, never
+                    other unexpected answer, including a 200 that is not a fully
+                    valid repository object. Reported in its own section, never
                     labelled inaccessible or private.
+
+Contract: an entry is ``ok`` only when its 200 body was fully validated (a
+JSON object with a non-empty string ``full_name`` and boolean ``private`` and
+``archived``); any 200 the script cannot fully validate is ``inconclusive``.
+Every body is read through ``catalog_script_common.validated_body``.
 
 Exit codes (``aggregate_verdict``): 0 only when every entry is ok (a stale
 ``verified`` date is advisory and does not fail); 1 when any entry is
@@ -44,16 +49,19 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import httpx
-
-from pipecat_context_hub.shared.repo_catalog import (
-    Catalog,
-    CatalogError,
-    load_catalog,
-    parse_catalog,
+from catalog_script_common import (
+    API_BASE,
+    EXIT_CATALOG,
+    github_headers,
+    is_bool,
+    load_catalog_arg,
+    non_empty_str,
+    validated_body,
 )
+
+from pipecat_context_hub.shared.repo_catalog import Catalog
 from pipecat_context_hub.shared.repo_slug import slug_key
 
-API_BASE = "https://api.github.com"
 ADVISORY_DAYS = 90
 TIMEOUT_SECONDS = 15.0
 
@@ -66,9 +74,12 @@ STATUS_INCONCLUSIVE = "inconclusive"
 EXIT_OK = 0
 EXIT_STALE = 1
 EXIT_INCONCLUSIVE = 2
-EXIT_CATALOG = 3
+# EXIT_CATALOG (3, the catalog cannot be loaded) comes from catalog_script_common.
 
 _STALE_STATUSES = frozenset({STATUS_INACCESSIBLE, STATUS_ARCHIVED, STATUS_RENAMED})
+
+# Every field the classifier reads from a ``/repos/{slug}`` 200 body.
+REPO_FIELDS = {"full_name": non_empty_str, "private": is_bool, "archived": is_bool}
 
 
 @dataclass(frozen=True)
@@ -83,14 +94,7 @@ class EntryResult:
 
 def build_headers(token: str | None) -> dict[str, str]:
     """Request headers; ``Authorization`` is present only when a token is given."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "pipecat-context-hub-catalog-health",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
+    return github_headers("pipecat-context-hub-catalog-health", token)
 
 
 def make_client(token: str | None, transport: httpx.BaseTransport | None = None) -> httpx.Client:
@@ -112,19 +116,6 @@ def _name_from_api_url(url: str) -> str | None:
         if len(tail) >= 2:
             return f"{tail[0]}/{tail[1]}"
     return None
-
-
-def _json_object(response: httpx.Response) -> dict[str, object] | None:
-    """The body as a JSON object, or ``None`` when it is not valid JSON or not an object."""
-    try:
-        data = response.json()
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _json_body(response: httpx.Response) -> dict[str, object]:
-    return _json_object(response) or {}
 
 
 def _is_repositories_target(url: str) -> bool:
@@ -152,10 +143,8 @@ def resolve_repositories_redirect(client: httpx.Client, response: httpx.Response
         second = client.get(urlparse(location).path)
     except httpx.HTTPError:
         return None
-    if second.status_code != 200:
-        return None
-    full_name = (_json_object(second) or {}).get("full_name")
-    return full_name if isinstance(full_name, str) and full_name else None
+    body, _ = validated_body(second, {"full_name": non_empty_str})
+    return str(body["full_name"]) if body is not None else None
 
 
 def classify_response(
@@ -172,23 +161,21 @@ def classify_response(
         if new_name is None:
             new_name = resolved_name
         if new_name is None:
-            body_url = _json_body(response).get("url")
-            if isinstance(body_url, str):
-                new_name = _name_from_api_url(body_url)
+            body, _ = validated_body(response, {"url": non_empty_str}, status=None)
+            if body is not None:
+                new_name = _name_from_api_url(str(body["url"]))
         return EntryResult(slug, STATUS_RENAMED, f"HTTP {code} redirect", new_name)
     if code == 404:
         return EntryResult(slug, STATUS_INACCESSIBLE, "HTTP 404 (missing or private)")
     if code == 200:
-        body = _json_object(response)
+        body, problem = validated_body(response, REPO_FIELDS)
         if body is None:
-            return EntryResult(slug, STATUS_INCONCLUSIVE, "200 body is not a JSON object")
-        if body.get("private") is True:
+            return EntryResult(slug, STATUS_INCONCLUSIVE, f"200 not a valid repository: {problem}")
+        if body["private"] is True:
             return EntryResult(slug, STATUS_INACCESSIBLE, "repository is private")
-        if body.get("archived") is True:
+        if body["archived"] is True:
             return EntryResult(slug, STATUS_ARCHIVED, "repository is archived")
-        full_name = body.get("full_name")
-        if not isinstance(full_name, str):
-            return EntryResult(slug, STATUS_INCONCLUSIVE, "200 body has no string full_name")
+        full_name = str(body["full_name"])
         if slug_key(full_name) != slug_key(slug):
             return EntryResult(slug, STATUS_RENAMED, "full_name differs", full_name)
         return EntryResult(slug, STATUS_OK)
@@ -273,12 +260,6 @@ def render_report(results: Sequence[EntryResult], verified: date, today: date) -
     return "\n".join(lines)
 
 
-def _catalog_failure(message: str) -> None:
-    """One line on stdout too, so the workflow's empty-report guard files an issue."""
-    print(message)
-    print(message, file=sys.stderr)
-
-
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -291,16 +272,8 @@ def main(
     args = parser.parse_args(argv)
 
     env = os.environ if environ is None else environ
-    try:
-        if args.catalog is not None:
-            catalog = parse_catalog(args.catalog.read_text(encoding="utf-8"))
-        else:
-            catalog = load_catalog()
-    except (CatalogError, OSError, UnicodeDecodeError) as exc:
-        _catalog_failure(f"cannot load the catalog: {exc}")
-        return EXIT_CATALOG
+    catalog = load_catalog_arg(args.catalog)
     if catalog is None:
-        _catalog_failure("cannot load the catalog (see log)")
         return EXIT_CATALOG
 
     token = env.get("GITHUB_TOKEN") or None

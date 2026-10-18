@@ -1,8 +1,11 @@
-"""Tests for the repo catalog health and curation scripts (no network).
+"""Tests for the repo catalog health script, the helper module both catalog
+scripts share, and the scripts' workflow/justfile/CI wiring (no network).
+``curate_repo_catalog.py`` has its own ``test_curate_repo_catalog.py``.
 
-Both scripts are loaded by path (the ``test_probe_mcp_2x.py`` pattern): they are
-not part of the wheel. Every GitHub answer is an injected ``httpx`` response or
-``httpx.MockTransport``.
+The scripts are loaded by path (the ``test_probe_mcp_2x.py`` pattern): they are
+not part of the wheel. The shared ``catalog_script_common`` module is loaded
+first, so the script's sibling import finds it in ``sys.modules``. Every GitHub
+answer is an injected ``httpx`` response or ``httpx.MockTransport``.
 
 Fixture provenance: the private/archived shapes below were observed on
 2026-10-16 (owner ``pipecat-ai``). The 301 redirect SHAPE is real (verified
@@ -15,7 +18,10 @@ SYNTHETIC.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -41,8 +47,8 @@ def _load(name: str) -> ModuleType:
     return module
 
 
+common = _load("catalog_script_common")
 check = _load("check_repo_catalog")
-curate = _load("curate_repo_catalog")
 
 _TODAY = date(2026, 10, 17)
 
@@ -166,6 +172,112 @@ class TestClassifyResponse:
     def test_non_json_200_does_not_crash(self, response: httpx.Response) -> None:
         r = check.classify_response("a/b", response)
         assert r.status == check.STATUS_INCONCLUSIVE
+
+    def test_partial_200_is_inconclusive_not_ok(self) -> None:
+        # Regression: a body with only full_name proves neither public nor
+        # unarchived, so it must not reach ok (it did when private/archived were
+        # only checked for `is True`).
+        r = check.classify_response("a/b", _resp(200, {"full_name": "a/b"}))
+        assert r.status == check.STATUS_INCONCLUSIVE
+
+    # Every field the classifier reads, missing and mistyped: each cell of the
+    # 200 body state space is inconclusive, never ok or a stale verdict.
+    _BAD_200_BODIES = [
+        *[
+            pytest.param({k: v for k, v in _ok_body("a/b").items() if k != field}, id=f"no-{field}")
+            for field in ("full_name", "private", "archived")
+        ],
+        pytest.param({**_ok_body("a/b"), "full_name": ""}, id="full_name-empty"),
+        pytest.param({**_ok_body("a/b"), "full_name": 7}, id="full_name-int"),
+        pytest.param({**_ok_body("a/b"), "full_name": None}, id="full_name-null"),
+        pytest.param({**_ok_body("a/b"), "private": "false"}, id="private-str"),
+        pytest.param({**_ok_body("a/b"), "private": 0}, id="private-int"),
+        pytest.param({**_ok_body("a/b"), "private": None}, id="private-null"),
+        pytest.param({**_ok_body("a/b"), "archived": "true"}, id="archived-str"),
+        pytest.param({**_ok_body("a/b"), "archived": 1}, id="archived-int"),
+        pytest.param({**_ok_body("a/b"), "archived": None}, id="archived-null"),
+    ]
+
+    @pytest.mark.parametrize("body", _BAD_200_BODIES)
+    def test_every_unvalidated_200_cell_is_inconclusive(self, body: dict[str, object]) -> None:
+        r = check.classify_response("a/b", _resp(200, body))
+        assert r.status == check.STATUS_INCONCLUSIVE
+        assert "not a valid repository" in r.detail
+
+    def test_the_classifier_validates_exactly_the_fields_it_reads(self) -> None:
+        assert set(check.REPO_FIELDS) == {"full_name", "private", "archived"}
+
+    @pytest.mark.parametrize(
+        ("status", "body", "expected"),
+        [
+            (200, _ok_body("a/b"), "ok"),
+            (200, {"full_name": "a/b"}, "inconclusive"),
+            (200, None, "inconclusive"),
+            (301, None, "renamed"),
+            (308, None, "renamed"),
+            (404, None, "inaccessible"),
+            (403, None, "inconclusive"),
+            (429, None, "inconclusive"),
+            (500, None, "inconclusive"),
+            (503, None, "inconclusive"),
+            (418, None, "inconclusive"),
+            (204, None, "inconclusive"),
+        ],
+    )
+    def test_status_by_body_table(self, status: int, body: object, expected: str) -> None:
+        assert check.classify_response("a/b", _resp(status, body)).status == expected
+
+
+class TestValidatedBody:
+    """The one GitHub-response validator both catalog scripts read through."""
+
+    _FIELDS = {"s": common.non_empty_str, "n": common.plain_int, "b": common.is_bool}
+    _GOOD = {"s": "x", "n": 0, "b": False, "extra": [1]}
+
+    def test_valid_body_is_returned(self) -> None:
+        body, problem = common.validated_body(_resp(200, self._GOOD), self._FIELDS)
+        assert body == self._GOOD and problem == ""
+
+    @pytest.mark.parametrize(
+        ("response", "reason"),
+        [
+            (_resp(404, {"s": "x", "n": 0, "b": False}), "HTTP 404"),
+            (_resp(500), "HTTP 500"),
+            (httpx.Response(200, content=b"<html>"), "body is not JSON"),
+            (_resp(200, ["x"]), "body is not a JSON object"),
+            (_resp(200, "a string"), "body is not a JSON object"),
+            (_resp(200, {"n": 0, "b": False}), "field 's'"),
+            (_resp(200, {"s": "", "n": 0, "b": False}), "field 's'"),
+            (_resp(200, {"s": "x", "b": False}), "field 'n'"),
+            (_resp(200, {"s": "x", "n": True, "b": False}), "field 'n'"),
+            (_resp(200, {"s": "x", "n": -1, "b": False}), "field 'n'"),
+            (_resp(200, {"s": "x", "n": "1", "b": False}), "field 'n'"),
+            (_resp(200, {"s": "x", "n": 0}), "field 'b'"),
+            (_resp(200, {"s": "x", "n": 0, "b": "false"}), "field 'b'"),
+            (_resp(200, {"s": "x", "n": 0, "b": 0}), "field 'b'"),
+        ],
+    )
+    def test_every_invalid_cell_returns_no_data(
+        self, response: httpx.Response, reason: str
+    ) -> None:
+        body, problem = common.validated_body(response, self._FIELDS)
+        assert body is None
+        assert reason in problem
+
+    def test_status_none_accepts_any_status(self) -> None:
+        body, _ = common.validated_body(
+            _resp(301, {"s": "x"}), {"s": common.non_empty_str}, status=None
+        )
+        assert body == {"s": "x"}
+
+    def test_both_scripts_share_the_validator_headers_and_catalog_exit(self) -> None:
+        for name in ("check_repo_catalog.py", "curate_repo_catalog.py"):
+            src = (_SCRIPTS / name).read_text(encoding="utf-8")
+            assert "from catalog_script_common import" in src, name
+            # No private response parsing left beside the shared validator.
+            assert ".json()" not in src, name
+            assert "_catalog_failure" not in src, name
+            assert '"X-GitHub-Api-Version"' not in src, name
 
 
 class TestCheckSlugErrors:
@@ -474,447 +586,6 @@ class TestMain:
         assert paths and all(p.startswith("/repos/") for p in paths)
 
 
-# --- curate -----------------------------------------------------------------
-
-
-class TestCurate:
-    def test_resolve_token_prefers_env_then_gh(self) -> None:
-        assert curate.resolve_token({"GITHUB_TOKEN": "env"}, lambda: "gh") == "env"
-        assert curate.resolve_token({}, lambda: "gh") == "gh"
-        assert curate.resolve_token({}, lambda: None) is None
-
-    def test_no_token_exits_nonzero_with_message(self, capsys: pytest.CaptureFixture[str]) -> None:
-        def boom(request: httpx.Request) -> httpx.Response:
-            raise AssertionError("no request may be made without a token")
-
-        code = curate.main(
-            [], transport=httpx.MockTransport(boom), environ={}, gh_token=lambda: None
-        )
-        assert code != 0
-        assert "GITHUB_TOKEN" in capsys.readouterr().err
-
-    def test_report_only_run_leaves_catalog_byte_identical(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        path = tmp_path / "catalog.toml"
-        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
-        before = path.read_bytes()
-        shipped_before = _CATALOG.read_bytes()
-        seen_auth: list[str | None] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen_auth.append(request.headers.get("authorization"))
-            assert request.method == "GET"
-            p = request.url.path
-            if p == "/repos/a/known":
-                return _resp(
-                    200,
-                    {
-                        "default_branch": "main",
-                        "archived": False,
-                        "pushed_at": "2026-10-01T00:00:00Z",
-                        "stargazers_count": 7,
-                    },
-                )
-            if p == "/repos/a/known/git/trees/main":
-                tree = [
-                    {"type": "blob", "path": "x.py"},
-                    {"type": "blob", "path": "y.ts"},
-                    {"type": "blob", "path": "README.md"},
-                    {"type": "tree", "path": "dir.py"},
-                ]
-                return _resp(200, {"tree": tree})
-            if p == "/search/code":
-                items = [
-                    {"repository": {"full_name": "new/vendor"}},
-                    {"repository": {"full_name": "A/Known"}},
-                ]
-                return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
-            return _resp(404)
-
-        code = curate.main(
-            ["--catalog", str(path)],
-            transport=httpx.MockTransport(handler),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        out = capsys.readouterr().out
-        assert code == 0
-        assert path.read_bytes() == before
-        assert _CATALOG.read_bytes() == shipped_before
-        assert set(seen_auth) == {"Bearer tok"}
-        assert "`a/known`: 2 source files" in out
-        assert "new/vendor" in out
-        assert "A/Known" not in out  # already catalogued, case-insensitively
-
-    def test_count_source_files(self) -> None:
-        tree = {"tree": [{"type": "blob", "path": "a.tsx"}, {"type": "blob", "path": "b.md"}]}
-        assert curate.count_source_files(tree) == 1
-        assert curate.count_source_files("nope") == 0
-
-    def test_repo_stats_records_errors_instead_of_raising(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return _resp(404)
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            assert curate.repo_stats(client, "a/b")["error"] == "HTTP 404"
-
-    def test_catalog_failure_has_its_own_exit_code_and_stdout_line(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        code = curate.main(
-            ["--catalog", str(tmp_path / "missing.toml")],
-            transport=httpx.MockTransport(lambda r: _resp(200)),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        captured = capsys.readouterr()
-        assert code == curate.EXIT_CATALOG
-        assert curate.EXIT_CATALOG not in (curate.EXIT_OK, curate.EXIT_NO_TOKEN)
-        assert "cannot load the catalog" in captured.out
-
-    @pytest.mark.parametrize(
-        "make",
-        [
-            lambda: httpx.Response(200, content=b"<html>"),
-            lambda: _resp(200, ["x"]),
-            lambda: _resp(200, {"items": "nope"}),
-        ],
-    )
-    def test_discover_vendors_records_malformed_response(self, make: object) -> None:
-        with curate.make_client("t", httpx.MockTransport(lambda r: make())) as client:  # type: ignore[operator]
-            problems: list[str] = []
-            found = curate.discover_vendors(client, set(), problems)
-        assert not found
-        assert len(problems) == 1
-
-    def test_discover_vendors_skips_null_and_non_dict_repository(self) -> None:
-        items = [
-            {"repository": None},
-            {"repository": "str"},
-            "junk",
-            {"repository": {"full_name": "new/vendor"}},
-        ]
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            problems: list[str] = []
-            found = curate.discover_vendors(client, set(), problems)
-        assert list(found) == ["new/vendor"]
-        assert problems and "3 item(s)" in problems[0]
-        assert "Code-search problems" in curate.render_report([], found, problems)
-
-    @pytest.mark.parametrize("status", [403, 422, 429, 500])
-    def test_discover_vendors_records_http_failure(self, status: int) -> None:
-        # A rate limit or server error ends discovery: it must not read as "no candidates".
-        with curate.make_client("t", httpx.MockTransport(lambda r: _resp(status))) as client:
-            problems: list[str] = []
-            found = curate.discover_vendors(client, set(), problems)
-        assert not found
-        assert problems == [f"page 1: HTTP {status}"]
-
-    def test_discover_vendors_records_transport_error(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.ReadTimeout("slow", request=request)
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            problems: list[str] = []
-            found = curate.discover_vendors(client, set(), problems)
-        assert not found
-        assert len(problems) == 1 and "ReadTimeout" in problems[0]
-
-    def test_incomplete_search_exits_nonzero_and_says_so(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        path = tmp_path / "catalog.toml"
-        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/search/code":
-                return _resp(403, {"message": "rate limited"})
-            return _resp(404)
-
-        code = curate.main(
-            ["--catalog", str(path)],
-            transport=httpx.MockTransport(handler),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        out = capsys.readouterr().out
-        assert code == curate.EXIT_REPORT_INCOMPLETE
-        assert code not in (curate.EXIT_OK, curate.EXIT_NO_TOKEN, curate.EXIT_CATALOG)
-        assert "none found (code search incomplete" in out
-        assert "page 1: HTTP 403" in out
-
-    def test_default_repos_are_never_candidates(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # The catalog parser rejects the shipped defaults, so they are never catalog
-        # slugs; they are always indexed and must not top the candidate list.
-        path = tmp_path / "catalog.toml"
-        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/search/code":
-                items = [
-                    {"repository": {"full_name": "pipecat-ai/pipecat"}},
-                    {"repository": {"full_name": "Pipecat-AI/Pipecat-Examples"}},
-                    {"repository": {"full_name": "new/vendor"}},
-                ]
-                return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
-            if request.url.path == "/repos/a/known":
-                return _resp(200, {"default_branch": "main"})
-            return _resp(200, {"tree": []})
-
-        code = curate.main(
-            ["--catalog", str(path)],
-            transport=httpx.MockTransport(handler),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        out = capsys.readouterr().out
-        assert code == curate.EXIT_OK
-        candidates = out.split("## Candidate repos", 1)[1]
-        assert "new/vendor" in candidates
-        assert "pipecat-ai/pipecat`" not in candidates
-        assert "Pipecat-AI/Pipecat-Examples" not in candidates
-
-    def test_scripts_compare_slugs_through_slug_key(self) -> None:
-        # repo_slug.slug_key is the one slug identity; a raw casefold would drift
-        # from catalog, config and hint behaviour if slug_key ever normalised more.
-        for name in ("check_repo_catalog.py", "curate_repo_catalog.py"):
-            src = (_SCRIPTS / name).read_text(encoding="utf-8")
-            assert ".casefold()" not in src, name
-            assert "slug_key(" in src, name
-
-    def test_repo_stats_non_dict_body_is_recorded(self) -> None:
-        with curate.make_client("t", httpx.MockTransport(lambda r: _resp(200, ["x"]))) as client:
-            assert "error" in curate.repo_stats(client, "a/b")
-
-    def test_truncated_tree_is_marked_in_report(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/repos/a/b":
-                return _resp(200, {"default_branch": "main"})
-            return _resp(200, {"truncated": True, "tree": [{"type": "blob", "path": "x.py"}]})
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            stats = curate.repo_stats(client, "a/b")
-        assert stats["truncated"] is True
-        assert "1 (truncated) source files" in curate.render_report([stats], curate.Counter())
-        # A truncated tree undercounts: the report is incomplete, not clean.
-        assert curate.stats_incomplete([stats])
-
-    def test_truncated_tree_exits_incomplete(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        path = tmp_path / "catalog.toml"
-        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/search/code":
-                return _resp(200, {"incomplete_results": False, "items": []})
-            if request.url.path == "/repos/a/known":
-                return _resp(200, {"default_branch": "main"})
-            return _resp(200, {"truncated": True, "tree": [{"type": "blob", "path": "x.py"}]})
-
-        code = curate.main(
-            ["--catalog", str(path)],
-            transport=httpx.MockTransport(handler),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        assert code == curate.EXIT_REPORT_INCOMPLETE
-        assert "1 (truncated) source files" in capsys.readouterr().out
-
-    @staticmethod
-    def _full_pages(total_count: object) -> httpx.MockTransport:
-        def handler(request: httpx.Request) -> httpx.Response:
-            page = request.url.params["page"]
-            items = [
-                {"repository": {"full_name": f"v{page}/r{i}"}}
-                for i in range(curate.SEARCH_PER_PAGE)
-            ]
-            return _resp(200, {"total_count": total_count, "items": items})
-
-        return httpx.MockTransport(handler)
-
-    @pytest.mark.parametrize("total_count", [400, None, "400", True])
-    def test_page_cap_with_unread_results_is_recorded(self, total_count: object) -> None:
-        # Every capped page full and GitHub reporting more (or not saying how
-        # many): the unread results must not read as a complete candidate set.
-        with curate.make_client("t", self._full_pages(total_count)) as client:
-            problems: list[str] = []
-            found = curate.discover_vendors(client, set(), problems)
-        assert len(found) == curate.SEARCH_PAGES * curate.SEARCH_PER_PAGE
-        assert len(problems) == 1 and f"{curate.SEARCH_PAGES}-page cap" in problems[0]
-
-    def test_page_cap_reached_exactly_is_clean(self) -> None:
-        total = curate.SEARCH_PAGES * curate.SEARCH_PER_PAGE
-        with curate.make_client("t", self._full_pages(total)) as client:
-            problems: list[str] = []
-            curate.discover_vendors(client, set(), problems)
-        assert problems == []
-
-    def test_page_cap_with_unread_results_exits_incomplete(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        path = tmp_path / "catalog.toml"
-        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
-        full = self._full_pages(400)
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/search/code":
-                return full.handle_request(request)
-            if request.url.path == "/repos/a/known":
-                return _resp(200, {"default_branch": "main"})
-            return _resp(200, {"tree": []})
-
-        code = curate.main(
-            ["--catalog", str(path)],
-            transport=httpx.MockTransport(handler),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        assert code == curate.EXIT_REPORT_INCOMPLETE
-        assert "page cap" in capsys.readouterr().out
-
-    def test_candidates_are_counted_by_slug_key(self) -> None:
-        items = [
-            {"repository": {"full_name": "Owner/Repo"}},
-            {"repository": {"full_name": "owner/repo"}},
-            {"repository": {"full_name": "OWNER/REPO"}},
-        ]
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            found = curate.discover_vendors(client, set(), [])
-        assert dict(found) == {"Owner/Repo": 3}  # one row, first spelling seen
-
-    @pytest.mark.parametrize(
-        "repository", [{}, {"full_name": None}, {"full_name": 5}, {"full_name": ""}]
-    )
-    def test_item_without_a_full_name_is_malformed(self, repository: object) -> None:
-        items = [{"repository": repository}]
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            problems: list[str] = []
-            found = curate.discover_vendors(client, set(), problems)
-        assert not found
-        assert problems == ["page 1: 1 item(s) without a repository full_name"]
-
-    def test_non_utf8_catalog_exits_catalog_code(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        bad = tmp_path / "latin1.toml"
-        bad.write_bytes(b'verified = "2026-10-16"\n# caf\xe9\n')
-        code = curate.main(
-            ["--catalog", str(bad)],
-            transport=httpx.MockTransport(lambda r: _resp(200)),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        assert code == curate.EXIT_CATALOG
-        assert "cannot load the catalog" in capsys.readouterr().out
-
-    def test_discover_vendors_records_incomplete_results(self) -> None:
-        # GitHub answers 200 with incomplete_results when its search timed out; the
-        # hits it did return still count, but "none found" is no longer clean.
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.params["page"] == "1":
-                items = [{"repository": {"full_name": "new/vendor"}}]
-                return _resp(200, {"incomplete_results": True, "items": items})
-            return _resp(200, {"incomplete_results": False, "items": []})
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            problems: list[str] = []
-            found = curate.discover_vendors(client, set(), problems)
-        assert list(found) == ["new/vendor"]
-        assert len(problems) == 1 and "page 1: incomplete_results" in problems[0]
-
-    def test_incomplete_results_exits_nonzero(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        path = tmp_path / "catalog.toml"
-        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/search/code":
-                return _resp(200, {"incomplete_results": True, "items": []})
-            if request.url.path == "/repos/a/known":
-                return _resp(200, {"default_branch": "main"})
-            return _resp(200, {"tree": []})
-
-        code = curate.main(
-            ["--catalog", str(path)],
-            transport=httpx.MockTransport(handler),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        out = capsys.readouterr().out
-        assert code == curate.EXIT_REPORT_INCOMPLETE
-        assert "none found (code search incomplete" in out
-
-    @pytest.mark.parametrize("status", [403, 409, 429])
-    def test_tree_failure_is_reported_not_counted(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], status: int
-    ) -> None:
-        path = tmp_path / "catalog.toml"
-        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/search/code":
-                return _resp(200, {"incomplete_results": False, "items": []})
-            if request.url.path == "/repos/a/known":
-                return _resp(200, {"default_branch": "main", "stargazers_count": 3})
-            return _resp(status, {"message": "nope"})
-
-        code = curate.main(
-            ["--catalog", str(path)],
-            transport=httpx.MockTransport(handler),
-            environ={"GITHUB_TOKEN": "tok"},
-        )
-        out = capsys.readouterr().out
-        assert code == curate.EXIT_REPORT_INCOMPLETE
-        assert f"`a/known`: source files unknown (tree: HTTP {status})" in out
-        assert "None source files" not in out
-        assert "stars 3" in out  # the metadata survives a failed tree
-
-    @pytest.mark.parametrize("body", [{}, {"default_branch": None}, {"default_branch": ""}])
-    def test_missing_default_branch_is_a_tree_error_without_a_request(
-        self, body: dict[str, object]
-    ) -> None:
-        paths: list[str] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            paths.append(request.url.path)
-            return _resp(200, body)
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            stats = curate.repo_stats(client, "a/b")
-        assert paths == ["/repos/a/b"]
-        assert stats["tree_error"] == "no default branch"
-        assert "source_files" not in stats
-        assert curate.stats_incomplete([stats])
-
-    def test_branch_is_quoted_as_one_path_segment(self) -> None:
-        raw: list[bytes] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/repos/a/b":
-                return _resp(200, {"default_branch": "rel/1#x?y"})
-            raw.append(request.url.raw_path)
-            return _resp(200, {"tree": [{"type": "blob", "path": "x.py"}]})
-
-        with curate.make_client("t", httpx.MockTransport(handler)) as client:
-            stats = curate.repo_stats(client, "a/b")
-        assert raw == [b"/repos/a/b/git/trees/rel%2F1%23x%3Fy?recursive=1"]
-        assert stats["source_files"] == 1
-        assert not curate.stats_incomplete([stats])
-
-    def test_script_never_opens_the_catalog_for_writing(self) -> None:
-        src = (_SCRIPTS / "curate_repo_catalog.py").read_text(encoding="utf-8")
-        assert not re.search(r"write_text|write_bytes|open\([^)]*[\"'][wax+]", src)
-
-
 # --- workflow / justfile / ci wiring (the test_audit_sync.py pattern) -------
 
 
@@ -962,7 +633,83 @@ class TestWiring:
         assert "catalog-health" not in ci
 
     def test_windows_file_list_includes_this_module(self) -> None:
-        assert "tests/unit/test_check_repo_catalog.py" in _CI_YML.read_text(encoding="utf-8")
+        ci = _CI_YML.read_text(encoding="utf-8")
+        assert "tests/unit/test_check_repo_catalog.py" in ci
+        assert "tests/unit/test_curate_repo_catalog.py" in ci
+
+    def test_health_job_exposes_the_script_exit_code(self) -> None:
+        text = _WORKFLOW.read_text(encoding="utf-8")
+        assert "exit-code: ${{ steps.health.outputs.exit-code }}" in text
+        assert 'echo "exit-code=${code}" >> "${GITHUB_OUTPUT}"' in text
+        assert "EXIT_CODE: ${{ needs.health.outputs.exit-code }}" in text
+
+
+def _issue_step_script() -> str:
+    """The shell body of the report job's issue step, dedented."""
+    lines = _WORKFLOW.read_text(encoding="utf-8").splitlines()
+    start = lines.index("      - name: Open or update tracking issue")
+    run = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
+    indent = len(lines[run]) - len(lines[run].lstrip()) + 2
+    body: list[str] = []
+    for line in lines[run + 1 :]:
+        if line.strip() and len(line) - len(line.lstrip()) < indent:
+            break
+        body.append(line[indent:])
+    return "\n".join(body) + "\n"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None, reason="runs the step under bash"
+)
+class TestIssueStep:
+    """The report job's shell, run against a stub ``gh`` that logs its argv."""
+
+    def _run(self, tmp_path: Path, *, exit_code: str, existing: str) -> list[str]:
+        stub_dir = tmp_path / "bin"
+        stub_dir.mkdir()
+        log = tmp_path / "gh.log"
+        stub = stub_dir / "gh"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$*" >> "$GH_LOG"\n'
+            'if [ "$1 $2" = "issue list" ]; then echo -n "$EXISTING"; fi\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        (tmp_path / "report.md").write_text("# Repo catalog health\nINCONCLUSIVE-REPORT\n")
+        env = {
+            "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_LOG": str(log),
+            "EXISTING": existing,
+            "REPORT_PATH": "report.md",
+            "LABEL": "catalog-health",
+            "TITLE": "t",
+            "RUN_ID": "42",
+            "EXIT_CODE": exit_code,
+        }
+        subprocess.run(  # noqa: S603 - fixed argv, test-only
+            ["bash", "-c", _issue_step_script()], cwd=tmp_path, env=env, check=True
+        )
+        return log.read_text(encoding="utf-8").splitlines()
+
+    def test_inconclusive_run_comments_and_keeps_the_body(self, tmp_path: Path) -> None:
+        calls = self._run(tmp_path, exit_code="2", existing="7")
+        assert not any(c.startswith("issue edit") for c in calls)
+        assert "issue comment 7 --body-file comment.md" in calls
+        comment = (tmp_path / "comment.md").read_text(encoding="utf-8")
+        assert "INCONCLUSIVE-REPORT" in comment and "run 42" in comment
+
+    def test_stale_run_replaces_the_body(self, tmp_path: Path) -> None:
+        calls = self._run(tmp_path, exit_code="1", existing="7")
+        assert "issue edit 7 --body-file report.md" in calls
+
+    def test_catalog_failure_replaces_the_body(self, tmp_path: Path) -> None:
+        calls = self._run(tmp_path, exit_code="3", existing="7")
+        assert "issue edit 7 --body-file report.md" in calls
+
+    def test_inconclusive_run_without_an_issue_opens_one(self, tmp_path: Path) -> None:
+        calls = self._run(tmp_path, exit_code="2", existing="")
+        assert any(c.startswith("issue create") for c in calls)
 
     def test_scripts_have_no_permission_bit_dependence(self) -> None:
         # Windows CI reads files by repo-relative path only; nothing here may rely on

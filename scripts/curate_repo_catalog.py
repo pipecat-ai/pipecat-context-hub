@@ -9,12 +9,18 @@ read, and a test asserts the file is byte-identical after a run.
 
 A GitHub token is required (code search rejects unauthenticated requests):
 ``GITHUB_TOKEN``, else ``gh auth token``; exits nonzero with a message when
-neither exists. Exits 2 (report still printed) when code search failed,
-answered malformed, flagged its results incomplete or had more results than
-the page cap reads, or when a catalog repo's metadata or file tree could not
-be read in full (a truncated tree included): the report is then missing data,
-so "none found" or a count is not a clean result. Exits 3 when the catalog
-cannot be loaded.
+neither exists. Exits 3 when the catalog cannot be loaded.
+
+Contract: the report is complete (exit 0) only when every GitHub response it
+used was fully validated and nothing was left unread. Every response goes
+through ``_get`` (``catalog_script_common.validated_body``), which hands back
+data only when the status is 200, the body is a JSON object and every field
+the caller reads is present with the right type. Anything else (a failed
+request, a non-200, a wrong shape, a missing or mistyped field, a truncated
+tree, ``incomplete_results``, a search item without a repository name, or
+fewer results read than ``total_count`` reports, whether the search stopped
+at a short page, an empty page or the page cap) is recorded and exits 2 with
+the report still printed: "none found" or a count is then not a clean result.
 
 Usage::
 
@@ -28,21 +34,28 @@ import os
 import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import cast
 from urllib.parse import quote
 
 import httpx
+from catalog_script_common import (
+    API_BASE,
+    EXIT_CATALOG,
+    FieldCheck,
+    github_headers,
+    is_bool,
+    is_list,
+    load_catalog_arg,
+    non_empty_str,
+    plain_int,
+    validated_body,
+)
 
 from pipecat_context_hub.shared.config import SourceConfig
-from pipecat_context_hub.shared.repo_catalog import (
-    CatalogError,
-    load_catalog,
-    parse_catalog,
-)
 from pipecat_context_hub.shared.repo_slug import slug_key
 
-API_BASE = "https://api.github.com"
 SOURCE_SUFFIXES = (".py", ".ts", ".tsx")
 SEARCH_QUERY = "pipecat.services extension:py"
 SEARCH_PAGES = 3
@@ -50,12 +63,34 @@ SEARCH_PER_PAGE = 100
 
 EXIT_OK = 0
 EXIT_NO_TOKEN = 1
-# The report printed, but code search failed, answered malformed, flagged
-# incomplete results or stopped at the page cap, or a catalog repo's stats
-# could not be read in full: the report is missing data, so "none found" or a
-# count is not a clean result.
+# The report printed, but a response was not fully valid or results were left
+# unread (see the module docstring): "none found" or a count is not clean.
 EXIT_REPORT_INCOMPLETE = 2
-EXIT_CATALOG = 3
+# EXIT_CATALOG (3, the catalog cannot be loaded) comes from catalog_script_common.
+
+
+def _tree_entries(value: object) -> bool:
+    """A git-tree list whose every entry has a string ``type`` and ``path``."""
+    return isinstance(value, list) and all(
+        isinstance(e, dict) and isinstance(e.get("type"), str) and isinstance(e.get("path"), str)
+        for e in value
+    )
+
+
+# Every field each caller reads, per endpoint. ``default_branch`` is checked in
+# ``_tree_stats`` (with ``non_empty_str``) so the metadata survives a repo
+# without one.
+_REPO_FIELDS: dict[str, FieldCheck] = {
+    "archived": is_bool,
+    "pushed_at": non_empty_str,
+    "stargazers_count": plain_int,
+}
+_TREE_FIELDS: dict[str, FieldCheck] = {"tree": _tree_entries, "truncated": is_bool}
+_SEARCH_FIELDS: dict[str, FieldCheck] = {
+    "total_count": plain_int,
+    "incomplete_results": is_bool,
+    "items": is_list,
+}
 
 
 def token_from_gh() -> str | None:
@@ -82,16 +117,25 @@ def resolve_token(
 def make_client(token: str, transport: httpx.BaseTransport | None = None) -> httpx.Client:
     return httpx.Client(
         base_url=API_BASE,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "pipecat-context-hub-catalog-curate",
-            "Authorization": f"Bearer {token}",
-        },
+        headers=github_headers("pipecat-context-hub-catalog-curate", token),
         follow_redirects=True,
         timeout=20.0,
         transport=transport,
     )
+
+
+def _get(
+    client: httpx.Client,
+    path: str,
+    fields: Mapping[str, FieldCheck],
+    params: Mapping[str, str | int] | None = None,
+) -> tuple[dict[str, object] | None, str]:
+    """The one GitHub read: ``(body, "")`` when fully valid, else ``(None, reason)``."""
+    try:
+        response = client.get(path, params=params)
+    except httpx.HTTPError as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    return validated_body(response, fields)
 
 
 def count_source_files(tree: object) -> int:
@@ -114,22 +158,19 @@ def _tree_stats(client: httpx.Client, slug: str, branch: object) -> dict[str, ob
     """``source_files``/``truncated`` for a repo's tree, or a ``tree_error``."""
     if not isinstance(branch, str) or not branch:
         return {"tree_error": "no default branch"}
-    try:
-        # The branch is one path segment: quote "/", "#" and "?" so it cannot
-        # reshape the URL.
-        tree = client.get(
-            f"/repos/{slug}/git/trees/{quote(branch, safe='')}", params={"recursive": "1"}
-        )
-        if tree.status_code != 200:
-            return {"tree_error": f"HTTP {tree.status_code}"}
-        payload = tree.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        return {"tree_error": f"{type(exc).__name__}: {exc}"}
-    if not isinstance(payload, dict) or not isinstance(payload.get("tree"), list):
-        return {"tree_error": "unexpected response body (no tree list)"}
+    # The branch is one path segment: quote "/", "#" and "?" so it cannot
+    # reshape the URL.
+    payload, problem = _get(
+        client,
+        f"/repos/{slug}/git/trees/{quote(branch, safe='')}",
+        _TREE_FIELDS,
+        params={"recursive": "1"},
+    )
+    if payload is None:
+        return {"tree_error": problem}
     return {
         "source_files": count_source_files(payload),
-        "truncated": payload.get("truncated") is True,
+        "truncated": payload["truncated"] is True,
     }
 
 
@@ -139,20 +180,14 @@ def repo_stats(client: httpx.Client, slug: str) -> dict[str, object]:
     A failed metadata lookup yields an ``error`` row; a failed tree lookup keeps
     the metadata and records ``tree_error`` in place of a file count.
     """
-    try:
-        meta = client.get(f"/repos/{slug}")
-        if meta.status_code != 200:
-            return {"slug": slug, "error": f"HTTP {meta.status_code}"}
-        body = meta.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        return {"slug": slug, "error": f"{type(exc).__name__}: {exc}"}
-    if not isinstance(body, dict):
-        return {"slug": slug, "error": "unexpected response body (not a JSON object)"}
+    body, problem = _get(client, f"/repos/{slug}", _REPO_FIELDS)
+    if body is None:
+        return {"slug": slug, "error": problem}
     return {
         "slug": slug,
-        "archived": bool(body.get("archived")),
-        "pushed_at": body.get("pushed_at"),
-        "stars": body.get("stargazers_count"),
+        "archived": body["archived"],
+        "pushed_at": body["pushed_at"],
+        "stars": body["stargazers_count"],
         **_tree_stats(client, slug, body.get("default_branch")),
     }
 
@@ -171,13 +206,12 @@ def discover_vendors(
 ) -> Counter[str]:
     """Repos whose code matches the search and are not in ``known`` (``slug_key`` form).
 
-    A failed request (network error, timeout, any non-200 such as a 403 or a
-    rate limit) or a malformed response is recorded in ``problems`` (when
-    given), never raised: it ends discovery early, so it must not read as
-    "no candidates". A page GitHub flags ``incomplete_results`` (its search
-    timed out), an item without a string ``full_name``, and a search that
-    still has unread results after the last of ``SEARCH_PAGES`` pages are
-    recorded too, since the candidate set may then be partial.
+    Problems are recorded in ``problems`` (when given), never raised, since the
+    candidate set may then be partial: a page that is not fully valid (it ends
+    discovery), a page GitHub flags ``incomplete_results`` (its search timed
+    out), an item without a string repository ``full_name``, and fewer results
+    read than the last page's ``total_count``, however the search stopped (a
+    short page, an empty page or the ``SEARCH_PAGES`` cap).
 
     Candidates are counted by ``slug_key`` (the one slug identity), shown in
     the first spelling seen, so ``Owner/Repo`` and ``owner/repo`` are one row.
@@ -187,36 +221,24 @@ def discover_vendors(
     found: Counter[str] = Counter()
     spelling: dict[str, str] = {}
     read = 0
+    total = 0
     for page in range(1, SEARCH_PAGES + 1):
-        try:
-            resp = client.get(
-                "/search/code",
-                params={"q": SEARCH_QUERY, "per_page": SEARCH_PER_PAGE, "page": page},
-            )
-        except httpx.HTTPError as exc:
-            problems.append(f"page {page}: {type(exc).__name__}: {exc}")
-            break
-        if resp.status_code != 200:
-            problems.append(f"page {page}: HTTP {resp.status_code}")
-            break
-        try:
-            payload = resp.json()
-        except ValueError as exc:
-            problems.append(f"page {page}: {type(exc).__name__}: {exc}")
-            break
-        if not isinstance(payload, dict):
-            problems.append(f"page {page}: unexpected response body (not a JSON object)")
-            break
-        if payload.get("incomplete_results") is True:
+        payload, problem = _get(
+            client,
+            "/search/code",
+            _SEARCH_FIELDS,
+            params={"q": SEARCH_QUERY, "per_page": SEARCH_PER_PAGE, "page": page},
+        )
+        if payload is None:
+            problems.append(f"page {page}: {problem}")
+            return found
+        if payload["incomplete_results"] is True:
             # GitHub answers 200 with ``incomplete_results: true`` when the search
             # timed out, so this page may be missing matches.
             problems.append(f"page {page}: incomplete_results (search may have missed repos)")
-        items = payload.get("items", [])
-        if not isinstance(items, list):
-            problems.append(f"page {page}: unexpected items (not a list)")
-            break
-        if not items:
-            break
+        # _SEARCH_FIELDS validated both: a list and a non-negative int.
+        items = cast("list[object]", payload["items"])
+        total = cast(int, payload["total_count"])
         read += len(items)
         malformed = 0
         for item in items:
@@ -230,16 +252,15 @@ def discover_vendors(
                 found[spelling.setdefault(key, name)] += 1
         if malformed:
             problems.append(f"page {page}: {malformed} item(s) without a repository full_name")
-    else:
-        # Every capped page came back non-empty: results may remain unread unless
-        # GitHub's total_count says this was all of them.
-        total = payload.get("total_count")
-        if not (isinstance(total, int) and not isinstance(total, bool) and total <= read):
-            shown_total = total if isinstance(total, int) and not isinstance(total, bool) else "?"
-            problems.append(
-                f"stopped at the {SEARCH_PAGES}-page cap: read {read} of {shown_total} "
-                "results (search may have missed repos)"
-            )
+        if read >= total or len(items) < SEARCH_PER_PAGE:
+            break  # all read, or a short/empty page: GitHub has no further page
+    if read < total:
+        where = (
+            f"stopped at the {SEARCH_PAGES}-page cap"
+            if page == SEARCH_PAGES and len(items) == SEARCH_PER_PAGE
+            else f"page {page} came back short"
+        )
+        problems.append(f"{where}: read {read} of {total} results (search may have missed repos)")
     return found
 
 
@@ -277,12 +298,6 @@ def render_report(
     return "\n".join(lines) + "\n"
 
 
-def _catalog_failure(message: str) -> None:
-    """One line on stdout too, so the workflow's empty-report guard files an issue."""
-    print(message)
-    print(message, file=sys.stderr)
-
-
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -302,16 +317,8 @@ def main(
             file=sys.stderr,
         )
         return EXIT_NO_TOKEN
-    try:
-        if args.catalog is not None:
-            catalog = parse_catalog(args.catalog.read_text(encoding="utf-8"))
-        else:
-            catalog = load_catalog()
-    except (CatalogError, OSError, UnicodeDecodeError) as exc:
-        _catalog_failure(f"cannot load the catalog: {exc}")
-        return EXIT_CATALOG
+    catalog = load_catalog_arg(args.catalog)
     if catalog is None:
-        _catalog_failure("cannot load the catalog (see log)")
         return EXIT_CATALOG
 
     slugs = [r.slug for g in catalog.groups for r in g.repos]
