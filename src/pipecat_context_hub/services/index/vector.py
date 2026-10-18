@@ -744,9 +744,17 @@ class VectorIndex:
             where_clause: dict[str, Any] = {"content_type": {"$eq": content_type}}
             if without_repo:
                 existing = self._collection.get(where=where_clause, include=["metadatas"])
+                metadatas = existing["metadatas"]
+                if metadatas is None or len(metadatas) != len(existing["ids"]):
+                    # Fail closed: guessing "no repo" would delete repo-owned chunks.
+                    raise RuntimeError(
+                        f"Chroma returned {len(existing['ids'])} ids but "
+                        f"{'no' if metadatas is None else len(metadatas)} metadatas for "
+                        f"content_type={content_type!r}; refusing to delete."
+                    )
                 ids = [
                     id_
-                    for id_, meta in zip(existing["ids"], existing["metadatas"] or [], strict=True)
+                    for id_, meta in zip(existing["ids"], metadatas, strict=True)
                     if meta is None or "repo" not in meta
                 ]
             else:

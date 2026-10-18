@@ -213,6 +213,23 @@ class TestVectorIndex:
         assert vector_index.delete_by_content_type("doc", without_repo=True) == count
         assert vector_index._collection.get(include=[])["ids"] == ["readme1"]
 
+    def test_delete_by_content_type_without_repo_fails_closed_on_missing_metadatas(
+        self, vector_index: VectorIndex, monkeypatch: pytest.MonkeyPatch
+    ):
+        vector_index.upsert(_docs_site_and_readme_fallback())
+        real_get = vector_index._collection.get
+        monkeypatch.setattr(
+            vector_index._collection,
+            "get",
+            lambda **kw: {**real_get(**kw), "metadatas": None},
+        )
+
+        with pytest.raises(RuntimeError, match="refusing to delete"):
+            vector_index.delete_by_content_type("doc", without_repo=True)
+
+        monkeypatch.undo()
+        assert set(vector_index._collection.get(include=[])["ids"]) == {"site1", "readme1", "c1"}
+
     def test_delete_by_content_type(self, vector_index: VectorIndex):
         records = [
             _make_record(chunk_id="d1", content_type="doc"),
