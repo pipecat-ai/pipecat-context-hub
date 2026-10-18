@@ -18,7 +18,6 @@ from pipecat_context_hub.services.ingest.taxonomy import (
 )
 from pipecat_context_hub.shared.types import CapabilityTag, TaxonomyEntry
 
-
 # ---------------------------------------------------------------------------
 # Fixtures — temp directory structures mimicking real repos
 # ---------------------------------------------------------------------------
@@ -1274,20 +1273,18 @@ class TestTaxonomyEntryRoundTrip:
 class TestSymlinkedPythonFiles:
     """A committed symlink must never be read, and a dangling one must never abort a refresh.
 
-    Frozen from a live failure: ``pipecat-ai/nemotron-voicechat-dgx-spark`` commits
-    ``reports/.../diagnostic-candidate/configuration_nemotron_h.py ->
-    /models/derived/nano/configuration_nemotron_h.py``, an absolute path that exists
-    only on the author's machine. ``read_text`` on it raised ``FileNotFoundError`` and
-    took the whole ``refresh`` down.
+    Frozen from a live failure: an indexed repo committed
+    ``reports/.../diagnostic-candidate/model_config.py ->
+    /models/derived/model_config.py``, an absolute path that exists only on the
+    author's machine. ``read_text`` on it raised ``FileNotFoundError`` and took the
+    whole ``refresh`` down.
     """
 
     _CODE = "from pipecat.services.elevenlabs import ElevenLabsTTSService\n"
 
     def _dangling(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / "configuration_nemotron_h.py").symlink_to(
-            "/models/derived/nano/configuration_nemotron_h.py"
-        )
+        (directory / "model_config.py").symlink_to("/models/derived/model_config.py")
 
     def _code_tags(self, entry: TaxonomyEntry) -> set[str]:
         return {t.name for t in entry.capabilities if t.source == "code"}
