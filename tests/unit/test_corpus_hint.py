@@ -520,6 +520,7 @@ class TestCorpusHint:
             "InnovaSonicBoom",
             "SmurfTTSService",
             "DrawsClient",
+            "iosx_core",
             "aws2bedrock",
         ],
     )
@@ -865,10 +866,10 @@ class TestFrozenRealQueries:
 
     @pytest.mark.parametrize(
         "query",
-        ["ReturnDetection", "InnovaSonicBoom", "ClipSyncer", "androidx_core", "FlawsInCode"],
+        ["ReturnDetection", "InnovaSonicBoom", "ClipSyncer", "FlawsInCode"],
     )
     def test_shipped_aliases_need_a_whole_identifier_token(self, query: str) -> None:
-        # turn detection / nova sonic / lip sync / android / aws as substrings of one token.
+        # turn detection / nova sonic / lip sync / aws as substrings of one token.
         assert _hint(query, {}) is None
 
     def test_tavus_indexed_gives_no_hint(self) -> None:

@@ -124,7 +124,7 @@ recommendation, the change is stated. Review history and grilled outcomes are in
      superset of the old, so no query that hinted stops hinting (`iOS app` splits to `i OS app` and would
      lose `ios`). A hit still needs a whole camel/snake token (or token run) equal to an alias, so substring
      negatives hold (`LawsOfRobotics`, `FlawsInCode`, `ClawsClient`, `claws_of_x`, `ReturnDetection`,
-     `InnovaSonicBoom`, `ClipSyncer`, `androidx_core`, `DeepgramSTTService`, `PipelineTask`). **No stop-word
+     `InnovaSonicBoom`, `ClipSyncer`, `iosx_core`, `DeepgramSTTService`, `PipelineTask`). **No stop-word
      list, minimum alias length or catalog symbol-safe flag**, and no symbol aliases in the catalog (they
      would need upkeep per service class). Accepted cost: an identifier containing a generic alias word
      hints exactly as the same word in prose already did (`SmartTurnAnalyzerV3`, `WebinarMode`,
@@ -653,7 +653,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-18 @ 5559349392fa4a818ae3699dc2531a9d3764592d -->
+<!-- reviewed: 2026-10-18 @ b2cbfe0f0060db43ac50f7ff5d60113a55a25a34 -->
 
 ## Progress
 
