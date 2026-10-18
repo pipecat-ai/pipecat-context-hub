@@ -13,19 +13,17 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
+from pipecat_context_hub.shared.env_keys import (
+    EXTRA_REPOS_ENV,
+    TAINTED_REFS_ENV,
+    TAINTED_REPOS_ENV,
+    split_csv,
+)
+from pipecat_context_hub.shared.exclusion_folds import exclusion_fold
+from pipecat_context_hub.shared.repo_slug import dedupe_slugs, slug_key
 from pipecat_context_hub.shared.versioning import DEFAULT_FRAMEWORK_PIN
 
 logger = logging.getLogger(__name__)
-
-# Environment variable for adding extra repos (comma-separated).
-_EXTRA_REPOS_ENV = "PIPECAT_HUB_EXTRA_REPOS"
-
-# Environment variable for skipping entire tainted repos (comma-separated).
-_TAINTED_REPOS_ENV = "PIPECAT_HUB_TAINTED_REPOS"
-
-# Environment variable for skipping specific tainted refs.
-# Format: org/repo@ref,org/repo@other-ref
-_TAINTED_REFS_ENV = "PIPECAT_HUB_TAINTED_REFS"
 
 # Environment variable for enabling cross-encoder reranking.
 _RERANKER_ENABLED_ENV = "PIPECAT_HUB_RERANKER_ENABLED"
@@ -81,29 +79,13 @@ _DEFAULT_PARENT_WATCH_INTERVAL = 2.0
 _PARENT_WATCH_INTERVAL_FLOOR = 0.1
 
 
-def _split_csv_env(raw: str) -> list[str]:
-    """Split a comma-separated env var into trimmed non-empty entries."""
-    return [part.strip() for part in raw.split(",") if part.strip()]
-
-
-def _dedupe_preserve_order(items: list[str]) -> list[str]:
-    """Deduplicate entries while preserving first-seen order."""
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
-
-
 def _parse_tainted_refs(raw: str) -> dict[str, list[str]]:
     """Parse org/repo@ref entries from an env var.
 
     Malformed entries are ignored rather than raising at config-load time.
     """
     parsed: dict[str, list[str]] = {}
-    for entry in _split_csv_env(raw):
+    for entry in split_csv(raw):
         if "@" not in entry:
             continue
         repo_slug, ref = entry.rsplit("@", 1)
@@ -491,24 +473,53 @@ class SourceConfig(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def effective_repos(self) -> list[str]:
-        """Repos list with extra repos appended and tainted repos removed."""
-        result = _dedupe_preserve_order(
-            list(self.repos) + _split_csv_env(os.environ.get(_EXTRA_REPOS_ENV, ""))
-        )
-        tainted = set(self.tainted_repos)
-        return [slug for slug in result if slug not in tainted]
+        """Repos list with extra repos appended and tainted repos removed.
+
+        Deduplicated by :func:`dedupe_slugs` (by :func:`slug_key`, the one
+        slug identity), first spelling wins with the defaults first, so a case
+        variant of a repo already listed is not cloned and indexed a second time.
+        """
+        result = dedupe_slugs(list(self.repos) + split_csv(os.environ.get(EXTRA_REPOS_ENV, "")))
+        return [slug for slug in result if not self.is_tainted(slug)]
+
+    def is_default(self, slug: str) -> bool:
+        """The one default-repo rule: ``slug`` is in *this instance's* ``repos``.
+
+        Compared by :func:`slug_key`, like :meth:`is_tainted`.
+        ``repos add|remove|list`` ask the configured instance; the catalog
+        parser asks ``SourceConfig()`` (the shipped defaults), because the
+        catalog is validated against what ships, not against one machine's
+        configuration.
+        """
+        key = slug_key(slug)
+        return any(slug_key(r) == key for r in self.repos)
+
+    def is_tainted(self, slug: str) -> bool:
+        """The one taint-matching rule: compared by :func:`slug_key` (the one
+        slug identity), so ``Foo/Bar`` cannot slip past a ``foo/bar`` taint.
+        Every consumer of ``tainted_repos`` (``effective_repos``, refresh's
+        cleanup, ``repos``) decides through this method. The fold is
+        ``exclusion_folds.EXCLUSION_FOLDS``'s, which the loader's shadowed-taint
+        warning also uses."""
+        fold = exclusion_fold(TAINTED_REPOS_ENV)
+        key = fold(slug)
+        return any(fold(t) == key for t in self.tainted_repos)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def tainted_repos(self) -> list[str]:
-        """Repos explicitly blocked from refresh by local policy."""
-        return _dedupe_preserve_order(_split_csv_env(os.environ.get(_TAINTED_REPOS_ENV, "")))
+        """Repos explicitly blocked from refresh by local policy.
+
+        Deduplicated by :func:`dedupe_slugs` (first spelling wins), so
+        ``Foo/Bar,foo/bar`` is one entry, as :meth:`is_tainted` treats it.
+        """
+        return dedupe_slugs(split_csv(os.environ.get(TAINTED_REPOS_ENV, "")))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def tainted_refs_by_repo(self) -> dict[str, list[str]]:
         """Mapping of repo slug to tainted upstream refs to skip."""
-        return _parse_tainted_refs(os.environ.get(_TAINTED_REFS_ENV, ""))
+        return _parse_tainted_refs(os.environ.get(TAINTED_REFS_ENV, ""))
 
 
 class HubConfig(BaseModel):

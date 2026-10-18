@@ -18,10 +18,7 @@ from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import (
     _DATA_DIR_ENV,
     _DEFAULT_RERANKER_MODEL,
-    _EXTRA_REPOS_ENV,
     _RERANKER_MODEL_ENV,
-    _TAINTED_REFS_ENV,
-    _TAINTED_REPOS_ENV,
     ChunkingConfig,
     EmbeddingConfig,
     HubConfig,
@@ -30,6 +27,7 @@ from pipecat_context_hub.shared.config import (
     SourceConfig,
     StorageConfig,
 )
+from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV, TAINTED_REFS_ENV, TAINTED_REPOS_ENV
 from pipecat_context_hub.shared.markdown import extract_section
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -259,6 +257,15 @@ class TestSourceConfig:
             "pipecat-ai/pipecat-prebuilt",
         ]
 
+    def test_is_default_is_casefolded_and_per_instance(self):
+        """The one default-repo rule: casefolded, against the instance's repos
+        (``repos`` asks the configured instance, the catalog the shipped one)."""
+        assert SourceConfig().is_default("PIPECAT-AI/Pipecat")
+        assert not SourceConfig().is_default("org/custom")
+        custom = SourceConfig(repos=["Org/Custom"])
+        assert custom.is_default("org/custom")
+        assert not custom.is_default("pipecat-ai/pipecat")
+
     def test_default_repos_membership(self):
         """Legibility companion to the exact-match snapshot in ``test_defaults``.
 
@@ -293,32 +300,41 @@ class TestSourceConfig:
     def test_effective_repos_without_env(self):
         """Without env var, effective_repos equals repos."""
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop(_EXTRA_REPOS_ENV, None)
+            os.environ.pop(EXTRA_REPOS_ENV, None)
             s = SourceConfig()
             assert s.effective_repos == s.repos
 
     def test_effective_repos_with_env(self):
         """Env var appends extra repos to defaults."""
-        with patch.dict(os.environ, {_EXTRA_REPOS_ENV: "org/repo-a,org/repo-b"}):
+        with patch.dict(os.environ, {EXTRA_REPOS_ENV: "org/repo-a,org/repo-b"}):
             s = SourceConfig()
             assert s.effective_repos == s.repos + ["org/repo-a", "org/repo-b"]
 
     def test_effective_repos_deduplicates(self):
         """Env var duplicates of default repos are ignored."""
-        with patch.dict(os.environ, {_EXTRA_REPOS_ENV: "pipecat-ai/pipecat,org/new"}):
+        with patch.dict(os.environ, {EXTRA_REPOS_ENV: "pipecat-ai/pipecat,org/new"}):
             s = SourceConfig()
             assert s.effective_repos == s.repos + ["org/new"]
 
+    def test_effective_repos_deduplicates_case_variants(self):
+        """Dedupe is by ``slug_key`` (GitHub slugs are case-insensitive): a case
+        variant of a default or of an earlier extra is not cloned twice; the
+        first spelling wins, defaults first."""
+        raw = "Pipecat-AI/Pipecat,foo/bar,FOO/bar,org/new"
+        with patch.dict(os.environ, {EXTRA_REPOS_ENV: raw}):
+            s = SourceConfig()
+            assert s.effective_repos == s.repos + ["foo/bar", "org/new"]
+
     def test_effective_repos_strips_whitespace(self):
         """Whitespace around slugs is trimmed."""
-        with patch.dict(os.environ, {_EXTRA_REPOS_ENV: " org/a , org/b "}):
+        with patch.dict(os.environ, {EXTRA_REPOS_ENV: " org/a , org/b "}):
             s = SourceConfig()
             assert "org/a" in s.effective_repos
             assert "org/b" in s.effective_repos
 
     def test_effective_repos_ignores_empty_env(self):
         """Empty or whitespace-only env var adds nothing."""
-        with patch.dict(os.environ, {_EXTRA_REPOS_ENV: "  "}):
+        with patch.dict(os.environ, {EXTRA_REPOS_ENV: "  "}):
             s = SourceConfig()
             assert s.effective_repos == s.repos
 
@@ -327,8 +343,8 @@ class TestSourceConfig:
         with patch.dict(
             os.environ,
             {
-                _EXTRA_REPOS_ENV: "org/repo-a",
-                _TAINTED_REPOS_ENV: "pipecat-ai/pipecat,org/repo-a",
+                EXTRA_REPOS_ENV: "org/repo-a",
+                TAINTED_REPOS_ENV: "pipecat-ai/pipecat,org/repo-a",
             },
         ):
             s = SourceConfig()
@@ -336,12 +352,52 @@ class TestSourceConfig:
             assert s.effective_repos == expected
             assert s.tainted_repos == ["pipecat-ai/pipecat", "org/repo-a"]
 
+    def test_slug_lists_collapse_case_variants_first_spelling_wins(self):
+        """``tainted_repos`` and ``effective_repos`` both dedupe by ``slug_key``
+        (``is_tainted`` already treats ``Foo/Bar`` and ``foo/bar`` as one)."""
+        with patch.dict(
+            os.environ,
+            {
+                EXTRA_REPOS_ENV: "Org/Extra,org/extra,ORG/EXTRA",
+                TAINTED_REPOS_ENV: "Foo/Bar,foo/bar,FOO/BAR,x/y",
+            },
+        ):
+            s = SourceConfig()
+            assert s.tainted_repos == ["Foo/Bar", "x/y"]
+            assert s.effective_repos == [*s.repos, "Org/Extra"]
+
+    def test_exclusion_fold_map(self):
+        from pipecat_context_hub.shared.exclusion_folds import EXCLUSION_FOLDS, exclusion_fold
+
+        assert exclusion_fold(TAINTED_REPOS_ENV)("Foo/Bar") == "foo/bar"
+        assert exclusion_fold(TAINTED_REFS_ENV)("Foo/Bar@V1") == "Foo/Bar@V1"
+        assert set(EXCLUSION_FOLDS) == {TAINTED_REPOS_ENV, TAINTED_REFS_ENV}
+        for unknown in (EXTRA_REPOS_ENV, "PIPECAT_HUB_TAINTED_NEW"):
+            with pytest.raises(KeyError):
+                exclusion_fold(unknown)
+
+    def test_shadow_warning_uses_the_fold_map(self):
+        """The loader's exclusion keys are the map's keys, and its shadow
+        comparison refuses a key the map does not define rather than silently
+        matching it exactly."""
+        from pipecat_context_hub.shared.exclusion_folds import EXCLUSION_FOLDS
+
+        assert env_loading._EXCLUSION_KEYS == frozenset(EXCLUSION_FOLDS)
+        assert (
+            env_loading._shadowed_exclusion_entries(TAINTED_REPOS_ENV, ["Foo/Bar"], "foo/bar") == []
+        )
+        assert env_loading._shadowed_exclusion_entries(
+            TAINTED_REFS_ENV, ["Foo/Bar@v1"], "foo/bar@v1"
+        ) == ["Foo/Bar@v1"]
+        with pytest.raises(KeyError):
+            env_loading._shadowed_exclusion_entries("PIPECAT_HUB_NEW_EXCLUSION", ["a/b"], "c/d")
+
     def test_tainted_refs_by_repo_parses_env(self):
         """Tainted refs are parsed from org/repo@ref entries."""
         with patch.dict(
             os.environ,
             {
-                _TAINTED_REFS_ENV: "pipecat-ai/pipecat@v0.0.9,pipecat-ai/pipecat@deadbeef,broken-entry"
+                TAINTED_REFS_ENV: "pipecat-ai/pipecat@v0.0.9,pipecat-ai/pipecat@deadbeef,broken-entry"
             },
         ):
             s = SourceConfig()
@@ -677,14 +733,26 @@ class TestDashboardScriptConfigParity:
 
     def test_load_env_layers_calls_both_loaders_in_order(self):
         """Behavioural companion to the source scan: the shared bootstrap
-        really does run cwd .env before config.toml."""
+        really does run cwd .env before config.toml. The loaders now return
+        the keys they set (dicts), which feed the provenance map."""
         calls: list[str] = []
+
+        def _cwd() -> dict[str, str]:
+            calls.append("cwd")
+            return {"PIPECAT_HUB_A": "from-dotenv"}
+
+        def _global() -> dict[str, str]:
+            calls.append("global")
+            return {"PIPECAT_HUB_B": "from-toml"}
+
         with (
-            patch.object(env_loading, "load_cwd_dotenv", lambda: calls.append("cwd")),
-            patch.object(env_loading, "load_global_config", lambda: calls.append("global")),
+            patch.object(env_loading, "load_cwd_dotenv", _cwd),
+            patch.object(env_loading, "load_global_config", _global),
         ):
-            env_loading.load_env_layers()
+            provenance = env_loading.load_env_layers()
         assert calls == ["cwd", "global"]
+        assert provenance["PIPECAT_HUB_A"] == ".env"
+        assert provenance["PIPECAT_HUB_B"] == "config.toml"
 
 
 # Derived from the same discovery pass as the source-level scan above, not

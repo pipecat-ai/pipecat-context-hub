@@ -24,6 +24,7 @@ import click
 
 from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
+from pipecat_context_hub.cli_repos import register_repos_commands
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_REFRESH_IN_PROGRESS
@@ -42,8 +43,10 @@ from pipecat_context_hub.shared.paths import (
     redact_home,
     redact_home_in_text,
     same_dir,
+    shown_path,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
+from pipecat_context_hub.shared.terminal import echo, escaped_click_errors, shown
 from pipecat_context_hub.shared.versioning import (
     canonicalize_framework_pin,
     exact_release_version,
@@ -55,12 +58,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.ingest.github_ingest import TagNotFoundError
     from pipecat_context_hub.shared.types import ChunkedRecord
-
-# Back-compat alias: tests/unit/test_cli.py imports the underscored name and
-# the banner call sites below reference it. The redaction helper itself now
-# lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
-# import cycle); this re-export keeps that suite green and the call sites stable.
-_redact_home = redact_home
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
@@ -222,7 +219,7 @@ def _require_free_disk(data_dir: Path, *, min_free: int | None = None) -> None:
     if free < required:
         raise click.ClickException(
             f"Refusing to refresh: only {free / 1024**3:.1f} GB free on the volume holding "
-            f"{redact_home(data_dir)} (need {required / 1024**3:.1f} GB). Free up space, or set "
+            f"{shown_path(data_dir)} (need {required / 1024**3:.1f} GB). Free up space, or set "
             f"{_MIN_FREE_GB_ENV}=0 to skip this check."
         )
 
@@ -257,11 +254,11 @@ def _acquire_refresh_lock_or_exit(data_dir: Path, logger: logging.Logger) -> Ind
         # holder (another refresh) from readers that kept it busy.
         if not refresh_in_progress(data_dir):
             raise _RefreshLockBusy(
-                f"Processes reading the index on {redact_home(data_dir)} (`serve` or CLI "
+                f"Processes reading the index on {shown_path(data_dir)} (`serve` or CLI "
                 "queries opening it) kept the refresh lock busy. Retry the refresh."
             ) from exc
         raise _RefreshLockBusy(
-            f"Another `refresh` is already running on {redact_home(data_dir)}. "
+            f"Another `refresh` is already running on {shown_path(data_dir)}. "
             "Wait for it to finish; concurrent refreshes can corrupt the vector index."
         ) from exc
     click.get_current_context().call_on_close(lock.release)
@@ -410,7 +407,7 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
 
     if any(_is_unsafe(candidate) for candidate in unsafe):
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it is a filesystem root or "
+            f"Refusing to delete {shown_path(data_dir)}: it is a filesystem root or "
             "home directory, not an index directory. Point PIPECAT_HUB_DATA_DIR at a "
             "dedicated directory before retrying --reset-index."
         )
@@ -478,15 +475,15 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
     if colliding_config_path is not None:
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
-            f"config.toml ({redact_home(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
+            f"Refusing to delete {shown_path(data_dir)}: it contains the active "
+            f"config.toml ({shown_path(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
             "or the config file so they don't collide, then retry --reset-index."
         )
     colliding_dotenv_path = env_loading.dotenv_collides_with_dir(resolved_data_dir)
     if colliding_dotenv_path is not None:
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
-            f"project .env ({redact_home(colliding_dotenv_path)}). Point PIPECAT_HUB_DATA_DIR "
+            f"Refusing to delete {shown_path(data_dir)}: it contains the active "
+            f"project .env ({shown_path(colliding_dotenv_path)}). Point PIPECAT_HUB_DATA_DIR "
             "at a directory outside your project (or run from elsewhere), then retry "
             "--reset-index."
         )
@@ -503,7 +500,7 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             _module_logger.warning(
                 "Could not recreate %s after reset (%s); the symlinked data dir may "
                 "need to be recreated manually",
-                redact_home(resolved_data_dir),
+                shown_path(resolved_data_dir),
                 exc,
             )
 
@@ -707,7 +704,36 @@ def _write_serve_debug_probe() -> None:
         )
 
 
-@click.group(invoke_without_command=True)
+class TerminalSafeGroup(click.Group):
+    """The hub's root group: click's own error rendering is terminal-safe.
+
+    Click prints a ``ClickException`` itself (``ClickException.show`` in
+    ``main``), bypassing ``terminal.echo``, and several embed configured paths
+    (the data dir, a colliding ``config.toml``). Root-level parsing
+    (``make_context``) and dispatch (``invoke``: every subcommand's parsing and
+    callback, nested groups included) run inside
+    :func:`terminal.escaped_click_errors`, so the message is escaped before
+    ``main`` shows it. ``plugin.py``'s bridge calls this group's ``main``, so
+    both front doors share it. A source test pins that every group in ``src/``
+    is this class or reachable from it.
+    """
+
+    def make_context(
+        self,
+        info_name: str | None,
+        args: list[str],
+        parent: click.Context | None = None,
+        **extra: Any,
+    ) -> click.Context:
+        with escaped_click_errors():
+            return super().make_context(info_name, args, parent=parent, **extra)
+
+    def invoke(self, ctx: click.Context) -> Any:
+        with escaped_click_errors():
+            return super().invoke(ctx)
+
+
+@click.group(cls=TerminalSafeGroup, invoke_without_command=True)
 @click.version_option(package_name="pipecat-ai-context-hub", prog_name="pipecat-context-hub")
 @click.option("--log-level", default="INFO", help="Logging level.")
 @click.pass_context
@@ -726,8 +752,9 @@ def main(ctx: click.Context, log_level: str) -> None:
     # moving both later, and malformed-config warnings are emitted through
     # configured logging instead of Python's last-resort handler.
     _configure_logging(log_level)
-    env_loading.load_env_layers()
+    provenance = env_loading.load_env_layers()
     ctx.ensure_object(dict)
+    ctx.obj["env_provenance"] = provenance
     config = HubConfig()
     ctx.obj["config"] = config.model_copy(
         update={"server": config.server.model_copy(update={"log_level": log_level})}
@@ -884,7 +911,7 @@ def serve(ctx: click.Context) -> None:
     logger.info(
         "pipecat-context-hub v%s starting: data_dir=%s total=%d counts_by_type={%s}",
         _SERVER_VERSION,
-        _redact_home(config.storage.data_dir),
+        shown_path(config.storage.data_dir),
         stats.get("total", 0),
         counts_repr or ("(deferred: refresh running)" if deferred_open else "(empty)"),
     )
@@ -924,7 +951,7 @@ def serve(ctx: click.Context) -> None:
                     "Unset the env var (or set it to 1) to re-enable."
                 )
             elif startup_disabled_reason == "not_cached":
-                probed = _redact_home(CrossEncoderReranker.resolve_hf_cache_dir())
+                probed = shown_path(CrossEncoderReranker.resolve_hf_cache_dir())
                 hint = (
                     f"model not downloaded (checked HF cache: {probed}). "
                     "Run 'pipecat-context-hub refresh' to pre-download, or set "
@@ -972,7 +999,7 @@ def serve(ctx: click.Context) -> None:
                     "Deprecation map %s (%s); check_deprecation cannot report "
                     "deprecations until `refresh` rebuilds it",
                     retriever.deprecation_map.load_error,
-                    redact_home(dep_map_path),
+                    shown_path(dep_map_path),
                 )
             if retriever.deprecation_map.entries:
                 logger.info(
@@ -1202,7 +1229,7 @@ def refresh(
         # The deprecation map counts too: a stale one would be served beside
         # the rebuilt index when this run does not republish it.
         undeleted = [
-            redact_home(path) for path in config.storage.index_artifact_paths if path.exists()
+            shown_path(path) for path in config.storage.index_artifact_paths if path.exists()
         ]
         if undeleted:
             raise click.ClickException(
@@ -1395,14 +1422,19 @@ def refresh(
 
         # Clean up repos removed from configuration (P2: stale data from
         # repos no longer in effective_repos would persist indefinitely).
+        # Membership is by exact spelling, not `slug_key`: index records are
+        # keyed by the spelling refresh ingested, and only the effective
+        # spelling (first wins, `effective_repos`) is refreshed, so records
+        # under another case variant are stale and handled like any
+        # unconfigured repo (warn, or delete with --prune). Taint matching
+        # stays `is_tainted` (slug_key), so tainted cleanup is unconditional.
         configured = set(config.sources.effective_repos)
-        tainted_repos = set(config.sources.tainted_repos)
         all_meta = index_store.get_all_metadata()
         for meta_key in all_meta:
             slug = _repo_slug_of_sha_key(meta_key)
             if slug is not None:
                 if slug not in configured:
-                    if slug in tainted_repos:
+                    if config.sources.is_tainted(slug):  # the one (casefolded) rule
                         # Explicit exclusion — always cleaned up, regardless
                         # of --prune.
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
@@ -1497,7 +1529,7 @@ def refresh(
                     raise _framework_pin_not_found(fw_version, exc) from exc
                 if repo_slug == framework_slug:
                     fw_state.clone_or_fetch_failed = True
-                all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
+                all_errors.append(f"Failed to clone/fetch {shown(repo_slug)}: {exc}")
                 source_status[repo_slug] = {
                     "status": "error",
                     "sha": _MISSING_SENTINEL,
@@ -2083,7 +2115,7 @@ def _safe_placeholder() -> str:
 def _echo_prune_skip_notice(unpruned_repo_count: int) -> None:
     """Print the 'Skipped pruning' line, shared by both summary branches below."""
     if unpruned_repo_count:
-        click.echo(
+        echo(
             f"Skipped pruning: {unpruned_repo_count} repo(s) not in this run's config "
             "(use --prune to remove)"
         )
@@ -2104,22 +2136,24 @@ def _print_refresh_summary(
         # a warning whose whole point is to be noticed shouldn't sit after the
         # line that reads as "done".
         _echo_prune_skip_notice(unpruned_repo_count)
-        click.echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
+        echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
         return
 
-    # Compute column widths
-    name_width = max(len(name) for name in source_status)
+    # Rows are keyed by configured repo entries, which nothing validated:
+    # flag a non-printable one (and size the column by what is printed).
+    labels = {name: shown(name) for name in source_status}
+    name_width = max(len(label) for label in labels.values())
     name_width = max(name_width, len("Repository"))
 
     hr = f"{_safe_hr(name_width)}  {_safe_hr(8)}  {_safe_hr(10)}  {_safe_hr(8)}  {_safe_hr(8)}"
     placeholder = _safe_placeholder()
 
     # Header
-    click.echo()
-    click.echo(
+    echo()
+    echo(
         f"{'Repository':<{name_width}}  {'Status':<8}  {'SHA':<10}  {'Existing':>8}  {'Updated':>8}"
     )
-    click.echo(hr)
+    echo(hr)
 
     # Rows — updated/error first, then skipped
     total_existing = 0
@@ -2151,28 +2185,27 @@ def _print_refresh_summary(
 
         existing_str = f"{existing_int:,}" if existing_int else placeholder
 
-        click.echo(
-            f"{name:<{name_width}}  {status:<8}  {sha:<10}  {existing_str:>8}  {updated_str:>8}"
+        echo(
+            f"{labels[name]:<{name_width}}  {status:<8}  {sha:<10}  {existing_str:>8}  {updated_str:>8}"
         )
 
     # Footer
-    click.echo(hr)
-    click.echo(
-        f"{'Total':<{name_width}}  {'':<8}  {'':<10}  {total_existing:>8,}  {total_updated:>8,}"
-    )
-    click.echo()
+    echo(hr)
+    echo(f"{'Total':<{name_width}}  {'':<8}  {'':<10}  {total_existing:>8,}  {total_updated:>8,}")
+    echo()
     if recovered_repos:
-        click.echo(
-            f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
+        echo(
+            f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(shown(r) for r in recovered_repos)}"
         )
     _echo_prune_skip_notice(unpruned_repo_count)
-    click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
+    echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 
 
 # One-shot query subcommands (search-docs, check-deprecation, status, ...) —
 # the same tool handlers the MCP server dispatches, exposed for shell callers.
 register_query_commands(main)
 register_install_command(main)
+register_repos_commands(main)
 
 
 if __name__ == "__main__":

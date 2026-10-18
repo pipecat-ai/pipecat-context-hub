@@ -1,0 +1,249 @@
+# Curated catalog of public GitHub repos worth indexing beyond the defaults.
+#
+# Single source for the generated block in .env.example and the generated
+# section in docs/configuration.md; regenerate both with `just catalog-regen`.
+# `verified` is the date of the last manual audit; bump it with
+# `just catalog-regen --bump-verified` after reviewing a clean health report.
+#
+# Public repos only: the schema rejects `private`, `archived` and `status` keys.
+# One group per vendor (no catch-all group). `parseable = false` marks a repo that
+# clones but yields no chunks (Swift/Kotlin/C++); hints skip it.
+verified = 2026-10-16
+
+[groups.client-sdks]
+kind = "topic"
+description = "Client SDKs and transports for web, mobile and native"
+aliases = ["client sdk", "ios", "android", "esp32"]
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-client-ios"
+  parseable = false
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-client-ios-daily"
+  parseable = false
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-client-ios-small-webrtc"
+  parseable = false
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-client-android"
+  parseable = false
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-client-android-transports"
+  parseable = false
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-client-cxx"
+  note = "the Daily transport lives under transports/daily (pipecat-client-cxx-daily is archived)"
+  parseable = false
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-esp32"
+  parseable = false
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-client-ios-gemini-live-websocket-demo"
+  note = "iOS demo app"
+  parseable = false
+
+  [[groups.client-sdks.repos]]
+  slug = "pipecat-ai/pipecat-client-ios-openai-realtime-webrtc-demo"
+  note = "iOS demo app"
+  parseable = false
+
+[groups.voice-ui-kit]
+kind = "topic"
+description = "Legacy Voice UI Kit (npm package, superseded by the default pipecat-ai/pipecat-ui)"
+aliases = ["voice ui kit", "voice-ui-kit"]
+
+  [[groups.voice-ui-kit.repos]]
+  slug = "pipecat-ai/voice-ui-kit"
+
+[groups.flows]
+kind = "topic"
+description = "Conversation flows and structured dialogues"
+aliases = ["pipecat flows"]
+
+  [[groups.flows.repos]]
+  slug = "pipecat-ai/pipecat-flows-editor"
+  note = "pipecat-ai/pipecat-flows is archived; flows ships inside pipecat-ai/pipecat"
+
+[groups.dev-tools]
+kind = "topic"
+description = "Cloud, CLI and developer tools"
+aliases = ["whisker"]
+
+  [[groups.dev-tools.repos]]
+  slug = "pipecat-ai/tail"
+
+  [[groups.dev-tools.repos]]
+  slug = "pipecat-ai/whisker"
+
+  [[groups.dev-tools.repos]]
+  slug = "pipecat-ai/skills"
+
+[groups.audio-and-benchmarks]
+kind = "topic"
+description = "Audio, turn detection and benchmarks"
+aliases = ["smart turn", "turn detection"]
+
+  [[groups.audio-and-benchmarks.repos]]
+  slug = "pipecat-ai/smart-turn"
+
+  [[groups.audio-and-benchmarks.repos]]
+  slug = "pipecat-ai/stt-benchmark"
+
+  [[groups.audio-and-benchmarks.repos]]
+  slug = "pipecat-ai/gb-benchmarks"
+
+[groups.example-apps]
+kind = "topic"
+description = "Example apps and demos"
+aliases = ["hackathon", "webinar"]
+
+  [[groups.example-apps.repos]]
+  slug = "pipecat-ai/peekaboo"
+
+  [[groups.example-apps.repos]]
+  slug = "pipecat-ai/pipecat-mcp-server"
+
+  [[groups.example-apps.repos]]
+  slug = "pipecat-ai/pipecat-music-player"
+
+  [[groups.example-apps.repos]]
+  slug = "pipecat-ai/yc-voice-agents-hackathon"
+
+  [[groups.example-apps.repos]]
+  slug = "pipecat-ai/pipecat-deepgram-webinar-demo"
+
+[groups.gradient-bang]
+kind = "topic"
+description = "Gradient Bang ecosystem"
+aliases = ["gradient bang", "gradient-bang"]
+
+  [[groups.gradient-bang.repos]]
+  slug = "pipecat-ai/gradient-bang"
+
+  [[groups.gradient-bang.repos]]
+  slug = "pipecat-ai/gb-context-viewer"
+
+[groups.nvidia]
+kind = "vendor"
+description = "NVIDIA Nemotron speech and voice agents"
+aliases = ["nvidia", "nemotron", "riva"]
+
+  [[groups.nvidia.repos]]
+  slug = "NVIDIA-AI-Blueprints/nemotron-voice-agent"
+  note = "replaces archived NVIDIA/voice-agent-examples"
+
+  [[groups.nvidia.repos]]
+  slug = "pipecat-ai/nemotron-january-2026"
+
+  [[groups.nvidia.repos]]
+  slug = "pipecat-ai/nemotron-voicechat-dgx-spark"
+
+  [[groups.nvidia.repos]]
+  slug = "pipecat-ai/nemo3-battleships"
+
+[groups.google]
+kind = "vendor"
+description = "Google Gemini Live"
+aliases = ["google", "gemini"]
+
+  [[groups.google.repos]]
+  slug = "pipecat-ai/gemini-live-web-starter"
+
+  [[groups.google.repos]]
+  slug = "askjohngeorge/askjg-demo-gemini-pcc"
+  maintainer = true
+
+  [[groups.google.repos]]
+  slug = "daily-co/pcc-gemini-screen-voice-ui-kit"
+
+[groups.aws]
+kind = "vendor"
+description = "AWS Bedrock, SageMaker and Nova Sonic"
+aliases = ["aws", "bedrock", "sagemaker", "nova sonic"]
+
+  [[groups.aws.repos]]
+  slug = "aws-samples/build-intelligent-ai-voice-agents-with-pipecat-and-amazon-bedrock"
+
+  [[groups.aws.repos]]
+  slug = "pipecat-ai/aws-workshops"
+
+  [[groups.aws.repos]]
+  slug = "pipecat-ai/aws-deepgram-workshop"
+
+  [[groups.aws.repos]]
+  slug = "deepgram/rxconnect-deepgram-pipecat-sagemaker-demo"
+
+  [[groups.aws.repos]]
+  slug = "chadbailey59/aws-telephony-bot"
+  maintainer = true
+
+  [[groups.aws.repos]]
+  slug = "aws-solutions-library-samples/guidance-for-voice-agents-on-aws"
+
+  [[groups.aws.repos]]
+  slug = "aws-samples/sample-voice-agent-on-aws"
+
+[groups.tavus]
+kind = "vendor"
+description = "Tavus avatars"
+aliases = ["tavus"]
+
+  [[groups.tavus.repos]]
+  slug = "aws-samples/sample-voice-ai-tavus-avatar-demo"
+
+[groups.murf]
+kind = "vendor"
+description = "Murf text-to-speech"
+aliases = ["murf"]
+
+  [[groups.murf.repos]]
+  slug = "murf-ai/pipecat-murf-tts"
+
+[groups.supermemory]
+kind = "vendor"
+description = "Supermemory long-term memory"
+aliases = ["supermemory"]
+
+  [[groups.supermemory.repos]]
+  slug = "supermemoryai/pipecat-memory"
+
+[groups.lip-sync-characters]
+kind = "topic"
+description = "Visemes and multi-character pipelines (personal projects, may be rewritten or archived without notice)"
+aliases = ["viseme", "lip sync"]
+
+  [[groups.lip-sync-characters.repos]]
+  slug = "jptaylor/pipecat-visemes"
+  maintainer = true
+
+  [[groups.lip-sync-characters.repos]]
+  slug = "jptaylor/pipecat-one-pipeline-two-characters"
+  maintainer = true
+
+[groups.community-projects]
+kind = "topic"
+description = "Community voice-bot projects (personal projects, may be rewritten or archived without notice)"
+aliases = ["caracal", "finchvox", "dum-e"]
+
+  [[groups.community-projects.repos]]
+  slug = "chadbailey59/caracal"
+  maintainer = true
+
+  [[groups.community-projects.repos]]
+  slug = "chadbailey59/agent-voice-bot"
+  maintainer = true
+
+  [[groups.community-projects.repos]]
+  slug = "finchvox/finchvox"
+  maintainer = true
+
+  [[groups.community-projects.repos]]
+  slug = "aaronsu11/Dum-E"
+  maintainer = true

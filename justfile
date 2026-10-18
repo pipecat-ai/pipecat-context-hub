@@ -51,6 +51,11 @@ check: lint fmt-check typecheck
 # Run the complete local CI gate
 ci: check test audit
 
+# Regenerate the .env.example block and docs section from the repo catalog.
+# Pass --bump-verified only after a manual audit of the catalog.
+catalog-regen *args:
+    uv run python -m pipecat_context_hub.shared.repo_catalog_render {{args}}
+
 # Dependency vulnerability audit
 audit-deps:
     # KEEP IN SYNC with the "Dependency Audit" step in .github/workflows/ci.yml —

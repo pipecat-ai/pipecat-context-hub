@@ -703,3 +703,25 @@ class TestInstallCommand:
             result = runner.invoke(main, ["install", "--client", "cursor", "--no-refresh"])
         assert result.exit_code == _EXIT_MANUAL_SETUP
         refresh.assert_not_called()
+
+
+class TestPrintConfigStaysJson:
+    def test_hostile_command_prints_valid_json(self) -> None:
+        """The block must parse to exactly the command with nothing raw.
+
+        ``json.dumps``' default ``ensure_ascii`` already escapes every such
+        character (DEL included, as ``\\u007f``), so this pins the route
+        (``echo_json``) rather than a pre-existing break."""
+        command = ["/opt/py\x7f\xa0\x85\x1b/bin/python", "-P", "-m", "pipecat_context_hub", "serve"]
+        with (
+            patch("pipecat_context_hub.cli_install._server_command", return_value=command),
+            patch("pipecat_context_hub.cli_install.subprocess.run") as run,
+        ):
+            result = runner.invoke(main, ["install", "--print-config"])
+        assert result.exit_code == 0, result.output
+        first, _, block = result.stdout.partition("\n")
+        assert first.startswith("Server command: ")
+        entry = json.loads(block)["mcpServers"]["pipecat-context-hub"]
+        assert [entry["command"], *entry["args"]] == command
+        assert not any(not (ch in "\n\t" or ch.isprintable()) for ch in result.stdout)
+        run.assert_not_called()

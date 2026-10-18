@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import sys
@@ -26,7 +27,6 @@ from pipecat_context_hub.cli import (
     _prewarm_models,
     _print_refresh_summary,
     _prune_enabled,
-    _redact_home,
     _safe_hr,
     _warmup_enabled,
     _write_serve_debug_probe,
@@ -37,6 +37,7 @@ from pipecat_context_hub.services.ingest.github_ingest import CloneResult, TagNo
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.env_loading import load_global_config
+from pipecat_context_hub.shared.paths import redact_home as _redact_home
 
 
 @pytest.fixture(autouse=True)
@@ -4797,6 +4798,62 @@ class TestPruneSafety(TestRefreshCommand):
         mock_store.delete_by_repo.assert_any_call(self._REMOVED_REPO)
         assert f"repo:{self._REMOVED_REPO}:commit_sha" in _batched_delete_keys(mock_store)
 
+    @pytest.mark.parametrize("prune", [False, True])
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    def test_case_variant_of_a_configured_repo_is_stale_by_exact_spelling(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        prune,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        """Cleanup membership is by exact spelling, not ``slug_key``: records
+        under a case variant of a configured repo were ingested under that
+        spelling and are never refreshed, so they are stale like any
+        unconfigured repo (warn, or delete with --prune). Harmonising the
+        membership to ``slug_key`` would count them as configured forever."""
+        configured = "daily-co/daily-python"
+        variant = "DAILY-CO/daily-python"
+        assert configured in HubConfig().sources.effective_repos
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        counts = mock_store.get_counts_by_repo.return_value
+        mock_store.get_counts_by_repo = MagicMock(return_value={**counts, variant: 5})
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = {**self._meta_with_removed_repo(), f"repo:{variant}:commit_sha": "fed789"}
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.chdir(tmp_path)
+        with caplog.at_level("WARNING", logger="pipecat_context_hub.cli"):
+            result = CliRunner().invoke(main, ["refresh", *(["--prune"] if prune else [])])
+
+        assert result.exit_code == 0, result.output
+        deleted_repos = [call.args[0] for call in mock_store.delete_by_repo.call_args_list]
+        assert configured not in deleted_repos
+        if prune:
+            assert variant in deleted_repos
+        else:
+            assert variant not in deleted_repos
+            assert variant in caplog.text
+
     @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "Yes", "YES"])
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -4885,6 +4942,58 @@ class TestPruneSafety(TestRefreshCommand):
         assert result.exit_code == 0, result.output
         mock_store.delete_by_repo.assert_any_call(tainted_slug)
         assert f"repo:{tainted_slug}:commit_sha" in _batched_delete_keys(mock_store)
+
+    @patch("pipecat_context_hub.services.index.store.IndexStore")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingService")
+    @patch("pipecat_context_hub.services.embedding.EmbeddingIndexWriter")
+    @patch("pipecat_context_hub.services.ingest.docs_crawler.DocsCrawler")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.GitHubRepoIngester")
+    @patch("pipecat_context_hub.services.ingest.github_ingest.repo_ref_is_tainted")
+    @patch("pipecat_context_hub.services.ingest.source_ingest.SourceIngester")
+    @pytest.mark.parametrize(
+        ("indexed", "tainted"),
+        [
+            # a configured default tainted in another case: effective_repos drops it
+            (_DEFAULT_REPOS[0], _DEFAULT_REPOS[0].upper()),
+            # an unconfigured index key in another case than the taint entry
+            ("Acme/Gone-Repo", "acme/gone-repo"),
+        ],
+    )
+    def test_taint_matches_case_insensitively(
+        self,
+        mock_si_cls,
+        mock_ref_tainted,
+        mock_gh_cls,
+        mock_dc_cls,
+        mock_eiw_cls,
+        mock_es_cls,
+        mock_is_cls,
+        indexed,
+        tainted,
+        tmp_path,
+        monkeypatch,
+    ):
+        """One taint rule (``SourceConfig.is_tainted``, casefolded): a taint
+        entry in another case still excludes the repo from ``effective_repos``
+        and still deletes its index data without --prune."""
+        mock_store, mock_crawler, mock_github, mock_source = self._make_mocks()
+        mock_is_cls.return_value = mock_store
+        mock_dc_cls.return_value = mock_crawler
+        mock_gh_cls.return_value = mock_github
+        mock_si_cls.return_value = mock_source
+        mock_ref_tainted.return_value = False
+
+        all_meta = {**_sha_metadata("abc123"), f"repo:{indexed}:commit_sha": "abc123"}
+        mock_store.get_all_metadata = MagicMock(return_value=all_meta)
+        mock_store.get_metadata = MagicMock(side_effect=lambda key: all_meta.get(key))
+
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", tainted)
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(main, ["refresh"])
+
+        assert result.exit_code == 0, result.output
+        mock_store.delete_by_repo.assert_any_call(indexed)
+        assert f"repo:{indexed}:commit_sha" in _batched_delete_keys(mock_store)
 
     @patch("pipecat_context_hub.services.index.store.IndexStore")
     @patch("pipecat_context_hub.services.embedding.EmbeddingService")
@@ -6305,6 +6414,33 @@ class TestPrintRefreshSummaryEncoding:
         raw = cp437_stdout.buffer.getvalue().decode("cp437")
         assert "\u2026" not in raw
 
+    _HOSTILE = "evil/x\x1b]52;c;cHduZWQ=\x07\x1b[2J"
+
+    def test_a_configured_repo_name_is_never_printed_raw(self, capsys):
+        """Rows are keyed by configured ``PIPECAT_HUB_EXTRA_REPOS`` entries,
+        which nothing validates before the summary prints them."""
+        row: dict[str, str | int] = {"status": "error", "sha": "-", "existing": 0, "updated": "-"}
+        source_status = {self._HOSTILE: row, "pipecat-ai/pipecat": dict(row)}
+        _print_refresh_summary(source_status, 0, 1, 1.0, recovered_repos=[self._HOSTILE])
+        out = capsys.readouterr().out
+        assert "\x1b" not in out and "\x07" not in out
+        flagged = f"{self._HOSTILE!r} [invalid]"
+        rows = [ln for ln in out.splitlines() if ln.startswith((flagged, "pipecat-ai/pipecat"))]
+        assert len(rows) == 2 and rows[0].index("error") == rows[1].index("error")
+        assert f"Recovered 1 corrupt clone(s): {flagged}" in out
+
+    def test_an_invalid_configured_slug_error_flags_the_slug(self):
+        """``Failed to clone/fetch <slug>: <exc>`` reaches the log with the
+        ingester's own ``Invalid repo slug`` text, which names the slug."""
+        from pipecat_context_hub.services.ingest import github_ingest
+
+        with pytest.raises(ValueError) as caught:
+            github_ingest.GitHubRepoIngester.clone_or_fetch(
+                object(),  # type: ignore[arg-type]  # the slug check runs before any self use
+                self._HOSTILE,
+            )
+        assert str(caught.value) == f"Invalid repo slug: {self._HOSTILE!r} [invalid]"
+
     def test_recovered_repos_surfaced_in_summary(self, capsys):
         source_status: dict[str, dict[str, str | int]] = {
             "pipecat-ai/pipecat": {
@@ -6564,6 +6700,35 @@ class TestDataDirSafetyFloor:
         _delete_local_index_storage(data_dir)
 
         assert not data_dir.exists()
+
+    @pytest.mark.skipif(
+        os.name != "posix", reason="a control character cannot be in a Windows filename"
+    )
+    def test_recreate_warning_names_the_data_dir_by_shown_path(
+        self, monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The reset warning names the data dir like the refusals do: repr
+        tagged ``[invalid]`` when it is not printable."""
+        self._no_config_file(monkeypatch, tmp_path)
+        real = tmp_path / "real\x1b[2J"
+        real.mkdir()
+        link = tmp_path / "hub-data"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/permissions")
+
+        def _fail(self: Path, *args: object, **kwargs: object) -> None:
+            raise OSError("no")
+
+        monkeypatch.setattr(Path, "mkdir", _fail)
+        with caplog.at_level(logging.WARNING, logger="pipecat_context_hub.cli"):
+            _delete_local_index_storage(link)
+        messages = [
+            r.getMessage() for r in caplog.records if "Could not recreate" in r.getMessage()
+        ]
+        assert len(messages) == 1
+        assert f"{str(real.resolve())!r} [invalid]" in messages[0]
 
     def test_refuses_home_reached_through_a_symlinked_ancestor(
         self, monkeypatch, tmp_path: Path
@@ -6947,3 +7112,65 @@ class TestDeleteRepoIndexDataWriteAhead:
         assert await _delete_repo_index_data(store, "o/r", "repo:o/r:commit_sha") is False
         assert flagged_at_delete == [True]
         assert meta == {"repo:o/r:commit_sha": "abc", "repo:o/r:cleanup_failed": "1"}
+
+
+class TestEnvProvenanceCarrier:
+    """`main()` hands the provenance map from `load_env_layers` to subcommands
+    via `ctx.obj["env_provenance"]`, and runs each loader once per invocation."""
+
+    @staticmethod
+    def _probe() -> tuple[click.Command, dict[str, Any]]:
+        seen: dict[str, Any] = {}
+
+        @click.command("provenance-probe")
+        @click.pass_context
+        def probe(ctx: click.Context) -> None:
+            seen["obj"] = ctx.obj
+
+        return probe, seen
+
+    def test_main_sets_env_provenance_from_load_env_layers(self, monkeypatch):
+        probe, seen = self._probe()
+        monkeypatch.setitem(main.commands, "provenance-probe", probe)
+        controlled = {"PIPECAT_HUB_STALE_AFTER_DAYS": "config.toml"}
+        monkeypatch.setattr(env_loading, "load_env_layers", lambda: controlled)
+
+        result = CliRunner().invoke(main, ["provenance-probe"])
+
+        assert result.exit_code == 0, result.output
+        assert seen["obj"]["env_provenance"] is controlled
+
+    def test_main_overwrites_a_preexisting_env_provenance(self, monkeypatch):
+        probe, seen = self._probe()
+        monkeypatch.setitem(main.commands, "provenance-probe", probe)
+        controlled = {"PIPECAT_HUB_X": ".env"}
+        monkeypatch.setattr(env_loading, "load_env_layers", lambda: controlled)
+
+        result = CliRunner().invoke(
+            main, ["provenance-probe"], obj={"env_provenance": {"stale": "env"}}
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["obj"]["env_provenance"] == controlled
+
+    def test_both_loaders_run_once_per_invocation(self, monkeypatch):
+        probe, seen = self._probe()
+        monkeypatch.setitem(main.commands, "provenance-probe", probe)
+        calls: list[str] = []
+
+        def _cwd() -> dict[str, str]:
+            calls.append("cwd")
+            return {}
+
+        def _global() -> dict[str, str]:
+            calls.append("global")
+            return {}
+
+        monkeypatch.setattr(env_loading, "load_cwd_dotenv", _cwd)
+        monkeypatch.setattr(env_loading, "load_global_config", _global)
+
+        result = CliRunner().invoke(main, ["provenance-probe"])
+
+        assert result.exit_code == 0, result.output
+        assert calls == ["cwd", "global"]
+        assert isinstance(seen["obj"]["env_provenance"], dict)

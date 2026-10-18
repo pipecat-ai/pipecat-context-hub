@@ -23,6 +23,9 @@ uv run pipecat-context-hub refresh --framework-version v0.0.96  # index framewor
 uv run pipecat-context-hub refresh --framework-version head     # ...or at its default branch (default: latest release tag)
 uv run pipecat-context-hub serve                    # start MCP server (`start` is an alias)
 uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
+uv run pipecat-context-hub repos list [--groups]    # effective repos (default/catalog/unlisted) and the catalog groups
+uv run pipecat-context-hub repos add <slug>         # edit PIPECAT_HUB_EXTRA_REPOS in config.toml (--unlisted, --group NAME, --config-only); also `remove`
+just catalog-regen                                  # regenerate .env.example / docs from data/repo_catalog.toml (--check, --bump-verified)
 ```
 
 Installed alongside `pipecat-ai[cli]`, every command is also reachable as
@@ -91,7 +94,12 @@ optional, see `config.toml.example`) > `HubConfig` field defaults. Every entry
 point — `cli.py:main()`, the dashboard scripts, `scripts/smoke_check_removals.py`
 — calls `shared/env_loading.py`'s `load_env_layers()` (which runs
 `load_cwd_dotenv()` then `load_global_config()`) before constructing config, so
-they all resolve identically. Don't hand-replicate the two calls in a new entry
+they all resolve identically. It also has one process-wide side effect, first:
+it installs the terminal-safe output boundary (`shared/terminal.py`'s
+`install_output_escaping`: a log record class and, unless a host replaced it,
+`sys.excepthook`), since it is the one bootstrap every entry point already calls
+before anything logs; tests reset both around every test
+(`tests/conftest.py::_stdlib_output_hooks`). Don't hand-replicate the two calls in a new entry
 point — a source-parity test (`tests/unit/test_config.py`) fails if you do. Full precedence
 details and the Windows lookup path: `docs/configuration.md`'s "Config precedence"
 section (the variable table sits just above it).
@@ -141,18 +149,27 @@ src/pipecat_context_hub/
 ├── cli.py                    # CLI entry point (serve + refresh)
 ├── cli_query.py              # One-shot query subcommands (the MCP tools as shell commands)
 ├── cli_install.py            # `install` — register the MCP server with a coding agent
+├── cli_repos.py              # `repos list|add|remove` — edit PIPECAT_HUB_EXTRA_REPOS in config.toml (check order, shadow refusal)
+├── data/repo_catalog.toml    # curated public repos by vendor/topic; source for generated .env.example / docs sections
 ├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat context-hub`
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
-│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence
+│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule)
+│   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
+│   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants)
+│   ├── repo_slug.py          # REPO_SLUG_RE / is_valid_repo_slug / slug_key / dedupe_slugs — the one owner/repo grammar, the one slug identity (casefolded; every default/taint/dedupe/writer/catalog comparison) and the one slug-list dedupe (leaf: ingester, catalog, repos, writer)
+│   ├── exclusion_folds.py    # EXCLUSION_FOLDS / exclusion_fold — the one per-key entry fold for the taint lists (slug_key for repos, exact for refs; unknown key raises); SourceConfig and the loader's shadowed-exclusion warning both use it
+│   ├── env_keys.py           # EXTRA_REPOS_ENV / TAINTED_REPOS_ENV / TAINTED_REFS_ENV / split_csv — the list-key literals and CSV rule (leaf: config model and env loader both import it)
+│   ├── repo_catalog_render.py # pure renderers + splice for the generated catalog sections; `python -m` entry behind `just catalog-regen`
 │   ├── interfaces.py         # IndexWriter/Reader, ServingIndex, Retriever, Ingester; FatalIndexError (ingesters re-raise: stops refresh), IndexUnavailableError (message for the caller)
 │   ├── tracking.py           # Runtime helpers (IdleTracker)
 │   ├── reranker.py           # probe_reranker — shared serve/CLI reranker startup decision
 │   ├── model_loading.py      # quiet_model_loading — offline-first HF env defaults (serve + CLI)
-│   ├── paths.py              # redact_home / redact_home_in_text (log redaction) + same_dir / is_inside (filesystem-identity predicates shared by every deletion guard)
+│   ├── paths.py              # redact_home / redact_home_in_text (log redaction), shown_path (the one rule for naming a configured path: redact_home + shown) + same_dir / is_inside / resolution_chain / lookup_target (filesystem-identity predicates shared by every deletion, trust and write guard; lookup_target is the config writer's target, walked as the kernel does)
+│   ├── terminal.py           # the output boundary, one enforcement point per kind (leaf, stdlib only at import): echo (human text: escape_controls, every non-printable char but newline/tab) and echo_json (JSON stdout: escape_json, \uXXXX inside strings, value-preserving) are the only click.echo in src/ (pinned by test_terminal); escaped_click_errors behind cli.TerminalSafeGroup (click's own ClickException rendering); install_output_escaping (record class escaping message/exc_text/stack_info on read, a foreign factory's records re-classed; default sys.excepthook wrapped; load_env_layers installs it first); shown flags one configured slug/path as repr + [invalid]
 │   ├── index_lock.py         # refresh.lock (exclusive for refresh; readers hold it shared while opening: refresh_excluded) / serve.lock (shared) advisory flocks; serve_is_running
-│   ├── exit_codes.py         # EXIT_INDEX_UNREADY (2) / EXIT_REFRESH_IN_PROGRESS (75), shared by serve, refresh and the CLI queries
+│   ├── exit_codes.py         # EXIT_INVALID_INPUT (1) / EXIT_INDEX_UNREADY (2) / EXIT_REFRESH_IN_PROGRESS (75), shared by serve, refresh and the CLI queries
 │   ├── staleness.py          # staleness_info / annotate_response — index-age footer on tool responses
 │   ├── support_links.py      # RETRIEVAL_QUALITY_ISSUE_URL / BUG_REPORT_ISSUE_URL — single source for MCP + CLI report-hint URLs
 │   ├── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval

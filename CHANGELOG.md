@@ -8,6 +8,51 @@ This project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`repos list|add|remove`** (also `pipecat context-hub repos ...`) manages
+  `PIPECAT_HUB_EXTRA_REPOS` in `~/.config/pipecat-context-hub/config.toml`,
+  offline, keeping comments and other keys and writing atomically. `add`
+  takes a catalog slug, `--unlisted owner/repo`, or `--group NAME`;
+  `--config-only` edits the file even when a real env var or the cwd `.env`
+  overrides the key (the command names that layer). `repos list` shows the
+  effective repos tagged `default` / `catalog` / `unlisted`, the cwd whose
+  `.env` was consulted, and repos `config.toml` holds but a higher layer hides;
+  `--groups` lists the catalog groups. Refusals exit 1 with the file untouched.
+  A tainted or malformed slug already in `config.toml` cannot be removed through
+  the CLI; its refusal says to edit the file by hand.
+  `--group` skips (and lists) tainted and `parseable = false` members; a group
+  with nothing left to act on exits 0 with `Nothing to add` / `Nothing to
+  remove` and the skipped list, without a shadowing refusal or reading
+  `config.toml`.
+  The writer reads through the loader's trust checks and never creates a file
+  the loader would ignore. It walks the path as the kernel does (refusing a
+  dangling symlink whose target ends in `/`, which the kernel's open would fail)
+  and re-walks it just before the atomic rename, refusing with the original
+  untouched if a symlink was retargeted in between; the reader vets the same
+  walked target. No configured string reaches the terminal raw: every line of
+  `repos` and `refresh` output, every refusal (click's own error messages
+  included), every log line (load-time warnings, tracebacks and stack text
+  included) and an uncaught traceback (through `pipecat context-hub` too) pass
+  through one output boundary
+  (`shared/terminal.py`) that escapes any non-printable character (an escape
+  sequence from a hostile `.env`, say) other than the message's own newlines
+  and tabs, and a configured entry or a `config.toml` / `.env` / data-dir path
+  that holds one is also flagged as its `repr()` tagged `[invalid]` where it is
+  named. The query commands' JSON on stdout (and `install --print-config`'s
+  block) stays valid JSON with the same value: a non-printable character in
+  indexed text is written as a JSON `\uXXXX` escape. Run `refresh` afterwards
+  to index.
+- **Repo catalog** (`src/pipecat_context_hub/data/repo_catalog.toml`): curated
+  public repos grouped by vendor or topic. It generates the extras block in
+  `.env.example` and the "Repo catalog" section of `docs/configuration.md`
+  (`just catalog-regen`; `--check` fails on drift, `--bump-verified` records a
+  manual audit); a test fails when they differ. The parser rejects any string
+  that holds a control character (C0, DEL, C1), a line or paragraph separator
+  or anything else `str.splitlines()` breaks on, or a bidi or zero-width format
+  character, and a `description` holding `|` or any string holding `BEGIN
+  GENERATED` / `END GENERATED`, so no catalog text can start an uncommented
+  assignment in the generated `.env.example` block or break a splice.
+- New runtime dependency: `tomlkit` (comment-preserving TOML edits), loaded
+  only by `repos add` / `repos remove`.
 - Plugin-specific release notes live in
   [`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
   This changelog retains repository and Context Hub package history.
@@ -45,6 +90,14 @@ This project uses [Semantic Versioning](https://semver.org/).
   (exit 2) instead of letting the remaining sources keep writing.
 
 ### Changed
+- **Taint matching is case-insensitive.** A `PIPECAT_HUB_TAINTED_REPOS` entry
+  now excludes a repo whatever its spelling (`Foo/Bar` taints `foo/bar`); it was
+  exact set membership. `refresh`'s cleanup, the effective repo list and `repos`
+  all decide through `SourceConfig.is_tainted`, and the warning about a
+  `config.toml` taint list shadowed by a higher layer compares the same way.
+  `PIPECAT_HUB_TAINTED_REFS` matching stays exact. The effective repo list and
+  the taint list also drop a case variant of an entry already listed (first
+  spelling wins), so `Foo/Bar` and `foo/bar` are cloned and indexed once.
 - **`refresh --force` compacts the vector graph.** Delete + re-add left deleted
   elements in the persisted HNSW graph, growing it by the whole corpus on every
   forced refresh (20k -> 80k elements for 20k live records over four rounds). A

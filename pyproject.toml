@@ -49,6 +49,8 @@ dependencies = [
     # plain re-lock cannot regress to a vulnerable build (the prior >=48.0.1 still
     # admitted 49.0.0).
     "cryptography>=50.0.0",
+    # Comment-preserving TOML writer for `repos add/remove` (tomli-w drops comments).
+    "tomlkit>=0.15.2,<1.0",
 ]
 
 [project.optional-dependencies]

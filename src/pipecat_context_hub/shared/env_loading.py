@@ -21,15 +21,27 @@ import os
 import stat
 import tomllib
 from pathlib import Path
+from typing import Final, Literal
 
+from pipecat_context_hub.shared.env_keys import (
+    EXTRA_REPOS_ENV,
+    TAINTED_REFS_ENV,
+    TAINTED_REPOS_ENV,
+    split_csv,
+)
+from pipecat_context_hub.shared.exclusion_folds import EXCLUSION_FOLDS, exclusion_fold
 from pipecat_context_hub.shared.paths import (
+    LookupMismatch,
     is_inside,
-    redact_home,
+    lookup_target,
     redact_home_in_text,
     resolution_chain,
+    shown_path,
 )
+from pipecat_context_hub.shared.terminal import install_output_escaping, shown
 
 _module_logger = logging.getLogger(__name__)
+
 
 # Default lookup path for the machine-global config file. Read via
 # `resolve_global_config_path()` (module-attribute lookup at call time, not a
@@ -74,6 +86,16 @@ MIN_FREE_GB_ENV_VAR = "PIPECAT_HUB_MIN_FREE_GB"
 
 _ENV_PREFIX = "PIPECAT_HUB_"
 
+# The three provenance labels `load_env_layers` can return (parent plan
+# Decision 9). One definition, so a consumer cannot misspell a label and fail
+# open; `SHADOWING_LAYERS` are the ones that outrank config.toml.
+ProvenanceLayer = Literal["env", ".env", "config.toml"]
+LAYER_ENV: Final = "env"
+LAYER_DOTENV: Final = ".env"
+LAYER_CONFIG_TOML: Final = "config.toml"
+SHADOWING_LAYERS: Final[frozenset[str]] = frozenset({LAYER_ENV, LAYER_DOTENV})
+
+
 # Declared above the frozensets below (rather than after them) so those sets
 # reference these constants instead of re-hardcoding the same literals — the
 # same single-source-of-truth rule PRUNE_ENV_VAR/DEBUG_PROBE_ENV_VAR follow.
@@ -111,15 +133,15 @@ _INVOCATION_SCOPED_KEYS = frozenset(
 _KNOWN_KEYS = frozenset(
     {
         _DATA_DIR_ENV_VAR,
-        "PIPECAT_HUB_EXTRA_REPOS",
+        EXTRA_REPOS_ENV,
         "PIPECAT_HUB_FRAMEWORK_VERSION",
         "PIPECAT_HUB_IDLE_TIMEOUT_SECS",
         "PIPECAT_HUB_PARENT_WATCH_INTERVAL",
         "PIPECAT_HUB_RERANKER_ENABLED",
         "PIPECAT_HUB_RERANKER_MODEL",
         "PIPECAT_HUB_STALE_AFTER_DAYS",
-        "PIPECAT_HUB_TAINTED_REFS",
-        "PIPECAT_HUB_TAINTED_REPOS",
+        TAINTED_REFS_ENV,
+        TAINTED_REPOS_ENV,
         "PIPECAT_HUB_WARMUP",
     }
 )
@@ -129,14 +151,15 @@ _KNOWN_KEYS = frozenset(
 # that is shadowed by a real env var or cwd `.env` is worth saying out loud —
 # an operator who deliberately excluded a repo machine-globally should learn
 # that this invocation is not honouring that list.
-_EXCLUSION_KEYS = frozenset({"PIPECAT_HUB_TAINTED_REPOS", "PIPECAT_HUB_TAINTED_REFS"})
+# The keys of `exclusion_folds.EXCLUSION_FOLDS`, which owns each key's matching rule.
+_EXCLUSION_KEYS = frozenset(EXCLUSION_FOLDS)
 
 # Scalar TOML value types accepted as-is (coerced via str()) or as elements
 # of a homogeneous array.
 _SCALAR_TYPES = (str, int, float, bool)
 
 
-def load_cwd_dotenv() -> None:
+def load_cwd_dotenv() -> dict[str, str]:
     """Load ``.env`` file from the current directory if it exists.
 
     Only sets variables that are not already in the environment so that
@@ -148,6 +171,9 @@ def load_cwd_dotenv() -> None:
         KEY=value            # ok
         KEY="value" # note   # inline comment stripped
         KEY=value # note     # inline comment stripped
+
+    Returns the keys actually set (blank values included), mapped to the value
+    set; a key already in ``os.environ`` is not in the result.
 
     Only ``PIPECAT_HUB_*``-prefixed keys are read from this file — any other key
     is silently skipped, not set into ``os.environ``. This file can live in any
@@ -179,12 +205,13 @@ def load_cwd_dotenv() -> None:
     ``_log_serve_cwd`` / ``_write_serve_debug_probe`` and in
     ``shared/paths.py``'s ``resolution_chain``.
     """
+    applied: dict[str, str] = {}
     try:
         env_path = Path.cwd() / ".env"
         if not env_path.is_file():
-            return
+            return applied
     except (OSError, ValueError, RuntimeError):
-        return
+        return applied
     # The read is guarded for the same reason as the cwd lookup above, and
     # mirrors `load_global_config()`'s already-guarded read: a `.env` that
     # exists but is unreadable (PermissionError / ENOENT from a concurrent
@@ -198,10 +225,10 @@ def load_cwd_dotenv() -> None:
     except (OSError, UnicodeError, ValueError) as exc:
         _module_logger.warning(
             "Failed to read .env at %s: %s; no cwd .env values were applied",
-            redact_home(env_path),
+            shown_path(env_path),
             redact_home_in_text(str(exc)),
         )
-        return
+        return applied
     for line in content.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -240,6 +267,9 @@ def load_cwd_dotenv() -> None:
                     key,
                     exc,
                 )
+            else:
+                applied[key] = value
+    return applied
 
 
 def resolve_global_config_path() -> Path | None:
@@ -452,7 +482,7 @@ def dotenv_collides_with_dir(candidate_dir: Path) -> Path | None:
     return _config_source_collides_with_dir(dotenv_path, candidate_dir)
 
 
-def load_env_layers() -> None:
+def load_env_layers() -> dict[str, ProvenanceLayer]:
     """Load every config layer below real env vars, in precedence order.
 
     The single bootstrap entry point: ``load_cwd_dotenv()`` (cwd ``.env``)
@@ -462,13 +492,47 @@ def load_env_layers() -> None:
     — calls this rather than hand-replicating the two-call ordering, so the
     contract is enforced by the code path instead of by convention.
 
+    Returns the provenance map: for each ``PIPECAT_HUB_*`` key, the layer that
+    supplied its FINAL NON-BLANK value (``env``, ``.env`` or ``config.toml``).
+    A key whose final value is blank (empty after ``.strip()``) is omitted, so
+    blankness is encoded in the map and no caller consults ``os.environ``.
+    Callers that do not need it ignore the return value.
+
+    The map is accurate for the FIRST call in a process only: the loaders write
+    the keys they set into ``os.environ``, so a second call snapshots them as
+    layer ``env``. Every entry point calls this once, before constructing any
+    config (``main()`` stores the result in ``ctx.obj["env_provenance"]``).
+
     The individual loaders remain public for tests that exercise one layer.
+
+    Side effect, process-wide and first: it installs the terminal-safe output
+    boundary (:func:`terminal.install_output_escaping`): a log record factory
+    whose records escape their message, traceback and stack text on read, and,
+    unless a host replaced it, a ``sys.excepthook`` that escapes an uncaught
+    traceback. It lives here because this is the one bootstrap every entry
+    point already calls, before anything can log: the loaders' warnings name
+    configured paths and entries, and an entry point that never configures
+    logging prints them through ``logging.lastResort``. Idempotent.
     """
-    load_cwd_dotenv()
-    load_global_config()
+    install_output_escaping()
+    env_layer = {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIX) and v.strip()}
+    dotenv_layer = load_cwd_dotenv()
+    global_layer = load_global_config()
+    merged: dict[str, str] = {}
+    provenance: dict[str, ProvenanceLayer] = {}
+    layers: tuple[tuple[ProvenanceLayer, dict[str, str]], ...] = (
+        (LAYER_ENV, env_layer),
+        (LAYER_DOTENV, dotenv_layer),
+        (LAYER_CONFIG_TOML, global_layer),
+    )
+    for label, layer in layers:
+        for key, value in layer.items():
+            merged[key] = value
+            provenance[key] = label
+    return {key: label for key, label in provenance.items() if merged[key].strip()}
 
 
-def _stringify_scalar_array(value: list[object], key: str) -> str | None:
+def _stringify_scalar_array(value: list[object], key: str, *, warn: bool = True) -> str | None:
     """Coerce a homogeneous scalar array to a CSV string, or None to skip.
 
     Losslessly equivalent to the existing CSV parser (`shared/config.py`)
@@ -478,13 +542,57 @@ def _stringify_scalar_array(value: list[object], key: str) -> str | None:
     """
     stringified = [str(v) for v in value]
     if any("," in s for s in stringified):
-        _module_logger.warning(
-            "config.toml key %r: array element contains a comma, which the CSV "
-            "parser cannot escape; skipping",
-            key,
-        )
+        if warn:
+            _module_logger.warning(
+                "config.toml key %r: array element contains a comma, which the CSV "
+                "parser cannot escape; skipping",
+                key,
+            )
         return None
     return ",".join(stringified)
+
+
+def _coerce_config_value(key: str, value: object, *, warn: bool) -> str | None:
+    """The string ``load_global_config`` sets for a raw config.toml value, or ``None`` (skipped).
+
+    The one coercion rule: a scalar via ``str()``, a homogeneous scalar array
+    joined with commas (no element may contain one); anything else is skipped.
+    ``warn`` is False for read-only callers that report the skip themselves.
+    """
+    if isinstance(value, list):
+        if not _is_homogeneous_scalar_array(value):
+            if warn:
+                _module_logger.warning(
+                    "config.toml key %r has a non-homogeneous or non-scalar array value; skipping",
+                    key,
+                )
+            return None
+        return _stringify_scalar_array(value, key, warn=warn)
+    if isinstance(value, _SCALAR_TYPES):
+        return str(value)
+    if warn:
+        # Name the actual type: this branch is reached by every non-scalar,
+        # non-list TOML type, including the native date/time/datetime ones —
+        # reporting "table" for a bare date sends the operator hunting for
+        # a syntax problem they don't have.
+        _module_logger.warning(
+            "config.toml key %r has an unsupported value type (%s); skipping",
+            key,
+            type(value).__name__,
+        )
+    return None
+
+
+def config_list_value(key: str, value: object) -> list[str] | None:
+    """The list a raw config.toml value of list-valued ``key`` yields once loaded.
+
+    Exactly what ``load_global_config`` (coercion) followed by
+    ``shared/config.py`` (:func:`split_csv`) produce, so ``repos list`` and the
+    writer agree with the reader. ``None`` means the loader skips the value.
+    Never logs.
+    """
+    coerced = _coerce_config_value(key, value, warn=False)
+    return None if coerced is None else split_csv(coerced)
 
 
 def _file_kind(mode: int) -> str:
@@ -502,8 +610,18 @@ def _file_kind(mode: int) -> str:
     return "not a regular file"
 
 
-def _link_owner_is_trusted(config_path: Path, uid: int) -> bool:
-    """False when any symlink on the config path was planted by another user.
+def _refuse(message: str, *args: object) -> str:
+    """Log a trust refusal as a warning and return its text (the ``ConfigNotTrusted`` reason)."""
+    # Callers pass each path through `shown_path`; the text is escaped at the
+    # output boundary (the log record, `repos`' echo), never as a whole here,
+    # so the remedy text stays readable and a path is never escaped twice.
+    text = message % args
+    _module_logger.warning("%s", text)
+    return text
+
+
+def _link_owner_refusal(config_path: Path, uid: int) -> str | None:
+    """A refusal (logged) when any symlink on the config path was planted by another user.
 
     ``fstat`` on the opened file describes the *target*, never the link, so a
     foreign-owned symlink pointing at a victim-owned file would otherwise pass
@@ -546,21 +664,20 @@ def _link_owner_is_trusted(config_path: Path, uid: int) -> bool:
             continue
         if lst.st_uid in (uid, 0):
             continue
-        _module_logger.warning(
+        return _refuse(
             "Ignoring config.toml at %s: path component %s is a symlink owned by uid %d, "
             "not the current user (uid %d). Another local account could redirect this "
             "hub's settings.",
-            redact_home(config_path),
-            redact_home(location),
+            shown_path(config_path),
+            shown_path(location),
             lst.st_uid,
             uid,
         )
-        return False
-    return True
+    return None
 
 
-def _config_parent_is_trusted(config_path: Path, uid: int) -> bool:
-    """False when any directory on config.toml's path is another user's to rewrite.
+def _config_parent_refusal(config_path: Path, uid: int, *, resolved: Path) -> str | None:
+    """A refusal (logged) when any directory on config.toml's path is another user's to rewrite.
 
     A per-file mode check cannot see this: write permission on a *directory*
     is what authorizes unlink-and-replace, so a ``0600`` file in a
@@ -587,78 +704,78 @@ def _config_parent_is_trusted(config_path: Path, uid: int) -> bool:
     two directories that directly hold the file — the lexical parent and the
     resolved one. A per-ancestor version would be noise on any machine with a
     group-writable dir anywhere in ``/``.
+
+    ``resolved`` is where the lookup ends: ``paths.lookup_target(config_path)``,
+    the one method that decides where ``open(path)`` lands. The reader
+    (:func:`_config_fd_refusal`), :func:`check_config_write_target` and the
+    writer all pass it, so there is no second (``realpath``) answer.
     """
     checked: set[str] = set()
     directories: list[tuple[Path, bool]] = []
 
     lexical_parent = Path(os.path.abspath(config_path)).parent
-    real_parent: Path | None
-    try:
-        real_parent = Path(os.path.realpath(config_path)).parent
-    except (OSError, ValueError):
-        real_parent = None
+    real_parent = resolved.parent
 
     # Warn-worthy holders first, so the dedup set records them with
     # `warn_group=True` before the ancestor sweep can claim them with False.
     directories.append((lexical_parent, True))
-    if real_parent is not None:
-        directories.append((real_parent, True))
+    directories.append((real_parent, True))
 
     for location in resolution_chain(config_path):
         directories.extend((ancestor, False) for ancestor in location.parents)
-    if real_parent is not None:
-        directories.append((real_parent, False))
-        directories.extend((ancestor, False) for ancestor in real_parent.parents)
+    directories.append((real_parent, False))
+    directories.extend((ancestor, False) for ancestor in real_parent.parents)
 
     for directory, warn_group in directories:
         marker = str(directory)
         if marker in checked:
             continue
         checked.add(marker)
-        if not _config_dir_is_trusted(config_path, directory, uid, warn_group=warn_group):
-            return False
-    return True
+        refusal = _config_dir_refusal(config_path, directory, uid, warn_group=warn_group)
+        if refusal is not None:
+            return refusal
+    return None
 
 
-def _config_dir_is_trusted(config_path: Path, parent: Path, uid: int, *, warn_group: bool) -> bool:
-    """One directory's leg of :func:`_config_parent_is_trusted`."""
+def _config_dir_refusal(
+    config_path: Path, parent: Path, uid: int, *, warn_group: bool
+) -> str | None:
+    """One directory's leg of :func:`_config_parent_refusal`."""
     try:
         pst = os.stat(parent)
     except (OSError, ValueError):
         # Unstattable directory: the open() already succeeded, so don't invent
         # a refusal from a check we couldn't perform.
-        return True
+        return None
 
     if pst.st_uid not in (uid, 0):
-        _module_logger.warning(
+        return _refuse(
             "Ignoring config.toml at %s: its directory is owned by uid %d, not the "
             "current user (uid %d). Another local account could replace the file.",
-            redact_home(config_path),
+            shown_path(config_path),
             pst.st_uid,
             uid,
         )
-        return False
     if pst.st_mode & stat.S_IWOTH and not pst.st_mode & stat.S_ISVTX:
-        _module_logger.warning(
+        return _refuse(
             "Ignoring config.toml at %s: its directory %s is world-writable without the "
             "sticky bit (mode %o), so any local account could replace the file. "
             "Run `chmod 755 %s` and retry.",
-            redact_home(config_path),
-            redact_home(parent),
+            shown_path(config_path),
+            shown_path(parent),
             stat.S_IMODE(pst.st_mode),
-            redact_home(parent),
+            shown_path(parent),
         )
-        return False
     if warn_group and pst.st_mode & stat.S_IWGRP and not pst.st_mode & stat.S_ISVTX:
         _module_logger.warning(
             "config.toml's directory %s is group-writable (mode %o); anyone in group %d "
             "can replace this hub's settings file. Consider `chmod 755 %s`.",
-            redact_home(parent),
+            shown_path(parent),
             stat.S_IMODE(pst.st_mode),
             pst.st_gid,
-            redact_home(parent),
+            shown_path(parent),
         )
-    return True
+    return None
 
 
 def _open_config_fd(config_path: Path) -> int:
@@ -668,7 +785,7 @@ def _open_config_fd(config_path: Path) -> int:
     blocks in the kernel until a writer appears, so a ``config.toml`` that is
     (accidentally or maliciously) a named pipe would hang *every* invocation
     of every entry point before argv is dispatched. With ``O_NONBLOCK`` the
-    open returns immediately and :func:`_config_fd_is_trusted` rejects the
+    open returns immediately and :func:`_config_fd_refusal` rejects the
     non-regular file. On a regular file the flag is a no-op.
 
     Raises ``OSError`` (``FileNotFoundError`` included) for the caller to
@@ -681,8 +798,8 @@ def _open_config_fd(config_path: Path) -> int:
     return os.open(config_path, flags)
 
 
-def _config_fd_is_trusted(fd: int, config_path: Path) -> bool:
-    """False when the opened config file can be controlled by another principal.
+def _config_fd_refusal(fd: int, config_path: Path) -> str | None:
+    """A refusal (logged) when the opened config file can be controlled by another principal.
 
     ``config.toml``'s contents are promoted straight into ``os.environ``
     (``PIPECAT_HUB_DATA_DIR``, ``PIPECAT_HUB_EXTRA_REPOS``, the taint lists),
@@ -724,61 +841,78 @@ def _config_fd_is_trusted(fd: int, config_path: Path) -> bool:
         st = os.fstat(fd)
     except OSError:
         # Should not happen on a live fd; the caller's read reports it.
-        return True
+        return None
 
     if not stat.S_ISREG(st.st_mode):
-        _module_logger.warning(
+        return _refuse(
             "Ignoring config.toml at %s: not a regular file (%s); config.toml must be a plain file",
-            redact_home(config_path),
+            shown_path(config_path),
             _file_kind(st.st_mode),
         )
-        return False
 
     if os.name != "posix":
-        return True
+        return None
 
     uid = os.getuid()
-    if not _link_owner_is_trusted(config_path, uid):
-        return False
-    if not _config_parent_is_trusted(config_path, uid):
-        return False
+    # Where the open landed, by the same kernel walk the writer uses. The open
+    # already succeeded, so the walk fails only on a race or the hop bound;
+    # a target it cannot prove is not trusted.
+    try:
+        resolved = lookup_target(config_path)
+    except LookupMismatch as exc:
+        return _refuse(
+            "Ignoring config.toml at %s: cannot prove where its lookup lands (%s)",
+            shown_path(config_path),
+            redact_home_in_text(str(exc)),
+        )
+    refusal = _link_owner_refusal(config_path, uid) or _config_parent_refusal(
+        config_path, uid, resolved=resolved
+    )
+    if refusal is not None:
+        return refusal
 
     if st.st_uid not in (uid, 0):
-        _module_logger.warning(
+        return _refuse(
             "Ignoring config.toml at %s: owned by uid %d, not the current user (uid %d). "
             "Another local account could control this hub's settings.",
-            redact_home(config_path),
+            shown_path(config_path),
             st.st_uid,
             uid,
         )
-        return False
     if st.st_mode & stat.S_IWOTH:
-        _module_logger.warning(
+        return _refuse(
             "Ignoring config.toml at %s: it is world-writable (mode %o). "
             "Run `chmod 600 %s` and retry.",
-            redact_home(config_path),
+            shown_path(config_path),
             stat.S_IMODE(st.st_mode),
-            redact_home(config_path),
+            shown_path(config_path),
         )
-        return False
     if st.st_mode & stat.S_IWGRP:
         _module_logger.warning(
             "config.toml at %s is group-writable (mode %o); anyone in group %d can change "
             "this hub's settings. Consider `chmod 600 %s`.",
-            redact_home(config_path),
+            shown_path(config_path),
             stat.S_IMODE(st.st_mode),
             st.st_gid,
-            redact_home(config_path),
+            shown_path(config_path),
         )
-    return True
+    return None
 
 
-def _shadowed_exclusion_entries(config_value: object, active_value: str) -> list[str] | None:
+def _shadowed_exclusion_entries(
+    key: str, config_value: object, active_value: str
+) -> list[str] | None:
     """Entries in a config.toml exclusion list that the winning layer drops.
 
-    Best-effort and lenient: this runs on a value that was never coerced (it
-    lost precedence before validation), so a shape the loader wouldn't accept
-    yields ``None`` rather than an error.
+    Both sides are read by the reader's own rules: the config.toml value by
+    :func:`config_list_value` (so a shape the loader wouldn't accept yields
+    ``None`` rather than an error; this runs on a value that lost precedence
+    before validation), the winning value by :func:`split_csv`. Entries
+    compare by the setting's own matching rule, :func:`exclusion_folds.exclusion_fold`
+    (the map ``SourceConfig.is_tainted`` also matches through: :func:`slug_key`
+    for ``PIPECAT_HUB_TAINTED_REPOS``, exact for ``PIPECAT_HUB_TAINTED_REFS``), so
+    an entry the winning list still honours under another spelling is not
+    reported lost.
 
     ``None`` (unreadable shape — nothing can be said about what survived) is
     distinct from ``[]`` (read fine, and the winning layer's list covers every
@@ -786,14 +920,19 @@ def _shadowed_exclusion_entries(config_value: object, active_value: str) -> list
     list made the caller warn that machine-global exclusions were "NOT in
     effect" in the superset case, where they demonstrably all are.
     """
-    if isinstance(config_value, str):
-        configured = [part.strip() for part in config_value.split(",")]
-    elif isinstance(config_value, list) and all(isinstance(v, str) for v in config_value):
-        configured = [str(v).strip() for v in config_value]
-    else:
+    # Lenient only about strings: a scalar or array the loader would stringify
+    # (an int, say) is not an exclusion list anyone wrote on purpose.
+    is_strings = isinstance(config_value, list) and all(isinstance(v, str) for v in config_value)
+    configured = (
+        config_list_value(key, config_value)
+        if isinstance(config_value, str) or is_strings
+        else None
+    )
+    if configured is None:
         return None
-    active = {part.strip() for part in active_value.split(",")}
-    return sorted({entry for entry in configured if entry and entry not in active})
+    fold = exclusion_fold(key)
+    active = {fold(entry) for entry in split_csv(active_value)}
+    return sorted({entry for entry in configured if fold(entry) not in active})
 
 
 def _is_homogeneous_scalar_array(value: list[object]) -> bool:
@@ -805,62 +944,132 @@ def _is_homogeneous_scalar_array(value: list[object]) -> bool:
     return all(type(v) is first_type for v in value)
 
 
-def load_global_config() -> None:
+class ConfigNotTrusted(Exception):
+    """The config file exists but must not be read.
+
+    Raised by :func:`read_trusted_config` for every trust-predicate refusal and
+    every open/read/decode failure. ``logged`` is True when the trust predicate
+    already emitted its own warning, so the :func:`load_global_config` wrapper
+    does not warn twice.
+    """
+
+    def __init__(self, reason: str, *, logged: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.logged = logged
+
+
+def read_trusted_config(path: Path) -> str | None:
+    """Read ``path`` through the loader's trust checks; the one shared reader.
+
+    Returns ``None`` for a missing file. Raises :class:`ConfigNotTrusted` for a
+    trust-predicate refusal or any open/read/decode failure. Invalid TOML is
+    not this function's concern (see :func:`parse_global_config`).
+    """
+    try:
+        fd = _open_config_fd(path)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        # `exc` is redacted, not just the path: OSError's own __str__ appends
+        # the absolute filename, which would leak the home directory.
+        raise ConfigNotTrusted(redact_home_in_text(str(exc))) from exc
+
+    # `fd` ownership transfers to `os.fdopen` on *entry*, not on success:
+    # `io.open` closes the descriptor itself when construction fails. Clearing
+    # the flag beforehand is the correct handoff point. Until that call, this
+    # function closes it on every path.
+    fd_owned = True
+    try:
+        refusal = _config_fd_refusal(fd, path)
+        if refusal is not None:
+            raise ConfigNotTrusted(refusal, logged=True)
+        fd_owned = False
+        with os.fdopen(fd, "rb") as f:
+            return f.read().decode("utf-8")
+    except (UnicodeError, OSError, ValueError) as exc:
+        raise ConfigNotTrusted(redact_home_in_text(str(exc))) from exc
+    finally:
+        if fd_owned:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def check_config_write_target(path: Path) -> None:
+    """Raise :class:`ConfigNotTrusted` when a NEW file at ``path`` would be refused.
+
+    For a config file that does not exist yet (:func:`read_trusted_config`
+    returned ``None``, which runs no path-level check): applies the reader's
+    own path-level predicates to the lookup ``path`` takes, so the writer
+    cannot create a file the reader would then ignore — a dangling symlink
+    planted by another user, a world-writable non-sticky or foreign-owned
+    directory anywhere on the resolution chain or the would-be target's
+    ancestors. Directories that do not exist yet are skipped here (the writer
+    creates them 0700); the file-level predicates (regular file, owner, mode)
+    are the writer's to satisfy, since it creates the file itself.
+    The would-be target's directories come from :func:`paths.lookup_target`
+    (the kernel's hop-by-hop walk the writer also uses), not ``realpath``, so
+    the check vets the file the writer would create even when called alone; a
+    lookup the walk cannot prove (a ``..`` after a non-directory, say) is
+    refused. POSIX only, like the predicates it reuses.
+    """
+    if os.name != "posix":
+        return
+    try:
+        resolved = lookup_target(path)
+    except LookupMismatch as exc:
+        raise ConfigNotTrusted(f"{shown_path(path)}: {redact_home_in_text(str(exc))}") from exc
+    uid = os.getuid()
+    refusal = _link_owner_refusal(path, uid) or _config_parent_refusal(path, uid, resolved=resolved)
+    if refusal is not None:
+        raise ConfigNotTrusted(refusal, logged=True)
+
+
+def parse_global_config(path: Path) -> dict[str, object]:
+    """Read ``path`` via :func:`read_trusted_config` and parse it as TOML.
+
+    A missing file yields ``{}``. :class:`ConfigNotTrusted` propagates;
+    invalid TOML raises ``tomllib.TOMLDecodeError`` unwrapped.
+    """
+    text = read_trusted_config(path)
+    if text is None:
+        return {}
+    return tomllib.loads(text)
+
+
+def load_global_config() -> dict[str, str]:
     """Load ``PIPECAT_HUB_*`` keys from the machine-global ``config.toml``.
 
     Only sets variables not already in ``os.environ`` (first-writer-wins,
     same as `load_cwd_dotenv`). A missing file returns silently. Malformed or
-    unreadable files log a warning and never raise.
+    unreadable files log a warning and never raise. Returns the keys actually
+    set, mapped to the value set.
     """
+    applied: dict[str, str] = {}
     config_path = resolve_global_config_path()
     if config_path is None:
         # Home directory couldn't be determined at import time (see
         # DEFAULT_CONFIG_PATH above) and no PIPECAT_HUB_CONFIG_FILE override
         # is set. Nothing to load; the warning was already logged once, at
         # import time.
-        return
+        return applied
     try:
-        fd = _open_config_fd(config_path)
-    except FileNotFoundError:
-        return
-    except (OSError, ValueError) as exc:
-        # `exc` is redacted, not just `config_path`: OSError's own __str__
-        # appends the absolute filename ("[Errno 13] Permission denied:
-        # '/Users/<name>/...'"), which would leak the home directory back into
-        # a log line whose path argument was carefully redacted.
+        data = parse_global_config(config_path)
+    except ConfigNotTrusted as exc:
+        if not exc.logged:
+            _module_logger.warning(
+                "Failed to read config.toml at %s: %s",
+                shown_path(config_path),
+                exc.reason,
+            )
+        return applied
+    except tomllib.TOMLDecodeError as exc:
         _module_logger.warning(
             "Failed to read config.toml at %s: %s",
-            redact_home(config_path),
+            shown_path(config_path),
             redact_home_in_text(str(exc)),
         )
-        return
-
-    # `fd` ownership transfers to `os.fdopen` on *entry*, not on success:
-    # `io.open` closes the descriptor itself when construction fails. Clearing
-    # the flag beforehand is therefore the correct handoff point — clearing it
-    # after the call returns would leave the `finally` below closing an fd the
-    # interpreter had already closed, which after fd-number reuse closes some
-    # unrelated file. Until that call, this function closes it on every path.
-    fd_owned = True
-    try:
-        if not _config_fd_is_trusted(fd, config_path):
-            return
-        fd_owned = False
-        with os.fdopen(fd, "rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, UnicodeError, OSError, ValueError) as exc:
-        # Same redaction rationale as the open() site above: an OSError raised
-        # mid-read still carries the absolute filename in its message.
-        _module_logger.warning(
-            "Failed to read config.toml at %s: %s",
-            redact_home(config_path),
-            redact_home_in_text(str(exc)),
-        )
-        return
-    finally:
-        if fd_owned:
-            with contextlib.suppress(OSError):
-                os.close(fd)
+        return applied
 
     loaded = 0
     for key, value in data.items():
@@ -908,7 +1117,7 @@ def load_global_config() -> None:
             # (`PIPECAT_HUB_EXTRA_REPOS`, `PIPECAT_HUB_TAINTED_REPOS`/`_REFS`),
             # and that is deliberate rather than an oversight for that key
             # class: those consumers read
-            # `_split_csv_env(os.environ.get(NAME, ""))`, so a blank yields the
+            # `split_csv(os.environ.get(NAME, ""))`, so a blank yields the
             # empty list — bit-for-bit the same result as the key being unset.
             # A blank list key is therefore inert in exactly the same sense as
             # a blank scalar, and the "neither layer applies" outcome above is
@@ -934,7 +1143,7 @@ def load_global_config() -> None:
             # so a shadowed taint list means a deliberate machine-global
             # exclusion is silently not in effect this run. Say so.
             if key in _EXCLUSION_KEYS:
-                lost = _shadowed_exclusion_entries(value, os.environ[key])
+                lost = _shadowed_exclusion_entries(key, value, os.environ[key])
                 if lost:
                     # Name the entries, not just the key: "your taint list is
                     # shadowed" is not actionable, "these repos are no longer
@@ -948,7 +1157,7 @@ def load_global_config() -> None:
                         "(real env var or cwd .env); these machine-global exclusions are "
                         "NOT in effect for this run: %s",
                         key,
-                        ", ".join(lost),
+                        ", ".join(shown(entry) for entry in lost),
                     )
                 elif lost is None:
                     # The shadowed value's shape isn't one this loader reads
@@ -980,28 +1189,8 @@ def load_global_config() -> None:
                     )
             continue
 
-        if isinstance(value, list):
-            if not _is_homogeneous_scalar_array(value):
-                _module_logger.warning(
-                    "config.toml key %r has a non-homogeneous or non-scalar array value; skipping",
-                    key,
-                )
-                continue
-            coerced = _stringify_scalar_array(value, key)
-            if coerced is None:
-                continue
-        elif isinstance(value, _SCALAR_TYPES):
-            coerced = str(value)
-        else:
-            # Name the actual type: this branch is reached by every non-scalar,
-            # non-list TOML type, including the native date/time/datetime ones —
-            # reporting "table" for a bare date sends the operator hunting for
-            # a syntax problem they don't have.
-            _module_logger.warning(
-                "config.toml key %r has an unsupported value type (%s); skipping",
-                key,
-                type(value).__name__,
-            )
+        coerced = _coerce_config_value(key, value, warn=True)
+        if coerced is None:
             continue
 
         if key == _DATA_DIR_ENV_VAR:
@@ -1026,7 +1215,7 @@ def load_global_config() -> None:
                     "config.toml key %r would relocate the data dir to contain the "
                     "active config file (%s); skipping",
                     key,
-                    redact_home(colliding_config_path),
+                    shown_path(colliding_config_path),
                 )
                 continue
 
@@ -1055,7 +1244,9 @@ def load_global_config() -> None:
                 exc,
             )
             continue
+        applied[key] = coerced
         loaded += 1
 
     if loaded:
-        _module_logger.info("Loaded %d key(s) from %s", loaded, redact_home(config_path))
+        _module_logger.info("Loaded %d key(s) from %s", loaded, shown_path(config_path))
+    return applied

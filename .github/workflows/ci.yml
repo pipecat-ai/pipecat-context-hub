@@ -106,7 +106,13 @@ jobs:
         # values built the same way (never touch the real filesystem), so they hold
         # cross-platform, and its config.toml.example/README parity test reads
         # files by absolute repo-relative path (no POSIX permission bits, no
-        # symlinks). tests/integration/ is still excluded (its serve tests use
+        # symlinks). test_repo_catalog.py is pure parsing/rendering of the
+        # packaged catalog (its `python -I` import-boundary tests skip off POSIX).
+        # test_config_writer.py runs its round-trip, re-parse and refusal rows
+        # everywhere; its uid/mode/symlink rows are marked POSIX-only, as Windows
+        # has no such permission bits. test_cli_repos.py builds its golden
+        # consulted-cwd line from `Path` at runtime, and its uid/mode rows skip
+        # when `os.name != "posix"`. tests/integration/ is still excluded (its serve tests use
         # POSIX-only select() on pipes); Linux CI runs everything.
         run: >-
           uv run pytest -v
@@ -117,6 +123,9 @@ jobs:
           tests/unit/test_hub_status.py
           tests/unit/test_env_loading.py
           tests/unit/test_config.py
+          tests/unit/test_repo_catalog.py
+          tests/unit/test_config_writer.py
+          tests/unit/test_cli_repos.py
 
   security:
     name: Security

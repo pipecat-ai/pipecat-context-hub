@@ -1,0 +1,265 @@
+"""Checked-in catalog of known public repos, grouped by vendor or topic.
+
+The catalog (``data/repo_catalog.toml``) is the single source for the generated
+block in ``.env.example``, the generated section in ``docs/configuration.md`` and
+(later) corpus hints. This module imports nothing from ``cli``, ``server`` or
+``services``.
+
+Test seams: :func:`parse_catalog` is pure (text in, :class:`Catalog` out, raises
+:class:`CatalogError`); :func:`_read_catalog_text` is the only I/O.
+:func:`load_catalog` is ``functools.cache`` around both and returns ``None`` on
+any failure, logging once at the first load.
+"""
+
+from __future__ import annotations
+
+import functools
+import logging
+import re
+import tomllib
+import unicodedata
+from dataclasses import dataclass
+from datetime import date
+from importlib import resources
+
+from pipecat_context_hub.shared.config import SourceConfig
+from pipecat_context_hub.shared.paths import redact_home_in_text
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug, slug_key
+
+logger = logging.getLogger(__name__)
+
+CATALOG_RESOURCE = "data/repo_catalog.toml"
+VALID_KINDS = frozenset({"vendor", "topic"})
+
+# Self-anchoring (`\A`..`\Z`, like `repo_slug.REPO_SLUG_RE`): `$` also matches
+# before a final newline, so a quoted TOML key `"bad\n"` would pass `.match()`.
+_GROUP_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
+_TOP_KEYS = frozenset({"verified", "groups"})
+_GROUP_KEYS = frozenset({"kind", "description", "aliases", "repos"})
+_REPO_KEYS = frozenset({"slug", "note", "parseable", "maintainer"})
+# Visibility is unknowable offline; the health check owns it. The schema simply
+# has no such fields, and names them in the error so the reason is obvious.
+_FORBIDDEN_KEYS = frozenset({"private", "archived", "status"})
+
+# The generated-block marker words. `repo_catalog_render` builds every marker
+# from these, so a catalog string containing one could break the next splice.
+GENERATED_BEGIN = "BEGIN GENERATED"
+GENERATED_END = "END GENERATED"
+# Free text rendered into a markdown table cell (`render_docs_block`).
+_TABLE_CELL_FIELDS = frozenset({"description"})
+# Unicode categories no catalog string may hold: Cc (C0, DEL and C1 controls,
+# including NEL), Cf (format: bidi overrides, zero-width characters, BOM), Zl
+# and Zp (U+2028 / U+2029). Each can either start a new line under some
+# consumer (`str.splitlines`, which `load_cwd_dotenv` uses; a terminal) or hide
+# text from a reviewer.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
+class CatalogError(ValueError):
+    """The catalog text violates the schema or a static invariant."""
+
+
+@dataclass(frozen=True)
+class CatalogRepo:
+    slug: str
+    note: str = ""
+    parseable: bool = True
+    maintainer: bool = False
+
+
+@dataclass(frozen=True)
+class CatalogGroup:
+    name: str
+    kind: str
+    description: str
+    aliases: tuple[str, ...]
+    repos: tuple[CatalogRepo, ...]
+
+
+@dataclass(frozen=True)
+class Catalog:
+    verified: date
+    groups: tuple[CatalogGroup, ...]
+
+    def find_repo(self, slug: str) -> CatalogRepo | None:
+        """The catalog entry for ``slug`` (matched by :func:`slug_key`), or ``None``."""
+        key = slug_key(slug)
+        for group in self.groups:
+            for repo in group.repos:
+                if slug_key(repo.slug) == key:
+                    return repo
+        return None
+
+    def find_group(self, name: str) -> CatalogGroup | None:
+        """The group called ``name`` (casefolded match), or ``None``."""
+        folded = name.casefold()
+        return next((g for g in self.groups if g.name.casefold() == folded), None)
+
+    def lists(self, slug: str) -> bool:
+        """True when the catalog lists ``slug`` (matched by :func:`slug_key`)."""
+        return self.find_repo(slug) is not None
+
+
+def _check_keys(where: str, table: dict[str, object], allowed: frozenset[str]) -> None:
+    for key in table:
+        if key in _FORBIDDEN_KEYS:
+            raise CatalogError(
+                f"{where}: key {key!r} is not allowed (the catalog is public-only; "
+                "the health check, not the schema, detects private or archived repos)"
+            )
+        if key not in allowed:
+            raise CatalogError(f"{where}: unknown key {key!r}")
+
+
+def _check_text(where: str, key: str, value: str) -> None:
+    """Enforce what the renderers and ``repos list`` assume of every catalog string.
+
+    Each string is printed on one line: as a comment in ``.env.example`` (a line
+    break would start a bare, uncommented assignment line a user copies into
+    ``.env``), in a ``docs/configuration.md`` table row, and on ``repos list
+    --groups`` stdout. So no character that any consumer treats as a line break
+    (``value.splitlines() == [value]``: newline, carriage return, NEL, U+2028,
+    U+2029, the C0 separators) and no character in :data:`_UNSAFE_CATEGORIES`
+    (controls, bidi and zero-width format characters, which can also hide
+    text); no ``|`` in a table-cell field; and no generated-block marker word
+    anywhere, which would break the next splice.
+    """
+    if value.splitlines() != [value]:
+        raise CatalogError(f"{where}: {key!r} contains a line break")
+    for ch in value:
+        if unicodedata.category(ch) in _UNSAFE_CATEGORIES:
+            raise CatalogError(
+                f"{where}: {key!r} contains a control or invisible character (U+{ord(ch):04X})"
+            )
+    if key in _TABLE_CELL_FIELDS and "|" in value:
+        raise CatalogError(f"{where}: {key!r} contains '|', which breaks the docs table row")
+    for marker in (GENERATED_BEGIN, GENERATED_END):
+        if marker in value:
+            raise CatalogError(f"{where}: {key!r} contains the generated-block marker {marker!r}")
+
+
+def _expect_str(where: str, table: dict[str, object], key: str, *, required: bool) -> str:
+    if key not in table:
+        if required:
+            raise CatalogError(f"{where}: missing {key!r}")
+        return ""
+    value = table[key]
+    if not isinstance(value, str) or not value.strip():
+        raise CatalogError(f"{where}: {key!r} must be a non-empty string")
+    _check_text(where, key, value)
+    return value
+
+
+def _expect_bool(where: str, table: dict[str, object], key: str, *, default: bool) -> bool:
+    if key not in table:
+        return default
+    value = table[key]
+    if not isinstance(value, bool):
+        raise CatalogError(f"{where}: {key!r} must be a bool")
+    return value
+
+
+def _parse_repo(where: str, raw: object) -> CatalogRepo:
+    if not isinstance(raw, dict):
+        raise CatalogError(f"{where}: each repo must be a table")
+    _check_keys(where, raw, _REPO_KEYS)
+    slug = _expect_str(where, raw, "slug", required=True)
+    if not is_valid_repo_slug(slug):
+        raise CatalogError(f"{where}: malformed slug {slug!r} (expected org/repo)")
+    return CatalogRepo(
+        slug=slug,
+        note=_expect_str(where, raw, "note", required=False),
+        parseable=_expect_bool(where, raw, "parseable", default=True),
+        maintainer=_expect_bool(where, raw, "maintainer", default=False),
+    )
+
+
+def _parse_group(name: str, raw: object) -> CatalogGroup:
+    where = f"groups.{name}"
+    if not _GROUP_NAME_RE.fullmatch(name):
+        raise CatalogError(f"{where}: group name must be lowercase letters, digits and '-'")
+    if not isinstance(raw, dict):
+        raise CatalogError(f"{where}: must be a table")
+    _check_keys(where, raw, _GROUP_KEYS)
+    kind = _expect_str(where, raw, "kind", required=True)
+    if kind not in VALID_KINDS:
+        raise CatalogError(f"{where}: kind {kind!r} must be one of {sorted(VALID_KINDS)}")
+    description = _expect_str(where, raw, "description", required=True)
+    aliases_raw = raw.get("aliases")
+    if (
+        not isinstance(aliases_raw, list)
+        or not aliases_raw
+        or not all(isinstance(a, str) and a.strip() for a in aliases_raw)
+    ):
+        raise CatalogError(f"{where}: 'aliases' must be a non-empty list of non-empty strings")
+    for alias in aliases_raw:
+        _check_text(where, "aliases", alias)
+    repos_raw = raw.get("repos")
+    if not isinstance(repos_raw, list) or not repos_raw:
+        raise CatalogError(f"{where}: needs at least one [[repos]] entry")
+    repos = tuple(_parse_repo(f"{where}.repos[{i}]", r) for i, r in enumerate(repos_raw))
+    return CatalogGroup(
+        name=name,
+        kind=kind,
+        description=description,
+        aliases=tuple(str(a) for a in aliases_raw),
+        repos=repos,
+    )
+
+
+def parse_catalog(text: str) -> Catalog:
+    """Parse and validate catalog text. Raises :class:`CatalogError`."""
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise CatalogError(f"invalid TOML: {exc}") from exc
+    _check_keys("catalog", data, _TOP_KEYS)
+    verified = data.get("verified")
+    # tomllib yields datetime for a timestamp; only a plain date is valid.
+    if type(verified) is not date:
+        raise CatalogError("catalog: 'verified' must be an ISO date (YYYY-MM-DD)")
+    groups_raw = data.get("groups")
+    if not isinstance(groups_raw, dict) or not groups_raw:
+        raise CatalogError("catalog: needs at least one [groups.<name>] table")
+    groups = tuple(_parse_group(name, raw) for name, raw in groups_raw.items())
+
+    shipped = SourceConfig()  # the shipped defaults (see SourceConfig.is_default)
+    seen_slugs: dict[str, str] = {}
+    seen_aliases: dict[str, str] = {}
+    for group in groups:
+        for repo in group.repos:
+            key = slug_key(repo.slug)
+            if shipped.is_default(repo.slug):
+                raise CatalogError(f"groups.{group.name}: {repo.slug!r} is a default repo")
+            if key in seen_slugs:
+                raise CatalogError(
+                    f"groups.{group.name}: slug {repo.slug!r} already in group {seen_slugs[key]!r}"
+                )
+            seen_slugs[key] = group.name
+        for alias in group.aliases:
+            akey = alias.casefold()
+            if akey in seen_aliases:
+                raise CatalogError(
+                    f"groups.{group.name}: alias {alias!r} already used by "
+                    f"group {seen_aliases[akey]!r}"
+                )
+            seen_aliases[akey] = group.name
+    return Catalog(verified=verified, groups=groups)
+
+
+def _read_catalog_text() -> str:
+    resource = resources.files("pipecat_context_hub").joinpath(CATALOG_RESOURCE)
+    return resource.read_text(encoding="utf-8")
+
+
+@functools.cache
+def load_catalog() -> Catalog | None:
+    """Load the shipped catalog; ``None`` (cached, logged once) on any failure."""
+    try:
+        return parse_catalog(_read_catalog_text())
+    except Exception as exc:  # never raise: a bad catalog must not fail a tool call
+        logger.warning(
+            "repo catalog failed to load; catalog features disabled: %s",
+            redact_home_in_text(str(exc)),  # an I/O error names the resource's absolute path
+        )
+        return None

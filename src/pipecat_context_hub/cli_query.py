@@ -43,7 +43,11 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
-from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_REFRESH_IN_PROGRESS
+from pipecat_context_hub.shared.exit_codes import (
+    EXIT_INDEX_UNREADY,
+    EXIT_INVALID_INPUT,
+    EXIT_REFRESH_IN_PROGRESS,
+)
 from pipecat_context_hub.shared.index_lock import (
     RefreshInProgressError,
     refresh_excluded,
@@ -56,6 +60,7 @@ from pipecat_context_hub.shared.support_links import (
     RETRIEVAL_QUALITY_ISSUE_URL,
     bug_report_hint,
 )
+from pipecat_context_hub.shared.terminal import echo, echo_json
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -73,10 +78,7 @@ def _echo_stderr_warning(text: str) -> None:
     change (a common prefix, ``click.secho`` coloring, a log-level tag)
     lands once instead of drifting across call sites.
     """
-    click.echo(redact_home_in_text(text), err=True)
-
-
-_EXIT_BAD_INPUT = 1
+    echo(redact_home_in_text(text), err=True)
 
 
 class _SemanticMeta(NamedTuple):
@@ -419,8 +421,8 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         try:
             result = _dispatch(tool, cleaned, runtime)
         except (ValidationError, ValueError) as exc:
-            click.echo(f"Error: {exc}", err=True)
-            raise SystemExit(_EXIT_BAD_INPUT) from exc
+            echo(f"Error: {exc}", err=True)
+            raise SystemExit(EXIT_INVALID_INPUT) from exc
         # Read-only inspection of the handler's raw JSON, before the staleness
         # footer below touches it — the hint must not affect what gets annotated.
         # Only semantic commands need the decode at all; a lookup command's
@@ -457,7 +459,8 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         # must still be open to read its metadata.
         if tool != "get_hub_status":
             result = annotate_response(result, runtime.index_store)
-    click.echo(result)
+    # Machine output: JSON stays JSON (never the human escaper).
+    echo_json(result)
 
 
 # ── Commands ─────────────────────────────────────────────────────────────────

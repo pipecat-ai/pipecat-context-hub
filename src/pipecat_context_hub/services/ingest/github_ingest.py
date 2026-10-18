@@ -29,6 +29,8 @@ from pipecat_context_hub.services.ingest.ingest_filters import (
 )
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.interfaces import FatalIndexError
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
+from pipecat_context_hub.shared.terminal import shown
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
@@ -108,7 +110,6 @@ _BOUNDARY_RE = re.compile(
 )
 
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-_REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 # Tag names this tool accepts as operator input and can hand back to git
 # (e.g. "v0.0.96", "0.0.96"). It also bounds `latest` candidacy, since a
 # selected tag is re-resolved through this same validation — see
@@ -1429,8 +1430,8 @@ class GitHubRepoIngester:
             was requested (a default-branch refresh); otherwise it names the tag
             the returned commit was resolved from.
         """
-        if not _REPO_SLUG_RE.fullmatch(repo_slug):
-            raise ValueError(f"Invalid repo slug: {repo_slug}")
+        if not is_valid_repo_slug(repo_slug):
+            raise ValueError(f"Invalid repo slug: {shown(repo_slug)}")
         if tag is not None and is_head_sentinel(tag):
             raise ValueError(
                 "clone_or_fetch: tag must not be the 'head' sentinel; "

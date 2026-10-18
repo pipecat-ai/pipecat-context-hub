@@ -73,7 +73,7 @@ Retrieval:
     `pipecat-ai/pipecat-ui`, `pipecat-ai/pipecat-prebuilt`
   - Tree-sitter-extracted: interfaces, classes, types, functions, enums, const exports
     with individual method chunks and full signatures
-- Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var
+- Additional repos via `PIPECAT_HUB_EXTRA_REPOS` (env var, `.env`, or `config.toml`, which `repos add` edits)
   - Adjacent pipecat-ai repos that parse cleanly but are opt-in (use the full
     `org/repo` slug in `PIPECAT_HUB_EXTRA_REPOS`):
     `pipecat-ai/pipecat-mcp-server` (Python), `pipecat-ai/pipecat-flows-editor` (TS)
@@ -89,8 +89,34 @@ Retrieval:
   - Repos with `src/` layouts are Python AST-indexed for `search_api`
   - Repos with `.pyi` stubs at root are also AST-indexed
   - Repos with `package.json`/`tsconfig.json` are tree-sitter-indexed
-  - See `.env.example` for curated repo bundles, grouped by topic and by vendor
-    (NVIDIA, Google, AWS, other providers)
+  - Users add extra repos with `pipecat-context-hub repos add <owner/repo>` (a
+    catalog repo; a slug outside the catalog needs `--unlisted`) or
+    `repos add --group NAME`, which edit `config.toml`; setting the env var or a
+    `.env` still works
+  - The curated bundles (by topic and by vendor: NVIDIA, Google, AWS, other
+    providers) live in `src/pipecat_context_hub/data/repo_catalog.toml`. The
+    `.env.example` block and the `docs/configuration.md` section are generated
+    from it: edit the catalog, then run `just catalog-regen` (a test fails on
+    drift). Do not hand-edit the generated blocks
+  - Catalog rules, enforced by the parser (`just catalog-regen --check`
+    validates them, and so does the test suite):
+    - Top-level `verified` is a plain ISO date (`YYYY-MM-DD`, not a timestamp);
+      the only top-level keys are `verified` and `groups`.
+    - Group names (`[groups.<name>]`) are lowercase letters, digits and `-`,
+      starting with a letter or digit. Each group has `kind` (`vendor` or
+      `topic`), a non-empty `description`, a non-empty `aliases` list of
+      non-empty strings, and at least one `[[repos]]` entry; no other keys.
+    - Each repo has a `slug` (`owner/repo`, the grammar `refresh` clones) and
+      optionally `note` (a non-empty string), `parseable` and `maintainer`
+      (booleans). `private`, `archived` and `status` are refused: visibility
+      is the health check's job.
+    - A slug appears in one group only and is never a default repo; an alias
+      belongs to one group only. Both compare case-insensitively.
+    - No text (slug, note, kind, description, alias) may hold any control
+      (Unicode category Cc) or format (Cf: bidi, zero-width, BOM) character,
+      U+2028 / U+2029 (Zl / Zp), or anything `str.splitlines()` splits on; a
+      `description` may not hold `|`; and no text may hold `BEGIN GENERATED`
+      or `END GENERATED`.
 
 ## Project Structure
 

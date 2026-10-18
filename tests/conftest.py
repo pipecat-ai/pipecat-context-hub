@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -107,6 +109,27 @@ def _isolate_env_vars(tmp_path: Path):
     for key in [k for k in os.environ if k.startswith("PIPECAT_HUB_")]:
         del os.environ[key]
     os.environ.update(pre_existing_hub_vars)
+
+
+@pytest.fixture(autouse=True)
+def _stdlib_output_hooks():
+    """Each test starts with the stdlib log record factory and ``sys.excepthook``.
+
+    ``load_env_layers`` (every CLI invocation) installs the terminal-safe
+    output boundary process-wide (``shared/terminal.install_output_escaping``).
+    Without this reset, whether a test's log capture sees escaped records would
+    depend on which test ran first; with it, a test proves who installs the
+    boundary. The previous hooks are restored afterwards.
+    """
+    previous_factory = logging.getLogRecordFactory()
+    previous_hook = sys.excepthook
+    logging.setLogRecordFactory(logging.LogRecord)
+    sys.excepthook = sys.__excepthook__
+    try:
+        yield
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        sys.excepthook = previous_hook
 
 
 @pytest.fixture

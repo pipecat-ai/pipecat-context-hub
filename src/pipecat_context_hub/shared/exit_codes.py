@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+# Invalid input: a bad argument, or a refused request (`repos add` of a default repo,
+# a shadowed layer, an untrusted config file, ...). Nothing was changed.
+EXIT_INVALID_INPUT = 1
 # The local index is missing, empty, unreadable or incompatible (or, for
 # `refresh`, a fatal index error stopped it).
 EXIT_INDEX_UNREADY = 2

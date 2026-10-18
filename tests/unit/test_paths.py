@@ -9,11 +9,14 @@ from urllib.parse import urlparse
 import pytest
 
 from pipecat_context_hub.shared.paths import (
+    LookupMismatch,
     is_inside,
     is_reparse_link,
+    lookup_target,
     redact_home_in_text,
     resolution_chain,
 )
+from pipecat_context_hub.shared.terminal import shown
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")
@@ -163,6 +166,20 @@ class TestRedactHomeInText:
         assert str(tmp_path) not in result
         assert "~" in result
 
+    def test_repr_escaped_windows_path_is_redacted(self, monkeypatch):
+        """An OSError renders its filename with repr(), doubling each backslash."""
+        from pathlib import PureWindowsPath
+
+        home = PureWindowsPath("C:\\Users\\x")
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(os, "sep", "\\")
+        text = f"[Errno 5] I/O error: {str(home / 'y')!r}"
+        assert "C:\\\\Users" in text  # the doubled form is what an OSError renders
+        assert redact_home_in_text(text) == "[Errno 5] I/O error: '~\\\\y'"
+        # a longer sibling of home is left alone
+        sibling = f"[Errno 5] I/O error: {str(PureWindowsPath('C:/Users/xavier/y'))!r}"
+        assert redact_home_in_text(sibling) == sibling
+
     def test_bare_home_occurrence_is_redacted(self, monkeypatch, tmp_path):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert redact_home_in_text(str(tmp_path)) == "~"
@@ -199,3 +216,76 @@ class TestRedactHomeInText:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         text = "Nothing home-related here."
         assert redact_home_in_text(text) == text
+
+
+class TestShown:
+    """The one terminal-safety rule for a configured string."""
+
+    @pytest.mark.parametrize(
+        "text", ["acme/repo", "/tmp/a b/config.toml", "~/x.toml", "ünïcode/päth", ""]
+    )
+    def test_printable_text_is_unchanged(self, text: str):
+        assert shown(text) == text
+
+    @pytest.mark.parametrize(
+        "text", ["a\x1b]52;c;eA==\x07", "a\x1b[2J", "a\nb", "a\u2028b", "a\u202eb", "a\u200bb"]
+    )
+    def test_non_printable_text_is_repr_tagged_and_idempotent(self, text: str):
+        out = shown(text)
+        assert out == f"{text!r} [invalid]"
+        assert out.isprintable()
+        assert shown(out) == out
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX lookup semantics")
+class TestLookupTarget:
+    """``lookup_target`` is the kernel's lookup, not ``realpath``: a ``..`` after
+    a component that is not an existing directory, at any hop, is refused."""
+
+    @pytest.mark.parametrize("nope", ["missing", "file"])
+    def test_dotdot_inside_a_link_target(self, nope: str, tmp_path: Path):
+        (tmp_path / "real").mkdir()
+        if nope == "file":
+            (tmp_path / "nope").write_text("")
+        (tmp_path / "link").symlink_to("nope/../real")
+        with pytest.raises(LookupMismatch, match=r"\.\."):
+            lookup_target(tmp_path / "link" / "config.toml")
+
+    def test_literal_dotdot_after_a_missing_component(self, tmp_path: Path):
+        with pytest.raises(LookupMismatch):
+            lookup_target(tmp_path / "nope" / ".." / "config.toml")
+
+    def test_agrees_with_realpath_where_the_kernel_lookup_works(self, tmp_path: Path):
+        (tmp_path / "a" / "sub").mkdir(parents=True)
+        (tmp_path / "hop").symlink_to(tmp_path / "a")
+        path = tmp_path / "hop" / "sub" / ".." / "new" / "config.toml"
+        assert str(lookup_target(path)) == os.path.realpath(path)
+
+    @pytest.mark.parametrize("target", ["cfg.toml/", "cfg.toml/."])
+    @pytest.mark.parametrize("existing", ["missing", "file"])
+    def test_link_target_ending_in_a_separator_needs_a_directory(
+        self, target: str, existing: str, tmp_path: Path
+    ):
+        if existing == "file":
+            (tmp_path / "cfg.toml").write_text("")
+        os.symlink(target, tmp_path / "link")
+        with pytest.raises(LookupMismatch, match="separator"):
+            lookup_target(tmp_path / "link")
+
+    def test_link_target_ending_in_a_separator_through_a_chain(self, tmp_path: Path):
+        os.symlink("hop", tmp_path / "link")
+        os.symlink("cfg.toml/", tmp_path / "hop")
+        with pytest.raises(LookupMismatch, match="separator"):
+            lookup_target(tmp_path / "link")
+
+    def test_link_target_ending_in_a_separator_to_a_directory_is_fine(self, tmp_path: Path):
+        (tmp_path / "real").mkdir()
+        os.symlink("real/", tmp_path / "link")
+        assert lookup_target(tmp_path / "link") == tmp_path / "real"
+        new = tmp_path / "link" / "config.toml"  # intermediate: a directory either way
+        assert str(lookup_target(new)) == os.path.realpath(new)
+
+    def test_hop_bound(self, tmp_path: Path):
+        (tmp_path / "loop").symlink_to("loop")
+        with pytest.raises(LookupMismatch):
+            lookup_target(tmp_path / "loop")
