@@ -128,6 +128,12 @@ This project uses [Semantic Versioning](https://semver.org/).
   (exit 2) instead of letting the remaining sources keep writing.
 
 ### Changed
+- **One repo left the repo catalog.** Its content was mostly captured tool output
+  rather than examples or code, about a quarter of a full index from that one
+  repo, and it drowned out unrelated queries. `repos add --group` no longer adds
+  it. If you already added it, `repos list` now shows it as `unlisted`: run
+  `repos remove --unlisted <slug>` (`--unlisted` because it is no longer in the
+  catalog), then `refresh --prune` to drop its indexed data.
 - **Taint matching is case-insensitive.** A `PIPECAT_HUB_TAINTED_REPOS` entry
   now excludes a repo whatever its spelling (`Foo/Bar` taints `foo/bar`); it was
   exact set membership. `refresh`'s cleanup, the effective repo list and `repos`

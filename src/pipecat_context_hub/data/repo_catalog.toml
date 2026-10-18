@@ -143,9 +143,6 @@ aliases = ["nvidia", "nemotron", "riva"]
   slug = "pipecat-ai/nemotron-january-2026"
 
   [[groups.nvidia.repos]]
-  slug = "pipecat-ai/nemotron-voicechat-dgx-spark"
-
-  [[groups.nvidia.repos]]
   slug = "pipecat-ai/nemo3-battleships"
 
 [groups.google]
