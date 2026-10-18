@@ -68,6 +68,26 @@ def _make_records(
     ]
 
 
+def _docs_site_and_readme_fallback() -> list[ChunkedRecord]:
+    """A docs-site chunk (no repo) beside a README-fallback chunk (repo set).
+
+    Both are ``content_type="doc"``; only the docs-site one belongs to the docs
+    re-crawl (regression: issue #146).
+    """
+    return [
+        _make_record(chunk_id="site1", repo=None, content="pipecat docs site page"),
+        _make_record(
+            chunk_id="readme1",
+            repo="pipecat-ai/pipecat-client-ios",
+            content="pipecat ios client readme",
+            source_url="https://github.com/pipecat-ai/pipecat-client-ios/blob/abc/README.md",
+            path="README.md",
+            metadata={"is_readme_fallback": True},
+        ),
+        _make_record(chunk_id="c1", content_type="code", content="pipecat code one"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # VectorIndex tests
 # ---------------------------------------------------------------------------
@@ -169,6 +189,86 @@ class TestVectorIndex:
     def test_delete_nonexistent_source(self, vector_index: VectorIndex):
         deleted = vector_index.delete_by_source("https://nonexistent.com")
         assert deleted == 0
+
+    def test_delete_by_content_type_without_repo_keeps_repo_scoped_records(
+        self, vector_index: VectorIndex
+    ):
+        vector_index.upsert(_docs_site_and_readme_fallback())
+
+        deleted = vector_index.delete_by_content_type("doc", without_repo=True)
+        assert deleted == 1
+
+        remaining = set(vector_index._collection.get(include=[])["ids"])
+        assert remaining == {"readme1", "c1"}
+
+    def test_delete_by_content_type_without_repo_above_batch_size(self, vector_index: VectorIndex):
+        count = _CHROMA_BATCH_SIZE + 10
+        site = [
+            _make_record(chunk_id=f"site-{i}", repo=None, embedding=_random_embedding(i))
+            for i in range(count)
+        ]
+        readme = _make_record(chunk_id="readme1", repo="pipecat-ai/pipecat-client-ios")
+        vector_index.upsert([*site, readme])
+
+        assert vector_index.delete_by_content_type("doc", without_repo=True) == count
+        assert vector_index._collection.get(include=[])["ids"] == ["readme1"]
+
+    def test_delete_by_content_type_without_repo_fails_closed_on_missing_metadatas(
+        self, vector_index: VectorIndex, monkeypatch: pytest.MonkeyPatch
+    ):
+        vector_index.upsert(_docs_site_and_readme_fallback())
+        real_get = vector_index._collection.get
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                vector_index._collection,
+                "get",
+                lambda **kw: {**real_get(**kw), "metadatas": None},
+            )
+            with pytest.raises(RuntimeError, match="refusing to delete"):
+                vector_index.delete_by_content_type("doc", without_repo=True)
+
+        assert set(vector_index._collection.get(include=[])["ids"]) == {"site1", "readme1", "c1"}
+
+    def test_delete_by_content_type_without_repo_fails_closed_on_null_metadata_entry(
+        self, vector_index: VectorIndex, monkeypatch: pytest.MonkeyPatch
+    ):
+        vector_index.upsert(_docs_site_and_readme_fallback())
+        real_get = vector_index._collection.get
+
+        def get_with_null_entry(**kw: Any) -> Any:
+            result = real_get(**kw)
+            # Blank the repo-owned README-fallback record's metadata entry.
+            metadatas = [
+                None if id_ == "readme1" else meta
+                for id_, meta in zip(result["ids"], result["metadatas"], strict=True)
+            ]
+            return {**result, "metadatas": metadatas}
+
+        with monkeypatch.context() as mp:
+            mp.setattr(vector_index._collection, "get", get_with_null_entry)
+            with pytest.raises(RuntimeError, match="refusing to delete"):
+                vector_index.delete_by_content_type("doc", without_repo=True)
+
+        assert set(vector_index._collection.get(include=[])["ids"]) == {"site1", "readme1", "c1"}
+
+    def test_delete_by_content_type_without_repo_fails_closed_on_short_metadatas(
+        self, vector_index: VectorIndex, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Fewer metadatas than ids: zip(strict=True) would raise anyway, but the
+        explicit length check must refuse first, with the diagnostic message."""
+        vector_index.upsert(_docs_site_and_readme_fallback())
+        real_get = vector_index._collection.get
+
+        def get_with_short_metadatas(**kw: Any) -> Any:
+            result = real_get(**kw)
+            return {**result, "metadatas": list(result["metadatas"])[:-1]}
+
+        with monkeypatch.context() as mp:
+            mp.setattr(vector_index._collection, "get", get_with_short_metadatas)
+            with pytest.raises(RuntimeError, match="refusing to delete"):
+                vector_index.delete_by_content_type("doc", without_repo=True)
+
+        assert set(vector_index._collection.get(include=[])["ids"]) == {"site1", "readme1", "c1"}
 
     def test_delete_by_content_type(self, vector_index: VectorIndex):
         records = [
@@ -546,6 +646,17 @@ class TestFTSIndex:
     def test_delete_nonexistent_source(self, fts_index: FTSIndex):
         deleted = fts_index.delete_by_source("https://nonexistent.com")
         assert deleted == 0
+
+    def test_delete_by_content_type_without_repo_keeps_repo_scoped_records(
+        self, fts_index: FTSIndex
+    ):
+        fts_index.upsert(_docs_site_and_readme_fallback())
+
+        deleted = fts_index.delete_by_content_type("doc", without_repo=True)
+        assert deleted == 1
+
+        results = fts_index.search(IndexQuery(query_text="pipecat", limit=10))
+        assert {r.chunk.chunk_id for r in results} == {"readme1", "c1"}
 
     def test_delete_by_content_type(self, fts_index: FTSIndex):
         records = [
@@ -1276,6 +1387,34 @@ class TestIndexStore:
         results = await store.keyword_search(query)
         assert len(results) == 3
         assert all(r.match_type == "keyword" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_docs_recrawl_delete_spares_readme_fallback_chunks(self, store: IndexStore):
+        """Regression (#146): the docs re-crawl delete must remove docs-site
+        records only. README-fallback chunks are also ``content_type="doc"``
+        but carry a repo and are owned by that repo's ingest, so they must
+        survive in BOTH stores, with no vector/FTS divergence."""
+        await store.upsert(_docs_site_and_readme_fallback())
+
+        deleted = await store.delete_by_content_type("doc", without_repo=True)
+        assert deleted == 1
+
+        vq = IndexQuery(query_text="test", query_embedding=_random_embedding(0), limit=10)
+        v_ids = {r.chunk.chunk_id for r in await store.vector_search(vq)}
+        k_ids = {
+            r.chunk.chunk_id
+            for r in await store.keyword_search(IndexQuery(query_text="pipecat", limit=10))
+        }
+        assert v_ids == k_ids == {"readme1", "c1"}
+
+    @pytest.mark.asyncio
+    async def test_delete_by_content_type_default_still_removes_every_record(
+        self, store: IndexStore
+    ):
+        """The generic delete keeps its meaning; only the opt-in narrows it."""
+        await store.upsert(_docs_site_and_readme_fallback())
+
+        assert await store.delete_by_content_type("doc") == 2
 
     @pytest.mark.asyncio
     async def test_delete_by_content_type_both_indexes(self, store: IndexStore):

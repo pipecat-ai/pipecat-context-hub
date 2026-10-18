@@ -1,6 +1,6 @@
 # Repo catalog, `repos` command and corpus hints
 
-**Branch:** `feature/repo-catalog-pr1` (PR 1; PR 2 gets its own branch) | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs: PR 1 merged (#144, `5733f06`), PR 2 built on `feature/repo-catalog-pr2`, awaiting merge)
+**Branch:** `feature/repo-catalog-pr1` (PR 1; PR 2 gets its own branch) | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs: PR 1 merged (#144, `5733f06`), PR 2 merged (#147, `05aaff3`))
 
 **Delivery:** two PRs, each from its own conduct-format plan (see *Delivery*): PR 1 =
 [`20261017-feature-repo-catalog-pr1-catalog-and-repos.md`](20261017-feature-repo-catalog-pr1-catalog-and-repos.md),
@@ -654,7 +654,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-18 @ c7e26bfc83082b60d40ad14ca63b3488e4e5f3fa -->
+<!-- reviewed: 2026-10-18 @ 504c3fcdc2bf66786945d7e707436c2cc937705a -->
 
 ## Progress
 

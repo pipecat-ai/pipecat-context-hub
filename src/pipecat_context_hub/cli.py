@@ -1393,7 +1393,10 @@ def refresh(
                 # If the marker cannot be dropped, leave the records intact.
                 try:
                     index_store.delete_metadata(_DOCS_HASH_KEY)
-                    await index_store.delete_by_content_type("doc")
+                    # Docs-site records only: README-fallback chunks are also
+                    # content_type="doc" but carry a repo and belong to that
+                    # repo's ingest, which this pass does not re-run.
+                    await index_store.delete_by_content_type("doc", without_repo=True)
                 except Exception as exc:
                     all_errors.append(f"Failed to delete stale docs records: {exc}")
                     source_status[docs_key] = {

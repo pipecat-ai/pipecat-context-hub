@@ -1,6 +1,6 @@
 # Repo catalog PR 2: indexed-repo status, corpus hints and catalog health
 
-**Branch:** `feature/repo-catalog-pr2` | **Review Gates:** full | **Component:** retrieval | **Status:** Complete (phases 3a, 3b, 3c, 4, 5 and 4b implemented)
+**Branch:** `feature/repo-catalog-pr2` | **Review Gates:** full | **Component:** retrieval | **Status:** Complete (phases 3a, 3b, 3c, 4, 5 and 4b implemented; merged as #147, `05aaff3`)
 
 ## Objective
 
@@ -332,7 +332,7 @@ exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.
 (`/mcp`). Run the new numbered `docs/smoke-test.md` item for one unindexed and one indexed vendor query.
 Put the result and the mutation-check results in the PR description. Restore the released tool afterwards.
 
-<!-- reviewed: 2026-10-18 @ d735bc025f13814c6bf6d958847359736e2a6ccb -->
+<!-- reviewed: 2026-10-18 @ e6ff46b6e4b6dd9505bfea3ea4a9736edf53e6cf -->
 
 ## Progress
 

@@ -56,7 +56,11 @@ The checklist referenced from [AGENTS.md](../AGENTS.md#pre-merge-live-mcp-smoke-
 19. `search_api("SmallWebRTCTransport")` — returns TS hits from
     `pipecat-ai/pipecat-client-web-transports` or `pipecat-ai/pipecat-ui`
 20. `search_docs("pipecat-client-ios")` — returns at least one hit from an
-    iOS SDK repo (README fallback for zero-code-chunk repos)
+    iOS SDK repo (README fallback for zero-code-chunk repos). Also re-run it
+    after a plain `refresh` that re-crawled the docs (upstream `llms-full.txt`
+    changed, so `refresh` logs a docs crawl) while that repo was skipped as
+    unchanged: the hit must survive the re-crawl (#146 — it used to delete
+    README-fallback chunks along with the docs-site records).
 21. `search_api("PipecatClientProvider")` — a bare query may rank other
     files that merely *import* `PipecatClientProvider` (e.g.
     `PipecatAppBase`, Ladle story `Provider` consts) ahead of the actual
