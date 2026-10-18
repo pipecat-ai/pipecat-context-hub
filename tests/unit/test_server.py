@@ -178,13 +178,17 @@ class TestToolRegistration:
 
     def test_hub_status_not_listed_without_store(self, mock_retriever):
         """Without index_store, get_hub_status should not be registered."""
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         # We can't call list_tools directly, but we verify the closure
         # builds correctly — the real test is that ValueError is never raised
         assert server.name == "pipecat-context-hub"
 
     async def test_list_tools_handler_registered(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/list")
         assert entry is not None
         assert entry.params_type is types.PaginatedRequestParams
@@ -195,7 +199,12 @@ class TestToolRegistration:
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
-        server = create_server(mock_retriever, idle_tracker=tracker)
+        server = create_server(
+            mock_retriever,
+            idle_tracker=tracker,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/list")
         assert entry is not None
 
@@ -211,7 +220,12 @@ class TestToolRegistration:
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
-        server = create_server(mock_retriever, idle_tracker=tracker)
+        server = create_server(
+            mock_retriever,
+            idle_tracker=tracker,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         request = types.CallToolRequestParams(name="search_docs", arguments={"query": "x"})
@@ -231,7 +245,12 @@ class TestToolRegistration:
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
-        server = create_server(mock_retriever, idle_tracker=tracker)
+        server = create_server(
+            mock_retriever,
+            idle_tracker=tracker,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("ping")
         assert entry is not None
 
@@ -247,7 +266,9 @@ class TestToolRegistration:
         """Omitting idle_tracker must leave the built-in ping handler
         in place unchanged — we don't want to break ping when idle
         watchdogging is disabled."""
-        server = create_server(mock_retriever)  # no idle_tracker
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )  # no idle_tracker
         entry = server.get_request_handler("ping")
         assert entry is not None
         result = await entry.handler(cast(Any, None), None)
@@ -261,13 +282,17 @@ class TestToolRegistration:
 
 class TestToolDispatch:
     async def test_call_tool_handler_registered(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         assert entry.params_type is types.CallToolRequestParams
 
     async def test_tools_list_returns_typed_tools_without_store(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/list")
         assert entry is not None
         result = await entry.handler(cast(Any, None), None)
@@ -277,7 +302,12 @@ class TestToolDispatch:
         assert all(tool.input_schema["type"] == "object" for tool in result.tools)
 
     async def test_tools_list_adds_hub_status_only_with_store(self, mock_retriever):
-        server = create_server(mock_retriever, index_store=MagicMock())
+        server = create_server(
+            mock_retriever,
+            index_store=MagicMock(),
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/list")
         assert entry is not None
         result = await entry.handler(cast(Any, None), None)
@@ -287,7 +317,12 @@ class TestToolDispatch:
         }
 
     async def test_unavailable_reason_answers_without_touching_the_index(self, mock_retriever):
-        server = create_server(mock_retriever, unavailable_reason=lambda: "retry in 60-120 seconds")
+        server = create_server(
+            mock_retriever,
+            unavailable_reason=lambda: "retry in 60-120 seconds",
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         result = await entry.handler(
@@ -300,7 +335,12 @@ class TestToolDispatch:
         mock_retriever.search_docs.assert_not_called()
 
     async def test_unavailable_reason_none_dispatches_normally(self, mock_retriever):
-        server = create_server(mock_retriever, unavailable_reason=lambda: None)
+        server = create_server(
+            mock_retriever,
+            unavailable_reason=lambda: None,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         mock_retriever.search_docs.side_effect = RuntimeError("reached the handler")
@@ -311,7 +351,9 @@ class TestToolDispatch:
             )
 
     async def test_unknown_tool_preserves_application_error(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         with pytest.raises(ValueError, match=r"^Unknown tool: missing_tool$"):
@@ -322,7 +364,9 @@ class TestToolDispatch:
 
     async def test_registered_handler_exception_preserves_application_error(self, mock_retriever):
         mock_retriever.search_docs.side_effect = RuntimeError("backend exploded")
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         with pytest.raises(RuntimeError, match=r"^backend exploded$"):
@@ -332,7 +376,9 @@ class TestToolDispatch:
             )
 
     async def test_invalid_arguments_return_error_result_with_field_detail(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         result = await entry.handler(
@@ -350,7 +396,12 @@ class TestToolDispatch:
     async def test_idle_tracker_ends_when_call_raises(self, mock_retriever):
         tracker = MagicMock()
         mock_retriever.search_docs.side_effect = RuntimeError("backend exploded")
-        server = create_server(mock_retriever, idle_tracker=tracker)
+        server = create_server(
+            mock_retriever,
+            idle_tracker=tracker,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         with pytest.raises(RuntimeError, match="backend exploded"):
@@ -364,11 +415,15 @@ class TestToolDispatch:
     async def test_create_server_returns_server(self, mock_retriever):
         from mcp.server.lowlevel import Server
 
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         assert isinstance(server, Server)
 
     async def test_server_name(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         assert server.name == "pipecat-context-hub"
 
 
@@ -405,7 +460,9 @@ class TestGetHubStatusRerankerFields:
             model="cross-encoder/ms-marco-TinyBERT-L-2-v2",
             configured_model="cross-encoder/ms-marco-TinyBERT-L-2-v2",
         )
-        payload = await handle_get_hub_status({}, self._stub_store(), status)
+        payload = await handle_get_hub_status(
+            {}, self._stub_store(), status, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         data = json.loads(payload)
         assert data["reranker_enabled"] is True
         assert data["reranker_model"] == "cross-encoder/ms-marco-TinyBERT-L-2-v2"
@@ -425,7 +482,9 @@ class TestGetHubStatusRerankerFields:
             configured_model="cross-encoder/ms-marco-MiniLM-L-12-v2",
             disabled_reason="not_cached",
         )
-        payload = await handle_get_hub_status({}, self._stub_store(), status)
+        payload = await handle_get_hub_status(
+            {}, self._stub_store(), status, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_model"] is None
@@ -445,7 +504,9 @@ class TestGetHubStatusRerankerFields:
             configured_model="cross-encoder/ms-marco-MiniLM-L-6-v2",
             disabled_reason="load_failed",
         )
-        payload = await handle_get_hub_status({}, self._stub_store(), status)
+        payload = await handle_get_hub_status(
+            {}, self._stub_store(), status, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_disabled_reason"] == "load_failed"
@@ -457,7 +518,9 @@ class TestGetHubStatusRerankerFields:
             handle_get_hub_status,
         )
 
-        payload = await handle_get_hub_status({}, self._stub_store(), None)
+        payload = await handle_get_hub_status(
+            {}, self._stub_store(), None, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_model"] is None
@@ -482,6 +545,8 @@ class TestGetHubStatusRerankerFields:
             retriever,
             index_store=self._stub_store(),
             reranker_status_provider=_provider,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
         )
         assert server.name == "pipecat-context-hub"
         # The closure is wired in — exercising it requires the full call path
@@ -577,15 +642,19 @@ class TestGetHubStatusCoverageOverMcp:
             mock_retriever,
             index_store=self._store({"owner/repo": 3}),
             configured_repos=frozenset({"Owner/Repo"}),
+            tainted_repos=frozenset(),
         )
         payload = await self._call_status(server)
         assert "owner/repo" in [s.casefold() for s in payload["indexed_repos"]]
         assert payload["configured_no_records"] == []
 
-    async def test_omitting_the_sets_keeps_existing_callers_working(self, mock_retriever):
-        server = create_server(mock_retriever, index_store=self._store({"acme/one": 1}))
-        payload = await self._call_status(server)
-        assert payload["configured_no_records"] == []
+    @pytest.mark.parametrize("omitted", ["configured_repos", "tainted_repos"])
+    def test_repo_sets_are_required(self, mock_retriever, omitted):
+        """No default: an omitted tainted set would let the hint suggest tainted repos."""
+        kwargs: dict[str, Any] = {"configured_repos": frozenset(), "tainted_repos": frozenset()}
+        del kwargs[omitted]
+        with pytest.raises(TypeError, match=omitted):
+            create_server(mock_retriever, index_store=self._store({"acme/one": 1}), **kwargs)
 
     @pytest.mark.parametrize(
         "counts", [RuntimeError("boom"), MagicMock()], ids=["raises", "non-mapping"]
@@ -1256,7 +1325,9 @@ class TestCorpusHintOverMcp:
         retriever = MagicMock()
         retriever.deprecation_map = None
         store = self._store({})
-        server = create_server(retriever, index_store=store)
+        server = create_server(
+            retriever, index_store=store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         for name, arguments in (("check_deprecation", {"symbol": "acme"}), ("get_hub_status", {})):

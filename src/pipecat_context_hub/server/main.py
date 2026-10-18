@@ -213,8 +213,8 @@ def create_server(
     idle_tracker: IdleTracker | None = None,
     unavailable_reason: Callable[[], str | None] | None = None,
     *,
-    configured_repos: Set[str] = frozenset(),
-    tainted_repos: Set[str] = frozenset(),
+    configured_repos: Set[str],
+    tainted_repos: Set[str],
 ) -> Server:
     """Create and configure the MCP server with all tool handlers.
 
@@ -233,7 +233,9 @@ def create_server(
 
     *configured_repos* and *tainted_repos* are the repo slugs captured once at
     process start by ``config.sources.repo_sets()`` (as the CLI door does);
-    ``get_hub_status`` and the corpus hint compare against them.
+    ``get_hub_status`` and the corpus hint compare against them. Required, with
+    no default, as in ``cli_query._QueryRuntime``: an empty set would silently
+    misclassify every configured repo and let the hint suggest tainted ones.
     """
     tool_registry = tuple(iter_tool_definitions(include_hub_status=index_store is not None))
 

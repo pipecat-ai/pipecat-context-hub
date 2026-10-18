@@ -167,7 +167,9 @@ class TestBothFrontDoors:
         retriever.deprecation_map = None
 
         async def run() -> str:
-            server = server_main.create_server(retriever, store)
+            server = server_main.create_server(
+                retriever, store, configured_repos=frozenset(), tainted_repos=frozenset()
+            )
             from mcp import types
 
             entry = server.get_request_handler("tools/call")

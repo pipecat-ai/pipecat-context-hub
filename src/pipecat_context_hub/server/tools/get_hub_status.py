@@ -40,8 +40,8 @@ async def handle_get_hub_status(
     index_store: ServingIndex,
     reranker_status: RerankerStatus | None = None,
     *,
-    configured_repos: Set[str] = frozenset(),
-    tainted_repos: Set[str] = frozenset(),
+    configured_repos: Set[str],
+    tainted_repos: Set[str],
 ) -> str:
     """Return index health metadata: freshness, record counts, commit SHAs.
 
@@ -50,8 +50,9 @@ async def handle_get_hub_status(
     omitted, reranker fields report as disabled.
 
     *configured_repos* and *tainted_repos* are captured once at process start
-    (``config.sources.repo_sets()``, on both front doors). An unreadable
-    per-repo count leaves the three repo-status fields empty.
+    (``config.sources.repo_sets()``, on both front doors). Required, with no
+    default, as in ``cli_query._QueryRuntime``. An unreadable per-repo count
+    leaves the three repo-status fields empty.
     """
     # Import here to use the same version string as the server.
     from pipecat_context_hub.server.main import _SERVER_VERSION

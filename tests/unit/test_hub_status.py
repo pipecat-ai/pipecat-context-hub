@@ -227,7 +227,9 @@ class TestHandleGetHubStatus:
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 
         store = self._mock_index_store()
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.server_version == _SERVER_VERSION
@@ -253,7 +255,9 @@ class TestHandleGetHubStatus:
                 "last_refresh_error_count": "0",
             },
         )
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.server_version == _SERVER_VERSION
@@ -267,7 +271,9 @@ class TestHandleGetHubStatus:
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 
         store = self._mock_index_store()
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
         assert output.indexed_framework_version is None
         assert output.indexed_framework_commits_ahead is None
@@ -283,7 +289,9 @@ class TestHandleGetHubStatus:
                 "indexed_framework_commits_ahead": "80",
             },
         )
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.framework_version is None
@@ -301,7 +309,9 @@ class TestHandleGetHubStatus:
                 "indexed_framework_commits_ahead": "0",
             },
         )
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.framework_version == "v1.5.0"
@@ -316,7 +326,9 @@ class TestHandleGetHubStatus:
             metadata={"indexed_framework_commits_ahead": "not-a-number"},
         )
         with caplog.at_level("WARNING"):
-            result_json = await handle_get_hub_status({}, store)
+            result_json = await handle_get_hub_status(
+                {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+            )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.indexed_framework_commits_ahead is None
@@ -329,7 +341,9 @@ class TestHandleGetHubStatus:
             metadata={"last_refresh_duration_seconds": "not-a-float"},
         )
         with caplog.at_level("WARNING"):
-            result_json = await handle_get_hub_status({}, store)
+            result_json = await handle_get_hub_status(
+                {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+            )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.last_refresh_duration_seconds is None
@@ -342,7 +356,9 @@ class TestHandleGetHubStatus:
         # backslash path), so compare against str(Path(...)), not a POSIX literal.
         data_dir = Path("/home/user/.pipecat-context-hub")
         store = self._mock_index_store(data_dir=data_dir)
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
         assert output.index_path == str(data_dir)
 
@@ -350,7 +366,9 @@ class TestHandleGetHubStatus:
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 
         store = self._mock_index_store()
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         parsed = json.loads(result_json)
         assert "server_version" in parsed
         assert "total_records" in parsed
@@ -477,11 +495,13 @@ class TestHubStatusCoverageFields:
         output = await _status(store, configured_repos=frozenset(), tainted_repos=frozenset())
         assert output.catalog_groups_not_indexed == []
 
-    async def test_kwargs_are_optional(self, catalog_text):
-        """Existing callers pass neither set; the response still builds."""
-        output = await _status(_StatusStore({"acme/one": 1}))
-        assert output.configured_no_records == []
-        assert output.catalog_groups_not_indexed == ["beta", "gamma"]
+    @pytest.mark.parametrize("omitted", ["configured_repos", "tainted_repos"])
+    async def test_repo_sets_are_required(self, catalog_text, omitted):
+        """No default: an omitted set would silently misreport coverage."""
+        kwargs: dict[str, Any] = {"configured_repos": frozenset(), "tainted_repos": frozenset()}
+        del kwargs[omitted]
+        with pytest.raises(TypeError, match=omitted):
+            await _status(_StatusStore({"acme/one": 1}), **kwargs)
 
 
 class TestHubStatusUnreadableCounts:
@@ -511,7 +531,9 @@ class TestHubStatusUnreadableCounts:
         store.get_index_stats.return_value = {"total": 0, "counts_by_type": {}, "commit_shas": []}
         store.get_all_metadata.return_value = {}
         store.data_dir = Path("/tmp/hub")
-        output = await _status(store, configured_repos=frozenset({"acme/one"}))
+        output = await _status(
+            store, configured_repos=frozenset({"acme/one"}), tainted_repos=frozenset()
+        )
         assert output.indexed_repos == []
         assert output.configured_no_records == []
         assert output.catalog_groups_not_indexed == []

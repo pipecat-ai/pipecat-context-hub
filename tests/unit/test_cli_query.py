@@ -76,7 +76,7 @@ class TestToolCommandParity:
         assert all(spec.input_schema["type"] == "object" for spec in registry)
         assert all(callable(spec.handler) or spec.name == "check_deprecation" for spec in registry)
 
-        server = create_server(MagicMock())
+        server = create_server(MagicMock(), configured_repos=frozenset(), tainted_repos=frozenset())
         list_entry = server.get_request_handler("tools/list")
         assert list_entry is not None
 
