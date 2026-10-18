@@ -312,3 +312,9 @@ Windows junction test is POSIX-emulated and `test_paths.py` is not on the
 Windows CI list; the AST sink guard is a tripwire, not proof; vendor aliases
 google/gemini/riva follow parent Decision 3; `PIPECAT_HUB_TAINTED_REFS` matches
 exactly; refresh cleanup membership is by exact spelling.
+
+Deferred to a follow-up issue: `parseable = false` handling. `repos add <slug>`
+accepts such a repo silently while `repos remove --group` skips it, so a repo
+added one by one cannot be removed by group. Fixing it changes behaviour the
+signed-off parent plan specifies, and PR 2's hints rely on the skip, so it needs
+the parent plan re-opened.
