@@ -109,6 +109,11 @@ body:
            - last_refresh_at
            - total_records and counts_by_type
            - framework_version (if set)
+           - catalog_groups_not_indexed
+
+           Do not include `indexed_repos` or `configured_no_records`: they name every
+           repo configured on this machine, which may include private ones, and this
+           report is posted to a public issue.
 
         2. **Reproduce the search** — call the failing tool with the exact query and
            filters above. For the results, report:
@@ -140,7 +145,7 @@ body:
         ## Output format
 
         Format everything as a single markdown block with these sections:
-        - **Hub Status**: table of status fields
+        - **Hub Status**: table of the status fields listed in step 1 (no others)
         - **Original Query Results**: numbered list of top 5 hits with scores
         - **Evidence Report**: confidence, rationale, and next queries
         - **Broadened Search**: whether expected result appeared and at what rank

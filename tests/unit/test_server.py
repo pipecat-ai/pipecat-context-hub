@@ -1389,6 +1389,10 @@ class TestCorpusHintInstructionsAndTemplate:
             / "retrieval-quality.yml"
         ).read_text(encoding="utf-8")
         assert text.count("label: Candidate repos") == 1
+        # The status fields that name local (possibly private) repos stay out of the
+        # public report; the catalog group names are public and may go in.
+        assert "Do not include `indexed_repos` or `configured_no_records`" in text
+        assert "status fields listed in step 1 (no others)" in text
         # The field is optional: its block carries no ``required: true``.
         block = text.split("label: Candidate repos", 1)[1]
         block = block.split("\n  - type:", 1)[0]
