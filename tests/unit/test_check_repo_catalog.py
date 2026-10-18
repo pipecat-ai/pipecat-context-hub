@@ -444,6 +444,22 @@ class TestMain:
             assert code == check.EXIT_CATALOG
             assert "cannot load the catalog" in captured.out
 
+    def test_non_utf8_catalog_exits_catalog_code(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # UnicodeDecodeError is a ValueError, not an OSError: it must still map to
+        # the catalog exit code instead of a traceback.
+        bad = tmp_path / "latin1.toml"
+        bad.write_bytes(b'verified = "2026-10-16"\n# caf\xe9\n')
+        code = check.main(
+            ["--catalog", str(bad)],
+            transport=httpx.MockTransport(lambda r: _resp(200)),
+            today=_TODAY,
+            environ={},
+        )
+        assert code == check.EXIT_CATALOG
+        assert "cannot load the catalog" in capsys.readouterr().out
+
     def test_runs_against_the_packaged_catalog_offline(self) -> None:
         # The shipped catalog parses and every slug is probed through the injected
         # transport (so PR CI needs no network).
@@ -624,7 +640,7 @@ class TestCurate:
             environ={"GITHUB_TOKEN": "tok"},
         )
         out = capsys.readouterr().out
-        assert code == curate.EXIT_SEARCH_INCOMPLETE
+        assert code == curate.EXIT_REPORT_INCOMPLETE
         assert code not in (curate.EXIT_OK, curate.EXIT_NO_TOKEN, curate.EXIT_CATALOG)
         assert "none found (code search incomplete" in out
         assert "page 1: HTTP 403" in out
@@ -645,7 +661,9 @@ class TestCurate:
                     {"repository": {"full_name": "new/vendor"}},
                 ]
                 return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
-            return _resp(404)
+            if request.url.path == "/repos/a/known":
+                return _resp(200, {"default_branch": "main"})
+            return _resp(200, {"tree": []})
 
         code = curate.main(
             ["--catalog", str(path)],
@@ -681,6 +699,113 @@ class TestCurate:
             stats = curate.repo_stats(client, "a/b")
         assert stats["truncated"] is True
         assert "1 (truncated) source files" in curate.render_report([stats], curate.Counter())
+
+    def test_non_utf8_catalog_exits_catalog_code(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bad = tmp_path / "latin1.toml"
+        bad.write_bytes(b'verified = "2026-10-16"\n# caf\xe9\n')
+        code = curate.main(
+            ["--catalog", str(bad)],
+            transport=httpx.MockTransport(lambda r: _resp(200)),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        assert code == curate.EXIT_CATALOG
+        assert "cannot load the catalog" in capsys.readouterr().out
+
+    def test_discover_vendors_records_incomplete_results(self) -> None:
+        # GitHub answers 200 with incomplete_results when its search timed out; the
+        # hits it did return still count, but "none found" is no longer clean.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.params["page"] == "1":
+                items = [{"repository": {"full_name": "new/vendor"}}]
+                return _resp(200, {"incomplete_results": True, "items": items})
+            return _resp(200, {"incomplete_results": False, "items": []})
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            problems: list[str] = []
+            found = curate.discover_vendors(client, set(), problems)
+        assert list(found) == ["new/vendor"]
+        assert len(problems) == 1 and "page 1: incomplete_results" in problems[0]
+
+    def test_incomplete_results_exits_nonzero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = tmp_path / "catalog.toml"
+        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                return _resp(200, {"incomplete_results": True, "items": []})
+            if request.url.path == "/repos/a/known":
+                return _resp(200, {"default_branch": "main"})
+            return _resp(200, {"tree": []})
+
+        code = curate.main(
+            ["--catalog", str(path)],
+            transport=httpx.MockTransport(handler),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        out = capsys.readouterr().out
+        assert code == curate.EXIT_REPORT_INCOMPLETE
+        assert "none found (code search incomplete" in out
+
+    @pytest.mark.parametrize("status", [403, 409, 429])
+    def test_tree_failure_is_reported_not_counted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], status: int
+    ) -> None:
+        path = tmp_path / "catalog.toml"
+        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                return _resp(200, {"incomplete_results": False, "items": []})
+            if request.url.path == "/repos/a/known":
+                return _resp(200, {"default_branch": "main", "stargazers_count": 3})
+            return _resp(status, {"message": "nope"})
+
+        code = curate.main(
+            ["--catalog", str(path)],
+            transport=httpx.MockTransport(handler),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        out = capsys.readouterr().out
+        assert code == curate.EXIT_REPORT_INCOMPLETE
+        assert f"`a/known`: source files unknown (tree: HTTP {status})" in out
+        assert "None source files" not in out
+        assert "stars 3" in out  # the metadata survives a failed tree
+
+    @pytest.mark.parametrize("body", [{}, {"default_branch": None}, {"default_branch": ""}])
+    def test_missing_default_branch_is_a_tree_error_without_a_request(
+        self, body: dict[str, object]
+    ) -> None:
+        paths: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            return _resp(200, body)
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            stats = curate.repo_stats(client, "a/b")
+        assert paths == ["/repos/a/b"]
+        assert stats["tree_error"] == "no default branch"
+        assert "source_files" not in stats
+        assert curate.stats_incomplete([stats])
+
+    def test_branch_is_quoted_as_one_path_segment(self) -> None:
+        raw: list[bytes] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/repos/a/b":
+                return _resp(200, {"default_branch": "rel/1#x?y"})
+            raw.append(request.url.raw_path)
+            return _resp(200, {"tree": [{"type": "blob", "path": "x.py"}]})
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            stats = curate.repo_stats(client, "a/b")
+        assert raw == [b"/repos/a/b/git/trees/rel%2F1%23x%3Fy?recursive=1"]
+        assert stats["source_files"] == 1
+        assert not curate.stats_incomplete([stats])
 
     def test_script_never_opens_the_catalog_for_writing(self) -> None:
         src = (_SCRIPTS / "curate_repo_catalog.py").read_text(encoding="utf-8")

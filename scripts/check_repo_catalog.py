@@ -296,7 +296,7 @@ def main(
             catalog = parse_catalog(args.catalog.read_text(encoding="utf-8"))
         else:
             catalog = load_catalog()
-    except (CatalogError, OSError) as exc:
+    except (CatalogError, OSError, UnicodeDecodeError) as exc:
         _catalog_failure(f"cannot load the catalog: {exc}")
         return EXIT_CATALOG
     if catalog is None:
