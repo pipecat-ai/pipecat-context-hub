@@ -225,18 +225,42 @@ class TerminalSafeLogRecord(logging.LogRecord):
 _SAFE_CLASSES: dict[type[logging.LogRecord], type[logging.LogRecord]] = {}
 
 
-def _rebuild_record(base: type[logging.LogRecord], state: dict[str, Any]) -> logging.LogRecord:
-    """Unpickle a re-classed foreign record: ``base`` plus the escaping, ``state``."""
-    safe = _safe_class(base)
-    record = safe.__new__(safe)
-    record.__dict__.update(state)
+def _rebuild_record(func: Any, args: tuple[Any, ...], state: Any) -> Any:
+    """Copy/unpickle a re-classed foreign record from its host class's reduction.
+
+    ``func(*args)`` and ``state`` are what the host class reduces to without the
+    escaping; ``state`` is applied as pickle's BUILD does (``__setstate__``, or
+    the ``__dict__`` and the ``(dict, slots)`` pair). The result is re-classed.
+    """
+    record = func(*args)
+    if isinstance(record, logging.LogRecord):
+        record.__class__ = _safe_class(type(record))
+    if state is not None:
+        setstate = getattr(record, "__setstate__", None)
+        if setstate is not None:
+            setstate(state)
+        else:
+            slots = None
+            if isinstance(state, tuple) and len(state) == 2:
+                state, slots = state
+            if state:
+                record.__dict__.update(state)
+            for name, value in (slots or {}).items():
+                setattr(record, name, value)
     return record
 
 
 def _reduce_foreign(self: logging.LogRecord, protocol: int) -> Any:
     # The re-classed type is built at runtime and has no importable name, so it
-    # pickles by the host's own class instead (which must be importable anyway).
-    return _rebuild_record, (type(self).__bases__[1], self.__dict__.copy())
+    # reduces by the host's own class (which must be importable anyway): the
+    # host's own reduction, with that class standing in for the runtime one.
+    base = type(self).__bases__[1]
+    reduced = base.__reduce_ex__(self, protocol)
+    if not isinstance(reduced, tuple):
+        return reduced
+    func, args, state = (*reduced, None)[:3]
+    args = tuple(base if arg is type(self) else arg for arg in args)
+    return _rebuild_record, (func, args, state)
 
 
 def _safe_class(cls: type[logging.LogRecord]) -> type[logging.LogRecord]:

@@ -329,6 +329,15 @@ class TestEscapeJson:
         assert not _raw(out)
 
 
+def _restore_reducing_record(state: dict[str, Any]) -> logging.LogRecord:
+    """``ReducingRecord``'s own reconstructor; marks that it was the one used."""
+    record = TestRecordReadSideEscaping.ReducingRecord.__new__(
+        TestRecordReadSideEscaping.ReducingRecord
+    )
+    record.__dict__.update(state, restored_by_host=True)
+    return record
+
+
 class TestRecordReadSideEscaping:
     """Message, traceback text and stack text are escaped when a formatter reads
     them, whichever factory made the record and however the text got there."""
@@ -417,6 +426,45 @@ class TestRecordReadSideEscaping:
         assert type(clone) is type(record)
         assert clone.__dict__ == record.__dict__
         assert clone.getMessage() == record.getMessage()
+        assert not _raw(self._FORMAT.format(clone))
+
+    class SlottedRecord(logging.LogRecord):
+        __slots__ = ("req_id",)
+
+    class ReducingRecord(logging.LogRecord):
+        """A host class with its own reduction, which must stay the one used."""
+
+        def __reduce__(self) -> Any:
+            return _restore_reducing_record, (self.__dict__.copy(),)
+
+    @pytest.mark.parametrize("copier", ["pickle", "copy", "deepcopy"])
+    @pytest.mark.parametrize("host", ["slotted", "reducing"])
+    def test_a_foreign_record_copies_like_the_host_class(self, host: str, copier: str) -> None:
+        """Copying a re-classed record (``QueueHandler.prepare`` copies, a
+        ``multiprocessing.Queue`` pickles) keeps slot state and honours the host
+        class's own ``__reduce__``, exactly as without the escaping."""
+        import copy
+        import pickle
+
+        cls = self.SlottedRecord if host == "slotted" else self.ReducingRecord
+        logging.setLogRecordFactory(cls)
+        terminal.install_log_escaping()
+        record = logging.getLogger("t").makeRecord(
+            "t", logging.WARNING, __file__, 1, "msg %s", (HOSTILE,), None
+        )
+        if host == "slotted":
+            record.req_id = "R42"  # type: ignore[attr-defined]
+        if copier == "pickle":
+            clone = pickle.loads(pickle.dumps(record))
+        else:
+            clone = getattr(copy, copier)(record)
+        assert type(clone) is type(record)
+        assert isinstance(clone, cls) and isinstance(clone, terminal.TerminalSafeLogRecord)
+        if host == "slotted":
+            assert clone.req_id == "R42"  # type: ignore[attr-defined]
+        else:
+            assert clone.__dict__.pop("restored_by_host") is True
+        assert clone.__dict__ == record.__dict__
         assert not _raw(self._FORMAT.format(clone))
 
     def test_a_foreign_record_keeps_its_class_behaviour(self) -> None:
