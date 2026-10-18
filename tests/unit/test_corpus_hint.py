@@ -865,6 +865,23 @@ class TestFrozenRealQueries:
         assert hint["matched_groups"] == ["tavus"]
 
     @pytest.mark.parametrize(
+        ("query", "group"),
+        [
+            ("TurnDetection", "audio-and-benchmarks"),
+            ("NovaSonicService", "aws"),
+            ("LipSyncBuffer", "lip-sync-characters"),
+            ("AwsClient", "aws"),
+        ],
+    )
+    def test_shipped_aliases_hint_from_a_whole_identifier_token(
+        self, query: str, group: str
+    ) -> None:
+        # Positive controls for the substring negatives below: the same aliases do hint.
+        hint = _hint(query, {})
+        assert hint is not None
+        assert group in hint["matched_groups"]
+
+    @pytest.mark.parametrize(
         "query",
         ["ReturnDetection", "InnovaSonicBoom", "ClipSyncer", "FlawsInCode"],
     )
