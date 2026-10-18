@@ -13,6 +13,7 @@ from pipecat_context_hub.shared.corpus_hint import (
 )
 from pipecat_context_hub.shared.interfaces import ServingIndex
 from pipecat_context_hub.shared.repo_catalog import load_catalog
+from pipecat_context_hub.shared.repo_slug import slug_key
 from pipecat_context_hub.shared.types import HubStatusOutput, RerankerStatus
 
 logger = logging.getLogger(__name__)
@@ -69,8 +70,8 @@ async def handle_get_hub_status(
 
     indexed = indexed_repos(index_store)
     # Tainted slugs are never reported as missing coverage.
-    tainted = {s.casefold() for s in tainted_repos}
-    configured = [s for s in configured_repos if s.casefold() not in tainted]
+    tainted = {slug_key(s) for s in tainted_repos}
+    configured = [s for s in configured_repos if slug_key(s) not in tainted]
 
     output = HubStatusOutput(
         server_version=_SERVER_VERSION,

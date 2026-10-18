@@ -388,6 +388,7 @@ class TestSlugGrammar:
             "shared/repo_slug.py": 1,  # slug_key itself
             "shared/repo_catalog.py": 3,  # find_group (2: group names), alias dedupe
             "services/ingest/github_ingest.py": 1,  # release-tag sort key
+            "shared/corpus_hint.py": 2,  # catalog alias and query text, not slugs
         }
         src = _REPO_ROOT / "src" / "pipecat_context_hub"
         found: dict[str, int] = {}

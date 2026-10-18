@@ -25,6 +25,7 @@ from typing import Any, Protocol
 
 from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.repo_catalog import Catalog, CatalogGroup, load_catalog
+from pipecat_context_hub.shared.repo_slug import slug_key
 from pipecat_context_hub.shared.support_links import RETRIEVAL_QUALITY_ISSUE_URL
 
 logger = logging.getLogger(__name__)
@@ -62,9 +63,9 @@ def indexed_repos(index_store: _CountsSource) -> frozenset[str] | None:
         )
         return None
     return frozenset(
-        str(slug).casefold()
+        slug_key(str(slug))
         for slug, count in counts.items()
-        if str(slug).casefold() != _DOCS_KEY and isinstance(count, int) and count > 0
+        if slug_key(str(slug)) != _DOCS_KEY and isinstance(count, int) and count > 0
     )
 
 
@@ -72,11 +73,11 @@ def configured_no_records(configured: Iterable[str], indexed: Set[str] | None) -
     """Configured slugs (original case) with no indexed records; ``[]`` if unreadable."""
     if indexed is None:
         return []
-    return sorted(slug for slug in configured if slug.casefold() not in indexed)
+    return sorted(slug for slug in configured if slug_key(slug) not in indexed)
 
 
 def _fold(slugs: Iterable[str]) -> frozenset[str]:
-    return frozenset(s.casefold() for s in slugs)
+    return frozenset(slug_key(s) for s in slugs)
 
 
 def missing_repos(
@@ -90,7 +91,7 @@ def missing_repos(
     return [
         r.slug
         for r in group.repos
-        if r.parseable and (key := r.slug.casefold()) not in indexed and key not in skip
+        if r.parseable and (key := slug_key(r.slug)) not in indexed and key not in skip
     ]
 
 
@@ -184,9 +185,9 @@ def corpus_hint(
             if not missing:
                 continue
             groups.append(group.name)
-            fresh = [s for s in missing if s.casefold() not in configured]
+            fresh = [s for s in missing if slug_key(s) not in configured]
             not_indexed.extend(fresh)
-            no_records.extend(s for s in missing if s.casefold() in configured)
+            no_records.extend(s for s in missing if slug_key(s) in configured)
             if fresh:
                 add_commands.append(_ADD_COMMAND.format(group=group.name))
         if not groups:
