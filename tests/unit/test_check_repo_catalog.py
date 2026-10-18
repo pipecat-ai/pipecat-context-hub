@@ -338,7 +338,7 @@ class TestClient:
                 return _resp(
                     301, headers={"location": "https://api.github.com/repositories/211666"}
                 )
-            return _resp(200, {"full_name": "pipecat-ai/new"})  # synthetic body
+            return _resp(200, {"full_name": "pipecat-ai/new", "private": False})  # synthetic
 
         with check.make_client(None, httpx.MockTransport(handler)) as client:
             r = check.check_slug(client, "pipecat-ai/old")
@@ -368,8 +368,14 @@ class TestClient:
             lambda: _resp(500),
             lambda: httpx.Response(200, content=b"<html>"),
             lambda: _resp(200, ["x"]),
-            lambda: _resp(200, {"name": "no-full-name"}),
-            lambda: _resp(200, {"full_name": 3}),
+            lambda: _resp(200, {"name": "no-full-name", "private": False}),
+            lambda: _resp(200, {"full_name": 3, "private": False}),
+            # Visibility not confirmed public: the name must not be reported
+            # (regression: a private target's name went into the issue body).
+            lambda: _resp(200, {"full_name": "secret/private-repo", "private": True}),
+            lambda: _resp(200, {"full_name": "secret/private-repo"}),
+            lambda: _resp(200, {"full_name": "secret/private-repo", "private": "false"}),
+            lambda: _resp(200, {"full_name": "secret/private-repo", "private": 0}),
             lambda: (_ for _ in ()).throw(httpx.ReadTimeout("slow")),
         ],
     )
@@ -712,7 +718,18 @@ class TestIssueStep:
         assert any(c.startswith("issue create") for c in calls)
 
     def test_scripts_have_no_permission_bit_dependence(self) -> None:
-        # Windows CI reads files by repo-relative path only; nothing here may rely on
-        # POSIX mode bits (the scripts are invoked through `uv run python`).
+        # The scripts are committed without the executable bit (and Windows has no
+        # POSIX mode bits), so every invocation in the justfile and the workflows
+        # must go through the interpreter (`uv run python scripts/<name>`), never
+        # run the file directly (`./scripts/<name>` or a bare `scripts/<name>`).
+        sources = [_JUSTFILE, *sorted((_REPO_ROOT / ".github" / "workflows").glob("*.yml"))]
+        texts = {p.name: p.read_text(encoding="utf-8") for p in sources}
         for name in ("check_repo_catalog.py", "curate_repo_catalog.py"):
             assert (_SCRIPTS / name).is_file()
+            mentions = 0
+            for source, text in texts.items():
+                every = re.findall(rf"scripts/{re.escape(name)}", text)
+                via_python = re.findall(rf"(?<!\S)python\s+scripts/{re.escape(name)}", text)
+                assert len(every) == len(via_python), (source, name)
+                mentions += len(every)
+            assert mentions, f"{name} is invoked nowhere: the scan proves nothing"
