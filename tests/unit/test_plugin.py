@@ -176,6 +176,35 @@ class TestExitCodeTranslation:
         assert result.exit_code == 1
 
 
+class TestUncaughtException:
+    """A hub bug's traceback is escaped through either front door.
+
+    The host's ``Typer.__call__`` installs its own excepthook before the hub's
+    bootstrap runs, so the bridge prints it through the terminal-safe hook.
+    """
+
+    def test_traceback_is_escaped_and_exits_1(self, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise RuntimeError("bad data dir \x1b[2J\x07")
+
+        monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _boom)
+        result = runner.invoke(_mounted(), ["context-hub", "status"])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "Traceback" in result.output
+        assert "RuntimeError: bad data dir \\x1b[2J\\x07" in result.output
+        assert "\x1b" not in result.output and "\x07" not in result.output
+
+    @pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+    def test_base_exceptions_pass_through(self, exc, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise exc()
+
+        monkeypatch.setattr("pipecat_context_hub.plugin.hub_cli.main", _boom)
+        result = runner.invoke(_mounted(), ["context-hub", "status"])
+        assert "Traceback" not in result.output
+
+
 class TestLogLevelForwarding:
     def test_group_log_level_reaches_the_click_group(self, monkeypatch):
         seen: dict[str, list[str]] = {}
