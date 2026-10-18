@@ -370,7 +370,7 @@ class TestTaintedSkipInThePredicate:
             _repo("acme/ok"),
             _repo("Acme/Also"),
         )
-        actionable, skipped = _skipped_lines(group, sources)
+        actionable, skipped = _skipped_lines(group, sources, for_removal=False)
         hint_missing = missing_repos(group, set(), tainted=frozenset(sources.tainted_repos))
         assert hint_missing == actionable == ["acme/ok", "Acme/Also"]
         assert skipped == [

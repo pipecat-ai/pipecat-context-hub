@@ -24,7 +24,7 @@ uv run pipecat-context-hub refresh --framework-version head     # ...or at its d
 uv run pipecat-context-hub serve                    # start MCP server (`start` is an alias)
 uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
 uv run pipecat-context-hub repos list [--groups]    # effective repos (default/catalog/unlisted) and the catalog groups
-uv run pipecat-context-hub repos add <slug>         # edit PIPECAT_HUB_EXTRA_REPOS in config.toml (--unlisted, --group NAME, --config-only); also `remove`
+uv run pipecat-context-hub repos add <slug>         # edit PIPECAT_HUB_EXTRA_REPOS in config.toml, or the file PIPECAT_HUB_CONFIG_FILE names (--unlisted, --group NAME, --config-only); also `remove`
 just catalog-regen                                  # regenerate .env.example / docs from data/repo_catalog.toml (--check, --bump-verified)
 just catalog-health                                 # network: flag private/missing/archived/renamed catalog repos (weekly in catalog-health.yml)
 just catalog-curate                                 # network, report-only: per-repo stats + code-search vendor candidates (needs a GitHub token)
@@ -98,7 +98,7 @@ just dashboard-serve    # serve dashboard on localhost:8765
 
 `PIPECAT_HUB_*` settings resolve in three layers, first-writer-wins: real env
 vars > cwd `.env` > `~/.config/pipecat-context-hub/config.toml` (machine-global,
-optional, see `config.toml.example`) > `HubConfig` field defaults. Every entry
+optional, see `config.toml.example`; `PIPECAT_HUB_CONFIG_FILE` overrides the path, `repos add|remove` included) > `HubConfig` field defaults. Every entry
 point — `cli.py:main()`, the dashboard scripts, `scripts/smoke_check_removals.py`
 — calls `shared/env_loading.py`'s `load_env_layers()` (which runs
 `load_cwd_dotenv()` then `load_global_config()`) before constructing config, so
@@ -157,15 +157,15 @@ src/pipecat_context_hub/
 ├── cli.py                    # CLI entry point (serve + refresh)
 ├── cli_query.py              # One-shot query subcommands (the MCP tools as shell commands)
 ├── cli_install.py            # `install` — register the MCP server with a coding agent
-├── cli_repos.py              # `repos list|add|remove` — edit PIPECAT_HUB_EXTRA_REPOS in config.toml (check order, shadow refusal)
+├── cli_repos.py              # `repos list|add|remove` — edit PIPECAT_HUB_EXTRA_REPOS in config.toml (check order, shadow refusal, hand-edit advice naming the resolved config path, `parseable = false` add warning)
 ├── data/repo_catalog.toml    # curated public repos by vendor/topic; source for generated .env.example / docs sections
 ├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat context-hub`
 ├── shared/                   # Pydantic data contracts, interfaces, config
 │   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
 │   ├── config.py             # HubConfig + env-aware computed fields
-│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule)
+│   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule: what the loader uses) / config_list_entries (its lenient view: what the file holds, for naming an entry the loader skips)
 │   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
-│   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants); member_skip_reason / actionable_members — the one group-member eligibility rule (`repos add --group` and the corpus hint)
+│   ├── repo_catalog.py       # load_catalog / parse_catalog (schema + invariants); member_skip_reason / actionable_members — the one group-member eligibility rule (`repos add --group` and the corpus hint skip tainted and `parseable = false`; `for_removal=True`, used by `repos remove --group`, skips tainted only)
 │   ├── repo_slug.py          # REPO_SLUG_RE / is_valid_repo_slug / slug_key / dedupe_slugs — the one owner/repo grammar, the one slug identity (casefolded; every default/taint/dedupe/writer/catalog comparison) and the one slug-list dedupe (leaf: ingester, catalog, repos, writer)
 │   ├── exclusion_folds.py    # EXCLUSION_FOLDS / exclusion_fold — the one per-key entry fold for the taint lists (slug_key for repos, exact for refs; unknown key raises); SourceConfig and the loader's shadowed-exclusion warning both use it; taint_matcher — the one taint-matching rule (SourceConfig.is_tainted and corpus_hint)
 │   ├── env_keys.py           # EXTRA_REPOS_ENV / TAINTED_REPOS_ENV / TAINTED_REFS_ENV / split_csv — the list-key literals and CSV rule (leaf: config model and env loader both import it)
