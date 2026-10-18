@@ -1574,6 +1574,16 @@ class TestLoaderChatter:
                 assert hub.run(*args).exit_code == 0
         assert self._loaded(caplog) == []
 
+    @pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+    def test_an_explicit_log_level_shows_it_for_repos(
+        self, hub: Hub, caplog: pytest.LogCaptureFixture, level: str
+    ):
+        hub.config_list(ALPHA_ONE)
+        with caplog.at_level(logging.DEBUG, logger="pipecat_context_hub.shared.env_loading"):
+            result = hub.invoke("--log-level", level, "repos", "list")
+        assert result.exit_code == 0, result.output
+        assert len(self._loaded(caplog)) == 1
+
     def test_other_commands_still_log_it(self, hub: Hub, caplog: pytest.LogCaptureFixture):
         hub.config_list(ALPHA_ONE)
         with caplog.at_level(logging.INFO, logger="pipecat_context_hub.shared.env_loading"):
@@ -1618,6 +1628,22 @@ class TestLoaderChatter:
             root.setLevel(previous_root)
         assert quiet.exit_code == 0, quiet.output
         assert self._loader_warnings(caplog) == []
+
+    @_posix_only
+    @pytest.mark.parametrize("verb", ["add", "remove"])
+    def test_a_refusal_does_not_repeat_the_loaders_trust_warning(
+        self, hub: Hub, caplog: pytest.LogCaptureFixture, verb: str
+    ):
+        """The hand-edit advice re-reads config.toml through the logging trust seam;
+        the loader already warned once at startup, so the re-read must stay quiet."""
+        hub.env(PIPECAT_HUB_TAINTED_REPOS=UNLISTED)
+        hub.write_config(f'{KEY} = ["{UNLISTED}"]\n')
+        hub.config.chmod(0o666)  # world-writable: an "Ignoring config.toml" warning per read
+        with caplog.at_level(logging.WARNING):
+            result = hub.run(verb, UNLISTED)
+        assert result.exit_code == EXIT_INVALID_INPUT
+        ignored = [r for r in caplog.records if "Ignoring config.toml" in r.getMessage()]
+        assert len(ignored) == 1, [r.getMessage() for r in ignored]
 
     def test_the_stray_key_does_warn_at_the_default_level(
         self, hub: Hub, caplog: pytest.LogCaptureFixture

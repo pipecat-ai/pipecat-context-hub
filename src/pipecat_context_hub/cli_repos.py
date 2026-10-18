@@ -29,14 +29,17 @@ are additionally flagged ``repr() [invalid]`` by ``shown()`` where named.
 
 from __future__ import annotations
 
+import contextlib
 import functools
+import logging
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 
 import click
 
+from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig, SourceConfig
 from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.env_loading import (
@@ -140,6 +143,23 @@ _UNPARSEABLE_NOTICE = (
 )
 
 
+@contextlib.contextmanager
+def _loader_quiet() -> Iterator[None]:
+    """Drop the env loader's log records for the block: a read-only re-read of config.toml.
+
+    ``main()`` already ran the loader, which warned once about an untrusted or
+    group-writable file or a blank ``PIPECAT_HUB_CONFIG_FILE``; the same trust seam
+    warns on every call, so a second read would print each of those warnings twice.
+    """
+    loader_logger = logging.getLogger(env_loading.__name__)
+    drop = lambda record: False  # noqa: E731 - a one-use logging.Filter callable
+    loader_logger.addFilter(drop)
+    try:
+        yield
+    finally:
+        loader_logger.removeFilter(drop)
+
+
 def _hand_edit_note(slug: str) -> str:
     """A leading-space sentence for a check-1/2 refusal when the file lists ``slug``, else ``""``.
 
@@ -148,10 +168,11 @@ def _hand_edit_note(slug: str) -> str:
     resolved file (``PIPECAT_HUB_CONFIG_FILE`` honoured). A typo that was never
     written gets no hand-edit advice.
     """
-    path = resolve_global_config_path()
-    if path is None:
-        return ""
-    raw, _problem = _raw_extra_repos(path)
+    with _loader_quiet():
+        path = resolve_global_config_path()
+        if path is None:
+            return ""
+        raw, _problem = _raw_extra_repos(path)
     held = config_list_entries(raw) if raw is not None else []
     if slug_key(slug) not in {slug_key(s) for s in held}:
         return ""

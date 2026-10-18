@@ -26,7 +26,7 @@ import click
 
 from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
-from pipecat_context_hub.cli_repos import register_repos_commands
+from pipecat_context_hub.cli_repos import register_repos_commands, repos_group
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_REFRESH_IN_PROGRESS
@@ -760,7 +760,11 @@ def main(ctx: click.Context, log_level: str) -> None:
     _configure_logging(log_level)
     # `repos` is a config editor: the loader's "Loaded N key(s) from config.toml" INFO line is
     # noise there, and `repos add` is about to rewrite that very file. Warnings still show.
-    with _loader_info_muted(ctx.invoked_subcommand == "repos"):
+    # An explicit `--log-level` is honoured: only the default level is muted.
+    log_level_is_default = (
+        ctx.get_parameter_source("log_level") is click.core.ParameterSource.DEFAULT
+    )
+    with _loader_info_muted(ctx.invoked_subcommand == repos_group.name and log_level_is_default):
         provenance = env_loading.load_env_layers()
     ctx.ensure_object(dict)
     ctx.obj["env_provenance"] = provenance
