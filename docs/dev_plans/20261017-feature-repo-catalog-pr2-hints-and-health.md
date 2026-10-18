@@ -330,7 +330,7 @@ exists, or onto `main` after PR 1 merges. If `src/pipecat_context_hub/cli_repos.
 (`/mcp`). Run the new numbered `docs/smoke-test.md` item for one unindexed and one indexed vendor query.
 Put the result and the mutation-check results in the PR description. Restore the released tool afterwards.
 
-<!-- reviewed: 2026-10-17 @ 0e2551faa66e61d53a9c85b85da3d79aff70843f -->
+<!-- reviewed: 2026-10-18 @ dc6c339d9f3d78e5d2367a9725579d3628b1cc2e -->
 
 ## Progress
 
