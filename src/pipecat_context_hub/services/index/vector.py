@@ -731,12 +731,27 @@ class VectorIndex:
         logger.debug("Upserted %d records into vector index", len(ids))
         return len(ids)
 
-    def delete_by_content_type(self, content_type: str) -> int:
-        """Delete all records matching a content type. Returns count deleted."""
+    def delete_by_content_type(self, content_type: str, *, without_repo: bool = False) -> int:
+        """Delete all records matching a content type. Returns count deleted.
+
+        ``without_repo`` narrows the delete to records with no repo (the
+        docs-site records), leaving repo-owned ones such as README-fallback
+        chunks. Chroma has no "key absent" filter and ``record.repo is None``
+        writes no ``repo`` key, so that predicate is applied in Python; it
+        must match ``FTSIndex.delete_by_content_type`` (``repo IS NULL``).
+        """
         with self._op_lock:
             where_clause: dict[str, Any] = {"content_type": {"$eq": content_type}}
-            existing = self._collection.get(where=where_clause, include=[])
-            ids = existing["ids"]
+            if without_repo:
+                existing = self._collection.get(where=where_clause, include=["metadatas"])
+                ids = [
+                    id_
+                    for id_, meta in zip(existing["ids"], existing["metadatas"] or [], strict=True)
+                    if meta is None or "repo" not in meta
+                ]
+            else:
+                existing = self._collection.get(where=where_clause, include=[])
+                ids = existing["ids"]
             count = len(ids)
             if count > 0:
                 # ChromaDB limits batch operations to ~5,000 records.

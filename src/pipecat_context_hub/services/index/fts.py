@@ -271,21 +271,25 @@ class FTSIndex:
             logger.debug("Upserted %d records into FTS index", count)
             return count
 
-    def delete_by_content_type(self, content_type: str) -> int:
-        """Delete all records with a given content type. Returns count deleted."""
+    def delete_by_content_type(self, content_type: str, *, without_repo: bool = False) -> int:
+        """Delete all records with a given content type. Returns count deleted.
+
+        ``without_repo`` narrows the delete to records with no repo (the
+        docs-site records); see ``VectorIndex.delete_by_content_type``.
+        """
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM chunks WHERE content_type = ?",
-                (content_type,),
-            )
+            if without_repo:
+                count_sql = "SELECT COUNT(*) FROM chunks WHERE content_type = ? AND repo IS NULL"
+                delete_sql = "DELETE FROM chunks WHERE content_type = ? AND repo IS NULL"
+            else:
+                count_sql = "SELECT COUNT(*) FROM chunks WHERE content_type = ?"
+                delete_sql = "DELETE FROM chunks WHERE content_type = ?"
+            cursor = self._conn.execute(count_sql, (content_type,))
             row = cursor.fetchone()
             count: int = row[0] if row else 0
 
             if count > 0:
-                self._conn.execute(
-                    "DELETE FROM chunks WHERE content_type = ?",
-                    (content_type,),
-                )
+                self._conn.execute(delete_sql, (content_type,))
                 self._conn.commit()
                 logger.debug(
                     "Deleted %d records from FTS index for content_type=%s", count, content_type
