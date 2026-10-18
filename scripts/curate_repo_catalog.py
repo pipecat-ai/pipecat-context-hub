@@ -9,7 +9,8 @@ read, and a test asserts the file is byte-identical after a run.
 
 A GitHub token is required (code search rejects unauthenticated requests):
 ``GITHUB_TOKEN``, else ``gh auth token``; exits nonzero with a message when
-neither exists.
+neither exists. Exits 2 (report still printed) when code search failed or
+answered malformed, since its candidate list may then be incomplete.
 
 Usage::
 
@@ -28,11 +29,13 @@ from pathlib import Path
 
 import httpx
 
+from pipecat_context_hub.shared.config import SourceConfig
 from pipecat_context_hub.shared.repo_catalog import (
     CatalogError,
     load_catalog,
     parse_catalog,
 )
+from pipecat_context_hub.shared.repo_slug import slug_key
 
 API_BASE = "https://api.github.com"
 SOURCE_SUFFIXES = (".py", ".ts", ".tsx")
@@ -41,6 +44,9 @@ SEARCH_PAGES = 3
 
 EXIT_OK = 0
 EXIT_NO_TOKEN = 1
+# The report printed, but code search failed or answered malformed: the
+# candidate list may be missing repos, so "none found" is not a clean result.
+EXIT_SEARCH_INCOMPLETE = 2
 EXIT_CATALOG = 3
 
 
@@ -128,9 +134,12 @@ def repo_stats(client: httpx.Client, slug: str) -> dict[str, object]:
 def discover_vendors(
     client: httpx.Client, known: set[str], problems: list[str] | None = None
 ) -> Counter[str]:
-    """Repos whose code matches the search and are not already catalogued.
+    """Repos whose code matches the search and are not in ``known`` (``slug_key`` form).
 
-    A malformed response is recorded in ``problems`` (when given), never raised.
+    A failed request (network error, timeout, any non-200 such as a 403 or a
+    rate limit) or a malformed response is recorded in ``problems`` (when
+    given), never raised: it ends discovery early, so it must not read as
+    "no candidates".
     """
     if problems is None:
         problems = []
@@ -140,9 +149,11 @@ def discover_vendors(
             resp = client.get(
                 "/search/code", params={"q": SEARCH_QUERY, "per_page": 100, "page": page}
             )
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            problems.append(f"page {page}: {type(exc).__name__}: {exc}")
             break
         if resp.status_code != 200:
+            problems.append(f"page {page}: HTTP {resp.status_code}")
             break
         try:
             payload = resp.json()
@@ -165,7 +176,7 @@ def discover_vendors(
                 malformed += 1
                 continue
             name = repo.get("full_name")
-            if isinstance(name, str) and name.casefold() not in known:
+            if isinstance(name, str) and slug_key(name) not in known:
                 found[name] += 1
         if malformed:
             problems.append(f"page {page}: {malformed} item(s) without a repository object")
@@ -190,6 +201,8 @@ def render_report(
     lines += ["", "## Candidate repos not in the catalog (code-search hits)", ""]
     if vendors:
         lines += [f"- `{name}`: {n} matching files" for name, n in vendors.most_common(30)]
+    elif problems:
+        lines.append("- none found (code search incomplete, see below)")
     else:
         lines.append("- none found")
     if problems:
@@ -236,12 +249,15 @@ def main(
         return EXIT_CATALOG
 
     slugs = [r.slug for g in catalog.groups for r in g.repos]
+    # The shipped default repos are always indexed and never in the catalog (the
+    # parser rejects them), yet they match the code search heavily.
+    known = {slug_key(s) for s in [*slugs, *SourceConfig().repos]}
     problems: list[str] = []
     with make_client(token, transport) as client:
         stats = [repo_stats(client, slug) for slug in slugs]
-        vendors = discover_vendors(client, {s.casefold() for s in slugs}, problems)
+        vendors = discover_vendors(client, known, problems)
     print(render_report(stats, vendors, problems))
-    return EXIT_OK
+    return EXIT_SEARCH_INCOMPLETE if problems else EXIT_OK
 
 
 if __name__ == "__main__":

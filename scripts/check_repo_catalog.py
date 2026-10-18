@@ -51,6 +51,7 @@ from pipecat_context_hub.shared.repo_catalog import (
     load_catalog,
     parse_catalog,
 )
+from pipecat_context_hub.shared.repo_slug import slug_key
 
 API_BASE = "https://api.github.com"
 ADVISORY_DAYS = 90
@@ -188,7 +189,7 @@ def classify_response(
         full_name = body.get("full_name")
         if not isinstance(full_name, str):
             return EntryResult(slug, STATUS_INCONCLUSIVE, "200 body has no string full_name")
-        if full_name.casefold() != slug.casefold():
+        if slug_key(full_name) != slug_key(slug):
             return EntryResult(slug, STATUS_RENAMED, "full_name differs", full_name)
         return EntryResult(slug, STATUS_OK)
     if code in (403, 429) or code >= 500:

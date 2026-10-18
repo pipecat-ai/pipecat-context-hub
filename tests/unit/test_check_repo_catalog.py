@@ -588,6 +588,85 @@ class TestCurate:
         assert problems and "3 item(s)" in problems[0]
         assert "Code-search problems" in curate.render_report([], found, problems)
 
+    @pytest.mark.parametrize("status", [403, 422, 429, 500])
+    def test_discover_vendors_records_http_failure(self, status: int) -> None:
+        # A rate limit or server error ends discovery: it must not read as "no candidates".
+        with curate.make_client("t", httpx.MockTransport(lambda r: _resp(status))) as client:
+            problems: list[str] = []
+            found = curate.discover_vendors(client, set(), problems)
+        assert not found
+        assert problems == [f"page 1: HTTP {status}"]
+
+    def test_discover_vendors_records_transport_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("slow", request=request)
+
+        with curate.make_client("t", httpx.MockTransport(handler)) as client:
+            problems: list[str] = []
+            found = curate.discover_vendors(client, set(), problems)
+        assert not found
+        assert len(problems) == 1 and "ReadTimeout" in problems[0]
+
+    def test_incomplete_search_exits_nonzero_and_says_so(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = tmp_path / "catalog.toml"
+        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                return _resp(403, {"message": "rate limited"})
+            return _resp(404)
+
+        code = curate.main(
+            ["--catalog", str(path)],
+            transport=httpx.MockTransport(handler),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        out = capsys.readouterr().out
+        assert code == curate.EXIT_SEARCH_INCOMPLETE
+        assert code not in (curate.EXIT_OK, curate.EXIT_NO_TOKEN, curate.EXIT_CATALOG)
+        assert "none found (code search incomplete" in out
+        assert "page 1: HTTP 403" in out
+
+    def test_default_repos_are_never_candidates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The catalog parser rejects the shipped defaults, so they are never catalog
+        # slugs; they are always indexed and must not top the candidate list.
+        path = tmp_path / "catalog.toml"
+        path.write_text(_catalog_text(["a/known"]), encoding="utf-8")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                items = [
+                    {"repository": {"full_name": "pipecat-ai/pipecat"}},
+                    {"repository": {"full_name": "Pipecat-AI/Pipecat-Examples"}},
+                    {"repository": {"full_name": "new/vendor"}},
+                ]
+                return _resp(200, {"items": items if request.url.params["page"] == "1" else []})
+            return _resp(404)
+
+        code = curate.main(
+            ["--catalog", str(path)],
+            transport=httpx.MockTransport(handler),
+            environ={"GITHUB_TOKEN": "tok"},
+        )
+        out = capsys.readouterr().out
+        assert code == curate.EXIT_OK
+        candidates = out.split("## Candidate repos", 1)[1]
+        assert "new/vendor" in candidates
+        assert "pipecat-ai/pipecat`" not in candidates
+        assert "Pipecat-AI/Pipecat-Examples" not in candidates
+
+    def test_scripts_compare_slugs_through_slug_key(self) -> None:
+        # repo_slug.slug_key is the one slug identity; a raw casefold would drift
+        # from catalog, config and hint behaviour if slug_key ever normalised more.
+        for name in ("check_repo_catalog.py", "curate_repo_catalog.py"):
+            src = (_SCRIPTS / name).read_text(encoding="utf-8")
+            assert ".casefold()" not in src, name
+            assert "slug_key(" in src, name
+
     def test_repo_stats_non_dict_body_is_recorded(self) -> None:
         with curate.make_client("t", httpx.MockTransport(lambda r: _resp(200, ["x"]))) as client:
             assert "error" in curate.repo_stats(client, "a/b")
@@ -619,6 +698,25 @@ class TestWiring:
         assert "workflow_dispatch" in text
         assert "GITHUB_TOKEN" in text
         assert (_SCRIPTS / "check_repo_catalog.py").is_file()
+
+    def test_workflow_serialises_runs(self) -> None:
+        # Two failing runs must not both see "no open issue" and each create one.
+        text = _WORKFLOW.read_text(encoding="utf-8")
+        assert re.search(r"^concurrency:\n\s+group: catalog-health\n", text, re.MULTILINE)
+        assert "cancel-in-progress: false" in text
+
+    def test_only_the_issue_job_holds_issues_write(self) -> None:
+        # The check runs project code and its dependency tree, so it gets a read-only
+        # token; the write scope sits on the job that runs `gh` and no project code.
+        lines = _WORKFLOW.read_text(encoding="utf-8").splitlines()
+        text = "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+        head, sep, report_job = text.partition("\n  report:\n")
+        assert sep, "the workflow has no separate `report` job"
+        assert "issues: write" not in head
+        assert "issues: write" in report_job
+        assert "scripts/check_repo_catalog.py" in head
+        assert "uv run" not in report_job
+        assert "actions/checkout" not in report_job
 
     def test_justfile_recipes_match_the_workflow_invocation(self) -> None:
         just = _JUSTFILE.read_text(encoding="utf-8")

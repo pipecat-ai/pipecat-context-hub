@@ -4,22 +4,36 @@ name: Catalog health
 # Fails on a private, missing, archived or renamed entry, and on an
 # inconclusive run (rate limit, 5xx, timeout) so it gets a re-run. Uses the
 # job's GITHUB_TOKEN; PR CI never touches the network for this.
+#
+# Two jobs: the check (which runs project code and its dependencies) holds a
+# read-only token; only the issue job, which runs `gh` and no project code,
+# gets `issues: write`.
 
 on:
   schedule:
     - cron: "0 7 * * 1"  # Mondays 07:00 UTC
   workflow_dispatch:
 
+# One run at a time, queued not cancelled: two failing runs must not both see
+# "no open issue" and each create one.
+concurrency:
+  group: catalog-health
+  cancel-in-progress: false
+
 permissions:
   contents: read
-  issues: write
+
+env:
+  REPORT_PATH: catalog-health-report.md
 
 jobs:
   health:
     name: Check catalog repos
     runs-on: ubuntu-latest
-    env:
-      REPORT_PATH: catalog-health-report.md
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.health.outcome }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -46,10 +60,39 @@ jobs:
           set -o pipefail
           uv run python scripts/check_repo_catalog.py | tee "${REPORT_PATH}"
 
-      - name: Open or update tracking issue on failure
+      - name: Upload report
         if: steps.health.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: catalog-health-report
+          path: ${{ env.REPORT_PATH }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Fail job if the check failed
+        if: steps.health.outcome == 'failure'
+        run: |
+          echo "Catalog health check failed; see the tracking issue." >&2
+          exit 1
+
+  report:
+    name: Open or update tracking issue
+    needs: health
+    if: always() && needs.health.outputs.outcome == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Download report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: catalog-health-report
+
+      - name: Open or update tracking issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           LABEL: catalog-health
           TITLE: "catalog-health: repo catalog needs attention"
           RUN_ID: ${{ github.run_id }}
@@ -78,9 +121,3 @@ jobs:
               --label "${LABEL}" \
               --body-file "${REPORT_PATH}"
           fi
-
-      - name: Fail job if the check failed
-        if: steps.health.outcome == 'failure'
-        run: |
-          echo "Catalog health check failed; see the tracking issue." >&2
-          exit 1
