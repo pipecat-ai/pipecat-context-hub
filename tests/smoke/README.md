@@ -82,7 +82,7 @@ updates the `upstream-drift` tracking issue, maintainers:
 
 - `invariants.py` helpers are pure and reusable. Both Phase 4 tests and the
   Phase 5 drift script import from it — do not duplicate logic.
-- Invariants parameterise over `_discover_under_examples` output, NOT over
+- Invariants parameterise over `_find_example_dirs` output, NOT over
   hard-coded topic lists. Adding or renaming an upstream topic must not break
   the assertions.
 - Do **not** apply `@pytest.mark.smoke` to these tests — that marker is
