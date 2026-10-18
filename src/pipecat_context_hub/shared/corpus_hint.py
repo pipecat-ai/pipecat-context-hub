@@ -155,11 +155,15 @@ def _query_text(tool: str, args: Mapping[str, Any]) -> str | None:
 # A lower-case letter or digit followed by an upper-case one ("TavusVideo"), and an
 # acronym followed by a capitalised word ("AWSBedrock").
 _CAMEL_BREAK = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_UNDERSCORES = re.compile(r"_+")
 
 
 def _identifier_words(text: str) -> str:
-    """``text`` with CamelCase runs and underscores split into space-separated words."""
-    return _CAMEL_BREAK.sub(" ", text.replace("_", " "))
+    """``text`` with CamelCase runs and underscore runs split into space-separated words.
+
+    A run of underscores is one separator, so ``nova__sonic`` still reads "nova sonic".
+    """
+    return _CAMEL_BREAK.sub(" ", _UNDERSCORES.sub(" ", text))
 
 
 def _matchable(text: str) -> tuple[str, str]:
@@ -168,6 +172,7 @@ def _matchable(text: str) -> tuple[str, str]:
     The original is kept so the identifier split can only add matches: "iOS app" splits
     to "i OS app", which has no "ios" word.
     """
+    # One ``.casefold`` call site: test_slug_identity_has_one_owner counts them in this file.
     original, split = (form.casefold() for form in (text, _identifier_words(text)))
     return original, split
 

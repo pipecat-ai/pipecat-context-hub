@@ -1828,7 +1828,7 @@ class TestCorpusHintBothFrontDoors(_HintCatalogMixin):
             cli_args,
             _hint_store(counts),
             tmp_path,
-            handler_target=(f"pipecat_context_hub.server.tools.{tool}.handle_{tool}"),
+            handler_target=f"pipecat_context_hub.server.tools.{tool}.handle_{tool}",
             env=env,
         )
         assert cli.exit_code == 0, cli.stderr

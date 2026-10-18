@@ -502,6 +502,11 @@ class TestCorpusHint:
             ("NvidiaSTTService", "nvidia"),
             ("nvidia_stt_service", "nvidia"),
             ("MurfTTSService", "murf"),
+            # A digit before a capital is a word break too ("Llama3 Nvidia Service").
+            ("Llama3NvidiaService", "nvidia"),
+            # A run of underscores is one separator, so a multi-word alias still reads.
+            ("nova__sonic", "aws"),
+            ("Nova__Sonic", "aws"),
         ],
     )
     def test_identifier_shaped_query_hints(self, query: str, group: str) -> None:
