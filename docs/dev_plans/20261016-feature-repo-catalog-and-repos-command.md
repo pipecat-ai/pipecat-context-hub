@@ -101,11 +101,11 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    table are **generated** from the catalog; a test fails when they differ.
 3. **Hint trigger: deterministic and independent of confidence.** Fire when a group alias appears in
    the query text (word boundary, case-insensitive, matched against the whole text including every
-   ` + ` / ` & ` concept) **and** at least one `parseable` repo of that group is not indexed
+   ` + ` / ` & ` concept; **identifier-aware**, see the amendment below) **and** at least one `parseable` repo of that group is not indexed
    (decision 10), and the repo is not tainted. Applies to the four search tools only (`search_docs`, `search_examples`,
    `search_api`, `get_code_snippet`). The text matched is per tool, from one table in
-   `shared/corpus_hint.py`: `query` for the three search tools; `symbol` and `intent` for
-   `get_code_snippet` (a path-only lookup never hints). `matched_groups` follows catalog order, so
+   `shared/corpus_hint.py`: `query` for the three search tools; `symbol`, `intent`, `class_name` and
+   `module` for `get_code_snippet` (a path-only lookup never hints). `matched_groups` follows catalog order, so
    multi-group output is deterministic. No embeddings, no network. Changed from the grilled "low
    confidence or empty" gate after `/review-plan`: on the maintainer's live index (2026-10-17)
    `search_docs` reported a not-low confidence (0.95) for three of four unindexed-vendor queries, and
@@ -113,6 +113,25 @@ recommendation, the change is stated. Review history and grilled outcomes are in
    AGENTS.md Review Checklist already records. A confidence gate would miss most real misses. Known
    cost: the hint also appears on vendor queries that were answered well, so it stays one compact
    object.
+   - **Amendment: identifier-aware matching (grilled 2026-10-18, issue #148).** The strict word boundary
+     missed the normal way `search_api` is used: `TavusVideoService`, `AWSBedrockLLMService`,
+     `GeminiLiveLLMService` and `aws_bedrock` carried no hint, because `\w` joins CamelCase runs and
+     underscores. Invariant: **an alias matches when it matches the original casefolded text OR the
+     identifier-split text** (underscores to spaces; a break between a lowercase letter or digit and an
+     uppercase letter, and between an acronym and a following capitalised word; then casefolded), each under
+     the unchanged `(?<!\w)alias(?!\w)` boundary. Matching the original too makes the new rule a strict
+     superset of the old, so no query that hinted stops hinting (`iOS app` splits to `i OS app` and would
+     lose `ios`). A hit still needs a whole camel/snake token (or token run) equal to an alias, so substring
+     negatives hold (`LawsOfRobotics`, `FlawsInCode`, `ClawsClient`, `claws_of_x`, `ReturnDetection`,
+     `InnovaSonicBoom`, `ClipSyncer`, `androidx_core`, `DeepgramSTTService`, `PipelineTask`). **No stop-word
+     list, minimum alias length or catalog symbol-safe flag**, and no symbol aliases in the catalog (they
+     would need upkeep per service class). Accepted cost: an identifier containing a generic alias word
+     hints exactly as the same word in prose already did (`SmartTurnAnalyzerV3`, `WebinarMode`,
+     `WhiskerObserver`). `get_code_snippet` also scans `class_name` and `module` (valid only beside `symbol`),
+     so `symbol="__init__", class_name="TavusVideoService"` hints. The change lives in
+     `shared/corpus_hint.py` only; both front doors reach it through `finish_response`, and the catalog and
+     `repo_catalog.py` are untouched. `docs/smoke-test.md` item 55's verdicts cannot change (superset, and
+     its queries contain no identifier tokens); the identifier queries are frozen as item 56.
    - **Agent-assist scope (maintainer addition):** the hint and the server instructions tell the
      agent that if it finds a relevant repo on GitHub that is not in the catalog it should *suggest*
      `pipecat-context-hub repos add <slug> --unlisted` to the **user** (catalog repos use plain
@@ -581,7 +600,9 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   door (`add_command` is one `pipecat-context-hub repos add --config-only --group <group>` per matched group with an unconfigured, untainted repo, joined with `; `, and is omitted when none; `refresh_command` appears
   only with a configured-but-empty repo; `report_issue_url` equals `RETRIEVAL_QUALITY_ISSUE_URL`);
   `configured_repos` reflects process start (a later `repos add` does not change a running hint); `get_code_snippet` hints from
-  `symbol`/`intent` and not from `path` alone; a partially indexed group lists only the missing repos
+  `symbol`/`intent`/`class_name`/`module` and not from `path` alone; identifier-aware matching (issue #148):
+  `TavusVideoService`, `AWSBedrockLLMService`, `GeminiLiveLLMService` and `aws_bedrock` hint, the original-text
+  match is kept (`iOS app`), and the substring negatives above do not hint; a partially indexed group lists only the missing repos
   in `repos_not_indexed`; multi-group queries give catalog-ordered `matched_groups`; the hint coexists
   with the staleness footer; non-search tools never hint; both front doors give the same
   `corpus_hint`; the CLI stderr hint is suppressed when `corpus_hint` is present (the hint is computed
@@ -591,7 +612,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   the default/tainted refusal, the check order (default/tainted before shadow before no-op), the writer's
   failed-re-parse abort, the `--unlisted` rules, the casefold in the `repos add` no-op, and the
   provenance overlap merge.
-- **[PR2]** Mutation checks: the alias word boundary, the `parseable = false` skip, the tainted skip in
+- **[PR2]** Mutation checks: the alias word boundary, the identifier split (and the original-text arm that keeps `iOS app`), the `parseable = false` skip, the tainted skip in
   the hint, the catalog-load-failure fallback, the casefold in `indexed_repos`, the CLI stderr-hint
   suppression, and the `add_command` format (contract C1, including `--config-only`).
 - **Mutation-check assignment:** each [PR1] and [PR2] mutation check above is assigned to a phase in the
@@ -622,7 +643,7 @@ Done by the maintainer in the main checkout, in this order. The repo-root `.env`
   say archived.
 - Vendor discovery method (code search per org) is not automated; the catalog job should rerun it.
 
-<!-- reviewed: 2026-10-17 @ 6a383e6a8d24be2081e355278f5190224a3c1d6a -->
+<!-- reviewed: 2026-10-18 @ e76308dee76f2c1a6b2342205096ed28774b5816 -->
 
 ## Progress
 
@@ -643,6 +664,7 @@ Conduct tracks phase progress in each child plan's own `## Progress`. This list 
 | `20261016T231344` | 34 | writer and provenance seams, case-fold, `--group`, hint plumbing |
 | `20261017T004623` | 38 | three contradictions grilled: Windows writer mirrors the reader; taint is a command-time and hint-time concern, not a loader invariant; `verified` is the last manual audit date |
 | `20261017T025658` | 31 | taken at the recommended resolution without a grill: `read_trusted_config` owns open-and-trust; `--unlisted` on a catalog slug exits 1; the writer lock was later dropped in a consolidation pass |
+| grill 2026-10-18 (issue #148) | 4 | decision 3 amended: identifier-aware alias matching (original OR split, no stop-words), `get_code_snippet` scans `class_name`/`module`, smoke item 56 |
 
 No pass found a Critical finding. Most findings in each later pass were in edits from the pass before,
 so decisions 4, 7, 8 and 9 were rewritten as contracts (2026-10-17) rather than patched again.
