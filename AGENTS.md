@@ -157,7 +157,7 @@ src/pipecat_context_hub/
 ├── cli.py                    # CLI entry point (serve + refresh)
 ├── cli_query.py              # One-shot query subcommands (the MCP tools as shell commands)
 ├── cli_install.py            # `install` — register the MCP server with a coding agent
-├── cli_repos.py              # `repos list|add|remove` — edit PIPECAT_HUB_EXTRA_REPOS in config.toml (check order, shadow refusal)
+├── cli_repos.py              # `repos list|add|remove` — edit PIPECAT_HUB_EXTRA_REPOS in config.toml (check order, shadow refusal, hand-edit advice naming the resolved config path, `parseable = false` add warning)
 ├── data/repo_catalog.toml    # curated public repos by vendor/topic; source for generated .env.example / docs sections
 ├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat context-hub`
 ├── shared/                   # Pydantic data contracts, interfaces, config

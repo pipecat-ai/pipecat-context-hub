@@ -1,6 +1,6 @@
 # Repo catalog, `repos` command and corpus hints
 
-**Branch:** `feature/repo-catalog-pr1` (PR 1; PR 2 gets its own branch) | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs: PR 1 merged (#144, `5733f06`), PR 2 merged (#147, `05aaff3`))
+**Branch:** `feature/repo-catalog-pr1` (PR 1; PR 2 gets its own branch) | **Review Gates:** full | **Component:** config | **Status:** In progress (design grilled 2026-10-16; signed off by `/review-plan` 2026-10-17, see Findings; delivered as two PRs: PR 1 merged (#144, `5733f06`), PR 2 merged (#147, `05aaff3`); #145 follow-up on `fix/repos-parseable-and-polish`)
 
 **Delivery:** two PRs, each from its own conduct-format plan (see *Delivery*): PR 1 =
 [`20261017-feature-repo-catalog-pr1-catalog-and-repos.md`](20261017-feature-repo-catalog-pr1-catalog-and-repos.md),
