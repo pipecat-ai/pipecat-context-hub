@@ -195,4 +195,6 @@ config file is loaded — the hub will not quietly fall back to the default
 location when you asked for a specific file. Setting it to an *empty* value
 (`PIPECAT_HUB_CONFIG_FILE=`) is treated the same way: it disables the lookup
 for that invocation (warning, no config loaded). Unset the variable entirely
-to go back to the default location.
+to go back to the default location. `pipecat-context-hub repos add|remove|list`
+honour it too: they edit and read the file it names, and their refusals name that
+path.

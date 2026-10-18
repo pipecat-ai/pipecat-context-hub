@@ -419,8 +419,14 @@ the indexed pipecat version; re-verify against the current registry if they drif
     in effect there; the matching `--config-only` remove warns against
     `refresh --prune`. `repos list --groups` names the catalog groups. Finish with
     `repos remove pipecat-ai/tail` (`Removed`) and `repos remove --group <name>`.
+    A `parseable = false` repo (for example `repos add pipecat-ai/pipecat-client-ios`)
+    adds with a stderr warning, `repos add --group client-sdks` skips it
+    (`Nothing to add`), and `repos remove --group client-sdks` removes it. A refusal
+    of a slug that is already in the file names the scratch path
+    (`PIPECAT_HUB_CONFIG_FILE`), and no `Loaded N key(s)` line appears on stderr.
     Confirm no network access happens (works offline) and that the scratch
-    file keeps its comments. Unit-side counterpart: `tests/unit/test_cli_repos.py`.
+    file keeps its comments. Unit-side counterpart: `tests/unit/test_cli_repos.py`; the real console script
+    is driven by `tests/integration/test_repos_console_script.py` (POSIX-only).
 
 54. **Configured text never reaches the terminal raw (PR 1).** From the repo
     root, `uv run pipecat-context-hub check-deprecation PipelineTask | python -m json.tool`

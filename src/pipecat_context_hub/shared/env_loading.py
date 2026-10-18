@@ -595,6 +595,34 @@ def config_list_value(key: str, value: object) -> list[str] | None:
     return None if coerced is None else split_csv(coerced)
 
 
+def config_list_entries(value: object) -> list[str]:
+    """Every entry a hand edit of config.toml would find in a list-valued ``value``.
+
+    The lenient counterpart of :func:`config_list_value`: that one yields what the
+    loader *uses* and is ``None`` for a value it skips whole (an array with a
+    comma-bearing element, a mixed or nested array); this one yields what the file
+    *holds*, for a caller that must name an entry the loader ignores. A scalar, or
+    each scalar element of an array, goes through ``str()``; the entries are its
+    :func:`split_csv` parts (what the CSV rule would read back) **and**, for an array
+    element, the whole trimmed text when that differs (what the file literally holds,
+    e.g. ``"bad,slug/repo"``), so a caller matching either spelling finds it. Non-scalar
+    elements are dropped. Never logs, never ``None``.
+    """
+    is_array = isinstance(value, list)
+    items = value if isinstance(value, list) else [value]
+    entries: list[str] = []
+    for item in items:
+        if not isinstance(item, _SCALAR_TYPES):
+            continue
+        text = str(item).strip()
+        parts = split_csv(text)
+        entries.extend(parts)
+        # A bare string is the CSV list itself; only an array element is one entry.
+        if is_array and text and text not in parts:
+            entries.append(text)
+    return entries
+
+
 def _file_kind(mode: int) -> str:
     """Human-readable name for a non-regular file's type, for warnings."""
     for predicate, name in (

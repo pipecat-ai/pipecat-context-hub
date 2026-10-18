@@ -2162,6 +2162,39 @@ class TestSharedListRule:
             assert env_keys.split_csv(raw or "") == expected
 
 
+class TestConfigListEntries:
+    """`config_list_entries` is the lenient view: what the file holds, incl. skipped values."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("a/b, c/d,,", ["a/b", "c/d"]),
+            (["a/b", " c/d "], ["a/b", "c/d"]),
+            ([1, 2], ["1", "2"]),
+            (5, ["5"]),
+            ([], []),
+            (["a/b", 2], ["a/b", "2"]),  # mixed array: the loader skips it, the file holds both
+            (["x/a,x/b"], ["x/a", "x/b", "x/a,x/b"]),  # CSV parts and the literal element
+            (["bad,slug/repo"], ["bad", "slug/repo", "bad,slug/repo"]),
+            ([["a/b"], "c/d"], ["c/d"]),  # nested arrays are dropped
+            ({"a": 1}, []),
+            (None, []),
+        ],
+    )
+    def test_entries(self, value, expected):
+        assert env_loading.config_list_entries(value) == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        ["a/b, c/d", ["a/b", " c/d "], [1, 2], 5, [], ["a/b", 2], ["a,b"], {"a": 1}],
+    )
+    def test_is_a_superset_of_what_the_loader_uses(self, value):
+        """Invariant: any entry the loader would use, the lenient view also finds."""
+        used = env_loading.config_list_value("PIPECAT_HUB_EXTRA_REPOS", value)
+        held = env_loading.config_list_entries(value)
+        assert set(used or []) <= set(held)
+
+
 class TestSpecificRefusalReason:
     @pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
     def test_reason_names_the_predicate(self, tmp_path: Path):

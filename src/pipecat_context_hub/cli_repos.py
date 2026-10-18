@@ -9,9 +9,13 @@ force comes from the provenance map ``main()`` stores in
 Checks run in a fixed order for a positional slug (the first that applies
 decides): (1) default or tainted repo, (2) slug syntax and catalog membership,
 (3) a shadowing ``env`` / ``.env`` layer without ``--config-only``, (4) no-op,
-(5) write. ``--group`` skips tainted and ``parseable = false`` members and
-applies checks 3 to 5 to the rest; with no member left, nothing can be written,
-so it exits 0 (``Nothing to add`` / ``Nothing to remove``) without check 3.
+(5) write. ``add --group`` skips tainted and ``parseable = false`` members (the
+corpus hint's ``add_command`` relies on that); ``remove --group`` skips only
+tainted ones, so a ``parseable = false`` repo added singly can be removed by
+group. A positional ``add`` of a ``parseable = false`` repo still writes but warns
+on stderr. Checks 3 to 5 apply to the members left; with none left, nothing can
+be written, so it exits 0 (``Nothing to add`` / ``Nothing to remove``) without
+check 3.
 
 ``shared/config_writer`` (hence ``tomlkit``) is imported inside the add/remove
 bodies only, so ``import pipecat_context_hub.cli`` never loads it.
@@ -25,20 +29,24 @@ are additionally flagged ``repr() [invalid]`` by ``shown()`` where named.
 
 from __future__ import annotations
 
+import contextlib
 import functools
+import logging
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 
 import click
 
+from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig, SourceConfig
 from pipecat_context_hub.shared.env_keys import EXTRA_REPOS_ENV
 from pipecat_context_hub.shared.env_loading import (
     LAYER_ENV,
     SHADOWING_LAYERS,
     ConfigNotTrusted,
+    config_list_entries,
     config_list_value,
     parse_global_config,
     resolve_global_config_path,
@@ -48,6 +56,7 @@ from pipecat_context_hub.shared.paths import redact_home_in_text, shown_path
 from pipecat_context_hub.shared.repo_catalog import (
     Catalog,
     CatalogGroup,
+    CatalogRepo,
     load_catalog,
     member_skip_reason,
 )
@@ -127,25 +136,88 @@ def _catalog_or_fail() -> Catalog:
     return catalog
 
 
-# Appended to the check-1/2 refusals of a slug `repos` will not touch: if it is already in the
-# file (hand-written, or tainted after it was added), the CLI cannot remove it either.
-_HAND_EDIT = (
-    "If it is already listed in config.toml, remove it by editing "
-    "~/.config/pipecat-context-hub/config.toml by hand; `repos` will not change it."
+# Printed to stderr after a positional `add` of a `parseable = false` catalog repo.
+_UNPARSEABLE_NOTICE = (
+    "Warning: {slug} is marked `parseable = false` in the repo catalog: its code is not "
+    "parsed, so it can never produce `search_api` results."
 )
 
 
-def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str:
-    """Checks 1 and 2 for a positional slug; returns the slug to act on."""
+@contextlib.contextmanager
+def _loader_quiet() -> Iterator[None]:
+    """Drop the env loader's log records for the block: a read-only re-read of config.toml.
+
+    ``main()`` already ran the loader, which warned once about an untrusted or
+    group-writable file or a blank ``PIPECAT_HUB_CONFIG_FILE``; the same trust seam
+    warns on every call, so a second read would print each of those warnings twice.
+    """
+    loader_logger = logging.getLogger(env_loading.__name__)
+    drop = lambda record: False  # noqa: E731 - a one-use logging.Filter callable
+    loader_logger.addFilter(drop)
+    try:
+        yield
+    finally:
+        loader_logger.removeFilter(drop)
+
+
+def _hand_edit_note(slug: str) -> str:
+    """A leading-space sentence for a check-1/2 refusal when the file lists ``slug``, else ``""``.
+
+    A slug `repos` will not touch cannot be removed by it either (hand-written, or
+    tainted after it was added), so when config.toml holds it the refusal names the
+    resolved file (``PIPECAT_HUB_CONFIG_FILE`` honoured). A typo that was never
+    written gets no hand-edit advice.
+    """
+    with _loader_quiet():
+        path = resolve_global_config_path()
+        if path is None:
+            return ""
+        raw, _problem = _raw_extra_repos(path)
+    held = config_list_entries(raw) if raw is not None else []
+    if slug_key(slug) not in {slug_key(s) for s in held}:
+        return ""
+    return (
+        f" It is listed in {shown_path(path)}; `repos` will not change it, "
+        "so remove it by editing that file by hand."
+    )
+
+
+def _raw_extra_repos(path: Path) -> tuple[object | None, str | None]:
+    """``(raw PIPECAT_HUB_EXTRA_REPOS value, problem)``; the value is ``None`` when absent.
+
+    The one read of config.toml for this key, via ``parse_global_config`` only (the
+    trust seam); read-only. TOML has no null, so ``None`` is unambiguous.
+    """
+    try:
+        data = parse_global_config(path)
+    except ConfigNotTrusted as exc:
+        return None, f"ignoring {shown_path(path)}: not trusted ({exc.reason})"
+    except tomllib.TOMLDecodeError as exc:
+        return None, (
+            f"ignoring {shown_path(path)}: not valid TOML ({redact_home_in_text(str(exc))})"
+        )
+    return data.get(EXTRA_REPOS_ENV), None
+
+
+def _resolve_positional(
+    ctx: click.Context, slug: str, *, unlisted: bool
+) -> tuple[str, CatalogRepo | None]:
+    """Checks 1 and 2 for a positional slug; returns ``(slug to act on, catalog entry)``.
+
+    The entry is ``None`` for an unlisted slug (``--unlisted``): the catalog says nothing
+    about it.
+    """
     config = _config(ctx)
     # 1. default or tainted repo
     if config.sources.is_default(slug):
         _fail(f"{slug} is a default repo; it is always indexed and cannot be added or removed.")
     if config.sources.is_tainted(slug):
-        _fail(f"{slug} is tainted (PIPECAT_HUB_TAINTED_REPOS) and is never indexed. {_HAND_EDIT}")
+        _fail(
+            f"{slug} is tainted (PIPECAT_HUB_TAINTED_REPOS) and is never indexed.{_hand_edit_note(slug)}"
+        )
     # 2. syntax and catalog membership
     if not is_valid_repo_slug(slug):
-        _fail(f"{slug!r} is not a valid repo slug; expected owner/repo. {_HAND_EDIT}")
+        _fail(f"{slug!r} is not a valid repo slug; expected owner/repo.{_hand_edit_note(slug)}")
     catalog = _catalog_or_fail()
     entry = catalog.find_repo(slug)
     if entry is None:
@@ -154,12 +226,12 @@ def _resolve_positional(ctx: click.Context, slug: str, *, unlisted: bool) -> str
                 f"{slug} is not in the repo catalog. Pass --unlisted to act on a repo "
                 "that is not listed there."
             )
-        return slug
+        return slug, None
     if unlisted:
         _fail(
             f"{entry.slug} is in the repo catalog; drop --unlisted (the catalog spelling is used)."
         )
-    return entry.slug
+    return entry.slug, entry
 
 
 def _resolve_group(catalog: Catalog, name: str) -> CatalogGroup:
@@ -234,12 +306,20 @@ def _validate_selector(slug: str | None, group: str | None, unlisted: bool) -> N
         _fail("give a SLUG (owner/repo) or --group NAME.")
 
 
-def _skipped_lines(group: CatalogGroup, sources: SourceConfig) -> tuple[list[str], list[str]]:
-    """``(actionable, skipped_lines)`` for a group's members (``member_skip_reason``)."""
+def _skipped_lines(
+    group: CatalogGroup, sources: SourceConfig, *, for_removal: bool
+) -> tuple[list[str], list[str]]:
+    """``(actionable, skipped_lines)`` for a group's members.
+
+    Both modes go through ``member_skip_reason``: ``add`` skips tainted and
+    ``parseable = false`` members (as the corpus hint expects); ``remove``
+    (``for_removal``) skips only tainted ones, so it can clear any repo the CLI could
+    have added.
+    """
     actionable: list[str] = []
     skipped: list[str] = []
     for repo in group.repos:
-        reason = member_skip_reason(repo, sources.is_tainted)
+        reason = member_skip_reason(repo, sources.is_tainted, for_removal=for_removal)
         if reason is None:
             actionable.append(repo.slug)
         else:
@@ -250,14 +330,14 @@ def _skipped_lines(group: CatalogGroup, sources: SourceConfig) -> tuple[list[str
 def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool) -> None:
     catalog = _catalog_or_fail()
     group = _resolve_group(catalog, name)
-    members, skipped = _skipped_lines(group, _config(ctx).sources)
+    members, skipped = _skipped_lines(group, _config(ctx).sources, for_removal=not adding)
     before: list[str] = []
     changed = False
     if members:
         layer = _refuse_if_shadowed(ctx, config_only)  # check 3: only when a write could happen
         before, changed = _apply(add=members) if adding else _apply(remove=members)
     else:
-        # Nothing actionable (every member tainted or `parseable = false`): no
+        # Nothing actionable (every member tainted, or for `add` also `parseable = false`): no
         # write can happen, so neither the shadow refusal nor config.toml's
         # validation applies; exit 0 with the skipped list (parent plan).
         layer = _shadowing_layer(ctx)
@@ -288,7 +368,7 @@ def _run_group(ctx: click.Context, name: str, *, config_only: bool, adding: bool
 def _run_positional(
     ctx: click.Context, slug: str, *, unlisted: bool, config_only: bool, adding: bool
 ) -> None:
-    target = _resolve_positional(ctx, slug, unlisted=unlisted)  # checks 1, 2
+    target, entry = _resolve_positional(ctx, slug, unlisted=unlisted)  # checks 1, 2
     layer = _refuse_if_shadowed(ctx, config_only)  # check 3
     note = _shadow_note(layer)
     if adding:  # checks 4, 5
@@ -297,6 +377,8 @@ def _run_positional(
             echo(f"Already in config.toml: {target}" + note)
             return
         echo(f"Added {target}")
+        if entry is not None and not entry.parseable:
+            echo(_UNPARSEABLE_NOTICE.format(slug=target), err=True)
         if unlisted:
             owner = target.split("/", 1)[0]
             echo(_UNLISTED_NOTICE.format(slug=target, owner=owner), err=True)
@@ -316,8 +398,8 @@ _GROUP_OPT = click.option(
     "group",
     metavar="NAME",
     help=(
-        "Act on every parseable, non-tainted repo of this catalog group "
-        "(`repos list --groups` names them)."
+        "Act on every non-tainted repo of this catalog group; `add` also skips "
+        "`parseable = false` repos (`repos list --groups` names the groups)."
     ),
 )
 _CONFIG_ONLY_OPT = click.option(
@@ -332,7 +414,8 @@ def repos_group() -> None:
     """List, add and remove extra repos (PIPECAT_HUB_EXTRA_REPOS in config.toml).
 
     \b
-    `add` and `remove` edit ~/.config/pipecat-context-hub/config.toml only, offline;
+    `add` and `remove` edit config.toml only (default
+    ~/.config/pipecat-context-hub/config.toml, or $PIPECAT_HUB_CONFIG_FILE), offline;
     run `pipecat-context-hub refresh` afterwards to (re)index.
     """
 
@@ -388,17 +471,12 @@ def _configured_in_toml() -> tuple[list[str], str | None]:
     path = resolve_global_config_path()
     if path is None:
         return [], "no config.toml location could be resolved"
-    try:
-        data = parse_global_config(path)
-    except ConfigNotTrusted as exc:
-        return [], f"ignoring {shown_path(path)}: not trusted ({exc.reason})"
-    except tomllib.TOMLDecodeError as exc:
-        return [], (
-            f"ignoring {shown_path(path)}: not valid TOML ({redact_home_in_text(str(exc))})"
-        )
-    if EXTRA_REPOS_ENV not in data:
+    raw, problem = _raw_extra_repos(path)
+    if problem is not None:
+        return [], problem
+    if raw is None:
         return [], None
-    configured = config_list_value(EXTRA_REPOS_ENV, data[EXTRA_REPOS_ENV])  # the loader's own rule
+    configured = config_list_value(EXTRA_REPOS_ENV, raw)  # the loader's own rule
     if configured is None:
         return (
             [],
