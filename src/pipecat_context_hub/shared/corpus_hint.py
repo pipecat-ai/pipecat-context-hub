@@ -135,8 +135,8 @@ def groups_not_indexed(
 _HINT_TEXT_ARGS: dict[str, tuple[str, ...]] = {
     "search_docs": ("query",),
     "search_examples": ("query",),
-    "search_api": ("query",),
-    "get_code_snippet": ("symbol", "intent"),
+    "search_api": ("query", "class_name", "module"),
+    "get_code_snippet": ("symbol", "intent", "class_name", "module"),
 }
 
 _ADD_COMMAND = "pipecat-context-hub repos add --config-only --group {group}"
@@ -148,12 +148,38 @@ def _query_text(tool: str, args: Mapping[str, Any]) -> str | None:
     if keys is None:
         return None
     parts = [v for k in keys if isinstance(v := args.get(k), str) and v.strip()]
-    return " ".join(parts) if parts else None
+    # A newline, not a space: a multi-word alias ("nova sonic") must not span two arguments.
+    return "\n".join(parts) if parts else None
 
 
-def _alias_matches(alias: str, text: str) -> bool:
-    pattern = rf"(?<!\w){re.escape(alias.casefold())}(?!\w)"
-    return re.search(pattern, text) is not None
+# A lower-case letter or digit followed by an upper-case one ("TavusVideo"), and an
+# acronym followed by a capitalised word ("AWSBedrock").
+_CAMEL_BREAK = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_UNDERSCORES = re.compile(r"_+")
+
+
+def _identifier_words(text: str) -> str:
+    """``text`` with CamelCase runs and underscore runs split into space-separated words.
+
+    A run of underscores is one separator, so ``nova__sonic`` still reads "nova sonic".
+    """
+    return _CAMEL_BREAK.sub(" ", _UNDERSCORES.sub(" ", text))
+
+
+def _matchable(text: str) -> tuple[str, str]:
+    """The two casefolded forms an alias is matched against: the text as typed, and split.
+
+    The original is kept so the identifier split can only add matches: "iOS app" splits
+    to "i OS app", which has no "ios" word.
+    """
+    # One ``.casefold`` call site: test_slug_identity_has_one_owner counts them in this file.
+    original, split = (form.casefold() for form in (text, _identifier_words(text)))
+    return original, split
+
+
+def _alias_matches(alias: str, forms: tuple[str, ...]) -> bool:
+    pattern = re.compile(rf"(?<!\w){re.escape(alias.casefold())}(?!\w)")
+    return any(pattern.search(form) for form in forms)
 
 
 def corpus_hint(
@@ -168,7 +194,9 @@ def corpus_hint(
 
     Fires when a catalog group alias appears in the tool's query text (word
     boundary, case-insensitive, over the whole text including every ``+`` / ``&``
-    concept) and that group has a parseable, untainted repo with no indexed
+    concept; CamelCase and snake_case identifiers also match word by word, so
+    ``TavusVideoService`` and ``aws_bedrock`` hint, ``LawsOfRobotics`` does not)
+    and that group has a parseable, untainted repo with no indexed
     records. ``None`` (no key at all) for non-search tools, no alias match, no
     catalog, or an unreadable count. Never raises.
 
@@ -186,8 +214,8 @@ def corpus_hint(
         catalog = load_catalog()
         if catalog is None:
             return None
-        folded = text.casefold()
-        matched = [g for g in catalog.groups if any(_alias_matches(a, folded) for a in g.aliases)]
+        forms = _matchable(text)
+        matched = [g for g in catalog.groups if any(_alias_matches(a, forms) for a in g.aliases)]
         if not matched:
             return None
         indexed = indexed_repos(index_store)

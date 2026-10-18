@@ -15,6 +15,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import BaseModel
 
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.shared.corpus_hint import (
@@ -402,6 +403,12 @@ description = "Murf"
 aliases = ["murf"]
 repos = [{ slug = "murf/one" }]
 
+[groups.mobile]
+kind = "topic"
+description = "Mobile"
+aliases = ["ios"]
+repos = [{ slug = "mo/one" }]
+
 [groups.swift]
 kind = "topic"
 description = "Swift only"
@@ -485,6 +492,53 @@ class TestCorpusHint:
     def test_alias_needs_a_word_boundary(self, query: str) -> None:
         # "aws" inside "laws" must not match.
         assert _hint(query) is None
+
+    @pytest.mark.parametrize(
+        ("query", "group"),
+        [
+            ("AWSBedrockLLMService", "aws"),
+            ("aws_bedrock", "aws"),
+            ("NovaSonicLLMService", "aws"),
+            ("NvidiaSTTService", "nvidia"),
+            ("nvidia_stt_service", "nvidia"),
+            ("MurfTTSService", "murf"),
+            # A digit before a capital is a word break too ("Llama3 Nvidia Service").
+            ("Llama3NvidiaService", "nvidia"),
+            # A run of underscores is one separator, so a multi-word alias still reads.
+            ("nova__sonic", "aws"),
+            ("Nova__Sonic", "aws"),
+        ],
+    )
+    def test_identifier_shaped_query_hints(self, query: str, group: str) -> None:
+        # CamelCase runs and underscores join \w, so the plain word boundary missed these.
+        hint = _hint(query)
+        assert hint is not None
+        assert hint["matched_groups"] == [group]
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "LawsOfRobotics",
+            "FlawsInCode",
+            "ClawsClient",
+            "claws_of_x",
+            "InnovaSonicBoom",
+            "SmurfTTSService",
+            "DrawsClient",
+            "iosx_core",
+            "aws2bedrock",
+        ],
+    )
+    def test_identifier_split_needs_a_whole_token(self, query: str) -> None:
+        # An alias must equal a whole camel/snake token (run), never a substring of one.
+        assert _hint(query) is None
+
+    def test_ios_alias_still_matches_the_original_text(self) -> None:
+        # "iOS app" splits to "i OS app", which has no "ios" word: only the original-text
+        # arm keeps this hinting.
+        hint = _hint("iOS app")
+        assert hint is not None
+        assert hint["matched_groups"] == ["mobile"]
 
     @pytest.mark.parametrize("query", ["TTS + nvidia", "TTS & nvidia"])
     def test_concept_queries_match_every_concept(self, query: str) -> None:
@@ -587,12 +641,48 @@ class TestCorpusHintPerTool:
         assert _hint("nvidia", tool=tool) is not None
         # A symbol/intent on these tools is not the matched text.
         assert _hint("x", tool=tool, args={"query": "x", "symbol": "nvidia"}) is None
+        # The ``class_name`` / ``module`` filters are topic text only where the tool has them.
+        for key in ("class_name", "module"):
+            hinted = _hint("x", tool=tool, args={"query": "x", key: "nvidia"}) is not None
+            assert hinted == (tool == "search_api"), (tool, key)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            {"query": "__init__", "class_name": "NvidiaSTTService"},
+            {"query": "connect", "module": "pipecat.services.nvidia.stt"},
+        ],
+    )
+    def test_search_api_reads_its_class_and_module_filters(self, args: dict[str, str]) -> None:
+        assert _hint("", tool="search_api", args=args)
 
     def test_get_code_snippet_reads_symbol(self) -> None:
         assert _hint("", tool="get_code_snippet", args={"symbol": "NvidiaSTTService nvidia"})
 
     def test_get_code_snippet_reads_intent(self) -> None:
         assert _hint("", tool="get_code_snippet", args={"intent": "nvidia riva setup"})
+
+    def test_get_code_snippet_reads_class_name(self) -> None:
+        args = {"symbol": "__init__", "class_name": "NvidiaSTTService"}
+        assert _hint("", tool="get_code_snippet", args=args)
+
+    def test_get_code_snippet_reads_module(self) -> None:
+        args = {"symbol": "__init__", "module": "pipecat.services.nvidia.stt"}
+        assert _hint("", tool="get_code_snippet", args=args)
+
+    @pytest.mark.parametrize(
+        ("tool", "args"),
+        [
+            ("search_api", {"query": "nova", "class_name": "SonicThing"}),
+            ("get_code_snippet", {"symbol": "nova", "intent": "sonic"}),
+            ("get_code_snippet", {"symbol": "nova", "module": "sonic.thing"}),
+        ],
+    )
+    def test_a_multi_word_alias_never_spans_two_arguments(
+        self, tool: str, args: dict[str, str]
+    ) -> None:
+        # "nova sonic" is one alias; "nova" in one argument and "sonic" in the next is not it.
+        assert _hint("", tool=tool, args=args) is None
 
     def test_get_code_snippet_path_alone_never_hints(self) -> None:
         args = {"path": "src/pipecat/services/nvidia/stt.py"}
@@ -618,6 +708,26 @@ class TestCorpusHintPerTool:
         args = {"query": "nvidia", "symbol": "nvidia", "intent": "nvidia"}
         hinting = {t for t in registered if _hint("", tool=t, args=args) is not None}
         assert hinting == expected
+
+    def test_scanned_keys_are_fields_of_the_tools_input_model(self) -> None:
+        """A renamed input field would otherwise leave the table scanning a key no call carries."""
+        from pipecat_context_hub.shared import corpus_hint as module
+        from pipecat_context_hub.shared.types import (
+            GetCodeSnippetInput,
+            SearchApiInput,
+            SearchDocsInput,
+            SearchExamplesInput,
+        )
+
+        models: dict[str, type[BaseModel]] = {
+            "search_docs": SearchDocsInput,
+            "search_examples": SearchExamplesInput,
+            "search_api": SearchApiInput,
+            "get_code_snippet": GetCodeSnippetInput,
+        }
+        assert set(models) == set(module._HINT_TEXT_ARGS)
+        for tool, model in models.items():
+            assert set(module._HINT_TEXT_ARGS[tool]) <= set(model.model_fields), tool
 
     def test_unknown_tool_never_hints(self) -> None:
         assert _hint("nvidia", tool="not_a_tool") is None
@@ -736,6 +846,53 @@ class TestFrozenRealQueries:
         assert hint is not None
         assert hint["matched_groups"] == ["tavus"]
         assert hint["repos_not_indexed"] == ["aws-samples/sample-voice-ai-tavus-avatar-demo"]
+
+    @pytest.mark.parametrize(
+        ("query", "group"),
+        [
+            ("TavusVideoService", "tavus"),
+            ("AWSBedrockLLMService", "aws"),
+            ("GeminiLiveLLMService", "google"),
+            ("aws_bedrock", "aws"),
+        ],
+    )
+    def test_issue_148_identifier_queries_hint(self, query: str, group: str) -> None:
+        # The four queries from issue #148, verbatim, against the shipped catalog.
+        for tool in ("search_api", "search_docs", "search_examples"):
+            hint = _hint(query, {}, tool=tool)
+            assert hint is not None, (tool, query)
+            assert group in hint["matched_groups"]
+
+    def test_issue_148_get_code_snippet_class_name_hints(self) -> None:
+        args = {"symbol": "__init__", "class_name": "TavusVideoService"}
+        hint = _hint("", {}, tool="get_code_snippet", args=args)
+        assert hint is not None
+        assert hint["matched_groups"] == ["tavus"]
+
+    @pytest.mark.parametrize(
+        ("query", "group"),
+        [
+            ("TurnDetection", "audio-and-benchmarks"),
+            ("NovaSonicService", "aws"),
+            ("LipSyncBuffer", "lip-sync-characters"),
+            ("AwsClient", "aws"),
+        ],
+    )
+    def test_shipped_aliases_hint_from_a_whole_identifier_token(
+        self, query: str, group: str
+    ) -> None:
+        # Positive controls for the substring negatives below: the same aliases do hint.
+        hint = _hint(query, {})
+        assert hint is not None
+        assert group in hint["matched_groups"]
+
+    @pytest.mark.parametrize(
+        "query",
+        ["ReturnDetection", "InnovaSonicBoom", "ClipSyncer", "FlawsInCode"],
+    )
+    def test_shipped_aliases_need_a_whole_identifier_token(self, query: str) -> None:
+        # turn detection / nova sonic / lip sync / aws as substrings of one token.
+        assert _hint(query, {}) is None
 
     def test_tavus_indexed_gives_no_hint(self) -> None:
         assert _hint(_FROZEN_TAVUS, {"aws-samples/sample-voice-ai-tavus-avatar-demo": 9}) is None

@@ -1784,6 +1784,33 @@ class TestCorpusHintBothFrontDoors(_HintCatalogMixin):
                 frozenset(),
                 id="snippet",
             ),
+            pytest.param(
+                ["search-docs", "AcmeVideoService"],
+                "search_docs",
+                {"query": "AcmeVideoService"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="camelcase-identifier",
+            ),
+            pytest.param(
+                ["get-code-snippet", "--symbol", "connect", "--class-name", "AcmeVideoService"],
+                "get_code_snippet",
+                {"symbol": "connect", "class_name": "AcmeVideoService"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="snippet-class-name",
+            ),
+            pytest.param(
+                ["search-api", "connect", "--class-name", "AcmeVideoService"],
+                "search_api",
+                {"query": "connect", "class_name": "AcmeVideoService"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="search-api-class-name",
+            ),
         ],
     )
     def test_identical_hint_json(
@@ -1801,11 +1828,7 @@ class TestCorpusHintBothFrontDoors(_HintCatalogMixin):
             cli_args,
             _hint_store(counts),
             tmp_path,
-            handler_target=(
-                "pipecat_context_hub.server.tools.get_code_snippet.handle_get_code_snippet"
-                if tool == "get_code_snippet"
-                else "pipecat_context_hub.server.tools.search_docs.handle_search_docs"
-            ),
+            handler_target=f"pipecat_context_hub.server.tools.{tool}.handle_{tool}",
             env=env,
         )
         assert cli.exit_code == 0, cli.stderr

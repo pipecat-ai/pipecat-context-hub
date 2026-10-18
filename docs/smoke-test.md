@@ -460,6 +460,24 @@ the indexed pipecat version; re-verify against the current registry if they drif
     no hint. Verdicts hold only while the live index matches the 2026-10-17
     provenance; a changed verdict is a data change, not a regression. Regression:
     `tests/unit/test_corpus_hint.py`.
+56. **Corpus hint on identifier-shaped queries (issue #148).** An alias also
+    matches the words of a CamelCase or snake_case identifier. With the
+    vendor's catalog repos unindexed, `search-api` at `--limit 3` carries a
+    `corpus_hint` for each of these (the CLI and MCP door give identical JSON):
+    - `TavusVideoService` -- `matched_groups` includes `tavus`.
+    - `AWSBedrockLLMService` -- includes `aws`.
+    - `aws_bedrock` -- includes `aws`.
+    - `GeminiLiveLLMService` -- includes `google`.
+    - `get-code-snippet --symbol __init__ --class-name TavusVideoService` --
+      includes `tavus` (`class_name` and `module` are scanned beside `symbol`;
+      `search-api` scans its `--class-name` and `--module` filters too).
+    Negatives, never a hint from any group: `LawsOfRobotics`, `FlawsInCode`,
+    `claws_of_x`, `ClipSyncer`. With a group's repos indexed, its identifier
+    query carries no hint. Item 55's verdicts are unchanged. Verdicts hold only
+    while the live index matches the unindexed/indexed state of each group; a
+    changed verdict is a data change, not a regression. Regression:
+    `tests/unit/test_corpus_hint.py` (`test_issue_148_*`) and
+    `tests/unit/test_cli_query.py` (`TestCorpusHintBothFrontDoors`).
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
