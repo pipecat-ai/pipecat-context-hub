@@ -239,6 +239,21 @@ The default index includes:
 
 To add repos or pin the framework version, see [Adding repos](configuration.md#adding-repos). Only Python, TypeScript, and RST are parsed.
 
+The `repos` command edits `PIPECAT_HUB_EXTRA_REPOS` in `config.toml` for you
+(rules in [Managing repos from the CLI](configuration.md#managing-repos-from-the-cli));
+run `refresh` afterwards to index the change:
+
+```bash
+pipecat-context-hub repos list [--groups]            # effective repos (default / catalog / unlisted)
+pipecat-context-hub repos add <owner/repo>           # also --group NAME, --unlisted, --config-only
+pipecat-context-hub repos remove <owner/repo>        # same options as add
+```
+
+Maintainers keep the [repo catalog](configuration.md#repo-catalog) current with two
+network-only recipes, never run in PR CI: `just catalog-health` (private, missing,
+archived or renamed entries; run weekly by `catalog-health.yml`) and
+`just catalog-curate` (report-only per-repo stats and vendor candidates).
+
 ## Security
 
 - Threat model: [docs/security/threat-model.md](security/threat-model.md)
