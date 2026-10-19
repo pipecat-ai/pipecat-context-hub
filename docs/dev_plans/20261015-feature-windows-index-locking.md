@@ -102,6 +102,18 @@ Once green, drop the "untested" caveat from all three places that carry it:
 `CHANGELOG.md` (Security entry), `docs/CONTRIBUTING.md` (the `ingest_filters.py`
 layout line) and `docs/security/threat-model.md` (the symlink bullet).
 
+**R9 (from W9, not Windows-specific): ingest discovery cleanups deferred from the
+symlink fix.** Do them in the R8 branch or a separate chore PR; neither changes
+behaviour, so neither needs a Windows host.
+- Make `_discover_under_examples` public (`discover_under_examples`).
+  `taxonomy.py` imports the private name from `github_ingest.py` to enforce the Seam 1
+  contract, so it is already a cross-module API.
+- Unify the three `examples/` plain-directory checks into one helper. Today
+  `github_ingest.py::_find_example_dirs` (~506), `taxonomy.py::build_from_directory`
+  (`examples_is_real`, ~468) and `taxonomy.py::build_from_examples_repo` (~624) each
+  spell `is_plain_dir(examples_dir)` themselves; the contract that they agree is held
+  by convention and the Seam 1 tests only.
+
 ## Non-goals
 - Changing POSIX behaviour. Every requirement above must leave `fcntl.flock`
   semantics and the existing POSIX tests untouched.
