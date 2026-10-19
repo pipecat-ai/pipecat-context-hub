@@ -210,7 +210,7 @@ dashboard/
     └── extract_dashboard.py  # Index stats → dashboard_data.json
 ```
 
-Entries an ingest walk discovers inside a cloned repo (files and directories under the clone root) are filtered with `is_plain_file` / `is_plain_dir` (`services/ingest/ingest_filters.py`), never `Path.is_file` / `is_dir` / `exists`: a committed symlink can point outside the clone, and those calls follow links (and raise `PermissionError` on an untraversable target). Management checks on the clone root itself and `.git` are exempt. Discovery uses `is_plain_*`; read sites deliberately keep `is_symlink()` + `resolve()`-within-root as defense in depth.
+Entries an ingest walk discovers inside a cloned repo (files and directories under the clone root) are filtered with `is_plain_file` / `is_plain_dir` (`services/ingest/ingest_filters.py`), never `Path.is_file` / `is_dir` / `exists`: a committed symlink can point outside the clone, and those calls follow links (and on Python 3.11-3.13 raise `PermissionError` on an untraversable target). Management checks on the clone root itself and `.git` are exempt. Discovery uses `is_plain_*`. The code-file, version-file and `source_ingest.py` read sites additionally keep a `resolve()`-within-root check (plus `is_symlink()` where present) as defense in depth; the taxonomy README and `.py` readers and the README fallback under the clone root rely on `is_plain_file` alone.
 
 ## Typer Bridge (`pipecat context-hub`)
 

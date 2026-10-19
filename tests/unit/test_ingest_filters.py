@@ -70,7 +70,10 @@ class TestPlainPathPredicates:
         assert not is_plain_file(tmp_path / "nope")
 
     def test_link_into_an_untraversable_directory_does_not_raise(self, tmp_path: Path):
-        """``Path.is_dir()`` / ``is_file()`` follow the link and raise ``PermissionError``."""
+        """``Path.is_dir()`` / ``is_file()`` follow the link and raise ``PermissionError`` on 3.11-3.13.
+
+        3.14 returns False, so this guards the older interpreters.
+        """
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             pytest.skip("root can traverse any directory")
         locked = tmp_path / "locked"

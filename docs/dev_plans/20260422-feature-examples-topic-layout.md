@@ -10,7 +10,8 @@
 > **Note (2026-10-18):** the smoke invariants now iterate `github_ingest._find_example_dirs`
 > (which falls back to root-level dirs and refuses symlinked directories via
 > `ingest_filters.is_plain_dir`). `_discover_under_examples`, named throughout this plan,
-> remains the topic-layout walk it delegates to.
+> remains the topic-layout walk it delegates to. In the dispatch below, "exists" now means
+> "is a real directory" (a symlink or junction is treated as absent).
 
 ## Objective
 

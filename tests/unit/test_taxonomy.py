@@ -1340,7 +1340,10 @@ class TestSymlinkedPythonFiles:
         assert "elevenlabs" not in self._code_tags(entry)
 
     def test_a_symlink_into_an_untraversable_directory_does_not_abort(self, tmp_path: Path):
-        """``Path.is_file()`` follows the link and raises ``PermissionError``; ``lstat`` does not."""
+        """``Path.is_file()`` follows the link and raises ``PermissionError`` on 3.11-3.13.
+
+        3.14 returns False; ``lstat`` never raises.
+        """
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             pytest.skip("root can traverse any directory")
         locked = tmp_path / "locked"

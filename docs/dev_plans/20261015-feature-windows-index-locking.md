@@ -29,7 +29,7 @@ of Windows' file-handle semantics (open files cannot be deleted, no
 | W6 | Refresh generation is `(st_ino, st_mtime_ns, st_size)` of the lock file. NTFS file IDs and timestamp granularity differ from POSIX inodes; whether `st_ino` is non-zero and stable, and whether the size-stepping bump is visible across handles, is untested. | `refresh_generation` (~295) | If it did not change, `serve` would keep a stale handle after a refresh and serve the old graph. |
 | W7 | Windows CI runs only a subset (`tests/unit/test_index_store.py`, `test_format_detection`, `test_metadata_types`, `test_taxonomy`, `test_github_ingest`, `test_cli`, `test_hub_status`, `test_env_loading`, `test_config`). `test_index_lock.py`, the reopening/serve tests and the integration tests are not run there; several are `skipif(win32)` outright. | `.github/workflows/ci.yml` windows-smoke | Nothing automated has ever executed the Windows lock path. |
 | W8 | Lock file deleted or replaced outside the hub while held lets two refreshes overlap. Not Windows-specific (accepted on every platform) but Windows is likelier to see it: antivirus/indexers and "delete the data dir" habits. | dev plan 20261014, accepted residual | Two refreshes interleave HNSW writes (the corruption this branch set out to prevent). |
-| W9 | Symlink and junction skipping in the ingest walkers (`is_plain_dir` / `is_plain_file`, branch `fix/ingest-skip-symlinked-dirs`) was never run against a real Windows link. Every symlink test is `skipif(win32)` because creating symlinks needs privileges, so `is_reparse_link` is untested for junctions (creatable unprivileged with `mklink /J`). `tests/unit/test_source_ingest.py` is not in the windows-smoke list at all. Also unverified: `_scannable_py_files(recursive=True)` in `taxonomy.py` uses `rglob`, which may descend a junction nested inside a plain example directory (only the leaf is `lstat`'d, and unlike `github_ingest` there is no `resolve()` containment check). | `shared/paths.py::is_reparse_link`, `ingest_filters.py`, `taxonomy.py` (~688, ~739), `source_ingest.py` | A repo committing a junction-like directory could have outside files read into taxonomy tags or `readme_content` on Windows, and CHANGELOG can only say junctions are skipped, not that it was tested. |
+| W9 | Symlink and junction skipping in the ingest walkers (`is_plain_dir` / `is_plain_file`, branch `fix/ingest-skip-symlinked-dirs`) was never run against a real Windows link. Every symlink test is `skipif(win32)` because creating symlinks needs privileges, so `is_reparse_link` is untested for junctions (creatable unprivileged with `mklink /J`). `tests/unit/test_ingest_filters.py`, `tests/unit/test_source_ingest.py` and `tests/unit/test_smoke_scaffold.py` are not in the windows-smoke list at all (`test_taxonomy.py` and `test_github_ingest.py` are, but their symlink rows are `skipif(win32)`). Also unverified: `_scannable_py_files(recursive=True)` in `taxonomy.py` uses `rglob`, which may descend a junction nested inside a plain example directory (only the leaf is `lstat`'d, and unlike `github_ingest` there is no `resolve()` containment check). | `shared/paths.py::is_reparse_link`, `ingest_filters.py`, `taxonomy.py` (~688, ~739), `source_ingest.py` | A repo committing a junction-like directory could have outside files read into taxonomy tags or `readme_content` on Windows, and CHANGELOG can only say junctions are skipped, not that it was tested. |
 
 ## Requirements for the follow-up
 
@@ -95,9 +95,12 @@ discovery, the taxonomy builder and `source_ingest` do not read through it; and 
 junction nested inside a plain example dir is not walked by
 `_scannable_py_files(recursive=True)`. If the last fails, replace `rglob` with a walk
 that prunes `is_reparse_link` directories, or add the same `resolve()` containment
-check `github_ingest` uses. Add `tests/unit/test_source_ingest.py` to the
-windows-smoke list. Once green, drop the "untested" caveat from the CHANGELOG
-Security entry.
+check `github_ingest` uses. Add `tests/unit/test_ingest_filters.py` and
+`tests/unit/test_source_ingest.py` to the windows-smoke list (and
+`tests/unit/test_smoke_scaffold.py` if its symlink rows get a junction variant).
+Once green, drop the "untested" caveat from all three places that carry it:
+`CHANGELOG.md` (Security entry), `docs/CONTRIBUTING.md` (the `ingest_filters.py`
+layout line) and `docs/security/threat-model.md` (the symlink bullet).
 
 ## Non-goals
 - Changing POSIX behaviour. Every requirement above must leave `fcntl.flock`

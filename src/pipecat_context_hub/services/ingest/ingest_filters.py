@@ -28,8 +28,9 @@ defense-in-depth rule: the per-file ``resolve()``-within-root checks still run a
 the code/TypeScript/RST/``.pyi`` read sites in ``github_ingest.py`` and
 ``source_ingest.py`` and, for the version files, in ``github_ingest._is_safe_file``,
 so a path that slips past discovery (a linked parent, a race) still cannot leave
-the clone there. Direct children of the clone root, such as the README fallback,
-have no ``resolve()`` check and rely on ``is_plain_file`` alone.
+the clone there. The ``taxonomy.py`` README and ``.py`` readers and the README
+fallback under the clone root have no ``resolve()`` check and rely on
+``is_plain_file`` alone.
 """
 
 from __future__ import annotations
@@ -53,9 +54,10 @@ def is_plain_file(path: Path) -> bool:
     (that is the separate ``resolve()``-within-root containment check).
 
     One ``lstat`` (does not follow links), so it can neither be fooled by nor
-    trip over a link's target. ``Path.is_file()`` follows the link first and
-    raises ``PermissionError`` for a link into a directory the user cannot
-    traverse, which aborts the whole refresh just as a dangling link did.
+    trip over a link's target. ``Path.is_file()`` follows the link first and, on
+    Python 3.11-3.13, raises ``PermissionError`` for a link into a directory the
+    user cannot traverse (3.14 returns False), which aborts the whole refresh
+    just as a dangling link did.
     """
     try:
         return stat.S_ISREG(path.lstat().st_mode)

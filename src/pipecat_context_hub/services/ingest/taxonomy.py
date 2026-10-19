@@ -438,12 +438,14 @@ class TaxonomyBuilder:
 
         Dispatch order:
 
-        1. If ``examples/foundational/`` exists, scan the legacy foundational
-           tree **and** walk any non-foundational sibling dirs under
-           ``examples/`` as topic-layout entries (preserves the
-           ``v0.0.96``-era mixed layout where ``examples/foundational/`` lives
-           alongside ``examples/simple-chatbot/``).
-        2. Else if ``examples/`` exists with any subdirs, treat as a pure
+        1. If ``examples/foundational/`` is a real directory (a symlink or
+           junction is treated as absent), scan the legacy foundational tree
+           **and** walk any non-foundational sibling dirs under ``examples/``
+           as topic-layout entries (preserves the ``v0.0.96``-era mixed layout
+           where ``examples/foundational/`` lives alongside
+           ``examples/simple-chatbot/``).
+        2. Else if ``examples/`` is a real directory (a symlink or junction is
+           treated as absent) with any real subdirs, treat as a pure
            topic-based layout (current pipecat main).
         3. Else fall back to ``build_from_examples_repo(root)`` for the
            ``pipecat-examples`` layout where top-level dirs are each an

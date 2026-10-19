@@ -1035,7 +1035,10 @@ class TestSymlinksAreNotFollowed:
         reason="permission bits do not bind root",
     )
     async def test_symlink_into_untraversable_dir_does_not_abort(self, tmp_path: Path):
-        """``is_file()`` on such a link raises ``PermissionError`` on Python 3.11/3.12."""
+        """``is_file()`` on such a link raises ``PermissionError`` on Python 3.11-3.13.
+
+        3.14 returns False instead, so this test guards the older interpreters.
+        """
         clone_dir = self._clone(tmp_path)
         locked = tmp_path / "locked"
         locked.mkdir()
