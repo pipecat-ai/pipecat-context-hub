@@ -11,6 +11,8 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-18
+
 ### Added
 - **PyPI project links and classifiers.** The PyPI page now links to the
   docs (docs.pipecat.ai), source, issues, and changelog, and lists supported
