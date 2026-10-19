@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -18,6 +20,7 @@ from pipecat_context_hub.services.ingest.source_ingest import (
     _build_chunks,
     _find_python_files,
     _find_ts_files,
+    _has_ts_markers,
     _make_chunk_id,
     _make_source_url,
     _sanitize_slug,
@@ -956,3 +959,175 @@ class TestCallGraphMetadata:
         for chunk in chunks:
             missing = required_keys - set(chunk.metadata.keys())
             assert not missing, f"Chunk {chunk.chunk_id} missing metadata: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Symlinks are never followed
+# ---------------------------------------------------------------------------
+
+_CLASS_SRC = (
+    '"""Mod."""\n\n\nclass {name}:\n    """Doc."""\n\n    def run(self):\n        return 1\n'
+)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
+class TestSymlinksAreNotFollowed:
+    """A committed link must not pull files from outside the clone into the index,
+    and a link into a directory the user cannot traverse must not abort ``refresh``."""
+
+    def _config(self, tmp_path: Path) -> MagicMock:
+        config = MagicMock()
+        config.storage.data_dir = tmp_path
+        return config
+
+    def _clone(self, tmp_path: Path) -> Path:
+        clone_dir = tmp_path / "repos" / "pipecat-ai_pipecat"
+        _create_git_repo(
+            clone_dir,
+            {
+                "src/real/__init__.py": "",
+                "src/real/mod.py": _CLASS_SRC.format(name="RealThing"),
+            },
+        )
+        return clone_dir
+
+    def _outside_package(self, tmp_path: Path) -> Path:
+        outside = tmp_path / "outside" / "leaky"
+        outside.mkdir(parents=True)
+        (outside / "__init__.py").write_text("")
+        (outside / "mod.py").write_text(_CLASS_SRC.format(name="LeakedThing"))
+        return outside
+
+    async def _ingest(self, tmp_path: Path):
+        writer = _make_mock_writer()
+        result = await SourceIngester(self._config(tmp_path), writer, _TEST_REPO_SLUG).ingest()
+        records: list[ChunkedRecord] = writer.upsert.call_args[0][0] if writer.upsert.called else []
+        return result, records
+
+    async def test_symlinked_package_dir_is_not_indexed(self, tmp_path: Path):
+        clone_dir = self._clone(tmp_path)
+        (clone_dir / "src" / "leaky").symlink_to(self._outside_package(tmp_path))
+
+        result, records = await self._ingest(tmp_path)
+
+        assert result.errors == []
+        text = " ".join(r.content for r in records)
+        assert "RealThing" in text  # control: the real package is still indexed
+        assert "LeakedThing" not in text
+
+    async def test_symlinked_src_dir_is_not_indexed(self, tmp_path: Path):
+        clone_dir = tmp_path / "repos" / "pipecat-ai_pipecat"
+        clone_dir.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "leaky").mkdir()
+        (outside / "leaky" / "__init__.py").write_text("")
+        (outside / "leaky" / "mod.py").write_text(_CLASS_SRC.format(name="LeakedThing"))
+        (clone_dir / "src").symlink_to(outside)
+
+        result, records = await self._ingest(tmp_path)
+
+        assert result.errors == []
+        assert records == []
+
+    @pytest.mark.skipif(
+        not hasattr(os, "geteuid") or os.geteuid() == 0,
+        reason="permission bits do not bind root",
+    )
+    async def test_symlink_into_untraversable_dir_does_not_abort(self, tmp_path: Path):
+        """``is_file()`` on such a link raises ``PermissionError`` on Python 3.11-3.13.
+
+        3.14 returns False instead, so this test guards the older interpreters.
+        """
+        clone_dir = self._clone(tmp_path)
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "stub.pyi").write_text("class Leaked: ...\n")
+        (clone_dir / "stub.pyi").symlink_to(locked / "stub.pyi")
+        (clone_dir / "src" / "linked").symlink_to(locked / "pkg")
+        locked.chmod(0)
+        try:
+            result, records = await self._ingest(tmp_path)
+        finally:
+            locked.chmod(0o700)
+
+        assert result.errors == []
+        assert any("RealThing" in r.content for r in records)  # control
+        assert not any("Leaked" in r.content for r in records)
+
+    def test_file_walks_skip_symlinked_and_special_files(self, tmp_path: Path):
+        """Discovery itself drops links and FIFOs, not only the read site."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "leak.py").write_text("pass")
+        (outside / "leak.ts").write_text("export const x = 1;")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "real.py").write_text("pass")
+        (root / "real.ts").write_text("export const y = 2;")
+        (root / "linked.py").symlink_to(outside / "leak.py")
+        (root / "linked.ts").symlink_to(outside / "leak.ts")
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(root / "fifo.py")
+            os.mkfifo(root / "fifo.ts")
+
+        assert [p.name for p in _find_python_files(root)] == ["real.py"]
+        assert [p.name for p in _find_ts_files(root)] == ["real.ts"]
+
+    async def test_symlinked_docs_dir_is_not_read(self, tmp_path: Path, monkeypatch):
+        clone_dir = self._clone(tmp_path)
+        outside = tmp_path / "outside_docs"
+        outside.mkdir()
+        (outside / "types.rst").write_text("anything")
+        (clone_dir / "docs").symlink_to(outside)
+        seen: list[Path] = []
+
+        def spy(path: Path):
+            seen.append(path)
+            return []
+
+        monkeypatch.setattr(
+            "pipecat_context_hub.services.ingest.source_ingest.parse_rst_types", spy
+        )
+
+        await self._ingest(tmp_path)
+
+        assert seen == []
+
+    async def test_real_docs_dir_is_still_read(self, tmp_path: Path, monkeypatch):
+        """Control for the test above: the spy does fire for a real ``docs/``."""
+        clone_dir = self._clone(tmp_path)
+        (clone_dir / "docs").mkdir()
+        (clone_dir / "docs" / "types.rst").write_text("anything")
+        seen: list[Path] = []
+
+        def spy(path: Path):
+            seen.append(path)
+            return []
+
+        monkeypatch.setattr(
+            "pipecat_context_hub.services.ingest.source_ingest.parse_rst_types", spy
+        )
+
+        await self._ingest(tmp_path)
+
+        assert [p.name for p in seen] == ["types.rst"]
+
+    def test_symlinked_subdir_does_not_make_a_ts_project(self, tmp_path: Path):
+        clone_dir = tmp_path / "repo"
+        clone_dir.mkdir()
+        outside = tmp_path / "outside_ts"
+        outside.mkdir()
+        (outside / "package.json").write_text("{}")
+        (clone_dir / "client").symlink_to(outside)
+
+        assert _has_ts_markers(clone_dir) is False
+
+    def test_symlinked_marker_file_does_not_make_a_ts_project(self, tmp_path: Path):
+        clone_dir = tmp_path / "repo"
+        clone_dir.mkdir()
+        outside = tmp_path / "package.json"
+        outside.write_text("{}")
+        (clone_dir / "package.json").symlink_to(outside)
+
+        assert _has_ts_markers(clone_dir) is False

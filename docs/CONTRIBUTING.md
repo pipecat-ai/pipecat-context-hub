@@ -135,7 +135,7 @@ src/pipecat_context_hub/
 │   │   ├── docs_crawler.py         # llms-full.txt ingester + markdown chunker
 │   │   ├── github_ingest.py        # Git clone/fetch + code chunking
 │   │   ├── source_ingest.py        # Source code chunking + module metadata
-│   │   ├── ingest_filters.py       # Per-file filters shared by github/source ingest (Storybook exclusion, content-hash dedup)
+│   │   ├── ingest_filters.py       # Per-file filters shared by github/source ingest (Storybook exclusion, content-hash dedup) + `is_plain_file`/`is_plain_dir` (refuse a symlinked example path; Windows junctions are skipped by the same check but untested)
 │   │   ├── ts_tree_sitter_parser.py # TypeScript/TSX tree-sitter extraction
 │   │   └── taxonomy.py             # Automated capability inference
 │   ├── index/

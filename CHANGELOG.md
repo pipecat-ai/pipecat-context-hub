@@ -11,6 +11,19 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+### Security
+- **A symlinked example directory is no longer followed.** An indexed repo could
+  commit `examples/foo -> /somewhere/else`, and its `README.md` and `.py` files were
+  read from outside the clone, so the README text reached `get_example` output.
+  Example discovery, the taxonomy builder and the source ingester (`src/<pkg>`, `docs/`,
+  root `.pyi` stubs, TypeScript project detection) now skip directory symlinks (one
+  shared rule, `is_plain_dir`) and no longer stat a file through a link, so a link
+  into a directory you cannot traverse cannot abort `refresh` either. Non-regular
+  files (FIFOs, devices) are skipped rather than opened, so a committed FIFO cannot
+  hang `refresh`. Windows
+  junctions are skipped by the same check, but no CI job creates one, so that path
+  is untested.
+
 ## [0.9.0] - 2026-10-18
 
 ### Added

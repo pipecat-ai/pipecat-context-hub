@@ -1051,7 +1051,8 @@ class TestTaxonomyBuilderTopicLayout:
     def test_lookup_key_parity_topic_layout(self, topic_repo_dir: Path):
         """Seam 1 contract: every dir returned by ``_discover_under_examples``
         must have a matching ``taxonomy_lookup[rel]`` entry built from the
-        builder output. This is the unit contract for Seam 1.
+        builder output. This is the unit contract for Seam 1 on the topic-layout
+        walk; the smoke invariants check the same contract over ``_find_example_dirs``.
         """
         from pipecat_context_hub.services.ingest.github_ingest import (
             _discover_under_examples,
@@ -1339,7 +1340,10 @@ class TestSymlinkedPythonFiles:
         assert "elevenlabs" not in self._code_tags(entry)
 
     def test_a_symlink_into_an_untraversable_directory_does_not_abort(self, tmp_path: Path):
-        """``Path.is_file()`` follows the link and raises ``PermissionError``; ``lstat`` does not."""
+        """``Path.is_file()`` follows the link and raises ``PermissionError`` on 3.11-3.13.
+
+        3.14 returns False; ``lstat`` never raises.
+        """
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             pytest.skip("root can traverse any directory")
         locked = tmp_path / "locked"
@@ -1401,3 +1405,131 @@ class TestSymlinkedPythonFiles:
         entries = TaxonomyBuilder().build_from_foundational(foundational, repo="o/r")
 
         assert [e.example_id for e in entries] == ["foundational-01-real"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
+class TestSymlinkedExampleDirectories:
+    """A committed directory symlink is never an example: its README and code stay unread.
+
+    Frozen from a security review: ``my-example -> /somewhere/outside`` was followed
+    by ``build_from_foundational`` and ``build_from_examples_repo``, so the outside
+    directory's ``README.md`` reached ``readme_content`` (returned by
+    ``get_example``) and its ``.py`` files fed the capability tags.
+    """
+
+    _SECRET = "TOP-SECRET-OUTSIDE-THE-CLONE"
+
+    def _outside(self, tmp_path: Path) -> Path:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "README.md").write_text(self._SECRET + "\n")
+        (outside / "bot.py").write_text("from pipecat.services.elevenlabs import X\n")
+        return outside
+
+    def _assert_unread(self, entries: list[TaxonomyEntry], linked_id: str) -> None:
+        assert linked_id not in {e.example_id for e in entries}
+        for e in entries:
+            assert self._SECRET not in (e.readme_content or "")
+            assert "elevenlabs" not in {t.name for t in e.capabilities}
+
+    def test_examples_repo_layout(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        (repo / "real").mkdir(parents=True)
+        (repo / "real" / "bot.py").write_text("x = 1\n")
+        (repo / "linked").symlink_to(self._outside(tmp_path))
+
+        entries = TaxonomyBuilder().build_from_examples_repo(repo, repo="o/r")
+
+        assert [e.example_id for e in entries] == ["example-real"]
+        self._assert_unread(entries, "example-linked")
+
+    def test_foundational_layout(self, tmp_path: Path):
+        foundational = tmp_path / "foundational"
+        (foundational / "01-real").mkdir(parents=True)
+        (foundational / "01-real" / "bot.py").write_text("x = 1\n")
+        (foundational / "02-linked").symlink_to(self._outside(tmp_path))
+
+        entries = TaxonomyBuilder().build_from_foundational(foundational, repo="o/r")
+
+        assert [e.example_id for e in entries] == ["foundational-01-real"]
+        self._assert_unread(entries, "foundational-02-linked")
+
+    def test_topic_layout_through_build_from_directory(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        topic = repo / "examples" / "voice"
+        (topic / "real").mkdir(parents=True)
+        (topic / "real" / "bot.py").write_text("x = 1\n")
+        (topic / "linked").symlink_to(self._outside(tmp_path))
+
+        entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+
+        assert {e.example_id for e in entries if "linked" in e.example_id} == set()
+        self._assert_unread(entries, "voice-linked")
+
+    def test_symlinked_foundational_root_is_not_scanned(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        (repo / "examples").mkdir(parents=True)
+        outside = tmp_path / "outside-foundational"
+        (outside / "01-x").mkdir(parents=True)
+        (outside / "01-x" / "README.md").write_text(self._SECRET + "\n")
+        (repo / "examples" / "foundational").symlink_to(outside)
+
+        entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+
+        assert all(self._SECRET not in (e.readme_content or "") for e in entries)
+        assert not any(e.example_id.startswith("foundational-") for e in entries)
+
+    def test_symlinked_examples_dir_holding_foundational_is_not_scanned(self, tmp_path: Path):
+        """``examples/foundational`` is a real directory only *through* the link.
+
+        ``is_plain_dir`` inspects the last component alone, so ``examples`` itself must
+        be vetted first; otherwise its outside ``foundational/`` was scanned and read.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside-examples"
+        (outside / "foundational" / "01-x").mkdir(parents=True)
+        (outside / "foundational" / "01-x" / "README.md").write_text(self._SECRET + "\n")
+        (outside / "foundational" / "01-x" / "bot.py").write_text(
+            "from pipecat.services.elevenlabs import X\n"
+        )
+        (repo / "examples").symlink_to(outside)
+
+        entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+
+        assert not any(e.example_id.startswith("foundational-") for e in entries)
+        self._assert_unread(entries, "foundational-01-x")
+
+    def test_symlinked_examples_dir_holding_topics_is_not_scanned(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside-examples"
+        (outside / "voice" / "one").mkdir(parents=True)
+        (outside / "voice" / "one" / "README.md").write_text(self._SECRET + "\n")
+        (repo / "examples").symlink_to(outside)
+
+        entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+
+        assert not any(e.example_id.startswith("voice-") for e in entries)
+        self._assert_unread(entries, "voice-one")
+
+    def test_marker_links_in_the_repo_root_do_not_abort(self, tmp_path: Path):
+        """The packaged-project probe must not stat through ``src`` / ``pyproject.toml`` links."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root can traverse any directory")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "pyproject.toml").write_text("[project]\n")
+        (locked / "src").mkdir()
+        repo = tmp_path / "repo"
+        (repo / "real").mkdir(parents=True)
+        (repo / "real" / "bot.py").write_text("x = 1\n")
+        (repo / "pyproject.toml").symlink_to(locked / "pyproject.toml")
+        (repo / "src").symlink_to(locked / "src")
+        locked.chmod(0)
+        try:
+            entries = TaxonomyBuilder().build_from_directory(repo, repo="o/r")
+        finally:
+            locked.chmod(0o700)
+
+        assert [e.example_id for e in entries] == ["example-real"]

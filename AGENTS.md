@@ -210,6 +210,8 @@ dashboard/
     └── extract_dashboard.py  # Index stats → dashboard_data.json
 ```
 
+Entries an ingest walk discovers inside a cloned repo (files and directories under the clone root) are filtered with `is_plain_file` / `is_plain_dir` (`services/ingest/ingest_filters.py`), never `Path.is_file` / `is_dir` / `exists`: a committed symlink can point outside the clone, and those calls follow links (and on Python 3.11-3.13 raise `PermissionError` on an untraversable target). Management checks on the clone root itself and `.git` are exempt. Discovery uses `is_plain_*`. The code-file, version-file and `source_ingest.py` read sites additionally keep a `resolve()`-within-root check (plus `is_symlink()` where present) as defense in depth; the taxonomy README and `.py` readers and the README fallback under the clone root rely on `is_plain_file` alone.
+
 ## Typer Bridge (`pipecat context-hub`)
 
 The Pipecat CLI mounts plugins with `Typer.add_typer`, so a plugin must expose a
@@ -270,7 +272,7 @@ Offline smoke tests in `tests/smoke/` exercise the taxonomy builder against
 vendored snapshots of the upstream pipecat and pipecat-examples repos. They
 run on every `pytest` invocation and have no `smoke` marker — no opt-in
 needed. The Seam 1 contract (every dir returned by
-`_discover_under_examples` has a matching `taxonomy_lookup[rel]` entry) is
+`_find_example_dirs` has a matching `taxonomy_lookup[rel]` entry) is
 what these tests enforce.
 
 - **PR gate (offline, always runs):** `uv run pytest tests/smoke/ -v`
