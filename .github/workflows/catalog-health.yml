@@ -1,0 +1,149 @@
+name: Catalog health
+
+# Weekly existence check for the curated repo catalog (parent plan Decision 6).
+# Fails on a private, missing, archived or renamed entry, and on an
+# inconclusive run (rate limit, 5xx, timeout) so it gets a re-run. Uses the
+# job's GITHUB_TOKEN; PR CI never touches the network for this.
+#
+# Two jobs: the check (which runs project code and its dependencies) holds a
+# read-only token; only the issue job, which runs `gh` and no project code,
+# gets `issues: write`.
+#
+# The issue body is the last conclusive report: only a stale-entry run
+# (script exit 1) replaces it. Any other failing run (exit 2: inconclusive
+# lookups; exit 3: catalog unloadable; anything unexpected) posts its report as
+# a comment and leaves the body alone, so a stale entry reported earlier is
+# never erased by a run that says nothing about the repos.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"  # Mondays 07:00 UTC
+  workflow_dispatch:
+
+# One run at a time, queued not cancelled: two failing runs must not both see
+# "no open issue" and each create one.
+concurrency:
+  group: catalog-health
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REPORT_PATH: catalog-health-report.md
+
+jobs:
+  health:
+    name: Check catalog repos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.health.outcome }}
+      exit-code: ${{ steps.health.outputs.exit-code }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.9.18"
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev --group dev
+
+      - name: Run catalog health check
+        id: health
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          code=0
+          uv run python scripts/check_repo_catalog.py | tee "${REPORT_PATH}" || code=$?
+          echo "exit-code=${code}" >> "${GITHUB_OUTPUT}"
+          exit "${code}"
+
+      - name: Upload report
+        if: steps.health.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: catalog-health-report
+          path: ${{ env.REPORT_PATH }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Fail job if the check failed
+        if: steps.health.outcome == 'failure'
+        run: |
+          echo "Catalog health check failed; see the tracking issue." >&2
+          exit 1
+
+  report:
+    name: Open or update tracking issue
+    needs: health
+    if: always() && needs.health.outputs.outcome == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Download report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: catalog-health-report
+
+      - name: Open or update tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          LABEL: catalog-health
+          TITLE: "catalog-health: repo catalog needs attention"
+          RUN_ID: ${{ github.run_id }}
+          EXIT_CODE: ${{ needs.health.outputs.exit-code }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "${REPORT_PATH}" ]; then
+            echo "No report file produced; aborting issue update." >&2
+            exit 1
+          fi
+          gh label create "${LABEL}" \
+            --description "Repo catalog health check findings" \
+            --color "B60205" \
+            --force
+          existing="$(gh issue list \
+            --state open \
+            --label "${LABEL}" \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -n "${existing}" ] && [ "${EXIT_CODE}" = "1" ]; then
+            # Conclusive (a stale entry): the report becomes the body.
+            gh issue edit "${existing}" --body-file "${REPORT_PATH}"
+            gh issue comment "${existing}" \
+              --body "Catalog health failed $(date -u +%FT%TZ) in run ${RUN_ID}."
+          elif [ -n "${existing}" ]; then
+            # Not conclusive: keep the body (the last conclusive report).
+            case "${EXIT_CODE}" in
+              2) what="Inconclusive catalog health run (re-run it)" ;;
+              3) what="Catalog health run could not load the catalog (fix it)" ;;
+              *) what="Catalog health run ended with unexpected exit '${EXIT_CODE}'" ;;
+            esac
+            {
+              echo "${what} $(date -u +%FT%TZ) in run ${RUN_ID}" \
+                "(the issue body keeps the last conclusive report)."
+              echo
+              cat "${REPORT_PATH}"
+            } > comment.md
+            gh issue comment "${existing}" --body-file comment.md
+          else
+            gh issue create \
+              --title "${TITLE}" \
+              --label "${LABEL}" \
+              --body-file "${REPORT_PATH}"
+          fi

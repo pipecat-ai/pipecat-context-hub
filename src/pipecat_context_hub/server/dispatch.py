@@ -165,7 +165,9 @@ _TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
 HUB_STATUS_TOOL = ToolDefinition(
     "get_hub_status",
     "Get index health: last refresh time, record counts by type, indexed pipecat version, "
-    "and commit SHAs. Use to check if the index is fresh before answering questions.",
+    "commit SHAs, and repo coverage (indexed repos, configured repos with no records, "
+    "catalog groups not indexed). Use to check if the index is fresh, or covers a repo, "
+    "before answering questions.",
     GetHubStatusInput.model_json_schema(),
     _handle_hub_status_front_door_only,
 )

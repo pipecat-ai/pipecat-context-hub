@@ -32,7 +32,7 @@ NOW = datetime(2026, 2, 26, tzinfo=UTC)
 def fts_index(tmp_path):
     """Create an FTSIndex with a temporary database."""
     db_path = tmp_path / "metadata.db"
-    index = FTSIndex(db_path)
+    index = FTSIndex(db_path, create=True)
     yield index
     index.close()
 
@@ -83,11 +83,11 @@ class TestFTSMetadata:
 
     def test_metadata_persists_across_reopens(self, tmp_path):
         db_path = tmp_path / "metadata.db"
-        index1 = FTSIndex(db_path)
+        index1 = FTSIndex(db_path, create=True)
         index1.set_metadata("persist_key", "persist_value")
         index1.close()
 
-        index2 = FTSIndex(db_path)
+        index2 = FTSIndex(db_path, create=True)
         assert index2.get_metadata("persist_key") == "persist_value"
         index2.close()
 
@@ -227,7 +227,9 @@ class TestHandleGetHubStatus:
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 
         store = self._mock_index_store()
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.server_version == _SERVER_VERSION
@@ -253,7 +255,9 @@ class TestHandleGetHubStatus:
                 "last_refresh_error_count": "0",
             },
         )
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.server_version == _SERVER_VERSION
@@ -267,7 +271,9 @@ class TestHandleGetHubStatus:
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 
         store = self._mock_index_store()
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
         assert output.indexed_framework_version is None
         assert output.indexed_framework_commits_ahead is None
@@ -283,7 +289,9 @@ class TestHandleGetHubStatus:
                 "indexed_framework_commits_ahead": "80",
             },
         )
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.framework_version is None
@@ -301,7 +309,9 @@ class TestHandleGetHubStatus:
                 "indexed_framework_commits_ahead": "0",
             },
         )
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.framework_version == "v1.5.0"
@@ -316,7 +326,9 @@ class TestHandleGetHubStatus:
             metadata={"indexed_framework_commits_ahead": "not-a-number"},
         )
         with caplog.at_level("WARNING"):
-            result_json = await handle_get_hub_status({}, store)
+            result_json = await handle_get_hub_status(
+                {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+            )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.indexed_framework_commits_ahead is None
@@ -329,7 +341,9 @@ class TestHandleGetHubStatus:
             metadata={"last_refresh_duration_seconds": "not-a-float"},
         )
         with caplog.at_level("WARNING"):
-            result_json = await handle_get_hub_status({}, store)
+            result_json = await handle_get_hub_status(
+                {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+            )
         output = HubStatusOutput.model_validate_json(result_json)
 
         assert output.last_refresh_duration_seconds is None
@@ -342,7 +356,9 @@ class TestHandleGetHubStatus:
         # backslash path), so compare against str(Path(...)), not a POSIX literal.
         data_dir = Path("/home/user/.pipecat-context-hub")
         store = self._mock_index_store(data_dir=data_dir)
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         output = HubStatusOutput.model_validate_json(result_json)
         assert output.index_path == str(data_dir)
 
@@ -350,8 +366,207 @@ class TestHandleGetHubStatus:
         from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
 
         store = self._mock_index_store()
-        result_json = await handle_get_hub_status({}, store)
+        result_json = await handle_get_hub_status(
+            {}, store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         parsed = json.loads(result_json)
         assert "server_version" in parsed
         assert "total_records" in parsed
         assert "counts_by_type" in parsed
+
+
+# ---------------------------------------------------------------------------
+# Catalog coverage fields (indexed / configured-no-records / not-indexed groups)
+# ---------------------------------------------------------------------------
+
+_CATALOG_TEXT = """
+verified = 2026-10-17
+
+[groups.acme]
+kind = "vendor"
+description = "Acme"
+aliases = ["acme"]
+repos = [{ slug = "acme/one" }]
+
+[groups.beta]
+kind = "vendor"
+description = "Beta"
+aliases = ["beta"]
+repos = [{ slug = "beta/one" }]
+
+[groups.gamma]
+kind = "topic"
+description = "Gamma"
+aliases = ["gamma"]
+repos = [{ slug = "gamma/one" }]
+"""
+
+
+class _StatusStore:
+    """Fake serving index for status: counts, stats, metadata, data_dir only."""
+
+    data_dir = Path("/tmp/hub")
+
+    def __init__(self, counts: Any) -> None:
+        self._counts = counts
+
+    def get_index_stats(self) -> dict[str, Any]:
+        return {"total": 0, "counts_by_type": {}, "commit_shas": []}
+
+    def get_all_metadata(self) -> dict[str, str]:
+        return {}
+
+    def get_counts_by_repo(self) -> Any:
+        if isinstance(self._counts, Exception):
+            raise self._counts
+        return self._counts
+
+
+class _NoCountsStore:
+    """Like ``_StatusStore`` but lacking ``get_counts_by_repo`` entirely."""
+
+    data_dir = Path("/tmp/hub")
+
+    def get_index_stats(self) -> dict[str, Any]:
+        return {"total": 0, "counts_by_type": {}, "commit_shas": []}
+
+    def get_all_metadata(self) -> dict[str, str]:
+        return {}
+
+
+@pytest.fixture
+def catalog_text(monkeypatch):
+    """Serve ``_CATALOG_TEXT`` as the shipped catalog; clear the load cache around the test."""
+    from pipecat_context_hub.shared import repo_catalog
+
+    text = {"value": _CATALOG_TEXT}
+    repo_catalog.load_catalog.cache_clear()
+    monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: text["value"])
+    yield text
+    repo_catalog.load_catalog.cache_clear()
+
+
+async def _status(store: Any, **kwargs: Any) -> HubStatusOutput:
+    from pipecat_context_hub.server.tools.get_hub_status import handle_get_hub_status
+
+    return HubStatusOutput.model_validate_json(await handle_get_hub_status({}, store, **kwargs))
+
+
+class TestHubStatusCoverageFields:
+    def test_new_fields_default_to_empty_lists(self):
+        output = HubStatusOutput.model_validate({"server_version": "x"})
+        assert output.indexed_repos == []
+        assert output.configured_no_records == []
+        assert output.catalog_groups_not_indexed == []
+
+    async def test_indexed_configured_no_records_and_uncovered(self, catalog_text):
+        store = _StatusStore({"acme/one": 5, "beta/one": 0, "docs.pipecat.ai": 9})
+        output = await _status(
+            store,
+            configured_repos=frozenset({"acme/one", "beta/one"}),
+            tainted_repos=frozenset(),
+        )
+        assert [s.casefold() for s in output.indexed_repos] == ["acme/one"]
+        assert output.configured_no_records == ["beta/one"]
+        # beta is configured but empty; gamma is not configured at all.
+        assert output.catalog_groups_not_indexed == ["beta", "gamma"]
+
+    async def test_case_variant_slug_counts_as_indexed(self, catalog_text):
+        store = _StatusStore({"owner/repo": 3})
+        output = await _status(
+            store, configured_repos=frozenset({"Owner/Repo"}), tainted_repos=frozenset()
+        )
+        assert "owner/repo" in [s.casefold() for s in output.indexed_repos]
+        assert output.configured_no_records == []
+
+    async def test_slug_case_convention_per_field(self, catalog_text):
+        """Pinned: indexed_repos is casefolded; configured_no_records keeps configured case."""
+        store = _StatusStore({"Acme/One": 5})
+        output = await _status(
+            store,
+            configured_repos=frozenset({"ACME/one", "Beta/One"}),
+            tainted_repos=frozenset(),
+        )
+        assert output.indexed_repos == ["acme/one"]
+        assert output.configured_no_records == ["Beta/One"]
+        fields = HubStatusOutput.model_fields
+        assert "casefolded" in (fields["indexed_repos"].description or "")
+        assert "spelled as configured" in (fields["configured_no_records"].description or "")
+
+    async def test_tainted_configured_repo_is_not_reported_no_records(self, catalog_text):
+        # The tainted skip lives in the shared predicate, case-insensitively.
+        store = _StatusStore({"acme/one": 5})
+        output = await _status(
+            store,
+            configured_repos=frozenset({"acme/one", "Beta/One"}),
+            tainted_repos=frozenset({"beta/ONE"}),
+        )
+        assert output.configured_no_records == []
+        assert "beta" not in output.catalog_groups_not_indexed
+
+    async def test_fully_indexed_catalog_has_no_uncovered_groups(self, catalog_text):
+        store = _StatusStore({"acme/one": 1, "beta/one": 1, "gamma/one": 1})
+        output = await _status(store, configured_repos=frozenset(), tainted_repos=frozenset())
+        assert output.catalog_groups_not_indexed == []
+
+    @pytest.mark.parametrize("omitted", ["configured_repos", "tainted_repos"])
+    async def test_repo_sets_are_required(self, catalog_text, omitted):
+        """No default: an omitted set would silently misreport coverage."""
+        kwargs: dict[str, Any] = {"configured_repos": frozenset(), "tainted_repos": frozenset()}
+        del kwargs[omitted]
+        with pytest.raises(TypeError, match=omitted):
+            await _status(_StatusStore({"acme/one": 1}), **kwargs)
+
+
+class TestHubStatusUnreadableCounts:
+    """A counts failure leaves the three fields empty and never raises."""
+
+    @pytest.mark.parametrize(
+        "store",
+        [
+            pytest.param(_StatusStore(RuntimeError("boom")), id="raises"),
+            pytest.param(_NoCountsStore(), id="method-missing"),
+            pytest.param(_StatusStore(MagicMock()), id="non-mapping"),
+        ],
+    )
+    async def test_fields_empty_and_response_returned(self, catalog_text, store):
+        output = await _status(
+            store,
+            configured_repos=frozenset({"acme/one"}),
+            tainted_repos=frozenset(),
+        )
+        assert output.indexed_repos == []
+        assert output.configured_no_records == []
+        assert output.catalog_groups_not_indexed == []
+        assert output.server_version == _SERVER_VERSION
+
+    async def test_bare_magicmock_store(self, catalog_text):
+        store = MagicMock()
+        store.get_index_stats.return_value = {"total": 0, "counts_by_type": {}, "commit_shas": []}
+        store.get_all_metadata.return_value = {}
+        store.data_dir = Path("/tmp/hub")
+        output = await _status(
+            store, configured_repos=frozenset({"acme/one"}), tainted_repos=frozenset()
+        )
+        assert output.indexed_repos == []
+        assert output.configured_no_records == []
+        assert output.catalog_groups_not_indexed == []
+
+
+class TestHubStatusCatalogLoadFailure:
+    @pytest.mark.parametrize("broken", ["this is [not toml", "verified = 2026-10-17\n"])
+    async def test_broken_catalog_gives_empty_groups_only(self, catalog_text, broken):
+        from pipecat_context_hub.shared import repo_catalog
+
+        catalog_text["value"] = broken
+        repo_catalog.load_catalog.cache_clear()
+        assert repo_catalog.load_catalog() is None
+        output = await _status(
+            _StatusStore({"acme/one": 2}),
+            configured_repos=frozenset({"acme/one", "beta/one"}),
+            tainted_repos=frozenset(),
+        )
+        assert output.catalog_groups_not_indexed == []
+        # The count itself is still readable, so the other fields still work.
+        assert [s.casefold() for s in output.indexed_repos] == ["acme/one"]
+        assert output.configured_no_records == ["beta/one"]

@@ -5,6 +5,10 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
+Plugin-specific release notes live in
+[`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
+This changelog retains repository and Context Hub package history.
+
 ## [Unreleased]
 
 ### Added
@@ -16,6 +20,128 @@ This project uses [Semantic Versioning](https://semver.org/).
 - **README links on PyPI.** Relative links in the PyPI project description
   (setup guides, config templates, security docs) pointed nowhere; they now
   use absolute GitHub URLs.
+
+### Security
+- **A symlinked example directory is no longer followed.** An indexed repo could
+  commit `examples/foo -> /somewhere/else`, and its `README.md` and `.py` files were
+  read from outside the clone, so the README text reached `get_example` output.
+  Example discovery, the taxonomy builder and the source ingester (`src/<pkg>`, `docs/`,
+  root `.pyi` stubs, TypeScript project detection) now skip directory symlinks (one
+  shared rule, `is_plain_dir`) and no longer stat a file through a link, so a link
+  into a directory you cannot traverse cannot abort `refresh` either. Non-regular
+  files (FIFOs, devices) are skipped rather than opened, so a committed FIFO cannot
+  hang `refresh`. Windows
+  junctions are skipped by the same check, but no CI job creates one, so that path
+  is untested.
+
+## [0.9.0] - 2026-10-18
+
+### Added
+- **`.release-template.json`** records this repo's release-note shape (bare `vX.Y.Z`
+  titles, a `Full changelog` compare line) so `/skein:release audit` compares
+  releases against the convention actually in use.
+- **`repos list|add|remove`** (also `pipecat context-hub repos ...`) edits your
+  `config.toml` for you, so adding a vendor's repos no longer means hand-editing
+  `PIPECAT_HUB_EXTRA_REPOS`. `add` takes a catalog slug, `--unlisted owner/repo`
+  or `--group NAME`; `list` shows the effective repos and where each came from.
+  Comments in the file are kept. `add` and `remove` refuse (exit 1) rather than
+  write an edit that a higher-priority env var or `.env` would override
+  (`--config-only` writes anyway). `--group` skips tainted repos, and on `add`
+  also repos that cannot produce `search_api` results. `--unlisted` notes that
+  the repo is not vetted by the catalog and names its owner. Run `refresh`
+  afterwards to index.
+- **Repo catalog**: a curated list of public repos grouped by vendor or topic,
+  behind `repos add --group`. It also generates the extras block in `.env.example`
+  and the "Repo catalog" section of `docs/configuration.md` (`just catalog-regen`).
+- **`corpus_hint` on search responses.** When a `search_docs`, `search_examples`,
+  `search_api` or `get_code_snippet` query names a vendor or topic from the catalog
+  whose repos are not indexed, the response says so and names the command to run
+  (`repos add` for repos not yet configured, `refresh` for configured repos with no
+  records), instead of returning confident-looking results that lack that content.
+  It also matches identifiers such as `TavusVideoService` and `aws_bedrock`. A
+  running `serve` sees a later `repos add` / `remove` after a restart.
+- **`get_hub_status` repo coverage:** `indexed_repos`, `configured_no_records` and
+  `catalog_groups_not_indexed`. The first two may name private local repos, so the
+  bug-report template and MCP instructions tell the agent to leave them out of
+  public reports.
+- **Weekly catalog health check** (`catalog-health.yml`, `just catalog-health`) flags
+  private, missing, archived or renamed catalog repos in one tracking issue.
+  `just catalog-curate` prints a read-only report of source-file counts and vendor
+  candidates for new entries.
+- **Reads wait out a refresh.** While `refresh` rewrites the index, `serve` answers
+  tool calls with a "retry in 60-120 seconds" error, then reopens the rebuilt index
+  itself, with no MCP client restart. One-shot CLI queries exit 75.
+- **A half-missing index is refused, not papered over.** Readers never create the
+  index; a vector or keyword half lost beside the other exits 2 with the exact
+  `refresh` command to run.
+- **Index write guards.** A Chroma HNSW `link_lists.bin` once ballooned to ~325 GB
+  (upstream chroma#7510). `refresh` now checks free disk first (default 5 GB,
+  `PIPECAT_HUB_MIN_FREE_GB`), takes an exclusive lock (warning if a `serve` has the
+  index open), and aborts on a runaway or structurally broken graph file (exit 2)
+  instead of continuing to write.
+
+### Changed
+- **One repo left the repo catalog.** Its content was mostly captured tool output
+  rather than code, about a quarter of a full index, and it drowned out unrelated
+  queries. `repos add --group` no longer adds it. Removing it from an index that
+  already held it was tested and works (`repos remove --unlisted <slug>`, then
+  `refresh --prune`).
+- **Taint matching is case-insensitive.** A `PIPECAT_HUB_TAINTED_REPOS` entry now
+  excludes a repo whatever its spelling (`Foo/Bar` taints `foo/bar`), and a case
+  variant of an already-listed repo is cloned and indexed once.
+  `PIPECAT_HUB_TAINTED_REFS` stays exact.
+- **`refresh --force` compacts the vector graph.** Delete + re-add left deleted
+  elements in the HNSW graph, growing it by the whole corpus on every forced
+  refresh (20k -> 80k elements for 20k live records over four rounds). Prefer
+  `refresh --force` after a pipecat upgrade.
+- **`refresh --reset-index` exits 1 instead of rebuilding when an index file
+  survives the delete.** On Windows a running `serve` holds them open: stop it,
+  then retry.
+
+### Fixed
+- **`refresh` no longer aborts on a symlinked `.py` file in an example.** A
+  committed symlink can dangle (or point into a directory you cannot traverse), which
+  made the taxonomy scan raise and stopped the whole refresh; symlinks are now
+  skipped, as elsewhere in ingest. A symlinked `README.md` is no longer read into the
+  example's `readme_content` either.
+- **`refresh` no longer deletes README-fallback chunks when it re-crawls the docs**;
+  only docs-site records are replaced. Closes #146.
+- **`refresh`'s docs and per-repo "existing" counts no longer overlap**; a README
+  fallback is counted once, under its repo.
+- **Search ranking no longer changes with `limit`.** `search_api("PipecatClientProvider",
+  chunk_type="function")` lost its definition at `limit` 15 or less (default 10) and
+  found it at 20 or more. Ranking now draws on a fixed pool of 50 candidates and
+  `limit` only truncates it.
+- **`check_deprecation` no longer reports a missing or unreadable deprecation map
+  as "not deprecated".** It returns a null `status` with a note to run `refresh`.
+- **A failed or interrupted delete no longer leaves a stale "unchanged" marker**, and
+  a repo whose refresh failed stays findable by `--prune`.
+- **`.env.example` lists only public, non-archived repos.** It offered nine private
+  repos (a clone fails without access) and the archived `pipecat-cli`; it also gains
+  NVIDIA, Google, AWS and other-provider sections.
+
+### Security
+- **Terminal-safe output.** Config values and indexed text can no longer inject
+  terminal escape sequences: `repos` and `refresh` output, errors, logs and uncaught
+  tracebacks escape non-printable characters. JSON on stdout stays valid with the
+  same value.
+- **The config writer will not follow a swapped symlink.** It refuses, leaving the
+  original file untouched, if the path was retargeted while an edit was in flight.
+- **Bumped transitive `fsspec` from `2026.2.0` to `2026.9.0`** in `uv.lock`
+  (via `huggingface-hub`) to clear PYSEC-2026-4217 from `pip-audit`. Lock-only.
+
+## [0.8.1] - 2026-10-02
+
+### Security
+- **Bumped `pyjwt` from `2.13.0` to `2.15.0`** in `uv.lock` (PR #136),
+  incorporating JWT/JWK validation hardening and malformed-input fixes from
+  the 2.14.0 and 2.15.0 releases. PR #136 also integrated PR #137's urllib3
+  and OAuthLib updates, allowing combined security validation before merge.
+- **Bumped `urllib3` from `2.7.0` to `2.8.0`** in `uv.lock` to address
+  CVE-2026-97687/-97688/-97689 (HTTPS proxy TLS configuration, unbounded
+  chunk-size buffering, and chunked Deflate streaming). PR #137 also bumps
+  transitive `oauthlib` from `3.3.1` to `4.0.0` to address CVE-2026-49265.
+  No top-level dependency constraints or hub APIs changed.
 
 ## [0.8.0] - 2026-09-11
 

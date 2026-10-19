@@ -7,31 +7,52 @@ subcommands registered from :mod:`pipecat_context_hub.cli_query`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
+from pipecat_context_hub.cli_repos import register_repos_commands, repos_group
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_REFRESH_IN_PROGRESS
+from pipecat_context_hub.shared.index_lock import (
+    REFRESH_LOCK,
+    SERVE_LOCK,
+    IndexLock,
+    IndexLockedError,
+    RefreshInProgressError,
+    refresh_in_progress,
+    serve_is_running,
+)
+from pipecat_context_hub.shared.interfaces import (
+    DOCS_COUNT_KEY,
+    FatalIndexError,
+    IndexUnavailableError,
+)
 from pipecat_context_hub.shared.paths import (
     is_reparse_link,
     redact_home,
     redact_home_in_text,
     same_dir,
+    shown_path,
 )
 from pipecat_context_hub.shared.support_links import bug_report_hint
+from pipecat_context_hub.shared.terminal import echo, escaped_click_errors, shown
 from pipecat_context_hub.shared.versioning import (
     canonicalize_framework_pin,
     exact_release_version,
@@ -43,12 +64,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.ingest.github_ingest import TagNotFoundError
     from pipecat_context_hub.shared.types import ChunkedRecord
-
-# Back-compat alias: tests/unit/test_cli.py imports the underscored name and
-# the banner call sites below reference it. The redaction helper itself now
-# lives in shared/paths.py (shared with cli_query, avoiding a cli<->cli_query
-# import cycle); this re-export keeps that suite green and the call sites stable.
-_redact_home = redact_home
 
 # Shared sentinel used by refresh bookkeeping for missing/unknown cells
 # (SHA, existing count, updated count). Centralised so the summary
@@ -74,32 +89,192 @@ def _framework_pin_not_found(fw_version: str, exc: TagNotFoundError) -> click.Cl
     return click.ClickException(f"--framework-version {fw_version!r}: {exc}")
 
 
-# Exit code for `serve` when the index cannot be used (unopenable or empty).
-# Documented in CHANGELOG 0.0.17 "Changed" section.
-_EXIT_INDEX_UNREADY = 2
-
 _module_logger = logging.getLogger(__name__)
 
 
-def _open_index_store_or_exit(config: HubConfig, logger: logging.Logger) -> IndexStore:
-    """Open the on-disk index store, or exit with `_EXIT_INDEX_UNREADY`.
+def _open_index_store_or_exit(
+    config: HubConfig, logger: logging.Logger, *, rebuild: bool
+) -> IndexStore:
+    """Open the on-disk index store, or exit with `EXIT_INDEX_UNREADY`.
 
     Shared by both `refresh` call sites (pre-`--reset-index` fail-fast path
-    and the post-delete rebuild) so the `IncompatibleIndexFormatError`
-    handling — including the redacted, front-door-consistent error message —
-    cannot drift between them.
+    and the post-delete rebuild) so the error handling — including the
+    redacted, front-door-consistent error message — cannot drift between them.
+    *rebuild* is ``--force``: only then may a lost vector collection beside a
+    populated keyword index be recreated (see :class:`IndexStore`). A lost
+    keyword half beside vector records is refused either way.
     """
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
     from pipecat_context_hub.services.index.store import IndexStore
 
     try:
-        return IndexStore(config.storage)
-    except IncompatibleIndexFormatError as exc:
-        # A pre-1.0 Chroma dir cannot be opened by 1.x. exc.__str__ embeds
-        # the absolute chroma_path; redact for front-door parity with the
-        # serve / cli_query error sites.
+        # recover=True: refresh holds the exclusive refresh lock, so it alone
+        # may repair an interrupted compaction while opening.
+        return IndexStore(config.storage, recover=True, create=True, rebuild=rebuild)
+    except (FatalIndexError, IndexUnavailableError) as exc:
+        # A pre-1.0 Chroma dir or a corrupt graph (IncompatibleIndexFormatError),
+        # an interrupted compaction the open could not restore
+        # (CompactionRestoreError), an unreadable keyword database
+        # (CorruptKeywordIndexError), without --force a lost vector
+        # collection (MissingVectorCollectionError, raised before the vector
+        # half is touched), or, even with --force, a lost keyword half beside
+        # vector records (LostKeywordIndexError: the reset remedy).
+        # exc.__str__ embeds the absolute path; redact for
+        # front-door parity with the serve / cli_query error sites.
         logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
+
+
+# Per-source skip markers: `refresh` skips a source whose marker matches what
+# it fetched. Built and parsed only through these, so the skip shortcut, the
+# stale-repo cleanup and `_distrust_skip_markers` agree on their shape.
+_DOCS_HASH_KEY = "docs:content_hash"
+
+
+def _repo_sha_key(slug: str) -> str:
+    return f"repo:{slug}:commit_sha"
+
+
+def _repo_slug_of_sha_key(key: str) -> str | None:
+    """The repo a :func:`_repo_sha_key` key names, or None for any other key."""
+    if key.startswith("repo:") and key.endswith(":commit_sha"):
+        return key[len("repo:") : -len(":commit_sha")]
+    return None
+
+
+def _repo_delete_pending_key(slug: str) -> str:
+    """Write-ahead flag: a delete of ``slug``'s records has started and no
+    clean re-ingest has followed it yet (it may have failed, or been aborted).
+    Also set on a repo whose refresh failed before its delete (checkout), so
+    it is retried while keeping the commit marker cleanup discovers it by.
+
+    The on-disk name ``cleanup_failed`` predates the write-ahead use; it is
+    kept so indexes written by earlier versions keep their flags.
+    """
+    return f"repo:{slug}:cleanup_failed"
+
+
+def _repo_vector_empty_key(slug: str) -> str:
+    return f"repo:{slug}:vector_empty"
+
+
+def _repo_reingest_flag_keys(slug: str) -> tuple[str, str]:
+    """Flags that each block ``slug``'s unchanged-skip shortcut until a
+    successful re-ingest (or the repo's removal) clears them all."""
+    return _repo_delete_pending_key(slug), _repo_vector_empty_key(slug)
+
+
+def _distrust_skip_markers(index_store: IndexStore) -> None:
+    """Stop every skip marker from vouching for records the vector half lacks.
+
+    Called when the vector half opened empty (lost and recreated by
+    ``--force``, or created beside a keyword half that kept its markers). The
+    docs hash is dropped. Each repo keeps its commit marker (the stale-repo
+    cleanup and the tainted-ref purge find repos through it) and is flagged
+    ``vector_empty`` instead, which the skip shortcut honours and a successful
+    re-ingest (or the repo's cleanup) clears. So a source this run cannot
+    fetch is still re-ingested by the next plain refresh.
+    """
+    metadata = index_store.get_all_metadata()
+    flags = {
+        _repo_vector_empty_key(slug): "1"
+        for slug in map(_repo_slug_of_sha_key, metadata)
+        if slug is not None
+    }
+    drop = [_DOCS_HASH_KEY] if _DOCS_HASH_KEY in metadata else []
+    if flags or drop:
+        index_store.set_metadata_batch(flags, delete_keys=drop)
+
+
+# Free space `refresh` requires on the data-dir volume before it starts. The
+# index plus repo clones are ~2 GB; a runaway HNSW file once consumed ~325 GB
+# and left the machine with 4 GB free, so refuse early with room to spare.
+_MIN_FREE_GB_DEFAULT = 5.0
+_MIN_FREE_GB_ENV = env_loading.MIN_FREE_GB_ENV_VAR
+
+
+def _min_free_bytes(env: dict[str, str] | None = None) -> int:
+    """Required free bytes for `refresh`; ``PIPECAT_HUB_MIN_FREE_GB=0`` disables."""
+    default = int(_MIN_FREE_GB_DEFAULT * 1024**3)
+    raw = (os.environ if env is None else env).get(_MIN_FREE_GB_ENV)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        gb = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(gb) or gb < 0:
+        return default
+    try:
+        return int(gb * 1024**3)
+    except OverflowError:  # e.g. 1e300 GB overflows to inf
+        return default
+
+
+def _require_free_disk(data_dir: Path, *, min_free: int | None = None) -> None:
+    """Abort `refresh` before it writes anything if the volume is nearly full."""
+    required = _min_free_bytes() if min_free is None else min_free
+    if required <= 0:
+        return
+    probe = data_dir.expanduser()
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        return  # can't tell; never block a refresh on a failed probe
+    if free < required:
+        raise click.ClickException(
+            f"Refusing to refresh: only {free / 1024**3:.1f} GB free on the volume holding "
+            f"{shown_path(data_dir)} (need {required / 1024**3:.1f} GB). Free up space, or set "
+            f"{_MIN_FREE_GB_ENV}=0 to skip this check."
+        )
+
+
+# How long `refresh` waits for readers' brief shared holds on its lock (an
+# index open takes well under this) before deciding another refresh runs.
+_REFRESH_LOCK_ATTEMPTS = 200
+_REFRESH_LOCK_RETRY_DELAY = 0.05
+
+
+class _RefreshLockBusy(click.ClickException):
+    """A retry-later refusal: exits 75 (EX_TEMPFAIL) like the query commands."""
+
+    exit_code = EXIT_REFRESH_IN_PROGRESS
+
+
+def _acquire_refresh_lock_or_exit(data_dir: Path, logger: logging.Logger) -> IndexLock:
+    """Take the exclusive refresh lock, released when the click command ends.
+
+    Two refreshes on one data dir interleave writes to the same Chroma HNSW
+    files. A live `serve` is only warned about, never refused: it is a
+    long-running reader and refresh-while-serving is the normal workflow.
+    """
+    lock = IndexLock(data_dir, REFRESH_LOCK, exclusive=True)
+    try:
+        # Readers hold this lock shared while they open the index (and probe
+        # it before every call), so contention is not proof of another
+        # refresh: retry for a while before calling it one.
+        lock.acquire(attempts=_REFRESH_LOCK_ATTEMPTS, delay=_REFRESH_LOCK_RETRY_DELAY)
+    except IndexLockedError as exc:
+        # Still busy after the retries: a shared probe tells an exclusive
+        # holder (another refresh) from readers that kept it busy.
+        if not refresh_in_progress(data_dir):
+            raise _RefreshLockBusy(
+                f"Processes reading the index on {shown_path(data_dir)} (`serve` or CLI "
+                "queries opening it) kept the refresh lock busy. Retry the refresh."
+            ) from exc
+        raise _RefreshLockBusy(
+            f"Another `refresh` is already running on {shown_path(data_dir)}. "
+            "Wait for it to finish; concurrent refreshes can corrupt the vector index."
+        ) from exc
+    click.get_current_context().call_on_close(lock.release)
+    if serve_is_running(data_dir):
+        logger.warning(
+            "A `serve` process has this index open. Refresh will proceed; the server "
+            "answers tool calls with a retry-in-60-120-seconds message meanwhile and "
+            "reopens the rebuilt index afterwards."
+        )
+    return lock
 
 
 # Values of PIPECAT_HUB_WARMUP that disable pre-warm. Anything else
@@ -238,7 +413,7 @@ def _refuse_unsafe_data_dir(data_dir: Path, resolved_data_dir: Path) -> None:
 
     if any(_is_unsafe(candidate) for candidate in unsafe):
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it is a filesystem root or "
+            f"Refusing to delete {shown_path(data_dir)}: it is a filesystem root or "
             "home directory, not an index directory. Point PIPECAT_HUB_DATA_DIR at a "
             "dedicated directory before retrying --reset-index."
         )
@@ -306,15 +481,15 @@ def _delete_local_index_storage(data_dir: Path) -> None:
     colliding_config_path = env_loading.config_collides_with_dir(resolved_data_dir)
     if colliding_config_path is not None:
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
-            f"config.toml ({redact_home(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
+            f"Refusing to delete {shown_path(data_dir)}: it contains the active "
+            f"config.toml ({shown_path(colliding_config_path)}). Move PIPECAT_HUB_DATA_DIR "
             "or the config file so they don't collide, then retry --reset-index."
         )
     colliding_dotenv_path = env_loading.dotenv_collides_with_dir(resolved_data_dir)
     if colliding_dotenv_path is not None:
         raise click.ClickException(
-            f"Refusing to delete {redact_home(data_dir)}: it contains the active "
-            f"project .env ({redact_home(colliding_dotenv_path)}). Point PIPECAT_HUB_DATA_DIR "
+            f"Refusing to delete {shown_path(data_dir)}: it contains the active "
+            f"project .env ({shown_path(colliding_dotenv_path)}). Point PIPECAT_HUB_DATA_DIR "
             "at a directory outside your project (or run from elsewhere), then retry "
             "--reset-index."
         )
@@ -331,7 +506,7 @@ def _delete_local_index_storage(data_dir: Path) -> None:
             _module_logger.warning(
                 "Could not recreate %s after reset (%s); the symlinked data dir may "
                 "need to be recreated manually",
-                redact_home(resolved_data_dir),
+                shown_path(resolved_data_dir),
                 exc,
             )
 
@@ -360,10 +535,16 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
     summary rather than only a log line. The framework provenance keys and the
     repo commit marker are cleared in one atomic batch (a batch call can't
     leave partial state, so there is no ordering concern between them).
+
+    Write-ahead: the repo's delete-pending flag is set *before* the
+    records are touched and cleared only with the commit marker, so a partial
+    delete (vector side gone, FTS rows left) can never sit behind an
+    unchanged-skip marker. If the flag cannot be written, nothing is deleted.
     """
     from pipecat_context_hub.services.ingest.github_ingest import _FRAMEWORK_REPO
 
     try:
+        index_store.set_metadata(_repo_delete_pending_key(slug), "1")
         await index_store.delete_by_repo(slug)
     except Exception:
         _module_logger.exception(
@@ -371,24 +552,16 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             "records may persist until a future refresh retries the cleanup",
             slug,
         )
-        # Flag the failure so a later refresh's unchanged-skip shortcut can't
-        # trust `indexed_records > 0` alone: that count is FTS-side, and a
-        # partial delete (vector delete succeeds, FTS delete raises) can
-        # leave stale FTS rows behind that would otherwise make the vector
-        # store's now-empty state for this repo look healthy indefinitely.
-        # Cleared once the repo is fully re-ingested (see the refresh loop's
-        # success path).
-        try:
-            index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
-        except Exception:
-            _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
     try:
         # No framework records left for the pin or provenance to describe.
+        # The re-ingest flags too: with the commit marker gone, cleanup never
+        # finds this repo again to clear them.
+        repo_keys = [meta_key, *_repo_reingest_flag_keys(slug)]
         delete_keys = (
-            [*_FRAMEWORK_PROVENANCE_METADATA_KEYS, meta_key]
+            [*_FRAMEWORK_PROVENANCE_METADATA_KEYS, *repo_keys]
             if slug == _FRAMEWORK_REPO
-            else [meta_key]
+            else repo_keys
         )
         index_store.set_metadata_batch({}, delete_keys=delete_keys)
     except Exception:
@@ -398,10 +571,6 @@ async def _delete_repo_index_data(index_store: IndexStore, slug: str, meta_key: 
             "future refresh retries the cleanup",
             slug,
         )
-        try:
-            index_store.set_metadata(f"repo:{slug}:cleanup_failed", "1")
-        except Exception:
-            _module_logger.exception("Also failed to record cleanup_failed marker for %s", slug)
         return False
     return True
 
@@ -541,7 +710,36 @@ def _write_serve_debug_probe() -> None:
         )
 
 
-@click.group(invoke_without_command=True)
+class TerminalSafeGroup(click.Group):
+    """The hub's root group: click's own error rendering is terminal-safe.
+
+    Click prints a ``ClickException`` itself (``ClickException.show`` in
+    ``main``), bypassing ``terminal.echo``, and several embed configured paths
+    (the data dir, a colliding ``config.toml``). Root-level parsing
+    (``make_context``) and dispatch (``invoke``: every subcommand's parsing and
+    callback, nested groups included) run inside
+    :func:`terminal.escaped_click_errors`, so the message is escaped before
+    ``main`` shows it. ``plugin.py``'s bridge calls this group's ``main``, so
+    both front doors share it. A source test pins that every group in ``src/``
+    is this class or reachable from it.
+    """
+
+    def make_context(
+        self,
+        info_name: str | None,
+        args: list[str],
+        parent: click.Context | None = None,
+        **extra: Any,
+    ) -> click.Context:
+        with escaped_click_errors():
+            return super().make_context(info_name, args, parent=parent, **extra)
+
+    def invoke(self, ctx: click.Context) -> Any:
+        with escaped_click_errors():
+            return super().invoke(ctx)
+
+
+@click.group(cls=TerminalSafeGroup, invoke_without_command=True)
 @click.version_option(package_name="pipecat-ai-context-hub", prog_name="pipecat-context-hub")
 @click.option("--log-level", default="INFO", help="Logging level.")
 @click.pass_context
@@ -560,14 +758,40 @@ def main(ctx: click.Context, log_level: str) -> None:
     # moving both later, and malformed-config warnings are emitted through
     # configured logging instead of Python's last-resort handler.
     _configure_logging(log_level)
-    env_loading.load_env_layers()
+    # `repos` is a config editor: the loader's "Loaded N key(s) from config.toml" INFO line is
+    # noise there, and `repos add` is about to rewrite that very file. Warnings still show.
+    # An explicit `--log-level` is honoured: only the default level is muted.
+    log_level_is_default = (
+        ctx.get_parameter_source("log_level") is click.core.ParameterSource.DEFAULT
+    )
+    with _loader_info_muted(ctx.invoked_subcommand == repos_group.name and log_level_is_default):
+        provenance = env_loading.load_env_layers()
     ctx.ensure_object(dict)
+    ctx.obj["env_provenance"] = provenance
     config = HubConfig()
     ctx.obj["config"] = config.model_copy(
         update={"server": config.server.model_copy(update={"log_level": log_level})}
     )
     if ctx.invoked_subcommand is None:
         ctx.invoke(serve)
+
+
+@contextlib.contextmanager
+def _loader_info_muted(mute: bool) -> Iterator[None]:
+    """Raise the env loader's effective threshold to WARNING for the block when ``mute``.
+
+    Uses the *effective* (inherited) level, not the logger's own ``.level`` (``NOTSET`` = 0
+    when it inherits): otherwise ``--log-level ERROR`` would be lowered to WARNING. The
+    raw own level is what gets restored.
+    """
+    loader_logger = logging.getLogger(env_loading.__name__)
+    previous = loader_logger.level
+    if mute:
+        loader_logger.setLevel(max(loader_logger.getEffectiveLevel(), logging.WARNING))
+    try:
+        yield
+    finally:
+        loader_logger.setLevel(previous)
 
 
 def _resolve_watch_and_idle_plan(
@@ -643,8 +867,6 @@ def serve(ctx: click.Context) -> None:
     from pipecat_context_hub.server.main import create_server
     from pipecat_context_hub.server.transport import serve_stdio
     from pipecat_context_hub.services.embedding import EmbeddingService
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
-    from pipecat_context_hub.services.index.store import IndexStore
     from pipecat_context_hub.services.retrieval.cross_encoder import CrossEncoderReranker
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
     from pipecat_context_hub.shared.tracking import IdleTracker
@@ -665,49 +887,43 @@ def serve(ctx: click.Context) -> None:
         config, _original_ppid, logger
     )
 
-    index_store: IndexStore | None = None
+    # Advertise this server so a concurrent `refresh` can warn about it.
+    # Best-effort: a lock failure must never stop the server from starting.
     try:
-        index_store = IndexStore(config.storage)
-        stats = index_store.get_index_stats()
-    except IncompatibleIndexFormatError as exc:
-        # Specific, non-mutating signal: the on-disk Chroma format predates 1.x.
-        # The probe ran before PersistentClient, so nothing was written.
-        if index_store is not None:
-            try:
-                index_store.close()
-            except Exception:
-                logger.exception("Failed to close partially-opened index store")
-        # exc.__str__ embeds the absolute chroma_path; redact it for front-door
-        # parity with the cli_query one-shot error sites.
-        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
-    except Exception as exc:
-        # IndexStore.__init__ opens two backends (Chroma + SQLite) without
-        # rolling back on partial failure; close() whatever did come up.
-        if index_store is not None:
-            try:
-                index_store.close()
-            except Exception:
-                logger.exception("Failed to close partially-opened index store")
-        logger.error(
-            "Failed to open index at %s: %s. "
-            "Run 'uv run pipecat-context-hub refresh --force --reset-index' to rebuild. %s",
-            _redact_home(config.storage.data_dir),
-            redact_home_in_text(str(exc)),
-            bug_report_hint(),
-        )
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+        serve_lock = IndexLock(config.storage.data_dir, SERVE_LOCK, exclusive=False)
+        serve_lock.acquire(attempts=5)
+        ctx.call_on_close(serve_lock.release)
+    except (IndexLockedError, OSError):
+        logger.debug("Could not take the serve lock; refresh won't see this server", exc_info=True)
 
-    if stats.get("total", 0) == 0:
-        logger.error(
-            "Index at %s is empty (0 records). "
-            "MCP clients would hang waiting for results. "
-            "Run 'uv run pipecat-context-hub refresh' before 'serve'. %s",
-            _redact_home(config.storage.data_dir),
-            bug_report_hint(),
+    from pipecat_context_hub.services.index.reopening import (
+        ReopeningIndexStore,
+        open_ready_index_store,
+    )
+
+    # Every open, this one included, runs under a shared hold on the refresh
+    # lock: a running refresh is rewriting the index files and opening them
+    # then is unsafe (a likely trigger for the graph corruption in
+    # chroma#7510). If one is running, start anyway with the index unopened, so
+    # the MCP client connects and its tool calls get a "retry in 60-120
+    # seconds" answer instead of a dead server.
+    index_store = ReopeningIndexStore(
+        config.storage.data_dir, lambda: open_ready_index_store(config.storage)
+    )
+    stats: dict[str, Any] = {}
+    deferred_open = False
+    try:
+        index_store.open_now()
+        stats = index_store.get_index_stats()
+    except RefreshInProgressError:
+        deferred_open = True
+        logger.warning(
+            "A `refresh` is running; deferring index open until it finishes. "
+            "Tool calls will ask the client to retry in 60-120 seconds."
         )
-        index_store.close()
-        raise SystemExit(_EXIT_INDEX_UNREADY)
+    except IndexUnavailableError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
 
     # Startup banner: one line so operators can confirm version, data dir,
     # and content-type shape from an MCP JSONL trace. Helps diagnose
@@ -726,9 +942,9 @@ def serve(ctx: click.Context) -> None:
     logger.info(
         "pipecat-context-hub v%s starting: data_dir=%s total=%d counts_by_type={%s}",
         _SERVER_VERSION,
-        _redact_home(config.storage.data_dir),
+        shown_path(config.storage.data_dir),
         stats.get("total", 0),
-        counts_repr or "(empty)",
+        counts_repr or ("(deferred: refresh running)" if deferred_open else "(empty)"),
     )
 
     # From here on, any failure must close the index_store — otherwise a
@@ -766,7 +982,7 @@ def serve(ctx: click.Context) -> None:
                     "Unset the env var (or set it to 1) to re-enable."
                 )
             elif startup_disabled_reason == "not_cached":
-                probed = _redact_home(CrossEncoderReranker.resolve_hf_cache_dir())
+                probed = shown_path(CrossEncoderReranker.resolve_hf_cache_dir())
                 hint = (
                     f"model not downloaded (checked HF cache: {probed}). "
                     "Run 'pipecat-context-hub refresh' to pre-download, or set "
@@ -801,22 +1017,41 @@ def serve(ctx: click.Context) -> None:
 
         retriever = HybridRetriever(index_store, embedding_svc, cross_encoder=cross_encoder)
 
-        # Load deprecation map from disk if available
+        # Load deprecation map from disk if available. A refresh rewrites it
+        # alongside the index, so it is reloaded on every index reopen too.
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
-        dep_map_path = config.storage.data_dir / "deprecation_map.json"
-        retriever.deprecation_map = DeprecationMap.load(dep_map_path)
-        if retriever.deprecation_map.entries:
-            logger.info(
-                "Loaded deprecation map: %d entries", len(retriever.deprecation_map.entries)
-            )
+        dep_map_path = config.storage.deprecation_map_path
+
+        def _load_deprecation_map() -> None:
+            retriever.deprecation_map = DeprecationMap.load(dep_map_path)
+            if retriever.deprecation_map.load_error:
+                logger.warning(
+                    "Deprecation map %s (%s); check_deprecation cannot report "
+                    "deprecations until `refresh` rebuilds it",
+                    retriever.deprecation_map.load_error,
+                    shown_path(dep_map_path),
+                )
+            if retriever.deprecation_map.entries:
+                logger.info(
+                    "Loaded deprecation map: %d entries", len(retriever.deprecation_map.entries)
+                )
+
+        _load_deprecation_map()
+        index_store.add_open_listener(_load_deprecation_map)
 
         idle_tracker = IdleTracker()
+        configured_repos, tainted_repos = config.sources.repo_sets()
+
         server = create_server(
             retriever,
             index_store,
             reranker_status_provider=_reranker_status,
             idle_tracker=idle_tracker,
+            # Back off while a refresh runs; reopen after any refresh.
+            unavailable_reason=index_store.unavailable_reason,
+            configured_repos=configured_repos,
+            tainted_repos=tainted_repos,
         )
 
         def _close_index_store_on_watchdog_shutdown() -> None:
@@ -955,6 +1190,13 @@ def refresh(
     )
     start = time.monotonic()
 
+    # `--reset-index` is the recovery path for a runaway index that has filled
+    # the disk, so it must not be refused for lack of space the delete itself
+    # frees: its check runs after the delete, below.
+    if not reset_index:
+        _require_free_disk(config.storage.data_dir)
+    _acquire_refresh_lock_or_exit(config.storage.data_dir, logger)
+
     # Fail fast on an incompatible on-disk index before spending a network
     # round-trip on the framework-pin pre-flight below. Skipped when
     # --reset-index will delete storage anyway — that branch opens the index
@@ -963,7 +1205,7 @@ def refresh(
     # index (deliberate — see the pre-flight's own comment above).
     index_store: IndexStore
     if not reset_index:
-        index_store = _open_index_store_or_exit(config, logger)
+        index_store = _open_index_store_or_exit(config, logger, rebuild=force)
 
     # ----- 0. Validate an explicit framework pin -----
     # Resolve a concrete pin before any indexing work, so a typo costs one
@@ -1016,11 +1258,27 @@ def refresh(
     if reset_index:
         logger.warning("Deleting local index storage before refresh")
         _delete_local_index_storage(config.storage.data_dir)
+        # The delete ignores errors; Windows refuses to delete a file another
+        # process (a running `serve`) holds open. Never rebuild over the rest.
+        # The deprecation map counts too: a stale one would be served beside
+        # the rebuilt index when this run does not republish it.
+        undeleted = [
+            shown_path(path) for path in config.storage.index_artifact_paths if path.exists()
+        ]
+        if undeleted:
+            raise click.ClickException(
+                f"--reset-index could not delete {', '.join(undeleted)}: another process "
+                "(such as a running `serve`) may have it open. Stop it, then retry."
+            )
+        _require_free_disk(config.storage.data_dir)
         force = True
         # Storage was just deleted, so this always opens a fresh index — the
         # IncompatibleIndexFormatError this guards against can't fire here,
         # but the same helper is reused for one open call site either way.
-        index_store = _open_index_store_or_exit(config, logger)
+        index_store = _open_index_store_or_exit(config, logger, rebuild=True)
+
+    if index_store.vector_empty:
+        _distrust_skip_markers(index_store)
 
     embedding_svc = EmbeddingService(config.embedding)
     writer = EmbeddingIndexWriter(index_store, embedding_svc)
@@ -1131,7 +1389,7 @@ def refresh(
 
         # ----- 1. Docs -----
         crawler = DocsCrawler(writer, config.sources, config.chunking)
-        docs_key = "docs.pipecat.ai"
+        docs_key = DOCS_COUNT_KEY
         try:
             raw_text = await crawler.fetch_llms_txt()
         except Exception as exc:
@@ -1146,7 +1404,7 @@ def refresh(
 
         if raw_text is not None:
             content_hash = hashlib.sha256(raw_text.encode()).hexdigest()
-            stored_hash = index_store.get_metadata("docs:content_hash")
+            stored_hash = index_store.get_metadata(_DOCS_HASH_KEY)
             if not force and stored_hash == content_hash:
                 logger.info("Docs unchanged (hash=%s…), skipping", content_hash[:8])
                 source_status[docs_key] = {
@@ -1156,37 +1414,18 @@ def refresh(
                     "updated": _MISSING_SENTINEL,
                 }
             else:
+                # Write-ahead: drop the skip marker BEFORE touching the docs
+                # records, so no failure or interruption after this point can
+                # leave `docs:content_hash` vouching for records that are gone.
+                # If the marker cannot be dropped, leave the records intact.
                 try:
-                    await index_store.delete_by_content_type("doc")
+                    index_store.delete_metadata(_DOCS_HASH_KEY)
+                    # Docs-site records only: README-fallback chunks are also
+                    # content_type="doc" but carry a repo and belong to that
+                    # repo's ingest, which this pass does not re-run.
+                    await index_store.delete_by_content_type("doc", without_repo=True)
                 except Exception as exc:
-                    # IndexStore.delete_by_content_type can now raise on an
-                    # FTS-layer failure (round-5 gauntlet fix). Record it the
-                    # same way every other ingest-step failure in this
-                    # function is recorded, rather than letting it crash the
-                    # whole refresh.
                     all_errors.append(f"Failed to delete stale docs records: {exc}")
-                    # Vector-side delete already ran before the FTS side
-                    # raised, so docs records have diverged from whatever
-                    # `docs:content_hash` still describes. Clear the stamp so
-                    # a future refresh — forced or not — can never take the
-                    # "docs unchanged, skip" shortcut on this stale hash; it
-                    # will retry the delete+ingest instead.
-                    #
-                    # This call is itself best-effort: if the same underlying
-                    # storage fault that broke `delete_by_content_type` also
-                    # breaks `delete_metadata` (e.g. a disk/lock issue
-                    # affecting the whole SQLite file), don't let it propagate
-                    # unhandled and abort the whole refresh — that would
-                    # reproduce exactly the permanent-skip bug this clear is
-                    # meant to close, just one layer deeper. Log and record
-                    # the failure in `all_errors`, then fall through to the
-                    # same "error" status as the primary failure.
-                    try:
-                        index_store.delete_metadata("docs:content_hash")
-                    except Exception as meta_exc:
-                        meta_msg = f"Failed to clear stale docs:content_hash stamp: {meta_exc}"
-                        all_errors.append(meta_msg)
-                        logger.warning(meta_msg)
                     source_status[docs_key] = {
                         "status": "error",
                         "sha": _MISSING_SENTINEL,
@@ -1203,7 +1442,7 @@ def refresh(
                         len(docs_result.errors),
                     )
                     if not docs_result.errors:
-                        index_store.set_metadata("docs:content_hash", content_hash)
+                        index_store.set_metadata(_DOCS_HASH_KEY, content_hash)
                     source_status[docs_key] = {
                         "status": "error" if docs_result.errors else "updated",
                         "sha": _MISSING_SENTINEL,
@@ -1220,14 +1459,19 @@ def refresh(
 
         # Clean up repos removed from configuration (P2: stale data from
         # repos no longer in effective_repos would persist indefinitely).
+        # Membership is by exact spelling, not `slug_key`: index records are
+        # keyed by the spelling refresh ingested, and only the effective
+        # spelling (first wins, `effective_repos`) is refreshed, so records
+        # under another case variant are stale and handled like any
+        # unconfigured repo (warn, or delete with --prune). Taint matching
+        # stays `is_tainted` (slug_key), so tainted cleanup is unconditional.
         configured = set(config.sources.effective_repos)
-        tainted_repos = set(config.sources.tainted_repos)
         all_meta = index_store.get_all_metadata()
         for meta_key in all_meta:
-            if meta_key.startswith("repo:") and meta_key.endswith(":commit_sha"):
-                slug = meta_key[len("repo:") : -len(":commit_sha")]
+            slug = _repo_slug_of_sha_key(meta_key)
+            if slug is not None:
                 if slug not in configured:
-                    if slug in tainted_repos:
+                    if config.sources.is_tainted(slug):  # the one (casefolded) rule
                         # Explicit exclusion — always cleaned up, regardless
                         # of --prune.
                         logger.warning("Repo %s is tainted by local policy, cleaning up", slug)
@@ -1285,7 +1529,7 @@ def refresh(
 
         framework_slug = _FRAMEWORK_REPO
         for repo_slug in config.sources.effective_repos:
-            stored_sha_key = f"repo:{repo_slug}:commit_sha"
+            stored_sha_key = _repo_sha_key(repo_slug)
             # Pin the framework repo to the resolved tag. `head` asks for the
             # default branch, which `clone_or_fetch` expresses as no tag at all.
             repo_tag = fw_version if repo_slug == framework_slug and not fw_at_head else None
@@ -1322,7 +1566,7 @@ def refresh(
                     raise _framework_pin_not_found(fw_version, exc) from exc
                 if repo_slug == framework_slug:
                     fw_state.clone_or_fetch_failed = True
-                all_errors.append(f"Failed to clone/fetch {repo_slug}: {exc}")
+                all_errors.append(f"Failed to clone/fetch {shown(repo_slug)}: {exc}")
                 source_status[repo_slug] = {
                     "status": "error",
                     "sha": _MISSING_SENTINEL,
@@ -1385,21 +1629,25 @@ def refresh(
             # thought to run `--force`. So the shortcut requires both halves:
             # the SHA is unchanged *and* records for it actually exist.
             indexed_records = pre_counts.get(repo_slug, 0)
-            # A prior cleanup failure for this repo (`_delete_repo_index_data`
-            # raising) leaves stale FTS rows behind even though the vector
-            # store may already be empty for it — `indexed_records` alone
+            # A delete of this repo's records that never completed with a
+            # clean re-ingest (the flag is written ahead of every delete), or
+            # a vector half that opened empty
+            # (`_distrust_skip_markers`), leaves FTS rows behind even though
+            # the vector store may be empty for it — `indexed_records` alone
             # can't tell those apart from a healthy repo. Don't take the
-            # unchanged-skip shortcut while that flag is set; force a
-            # re-ingest instead, which clears it on success below.
-            cleanup_failed = (
-                index_store.get_metadata(f"repo:{repo_slug}:cleanup_failed") is not None
+            # unchanged-skip shortcut while either flag is set; force a
+            # re-ingest instead, which clears both on success below.
+            delete_pending = (
+                index_store.get_metadata(_repo_delete_pending_key(repo_slug)) is not None
             )
+            vector_empty = index_store.get_metadata(_repo_vector_empty_key(repo_slug)) is not None
             if (
                 not force
                 and stored_sha == commit_sha
                 and indexed_records > 0
                 and repo_slug not in github.recovered_repos
-                and not cleanup_failed
+                and not delete_pending
+                and not vector_empty
             ):
                 logger.info(
                     "Repo %s unchanged (sha=%s…), skipping",
@@ -1426,10 +1674,18 @@ def refresh(
                         repo_slug,
                         commit_sha[:8],
                     )
-                elif not force and stored_sha == commit_sha and cleanup_failed:
+                elif not force and stored_sha == commit_sha and delete_pending:
                     logger.warning(
-                        "Repo %s SHA unchanged (sha=%s…) but a prior cleanup "
-                        "failed — re-ingesting to reconcile the index",
+                        "Repo %s SHA unchanged (sha=%s…) but an earlier delete of "
+                        "its records was not followed by a clean re-ingest "
+                        "(failed or interrupted) — re-ingesting to reconcile the index",
+                        repo_slug,
+                        commit_sha[:8],
+                    )
+                elif not force and stored_sha == commit_sha and vector_empty:
+                    logger.warning(
+                        "Repo %s SHA unchanged (sha=%s…) but the vector index "
+                        "opened empty since it was indexed — re-ingesting",
                         repo_slug,
                         commit_sha[:8],
                     )
@@ -1455,24 +1711,19 @@ def refresh(
                 continue
 
             try:
+                # Write-ahead, as in `_delete_repo_index_data`: flag the repo
+                # before deleting its records, so an abort anywhere between
+                # here and the SHA bookkeeping below (which runs only at the
+                # end of the loop) can't leave the unchanged-skip shortcut
+                # trusting a partial index. The flag is cleared on a clean
+                # re-ingest; if it can't be written, the records are left
+                # intact.
+                index_store.set_metadata(_repo_delete_pending_key(repo_slug), "1")
                 await index_store.delete_by_repo(repo_slug)
             except Exception as exc:
                 msg = f"Failed to delete stale records for {repo_slug}: {exc}"
                 all_errors.append(msg)
                 logger.error(msg)
-                # Defense-in-depth / consistency with the sibling
-                # `_delete_repo_index_data` failure paths, which set this
-                # marker on any delete failure. Not load-bearing here: this
-                # `continue` skips `ingested_repos.add()` below, and the
-                # SHA-bookkeeping loop further down already deletes this
-                # repo's stored commit_sha on any failure path (forcing a
-                # retry next non-force refresh) independent of this marker.
-                try:
-                    index_store.set_metadata(f"repo:{repo_slug}:cleanup_failed", "1")
-                except Exception:
-                    logger.exception(
-                        "Also failed to record cleanup_failed marker for %s", repo_slug
-                    )
                 source_status[repo_slug] = {
                     "status": "error",
                     "sha": commit_sha[:8],
@@ -1561,7 +1812,8 @@ def refresh(
                 # for it is now moot: the index is coherent again, so the
                 # unchanged-skip shortcut can trust `indexed_records` for it
                 # on future runs.
-                index_store.delete_metadata(f"repo:{repo_slug}:cleanup_failed")
+                for key in _repo_reingest_flag_keys(repo_slug):
+                    index_store.delete_metadata(key)
 
             source_status[repo_slug] = {
                 "status": "error" if repo_has_errors else "updated",
@@ -1601,16 +1853,25 @@ def refresh(
             )
 
         # Store SHAs: unchanged repos (handles first-run) + successfully ingested repos.
-        # For failed repos: delete the cached SHA so the next non-force refresh
-        # retries them (P1: --force deletes records before ingest, so a failure
-        # leaves the repo empty; keeping the old SHA would skip it next time).
+        # A failed repo (checkout, delete or ingest error) must be retried by
+        # the next non-force refresh (P1: --force deletes records before
+        # ingest, so a failure can leave the repo empty), but it may still
+        # hold records, so it keeps a commit marker: the stale-repo cleanup
+        # and `--prune` find repos only through that key. The delete-pending
+        # flag, not the marker's absence, blocks the unchanged-skip shortcut.
         for repo_slug, sha in repo_shas.items():
             if repo_slug in frozen_sha_repos:
                 continue
+            sha_key = _repo_sha_key(repo_slug)
             if repo_slug not in changed_repos or repo_slug in ingested_repos:
-                index_store.set_metadata(f"repo:{repo_slug}:commit_sha", sha)
+                index_store.set_metadata(sha_key, sha)
             else:
-                index_store.delete_metadata(f"repo:{repo_slug}:commit_sha")
+                index_store.set_metadata_batch(
+                    {
+                        sha_key: index_store.get_metadata(sha_key) or sha,
+                        _repo_delete_pending_key(repo_slug): "1",
+                    }
+                )
 
         # ----- 3. Deprecation map -----
         # Built solely from pipecat's machine-readable registry
@@ -1624,7 +1885,7 @@ def refresh(
             build_deprecation_map_from_registry,
         )
 
-        dep_map_path = config.storage.data_dir / "deprecation_map.json"
+        dep_map_path = config.storage.deprecation_map_path
 
         # Reuse the same record-replacement gate as framework provenance below,
         # so the map and the stamp can never describe different revisions.
@@ -1664,6 +1925,24 @@ def refresh(
 
     try:
         asyncio.run(_run_refresh())
+
+        if force and not reset_index:
+            # `--force` deletes then re-adds every record, which leaves the
+            # deleted ones in the persisted HNSW graph (it grew by the whole
+            # corpus per forced refresh). Rebuild it from the live records.
+            # Non-fatal: the index is fully usable without it. Except a
+            # FatalIndexError (the HNSW guard tripped on a graph written this
+            # run, or the swap failed leaving no ``latest`` collection): that stops the refresh, exit 2.
+            try:
+                kept = index_store.compact_vector()
+                logger.info("Compacted vector index after forced refresh (%d records)", kept)
+            except FatalIndexError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Vector index compaction failed; the index is valid but larger than needed",
+                    exc_info=True,
+                )
 
         duration = round(time.monotonic() - start, 1)
         logger.info(
@@ -1813,6 +2092,15 @@ def refresh(
             recovered_repos=sorted(github.recovered_repos),
             unpruned_repo_count=unpruned_repo_count,
         )
+    except FatalIndexError as exc:
+        # Only the post-write HNSW guard (during ingest or compaction) and a
+        # compaction swap that failed leaving no ``latest`` raise this mid-run
+        # (the open-time checks fire in `_open_index_store_or_exit`). The
+        # ingesters re-raise it so a corrupt index stops the refresh instead of
+        # being recorded as one more per-source error while the remaining
+        # sources keep writing into it.
+        logger.error("%s %s", redact_home_in_text(str(exc)), bug_report_hint())
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
     finally:
         index_store.close()
 
@@ -1864,7 +2152,7 @@ def _safe_placeholder() -> str:
 def _echo_prune_skip_notice(unpruned_repo_count: int) -> None:
     """Print the 'Skipped pruning' line, shared by both summary branches below."""
     if unpruned_repo_count:
-        click.echo(
+        echo(
             f"Skipped pruning: {unpruned_repo_count} repo(s) not in this run's config "
             "(use --prune to remove)"
         )
@@ -1885,22 +2173,24 @@ def _print_refresh_summary(
         # a warning whose whole point is to be noticed shouldn't sit after the
         # line that reads as "done".
         _echo_prune_skip_notice(unpruned_repo_count)
-        click.echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
+        echo(f"Refresh complete: {total_upserted} records upserted in {duration}s.")
         return
 
-    # Compute column widths
-    name_width = max(len(name) for name in source_status)
+    # Rows are keyed by configured repo entries, which nothing validated:
+    # flag a non-printable one (and size the column by what is printed).
+    labels = {name: shown(name) for name in source_status}
+    name_width = max(len(label) for label in labels.values())
     name_width = max(name_width, len("Repository"))
 
     hr = f"{_safe_hr(name_width)}  {_safe_hr(8)}  {_safe_hr(10)}  {_safe_hr(8)}  {_safe_hr(8)}"
     placeholder = _safe_placeholder()
 
     # Header
-    click.echo()
-    click.echo(
+    echo()
+    echo(
         f"{'Repository':<{name_width}}  {'Status':<8}  {'SHA':<10}  {'Existing':>8}  {'Updated':>8}"
     )
-    click.echo(hr)
+    echo(hr)
 
     # Rows — updated/error first, then skipped
     total_existing = 0
@@ -1932,28 +2222,27 @@ def _print_refresh_summary(
 
         existing_str = f"{existing_int:,}" if existing_int else placeholder
 
-        click.echo(
-            f"{name:<{name_width}}  {status:<8}  {sha:<10}  {existing_str:>8}  {updated_str:>8}"
+        echo(
+            f"{labels[name]:<{name_width}}  {status:<8}  {sha:<10}  {existing_str:>8}  {updated_str:>8}"
         )
 
     # Footer
-    click.echo(hr)
-    click.echo(
-        f"{'Total':<{name_width}}  {'':<8}  {'':<10}  {total_existing:>8,}  {total_updated:>8,}"
-    )
-    click.echo()
+    echo(hr)
+    echo(f"{'Total':<{name_width}}  {'':<8}  {'':<10}  {total_existing:>8,}  {total_updated:>8,}")
+    echo()
     if recovered_repos:
-        click.echo(
-            f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(recovered_repos)}"
+        echo(
+            f"Recovered {len(recovered_repos)} corrupt clone(s): {', '.join(shown(r) for r in recovered_repos)}"
         )
     _echo_prune_skip_notice(unpruned_repo_count)
-    click.echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
+    echo(f"Refresh complete: {total_upserted:,} upserted, {error_count} errors, {duration}s.")
 
 
 # One-shot query subcommands (search-docs, check-deprecation, status, ...) —
 # the same tool handlers the MCP server dispatches, exposed for shell callers.
 register_query_commands(main)
 register_install_command(main)
+register_repos_commands(main)
 
 
 if __name__ == "__main__":

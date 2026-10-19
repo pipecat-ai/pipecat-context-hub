@@ -178,13 +178,17 @@ class TestToolRegistration:
 
     def test_hub_status_not_listed_without_store(self, mock_retriever):
         """Without index_store, get_hub_status should not be registered."""
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         # We can't call list_tools directly, but we verify the closure
         # builds correctly — the real test is that ValueError is never raised
         assert server.name == "pipecat-context-hub"
 
     async def test_list_tools_handler_registered(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/list")
         assert entry is not None
         assert entry.params_type is types.PaginatedRequestParams
@@ -195,7 +199,12 @@ class TestToolRegistration:
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
-        server = create_server(mock_retriever, idle_tracker=tracker)
+        server = create_server(
+            mock_retriever,
+            idle_tracker=tracker,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/list")
         assert entry is not None
 
@@ -211,7 +220,12 @@ class TestToolRegistration:
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
-        server = create_server(mock_retriever, idle_tracker=tracker)
+        server = create_server(
+            mock_retriever,
+            idle_tracker=tracker,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         request = types.CallToolRequestParams(name="search_docs", arguments={"query": "x"})
@@ -231,7 +245,12 @@ class TestToolRegistration:
         from pipecat_context_hub.shared.tracking import IdleTracker
 
         tracker = IdleTracker()
-        server = create_server(mock_retriever, idle_tracker=tracker)
+        server = create_server(
+            mock_retriever,
+            idle_tracker=tracker,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("ping")
         assert entry is not None
 
@@ -247,7 +266,9 @@ class TestToolRegistration:
         """Omitting idle_tracker must leave the built-in ping handler
         in place unchanged — we don't want to break ping when idle
         watchdogging is disabled."""
-        server = create_server(mock_retriever)  # no idle_tracker
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )  # no idle_tracker
         entry = server.get_request_handler("ping")
         assert entry is not None
         result = await entry.handler(cast(Any, None), None)
@@ -261,13 +282,17 @@ class TestToolRegistration:
 
 class TestToolDispatch:
     async def test_call_tool_handler_registered(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         assert entry.params_type is types.CallToolRequestParams
 
     async def test_tools_list_returns_typed_tools_without_store(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/list")
         assert entry is not None
         result = await entry.handler(cast(Any, None), None)
@@ -277,7 +302,12 @@ class TestToolDispatch:
         assert all(tool.input_schema["type"] == "object" for tool in result.tools)
 
     async def test_tools_list_adds_hub_status_only_with_store(self, mock_retriever):
-        server = create_server(mock_retriever, index_store=MagicMock())
+        server = create_server(
+            mock_retriever,
+            index_store=MagicMock(),
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/list")
         assert entry is not None
         result = await entry.handler(cast(Any, None), None)
@@ -286,8 +316,44 @@ class TestToolDispatch:
             name for name, _, _ in (*_BASE_TOOLS, _HUB_STATUS_TOOL)
         }
 
+    async def test_unavailable_reason_answers_without_touching_the_index(self, mock_retriever):
+        server = create_server(
+            mock_retriever,
+            unavailable_reason=lambda: "retry in 60-120 seconds",
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        result = await entry.handler(
+            cast(Any, None),
+            types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
+        )
+        assert isinstance(result, types.CallToolResult)
+        assert result.is_error is True
+        assert cast(types.TextContent, result.content[0]).text == "retry in 60-120 seconds"
+        mock_retriever.search_docs.assert_not_called()
+
+    async def test_unavailable_reason_none_dispatches_normally(self, mock_retriever):
+        server = create_server(
+            mock_retriever,
+            unavailable_reason=lambda: None,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        mock_retriever.search_docs.side_effect = RuntimeError("reached the handler")
+        with pytest.raises(RuntimeError, match="reached the handler"):
+            await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name="search_docs", arguments={"query": "x"}),
+            )
+
     async def test_unknown_tool_preserves_application_error(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         with pytest.raises(ValueError, match=r"^Unknown tool: missing_tool$"):
@@ -298,7 +364,9 @@ class TestToolDispatch:
 
     async def test_registered_handler_exception_preserves_application_error(self, mock_retriever):
         mock_retriever.search_docs.side_effect = RuntimeError("backend exploded")
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         with pytest.raises(RuntimeError, match=r"^backend exploded$"):
@@ -308,7 +376,9 @@ class TestToolDispatch:
             )
 
     async def test_invalid_arguments_return_error_result_with_field_detail(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         result = await entry.handler(
@@ -326,7 +396,12 @@ class TestToolDispatch:
     async def test_idle_tracker_ends_when_call_raises(self, mock_retriever):
         tracker = MagicMock()
         mock_retriever.search_docs.side_effect = RuntimeError("backend exploded")
-        server = create_server(mock_retriever, idle_tracker=tracker)
+        server = create_server(
+            mock_retriever,
+            idle_tracker=tracker,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
+        )
         entry = server.get_request_handler("tools/call")
         assert entry is not None
         with pytest.raises(RuntimeError, match="backend exploded"):
@@ -340,11 +415,15 @@ class TestToolDispatch:
     async def test_create_server_returns_server(self, mock_retriever):
         from mcp.server.lowlevel import Server
 
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         assert isinstance(server, Server)
 
     async def test_server_name(self, mock_retriever):
-        server = create_server(mock_retriever)
+        server = create_server(
+            mock_retriever, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         assert server.name == "pipecat-context-hub"
 
 
@@ -381,7 +460,9 @@ class TestGetHubStatusRerankerFields:
             model="cross-encoder/ms-marco-TinyBERT-L-2-v2",
             configured_model="cross-encoder/ms-marco-TinyBERT-L-2-v2",
         )
-        payload = await handle_get_hub_status({}, self._stub_store(), status)
+        payload = await handle_get_hub_status(
+            {}, self._stub_store(), status, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         data = json.loads(payload)
         assert data["reranker_enabled"] is True
         assert data["reranker_model"] == "cross-encoder/ms-marco-TinyBERT-L-2-v2"
@@ -401,7 +482,9 @@ class TestGetHubStatusRerankerFields:
             configured_model="cross-encoder/ms-marco-MiniLM-L-12-v2",
             disabled_reason="not_cached",
         )
-        payload = await handle_get_hub_status({}, self._stub_store(), status)
+        payload = await handle_get_hub_status(
+            {}, self._stub_store(), status, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_model"] is None
@@ -421,7 +504,9 @@ class TestGetHubStatusRerankerFields:
             configured_model="cross-encoder/ms-marco-MiniLM-L-6-v2",
             disabled_reason="load_failed",
         )
-        payload = await handle_get_hub_status({}, self._stub_store(), status)
+        payload = await handle_get_hub_status(
+            {}, self._stub_store(), status, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_disabled_reason"] == "load_failed"
@@ -433,7 +518,9 @@ class TestGetHubStatusRerankerFields:
             handle_get_hub_status,
         )
 
-        payload = await handle_get_hub_status({}, self._stub_store(), None)
+        payload = await handle_get_hub_status(
+            {}, self._stub_store(), None, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
         data = json.loads(payload)
         assert data["reranker_enabled"] is False
         assert data["reranker_model"] is None
@@ -458,12 +545,147 @@ class TestGetHubStatusRerankerFields:
             retriever,
             index_store=self._stub_store(),
             reranker_status_provider=_provider,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset(),
         )
         assert server.name == "pipecat-context-hub"
         # The closure is wired in — exercising it requires the full call path
         # which is covered by integration tests; here we assert create_server
         # accepts the callable and does not eagerly invoke it.
         assert calls == []
+
+
+_STATUS_CATALOG = """
+verified = 2026-10-17
+
+[groups.acme]
+kind = "vendor"
+description = "Acme"
+aliases = ["acme"]
+repos = [{ slug = "acme/one" }]
+
+[groups.beta]
+kind = "vendor"
+description = "Beta"
+aliases = ["beta"]
+repos = [{ slug = "beta/one" }]
+
+[groups.gamma]
+kind = "topic"
+description = "Gamma"
+aliases = ["gamma"]
+repos = [{ slug = "gamma/one" }]
+"""
+
+
+class TestGetHubStatusCoverageOverMcp:
+    """The MCP door threads ``configured_repos`` / ``tainted_repos`` into get_hub_status."""
+
+    @pytest.fixture(autouse=True)
+    def _catalog(self, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        repo_catalog.load_catalog.cache_clear()
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: _STATUS_CATALOG)
+        yield
+        repo_catalog.load_catalog.cache_clear()
+
+    @staticmethod
+    def _store(counts: Any) -> Any:
+        class _Stub:
+            data_dir = "/tmp/hub"
+
+            def get_index_stats(self) -> dict[str, Any]:
+                return {"total": 0, "counts_by_type": {}, "commit_shas": []}
+
+            def get_all_metadata(self) -> dict[str, str]:
+                return {}
+
+            def get_counts_by_repo(self) -> Any:
+                if isinstance(counts, Exception):
+                    raise counts
+                return counts
+
+        return _Stub()
+
+    @staticmethod
+    async def _call_status(server: Any) -> dict[str, Any]:
+        import json
+
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        result = await entry.handler(
+            cast(Any, None),
+            types.CallToolRequestParams(name="get_hub_status", arguments={}),
+        )
+        assert isinstance(result, types.CallToolResult)
+        assert not result.is_error
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        payload: dict[str, Any] = json.loads(block.text)
+        return payload
+
+    async def test_reports_the_three_coverage_fields(self, mock_retriever):
+        server = create_server(
+            mock_retriever,
+            index_store=self._store({"acme/one": 5, "beta/one": 0}),
+            configured_repos=frozenset({"acme/one", "beta/one"}),
+            tainted_repos=frozenset({"bad/repo"}),
+        )
+        payload = await self._call_status(server)
+        assert [s.casefold() for s in payload["indexed_repos"]] == ["acme/one"]
+        assert payload["configured_no_records"] == ["beta/one"]
+        assert payload["catalog_groups_not_indexed"] == ["beta", "gamma"]
+
+    async def test_case_variant_configured_slug(self, mock_retriever):
+        server = create_server(
+            mock_retriever,
+            index_store=self._store({"owner/repo": 3}),
+            configured_repos=frozenset({"Owner/Repo"}),
+            tainted_repos=frozenset(),
+        )
+        payload = await self._call_status(server)
+        assert "owner/repo" in [s.casefold() for s in payload["indexed_repos"]]
+        assert payload["configured_no_records"] == []
+
+    @pytest.mark.parametrize("omitted", ["configured_repos", "tainted_repos"])
+    def test_repo_sets_are_required(self, mock_retriever, omitted):
+        """No default: an omitted tainted set would let the hint suggest tainted repos."""
+        kwargs: dict[str, Any] = {"configured_repos": frozenset(), "tainted_repos": frozenset()}
+        del kwargs[omitted]
+        with pytest.raises(TypeError, match=omitted):
+            create_server(mock_retriever, index_store=self._store({"acme/one": 1}), **kwargs)
+
+    @pytest.mark.parametrize(
+        "counts", [RuntimeError("boom"), MagicMock()], ids=["raises", "non-mapping"]
+    )
+    async def test_unreadable_counts_never_break_the_response(self, mock_retriever, counts):
+        server = create_server(
+            mock_retriever,
+            index_store=self._store(counts),
+            configured_repos=frozenset({"acme/one"}),
+            tainted_repos=frozenset(),
+        )
+        payload = await self._call_status(server)
+        assert payload["indexed_repos"] == []
+        assert payload["configured_no_records"] == []
+        assert payload["catalog_groups_not_indexed"] == []
+        assert payload["server_version"]
+
+    async def test_catalog_load_failure_leaves_groups_empty(self, mock_retriever, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: "not [valid toml")
+        repo_catalog.load_catalog.cache_clear()
+        server = create_server(
+            mock_retriever,
+            index_store=self._store({"acme/one": 5}),
+            configured_repos=frozenset({"acme/one", "beta/one"}),
+            tainted_repos=frozenset(),
+        )
+        payload = await self._call_status(server)
+        assert payload["catalog_groups_not_indexed"] == []
+        assert payload["configured_no_records"] == ["beta/one"]
 
 
 class TestTransport:
@@ -580,7 +802,7 @@ class TestServerInstructions:
 
     This text is advisory prose for the *connecting agent*, not a code path
     that fires on an exception — nothing else in the tree references it (see
-    AGENTS.md item #50), so a wording edit that drops a clause or a URL would
+    docs/smoke-test.md item #50), so a wording edit that drops a clause or a URL would
     otherwise pass silently. Also, the CLI (``cli_query.py``) now gets the
     same guidance via the shared ``shared/support_links.py`` constants — see
     ``TestSupportLinks`` below.
@@ -706,18 +928,21 @@ class TestServerInstructions:
         _assert_no_unsubstituted_placeholder('e.g. search_docs({"query": "TTS"})')
         _assert_no_unsubstituted_placeholder("a set like {a, b, c} or {ok}")
 
-    @pytest.mark.parametrize("index_state", ["empty", "incompatible"])
+    @pytest.mark.parametrize("index_state", ["empty", "lost_vector", "incompatible"])
     def test_boot_failure_guidance_matches_index_recovery_paths(
         self, index_state, tmp_path, monkeypatch, caplog
     ):
         """Boot guidance must defer to the recovery emitted before MCP initialization.
 
-        Empty and incompatible indexes prescribe different commands on stderr,
-        but both exit before an MCP client can call ``get_hub_status``.
+        Empty, lost-vector and incompatible indexes prescribe different commands
+        on stderr, but all exit before an MCP client can call ``get_hub_status``.
+        Regression (main.py boot guidance): a lost vector collection beside keyword
+        records needs ``refresh --force``, which the guidance used to omit.
         """
         from click.testing import CliRunner
 
-        from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY, main
+        from pipecat_context_hub.cli import main
+        from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
         from pipecat_context_hub.services.index import IncompatibleIndexFormatError
         from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
@@ -732,6 +957,16 @@ class TestServerInstructions:
             index_store = MagicMock(return_value=store)
             emitted_remediation = "pipecat-context-hub refresh"
             guided_remediation = "pipecat-context-hub refresh"
+        elif index_state == "lost_vector":
+            from pipecat_context_hub.services.index.errors import MissingVectorCollectionError
+
+            chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
+            index_store = MagicMock(side_effect=MissingVectorCollectionError(chroma_path))
+            emitted_remediation = "pipecat-context-hub refresh --force' to rebuild it"
+            guided_remediation = (
+                "keyword records prescribes pipecat-context-hub refresh --force "
+                "(plain refresh refuses it)"
+            )
         else:
             chroma_path = tmp_path / ".pipecat-context-hub" / "chroma"
             index_store = MagicMock(side_effect=IncompatibleIndexFormatError(chroma_path))
@@ -739,13 +974,15 @@ class TestServerInstructions:
             guided_remediation = "pipecat-context-hub refresh --force --reset-index"
 
         monkeypatch.chdir(tmp_path)
+        # serve takes a lock beside the data dir: keep it out of the real home.
+        monkeypatch.setenv("PIPECAT_HUB_DATA_DIR", str(tmp_path / "hub"))
         with (
             patch("pipecat_context_hub.services.index.store.IndexStore", index_store),
             caplog.at_level("ERROR", logger="pipecat_context_hub.cli"),
         ):
             result = CliRunner().invoke(main, ["serve"])
 
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert emitted_remediation in caplog.text
         assert guided_remediation in _SERVER_INSTRUCTIONS.replace("``", "")
         assert "before MCP initialization" in _SERVER_INSTRUCTIONS
@@ -958,3 +1195,299 @@ class TestEntryPoint:
 
         mod = importlib.import_module("pipecat_context_hub.__main__")
         assert hasattr(mod, "main")
+
+
+_HINT_CATALOG = """
+verified = 2026-10-17
+
+[groups.acme]
+kind = "vendor"
+description = "Acme"
+aliases = ["acme"]
+repos = [{ slug = "acme/one" }, { slug = "acme/two" }]
+
+[groups.shady]
+kind = "vendor"
+description = "Shady"
+aliases = ["shady"]
+repos = [{ slug = "bad/one" }]
+"""
+
+
+class TestCorpusHintOverMcp:
+    """The MCP door attaches ``corpus_hint`` to the four search tools, once, off the loop."""
+
+    @pytest.fixture(autouse=True)
+    def _catalog(self, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        repo_catalog.load_catalog.cache_clear()
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: _HINT_CATALOG)
+        yield
+        repo_catalog.load_catalog.cache_clear()
+
+    @staticmethod
+    def _store(counts: Any = None, *, stale_days: float = 30) -> MagicMock:
+        from datetime import timedelta
+
+        store = MagicMock()
+        store.data_dir = "/tmp/hub"
+        store.get_index_stats.return_value = {"total": 10, "counts_by_type": {}}
+        store.get_all_metadata.return_value = {
+            "last_refresh_at": (datetime.now(UTC) - timedelta(days=stale_days)).isoformat()
+        }
+        if isinstance(counts, Exception):
+            store.get_counts_by_repo.side_effect = counts
+        elif counts is not None:
+            store.get_counts_by_repo.return_value = counts
+        return store
+
+    @staticmethod
+    async def _call(
+        store: Any,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        configured: frozenset[str] = frozenset(),
+        tainted: frozenset[str] = frozenset(),
+        handler_json: str = '{"hits": [{"id": "x"}]}',
+    ) -> dict[str, Any]:
+        import json
+
+        server = create_server(
+            MagicMock(),
+            index_store=store,
+            configured_repos=configured,
+            tainted_repos=tainted,
+        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        with patch(
+            "pipecat_context_hub.server.main.get_tool_handler",
+            return_value=AsyncMock(return_value=handler_json),
+        ):
+            result = await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name=name, arguments=arguments),
+            )
+        assert isinstance(result, types.CallToolResult)
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        payload: dict[str, Any] = json.loads(block.text)
+        return payload
+
+    async def test_golden_hint(self):
+        from pipecat_context_hub.shared.support_links import RETRIEVAL_QUALITY_ISSUE_URL
+
+        payload = await self._call(self._store({}), "search_docs", {"query": "acme avatar"})
+        hint = payload["corpus_hint"]
+        assert hint["matched_groups"] == ["acme"]
+        assert hint["repos_not_indexed"] == ["acme/one", "acme/two"]
+        assert hint["add_command"] == "pipecat-context-hub repos add --config-only --group acme"
+        assert hint["report_issue_url"] == RETRIEVAL_QUALITY_ISSUE_URL
+        assert "refresh_command" not in hint
+        assert payload["hits"] == [{"id": "x"}]
+
+    async def test_hint_coexists_with_the_staleness_footer(self):
+        payload = await self._call(self._store({}), "search_docs", {"query": "acme avatar"})
+        assert "corpus_hint" in payload
+        assert "refresh" in payload["index_staleness"]["hint"]
+
+    @pytest.mark.parametrize(
+        ("name", "arguments"),
+        [
+            ("search_docs", {"query": "acme"}),
+            ("search_examples", {"query": "acme"}),
+            ("search_api", {"query": "acme"}),
+            ("get_code_snippet", {"symbol": "Acme.connect"}),
+            ("get_code_snippet", {"intent": "acme setup"}),
+        ],
+    )
+    async def test_every_search_tool_hints(self, name, arguments):
+        payload = await self._call(self._store({}), name, arguments)
+        assert payload["corpus_hint"]["matched_groups"] == ["acme"]
+
+    async def test_get_code_snippet_path_alone_never_hints(self):
+        payload = await self._call(
+            self._store({}), "get_code_snippet", {"path": "src/acme/service.py"}
+        )
+        assert "corpus_hint" not in payload
+
+    @pytest.mark.parametrize(
+        ("name", "arguments"),
+        [("get_doc", {"path": "/acme"}), ("get_example", {"example_id": "acme"})],
+    )
+    async def test_lookup_tools_never_hint(self, name, arguments):
+        payload = await self._call(self._store({}), name, arguments)
+        assert "corpus_hint" not in payload
+
+    async def test_check_deprecation_and_status_never_hint(self):
+        retriever = MagicMock()
+        retriever.deprecation_map = None
+        store = self._store({})
+        server = create_server(
+            retriever, index_store=store, configured_repos=frozenset(), tainted_repos=frozenset()
+        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        for name, arguments in (("check_deprecation", {"symbol": "acme"}), ("get_hub_status", {})):
+            result = await entry.handler(
+                cast(Any, None), types.CallToolRequestParams(name=name, arguments=arguments)
+            )
+            assert isinstance(result, types.CallToolResult)
+            block = result.content[0]
+            assert isinstance(block, types.TextContent)
+            assert "corpus_hint" not in block.text
+
+    async def test_no_hint_when_the_group_is_indexed(self):
+        payload = await self._call(
+            self._store({"acme/one": 1, "acme/two": 1}), "search_docs", {"query": "acme"}
+        )
+        assert "corpus_hint" not in payload
+
+    @pytest.mark.parametrize(
+        "counts", [RuntimeError("boom"), "bare-magicmock"], ids=["raises", "magicmock"]
+    )
+    async def test_unreadable_counts_give_no_key(self, counts):
+        store = self._store(None if counts == "bare-magicmock" else counts)
+        payload = await self._call(store, "search_docs", {"query": "acme"})
+        assert "corpus_hint" not in payload
+        assert payload["hits"] == [{"id": "x"}]
+
+    async def test_store_lacking_the_method_gives_no_key(self):
+        class _Stub:
+            data_dir = "/tmp/hub"
+
+            def get_index_stats(self) -> dict[str, Any]:
+                return {"total": 0, "counts_by_type": {}}
+
+            def get_all_metadata(self) -> dict[str, str]:
+                return {}
+
+        payload = await self._call(_Stub(), "search_docs", {"query": "acme"})
+        assert "corpus_hint" not in payload
+
+    async def test_configured_repos_reflect_process_start(self):
+        payload = await self._call(
+            self._store({"acme/one": 1}),
+            "search_docs",
+            {"query": "acme"},
+            configured=frozenset({"acme/two"}),
+        )
+        hint = payload["corpus_hint"]
+        assert hint["repos_configured_no_records"] == ["acme/two"]
+        assert hint["refresh_command"] == "pipecat-context-hub refresh"
+        assert "add_command" not in hint
+
+    async def test_tainted_repo_is_in_neither_field(self):
+        payload = await self._call(
+            self._store({"acme/one": 1}),
+            "search_docs",
+            {"query": "acme"},
+            tainted=frozenset({"acme/two"}),
+        )
+        # acme/two is tainted and acme/one is indexed, so nothing is left to hint about.
+        assert "corpus_hint" not in payload
+
+    async def test_tainted_repo_is_not_listed_in_a_partial_hint(self):
+        payload = await self._call(
+            self._store({}),
+            "search_docs",
+            {"query": "acme"},
+            tainted=frozenset({"acme/two"}),
+        )
+        assert payload["corpus_hint"]["repos_not_indexed"] == ["acme/one"]
+        assert "acme/two" not in str(payload["corpus_hint"])
+
+    async def test_tainted_only_group_gives_no_hint(self):
+        payload = await self._call(
+            self._store({}),
+            "search_docs",
+            {"query": "shady"},
+            tainted=frozenset({"bad/one"}),
+        )
+        assert "corpus_hint" not in payload
+
+    async def test_catalog_load_failure_gives_no_key(self, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: "not [valid toml")
+        repo_catalog.load_catalog.cache_clear()
+        payload = await self._call(self._store({}), "search_docs", {"query": "acme"})
+        assert "corpus_hint" not in payload
+        assert payload["hits"] == [{"id": "x"}]
+
+    async def test_status_group_skips_tainted_only_group_like_the_hint(self):
+        """One predicate: ``catalog_groups_not_indexed`` agrees with the hint on taint."""
+        import json
+
+        store = self._store({})
+        server = create_server(
+            MagicMock(),
+            index_store=store,
+            configured_repos=frozenset(),
+            tainted_repos=frozenset({"bad/one"}),
+        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        result = await entry.handler(
+            cast(Any, None), types.CallToolRequestParams(name="get_hub_status", arguments={})
+        )
+        assert isinstance(result, types.CallToolResult)
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        assert json.loads(block.text)["catalog_groups_not_indexed"] == ["acme"]
+
+
+class TestCorpusHintInstructionsAndTemplate:
+    def test_server_instructions_pin_the_corpus_hint_guidance(self):
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        assert "corpus_hint" in _SERVER_INSTRUCTIONS
+        assert "--unlisted" in _SERVER_INSTRUCTIONS
+        # The agent drafts the issue; the user files it.
+        lowered = _SERVER_INSTRUCTIONS.lower()
+        assert "draft" in lowered
+        assert "user files" in lowered or "do not file" in lowered or "never file" in lowered
+
+    def test_server_instructions_flag_unlisted_repos_as_unvetted(self):
+        # An agent-found repo may be planted; once indexed, its text reaches the
+        # agent verbatim. The guidance must say so and name the owner.
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        hint = _SERVER_INSTRUCTIONS.split("**Corpus hint:**", 1)[1].split("**When the hub", 1)[0]
+        lowered = " ".join(hint.lower().split())
+        assert "not vetted" in lowered
+        assert "owner" in lowered
+        assert "unfiltered" in lowered
+
+    def test_server_instructions_keep_local_repo_names_out_of_bug_reports(self):
+        # The degraded-hub paragraph routes the get_hub_status response into a
+        # public bug report; the fields naming local (possibly private) repos stay out.
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        flat = " ".join(_SERVER_INSTRUCTIONS.split())
+        assert "share the full ``get_hub_status`` response" not in flat
+        assert (
+            "share the ``get_hub_status`` response, leaving out ``indexed_repos`` "
+            "and ``configured_no_records``" in flat
+        )
+
+    def test_retrieval_quality_template_has_the_candidate_repos_field(self):
+        from pathlib import Path
+
+        text = (
+            Path(__file__).resolve().parents[2]
+            / ".github"
+            / "ISSUE_TEMPLATE"
+            / "retrieval-quality.yml"
+        ).read_text(encoding="utf-8")
+        assert text.count("label: Candidate repos") == 1
+        # The status fields that name local (possibly private) repos stay out of the
+        # public report; the catalog group names are public and may go in.
+        assert "Do not include `indexed_repos` or `configured_no_records`" in text
+        assert "status fields listed in step 1 (no others)" in text
+        # The field is optional: its block carries no ``required: true``.
+        block = text.split("label: Candidate repos", 1)[1]
+        block = block.split("\n  - type:", 1)[0]
+        assert "required: true" not in block

@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from pipecat_context_hub.shared import env_loading
+from pipecat_context_hub.shared import env_keys, env_loading, paths
 from pipecat_context_hub.shared.config import HubConfig, StorageConfig
 from pipecat_context_hub.shared.env_loading import (
     _INVOCATION_SCOPED_KEYS,
@@ -26,6 +27,7 @@ from pipecat_context_hub.shared.env_loading import (
     resolve_global_config_path,
 )
 from pipecat_context_hub.shared.paths import is_inside, redact_home
+from tests.unit._config_trust_cases import TRUST_REFUSAL_CASES
 
 
 def _use_config_file(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -227,21 +229,32 @@ class TestResolveGlobalConfigPath:
         dashboard scripts, scripts/smoke_check_removals.py) imports this
         module at the top level, so a crash here would take all of them
         down before argv is even parsed."""
-        import importlib
+        import importlib.util
         import pathlib
+        import sys
 
-        original_home = pathlib.Path.home
+        # Execute the module source into a FRESH, unregistered module object
+        # rather than `importlib.reload(env_loading)`: a reload rebinds
+        # `ConfigNotTrusted` (and every other class) in the shared module, while
+        # `config_writer` / `cli_repos` keep the class they imported, so their
+        # `except ConfigNotTrusted` clauses stop matching for every later test.
+        registered = sys.modules[env_loading.__name__]
+        exc_class = env_loading.ConfigNotTrusted
+        spec = importlib.util.spec_from_file_location(
+            "_env_loading_no_home_copy", env_loading.__file__
+        )
+        assert spec is not None and spec.loader is not None
+        fresh = importlib.util.module_from_spec(spec)
 
         def _raise_no_home(*args, **kwargs):
             raise RuntimeError("Could not determine home directory.")
 
         monkeypatch.setattr(pathlib.Path, "home", _raise_no_home)
-        try:
-            reloaded = importlib.reload(env_loading)
-            assert reloaded.DEFAULT_CONFIG_PATH is None
-        finally:
-            monkeypatch.setattr(pathlib.Path, "home", original_home)
-            importlib.reload(env_loading)  # restore real DEFAULT_CONFIG_PATH for later tests
+        spec.loader.exec_module(fresh)
+        assert fresh.DEFAULT_CONFIG_PATH is None
+        # The shared module is untouched, so its classes keep their identity.
+        assert sys.modules[env_loading.__name__] is registered
+        assert env_loading.ConfigNotTrusted is exc_class
 
 
 class TestLoadGlobalConfigBasics:
@@ -381,7 +394,7 @@ class TestLoadGlobalConfigKeyFiltering:
         assert "PIPECAT_HUB_EXTRA_REPOS" in caplog.text
 
     def test_invocation_scoped_keys_pinned(self):
-        """Drift-alarm: the exact five-key skip-list, not just membership."""
+        """Drift-alarm: the exact six-key skip-list, not just membership."""
         assert _INVOCATION_SCOPED_KEYS == frozenset(
             {
                 PRUNE_ENV_VAR,
@@ -389,6 +402,7 @@ class TestLoadGlobalConfigKeyFiltering:
                 "PIPECAT_HUB_CONFIG_FILE",
                 "PIPECAT_HUB_ENABLE_STABILITY_BENCHMARK",
                 "PIPECAT_HUB_STABILITY_OUTPUT",
+                "PIPECAT_HUB_MIN_FREE_GB",
             }
         )
 
@@ -1224,6 +1238,33 @@ class TestShadowedExclusionWarningNamesEntries:
         assert "NOT in effect" not in caplog.text
         assert "still covered" in caplog.text
 
+    @pytest.mark.parametrize(
+        ("key", "configured", "active", "lost"),
+        [
+            # Taint matching is casefolded (SourceConfig.is_tainted): a case-only
+            # difference still excludes the repo, so nothing is lost.
+            ("PIPECAT_HUB_TAINTED_REPOS", '"Foo/Bar"', "foo/bar", None),
+            ("PIPECAT_HUB_TAINTED_REPOS", '["Foo/Bar", "Org/Gone"]', "foo/bar", "Org/Gone"),
+            # Ref matching stays exact, so the case-only difference is lost.
+            ("PIPECAT_HUB_TAINTED_REFS", '"Foo/Bar@v1"', "foo/bar@v1", "Foo/Bar@v1"),
+        ],
+    )
+    def test_shadow_warning_uses_each_settings_matching_rule(
+        self, key, configured, active, lost, tmp_path: Path, monkeypatch, caplog
+    ):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(f"{key} = {configured}\n")
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv(key, active)
+        with caplog.at_level("WARNING"):
+            load_global_config()
+        assert key in caplog.text
+        if lost is None:
+            assert "NOT in effect" not in caplog.text
+            assert "still covered" in caplog.text
+        else:
+            assert f"NOT in effect for this run: {lost}\n" in caplog.text + "\n"
+
     def test_unparseable_shadowed_exclusion_list_warns_generically(
         self, tmp_path: Path, monkeypatch, caplog
     ):
@@ -1868,7 +1909,7 @@ class TestBlankConfigFileOverrideDisablesLookup:
     """Round-8 finding #2: `PIPECAT_HUB_CONFIG_FILE=` (present but blank) fell
     through a truthiness check to DEFAULT_CONFIG_PATH, silently loading the
     machine-global config the operator's explicit override asked *not* to use.
-    docs/README.md documents an unusable override as loading no config.
+    docs/troubleshooting.md documents an unusable override as loading no config.
     """
 
     def test_blank_override_returns_none(self, monkeypatch, caplog):
@@ -1918,3 +1959,425 @@ class TestDataDirPathWarningIsHomeRedacted:
             pytest.skip("Path.resolve() did not raise on this platform's symlink loop")
         assert "PIPECAT_HUB_DATA_DIR" not in os.environ
         assert str(home) not in caplog.text
+
+
+class TestLoadTimeWarningsAreTerminalSafe:
+    """Load-time warnings embed configured config.toml values; a cwd ``.env`` can
+    select a project-owned config.toml (``PIPECAT_HUB_CONFIG_FILE``) that passes
+    the trust seam, so those values are not owner-trusted. The bootstrap
+    (``load_env_layers``) installs the log boundary before it loads anything."""
+
+    _HOSTILE = "evil/x\x1b]52;c;cHduZWQ=\x07\x1b[2J"
+
+    # Each test starts with the stdlib record factory: the suite-wide autouse
+    # fixture ``_stdlib_output_hooks`` (tests/conftest.py).
+
+    @staticmethod
+    def _raw(text: str) -> bool:
+        return "\x1b" in text or "\x07" in text
+
+    def test_shadowed_exclusion_warning_flags_each_lost_entry(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            'PIPECAT_HUB_TAINTED_REPOS = ["org/kept", "evil/x\\u001b]52;c;cHduZWQ=\\u0007"]\n'
+        )
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.setenv("PIPECAT_HUB_TAINTED_REPOS", "org/kept")
+        with caplog.at_level("WARNING"):
+            env_loading.load_env_layers()
+        assert "NOT in effect for this run: 'evil/x\\x1b]52;c;cHduZWQ=\\x07' [invalid]" in (
+            caplog.text
+        )
+        assert not any(self._raw(r.getMessage()) for r in caplog.records)
+
+    def test_unusable_data_dir_warning_escapes_the_error_text(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        """The resolve error's text embeds the configured path; it is escaped
+        by the log boundary, not at the call site."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('PIPECAT_HUB_DATA_DIR = "/data/evil"\n')
+        _use_config_file(monkeypatch, config_file)
+        monkeypatch.delenv("PIPECAT_HUB_DATA_DIR", raising=False)
+        real_resolve = Path.resolve
+        hostile = self._HOSTILE
+
+        def _resolve(path: Path, strict: bool = False) -> Path:
+            if path.name == "evil":
+                raise RuntimeError(f"Symlink loop from {hostile}")
+            return real_resolve(path, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", _resolve)
+        with caplog.at_level("WARNING"):
+            env_loading.load_env_layers()
+        assert "not a usable path" in caplog.text
+        assert not any(self._raw(r.getMessage()) for r in caplog.records)
+        assert not self._raw(caplog.text)
+
+
+class TestReadTrustedConfig:
+    """Direct tests for the shared reader seam (parent Decision 8)."""
+
+    def test_returns_text_of_a_trusted_file(self, tmp_path: Path):
+        path = tmp_path / "config.toml"
+        path.write_bytes(b'PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')  # bytes: no \r\n translation
+        path.chmod(0o600)
+        assert env_loading.read_trusted_config(path) == 'PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n'
+
+    def test_missing_file_is_none_not_an_error(self, tmp_path: Path):
+        assert env_loading.read_trusted_config(tmp_path / "nope" / "config.toml") is None
+
+    def test_invalid_toml_is_not_this_functions_concern(self, tmp_path: Path):
+        path = tmp_path / "config.toml"
+        path.write_bytes(b"this is = = not toml\n")  # bytes: no \r\n translation
+        path.chmod(0o600)
+        assert env_loading.read_trusted_config(path) == "this is = = not toml\n"
+
+    @pytest.mark.parametrize("build", TRUST_REFUSAL_CASES)
+    def test_every_trust_refusal_raises_config_not_trusted(
+        self, build, tmp_path: Path, monkeypatch
+    ):
+        path = build(tmp_path, monkeypatch)
+        with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
+            env_loading.read_trusted_config(path)
+        assert isinstance(excinfo.value.reason, str)
+        assert excinfo.value.reason
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+    def test_reader_vets_the_lookup_target_the_writer_uses(self, tmp_path: Path, monkeypatch):
+        """One method decides where ``open(path)`` lands: the reader's parent
+        check uses ``paths.lookup_target`` (as the writer does), not ``realpath``."""
+        if os.getuid() == 0:
+            pytest.skip("root bypasses ownership checks")
+        path = tmp_path / "config.toml"
+        path.write_text("X = 1\n")
+        path.chmod(0o600)
+        unsafe = tmp_path / "unsafe"
+        unsafe.mkdir()
+        unsafe.chmod(0o777)  # world-writable, no sticky bit
+        monkeypatch.setattr(env_loading, "lookup_target", lambda p: unsafe / "config.toml")
+        with pytest.raises(env_loading.ConfigNotTrusted, match="world-writable"):
+            env_loading.read_trusted_config(path)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+    def test_reader_refuses_a_lookup_it_cannot_prove(self, tmp_path: Path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text("X = 1\n")
+        path.chmod(0o600)
+
+        def _mismatch(_p: Path) -> Path:
+            raise paths.LookupMismatch("the hop bound was reached")
+
+        monkeypatch.setattr(env_loading, "lookup_target", _mismatch)
+        with pytest.raises(env_loading.ConfigNotTrusted, match="cannot prove"):
+            env_loading.read_trusted_config(path)
+
+    def test_parent_check_has_no_realpath_fallback(self):
+        import inspect
+
+        param = inspect.signature(env_loading._config_parent_refusal).parameters["resolved"]
+        assert param.default is inspect.Parameter.empty
+        assert (
+            "realpath" not in inspect.getsource(env_loading._config_parent_refusal).split('"""')[-1]
+        )
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+    def test_reason_is_home_redacted(self, tmp_path: Path, monkeypatch):
+        if os.getuid() == 0:
+            pytest.skip("root bypasses file permission bits")
+        home = tmp_path / "home"
+        path = home / "config.toml"
+        home.mkdir()
+        path.write_text("X = 1\n")
+        path.chmod(0o000)
+        monkeypatch.setenv("HOME", str(home))
+        with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
+            env_loading.read_trusted_config(path)
+        assert str(home) not in excinfo.value.reason
+
+
+class TestParseGlobalConfig:
+    def test_parses_a_trusted_file(self, tmp_path: Path):
+        path = tmp_path / "config.toml"
+        path.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "42"\nPIPECAT_HUB_N = 3\n')
+        path.chmod(0o600)
+        assert env_loading.parse_global_config(path) == {
+            "PIPECAT_HUB_STALE_AFTER_DAYS": "42",
+            "PIPECAT_HUB_N": 3,
+        }
+
+    def test_missing_file_yields_empty_dict(self, tmp_path: Path):
+        assert env_loading.parse_global_config(tmp_path / "nope" / "config.toml") == {}
+
+    def test_invalid_toml_raises_decode_error_unwrapped(self, tmp_path: Path):
+        path = tmp_path / "config.toml"
+        path.write_text("this is = = not toml\n")
+        path.chmod(0o600)
+        with pytest.raises(tomllib.TOMLDecodeError) as excinfo:
+            env_loading.parse_global_config(path)
+        assert not isinstance(excinfo.value, env_loading.ConfigNotTrusted)
+
+    @pytest.mark.parametrize("build", TRUST_REFUSAL_CASES)
+    def test_trust_refusal_propagates_as_config_not_trusted(
+        self, build, tmp_path: Path, monkeypatch
+    ):
+        path = build(tmp_path, monkeypatch)
+        with pytest.raises(env_loading.ConfigNotTrusted):
+            env_loading.parse_global_config(path)
+
+
+class TestSharedListRule:
+    """`config_list_value` is exactly the loader's coercion plus the CSV split."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("a/b, c/d,,", ["a/b", "c/d"]),
+            (["a/b", " c/d "], ["a/b", "c/d"]),
+            ([1, 2], ["1", "2"]),
+            (5, ["5"]),
+            ([], []),
+            (["a/b", 2], None),
+            (["a,b"], None),
+            ({"a": 1}, None),
+        ],
+    )
+    def test_matches_the_loader(self, value, expected, tmp_path, monkeypatch):
+        assert env_loading.config_list_value("PIPECAT_HUB_EXTRA_REPOS", value) == expected
+        # ...and the loader itself, end to end.
+        import tomlkit
+
+        path = tmp_path / "config.toml"
+        path.write_text(tomlkit.dumps({"PIPECAT_HUB_EXTRA_REPOS": value}))
+        path.chmod(0o600)
+        monkeypatch.setattr(env_loading, "resolve_global_config_path", lambda: path)
+        monkeypatch.delenv("PIPECAT_HUB_EXTRA_REPOS", raising=False)
+        env_loading.load_global_config()
+        raw = os.environ.get("PIPECAT_HUB_EXTRA_REPOS")
+        if expected is None:
+            assert raw is None
+        else:
+            assert env_keys.split_csv(raw or "") == expected
+
+
+class TestConfigListEntries:
+    """`config_list_entries` is the lenient view: what the file holds, incl. skipped values."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("a/b, c/d,,", ["a/b", "c/d"]),
+            (["a/b", " c/d "], ["a/b", "c/d"]),
+            ([1, 2], ["1", "2"]),
+            (5, ["5"]),
+            ([], []),
+            (["a/b", 2], ["a/b", "2"]),  # mixed array: the loader skips it, the file holds both
+            (["x/a,x/b"], ["x/a", "x/b", "x/a,x/b"]),  # CSV parts and the literal element
+            (["bad,slug/repo"], ["bad", "slug/repo", "bad,slug/repo"]),
+            ([["a/b"], "c/d"], ["c/d"]),  # nested arrays are dropped
+            ({"a": 1}, []),
+            (None, []),
+        ],
+    )
+    def test_entries(self, value, expected):
+        assert env_loading.config_list_entries(value) == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        ["a/b, c/d", ["a/b", " c/d "], [1, 2], 5, [], ["a/b", 2], ["a,b"], {"a": 1}],
+    )
+    def test_is_a_superset_of_what_the_loader_uses(self, value):
+        """Invariant: any entry the loader would use, the lenient view also finds."""
+        used = env_loading.config_list_value("PIPECAT_HUB_EXTRA_REPOS", value)
+        held = env_loading.config_list_entries(value)
+        assert set(used or []) <= set(held)
+
+
+class TestSpecificRefusalReason:
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
+    def test_reason_names_the_predicate(self, tmp_path: Path):
+        path = tmp_path / "cfg" / "config.toml"
+        path.parent.mkdir()
+        path.write_text("")
+        path.chmod(0o666)
+        with pytest.raises(env_loading.ConfigNotTrusted) as excinfo:
+            env_loading.read_trusted_config(path)
+        assert "world-writable" in excinfo.value.reason
+        assert excinfo.value.logged
+
+
+class TestConfigNotTrusted:
+    def test_carries_reason(self):
+        exc = env_loading.ConfigNotTrusted("because")
+        assert exc.reason == "because"
+        assert "because" in str(exc)
+        assert isinstance(exc, Exception)
+        assert not isinstance(exc, (OSError, ValueError))
+
+
+def _seam_outcome(path: Path) -> str:
+    """What the shared seam says about ``path``: refused / invalid / missing / ok."""
+    try:
+        text = env_loading.read_trusted_config(path)
+    except env_loading.ConfigNotTrusted:
+        return "refused"
+    if text is None:
+        return "missing"
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return "invalid"
+    return "ok"
+
+
+def _invalid_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "cfg" / "config.toml"
+    path.parent.mkdir()
+    path.write_text("this is = = not toml\n")
+    path.chmod(0o600)
+    return path
+
+
+def _missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return tmp_path / "cfg" / "config.toml"
+
+
+def _valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "cfg" / "config.toml"
+    path.parent.mkdir()
+    path.write_text('PIPECAT_HUB_STALE_AFTER_DAYS = "42"\n')
+    path.chmod(0o600)
+    return path
+
+
+class TestReaderAndSeamAgree:
+    """`load_global_config` warns and ignores exactly when the seam raises
+    `ConfigNotTrusted` or `TOMLDecodeError`; a missing file is silent."""
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            *TRUST_REFUSAL_CASES,
+            pytest.param(_invalid_toml, id="invalid-toml"),
+            pytest.param(_missing, id="missing"),
+            pytest.param(_valid, id="valid"),
+        ],
+    )
+    def test_loader_warns_iff_seam_refuses(self, build, tmp_path: Path, monkeypatch, caplog):
+        path = build(tmp_path, monkeypatch)
+        # Bypass the env var: it cannot carry an embedded NUL.
+        monkeypatch.setattr(env_loading, "resolve_global_config_path", lambda: path)
+        monkeypatch.delenv("PIPECAT_HUB_STALE_AFTER_DAYS", raising=False)
+        outcome = _seam_outcome(path)
+        caplog.clear()  # count only the loader's own warnings
+        with caplog.at_level("WARNING"):
+            applied = env_loading.load_global_config()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        warned = bool(warnings)
+        if outcome in ("refused", "invalid"):
+            assert len(warnings) == 1, [r.getMessage() for r in warnings]  # once, not twice
+            assert applied == {}
+            assert "PIPECAT_HUB_STALE_AFTER_DAYS" not in os.environ
+        elif outcome == "missing":
+            assert not warned
+            assert applied == {}
+        else:
+            assert not warned
+            assert os.environ["PIPECAT_HUB_STALE_AFTER_DAYS"] == "42"
+
+    def test_unresolvable_path_never_reaches_the_seam(self, monkeypatch, caplog):
+        monkeypatch.setenv("PIPECAT_HUB_CONFIG_FILE", "")
+        monkeypatch.setattr(
+            env_loading,
+            "read_trusted_config",
+            lambda p: pytest.fail("seam must not be reached for an unresolvable path"),
+        )
+        with caplog.at_level("WARNING"):
+            applied = env_loading.load_global_config()
+        assert applied == {}
+        # The only log is the resolver's own warning.
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert warnings
+        assert all("PIPECAT_HUB_CONFIG_FILE" in r.getMessage() for r in warnings)
+
+
+_KEY = "PIPECAT_HUB_STALE_AFTER_DAYS"
+
+
+class TestEnvProvenance:
+    """Parent Decision 9: `load_env_layers()` returns the layer that supplied
+    each key's FINAL NON-BLANK value; blank/absent keys are omitted. One test id
+    per row of the plan's provenance table."""
+
+    def _run(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        env: str | None = None,
+        dotenv: str | None = None,
+        toml: str | None = None,
+    ) -> dict[str, env_loading.ProvenanceLayer]:
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        monkeypatch.chdir(project_dir)
+        # Isolate the fixture's PIPECAT_HUB_CONFIG_FILE from the map: point at
+        # the real config file (or an absent default) and report on `_KEY` only.
+        monkeypatch.delenv(_KEY, raising=False)
+        if env is not None:
+            monkeypatch.setenv(_KEY, env)
+        if dotenv is not None:
+            (project_dir / ".env").write_text(f"{_KEY}={dotenv}\n")
+        if toml is not None:
+            config_file = tmp_path / "config.toml"
+            config_file.write_text(f'{_KEY} = "{toml}"\n')
+            config_file.chmod(0o600)
+            _use_config_file(monkeypatch, config_file)
+        return env_loading.load_env_layers()
+
+    def test_real_env_non_blank(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, env="7")[_KEY] == "env"
+
+    def test_real_env_blank_alone_is_omitted(self, tmp_path, monkeypatch):
+        assert _KEY not in self._run(tmp_path, monkeypatch, env="")
+
+    def test_real_env_whitespace_only_alone_is_omitted(self, tmp_path, monkeypatch):
+        assert _KEY not in self._run(tmp_path, monkeypatch, env="   ")
+
+    def test_dotenv_non_blank(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, dotenv="7")[_KEY] == ".env"
+
+    def test_dotenv_blank_alone_is_omitted(self, tmp_path, monkeypatch):
+        assert _KEY not in self._run(tmp_path, monkeypatch, dotenv="")
+
+    def test_dotenv_blank_then_config_toml_non_blank_is_config_toml(self, tmp_path, monkeypatch):
+        """The overlap row: `.env` sets the key blank, then `config.toml` sets it
+        non-blank. Breaking the overlap merge (a later layer's value not
+        replacing an earlier blank) makes this fail."""
+        prov = self._run(tmp_path, monkeypatch, dotenv="", toml="45")
+        assert prov[_KEY] == "config.toml"
+        assert os.environ[_KEY] == "45"
+
+    def test_blank_env_dotenv_and_config_toml_is_config_toml(self, tmp_path, monkeypatch):
+        prov = self._run(tmp_path, monkeypatch, env="", dotenv="9", toml="45")
+        assert prov[_KEY] == "config.toml"
+
+    def test_config_toml_alone(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, toml="45")[_KEY] == "config.toml"
+
+    def test_dotenv_non_blank_beats_config_toml(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, dotenv="9", toml="45")[_KEY] == ".env"
+
+    def test_real_env_non_blank_beats_dotenv_and_config_toml(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, env="7", dotenv="9", toml="45")[_KEY] == "env"
+
+    def test_no_layer_gives_empty_map(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("PIPECAT_HUB_CONFIG_FILE", raising=False)
+        monkeypatch.setattr(env_loading, "DEFAULT_CONFIG_PATH", tmp_path / "absent" / "c.toml")
+        assert self._run(tmp_path, monkeypatch) == {}
+
+    def test_only_hub_keys_appear(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UNRELATED_VAR", "x")
+        assert "UNRELATED_VAR" not in self._run(tmp_path, monkeypatch, env="7")

@@ -5,6 +5,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+!plugins/pipecat-context-hub/skills/build/
+!plugins/pipecat-context-hub/skills/build/SKILL.md
 .eggs/
 *.egg
 .venv/

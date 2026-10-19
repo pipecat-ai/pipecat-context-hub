@@ -16,13 +16,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pipecat_context_hub.services.index.errors import (
+    CorruptKeywordIndexError,
+    MissingKeywordIndexError,
+)
+from pipecat_context_hub.shared.interfaces import DOCS_COUNT_KEY
 from pipecat_context_hub.shared.types import ChunkedRecord, IndexQuery, IndexResult
 
 logger = logging.getLogger(__name__)
 
 # Version of the published read contract over `index_metadata` — the shape
 # external tooling may depend on when reading this database directly (see
-# "Index metadata contract" in docs/README.md). Bump only on a breaking change
+# "Index metadata contract" in docs/index-contract.md). Bump only on a breaking change
 # to that table's shape or to the meaning of a documented key; adding a new key
 # is backwards compatible and does not warrant a bump. Written on refresh, so
 # an index built before the contract was published simply lacks it — consumers
@@ -77,6 +82,55 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
 END;
 """
 
+# Every table and trigger _SCHEMA_SQL creates: an open that finds all of them
+# has an initialized database and writes nothing.
+_SCHEMA_OBJECTS = frozenset(
+    {"chunks", "chunks_fts", "index_metadata", "chunks_ai", "chunks_ad", "chunks_au"}
+)
+
+# Primary SQLite result codes that describe the moment (contention, I/O,
+# resources, permissions), not the file: an open failing with one of these is
+# not told to rebuild the index. Every other code (SQLITE_NOTADB,
+# SQLITE_CORRUPT, SQLITE_ERROR for a schema the index cannot use, ...) is.
+_TRANSIENT_SQLITE_CODES = frozenset(
+    {
+        sqlite3.SQLITE_PERM,
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+        sqlite3.SQLITE_NOMEM,
+        sqlite3.SQLITE_READONLY,
+        sqlite3.SQLITE_INTERRUPT,
+        sqlite3.SQLITE_IOERR,
+        sqlite3.SQLITE_FULL,
+        sqlite3.SQLITE_CANTOPEN,
+        sqlite3.SQLITE_PROTOCOL,
+    }
+)
+
+
+def _is_unreadable(exc: BaseException) -> bool:
+    """Whether *exc* says the database file itself cannot be used.
+
+    False for transient failures and for errors SQLite gave no code for.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code is not None and code & 0xFF not in _TRANSIENT_SQLITE_CODES
+
+
+def is_transient_open_error(exc: BaseException) -> bool:
+    """Whether an open failed for a reason of the moment (busy, locked, I/O,
+    permissions, ...) that retrying, not rebuilding the index, addresses."""
+    if isinstance(exc, OSError):
+        return True
+    code = getattr(exc, "sqlite_errorcode", None)
+    return (
+        isinstance(exc, sqlite3.Error)
+        and code is not None
+        and code & 0xFF in _TRANSIENT_SQLITE_CODES
+    )
+
 
 class FTSIndex:
     """SQLite FTS5 keyword index for full-text search.
@@ -85,16 +139,67 @@ class FTSIndex:
     filtering. Data persists in a SQLite database file on disk.
     """
 
-    def __init__(self, sqlite_path: Path) -> None:
+    def __init__(self, sqlite_path: Path, *, create: bool = False) -> None:
+        """Open the keyword index at *sqlite_path*.
+
+        Only an incomplete schema is written to, so opening an initialized
+        database never writes. A reader (*create* False) never writes: a
+        missing database, or one whose schema is incomplete (e.g. a 0-byte
+        file), raises :class:`MissingKeywordIndexError`. With *create*
+        (``refresh`` only) a missing database is created, and an incomplete
+        one is completed and its FTS table rebuilt from ``chunks``, so rows
+        written without the sync triggers are searchable rather than
+        silently missing. A database that cannot be read (or completed)
+        raises :class:`CorruptKeywordIndexError`.
+        """
         self._sqlite_path = sqlite_path
         self._lock = threading.RLock()
+        if not create and not sqlite_path.is_file():
+            raise MissingKeywordIndexError(sqlite_path)
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(sqlite_path), check_same_thread=False)
+        try:
+            present = {
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')"
+                )
+            }
+            missing = _SCHEMA_OBJECTS - present
+            if missing and not create:
+                raise MissingKeywordIndexError(sqlite_path)
+            if missing:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                # One transaction: completing the schema and rebuilding the FTS
+                # table commit together, so a failed rebuild leaves the schema
+                # incomplete and the next refresh retries it (rather than
+                # finding every object present and skipping the rebuild).
+                rebuild = ""
+                if "chunks" in present:
+                    logger.warning(
+                        "Keyword index at %s was incomplete (missing %s); rebuilding its FTS table",
+                        sqlite_path,
+                        ", ".join(sorted(missing)),
+                    )
+                    rebuild = "INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild');"
+                self._conn.executescript(f"BEGIN;\n{_SCHEMA_SQL}\n{rebuild}\nCOMMIT;")
+        except BaseException as exc:
+            self._conn.close()
+            if _is_unreadable(exc):
+                raise CorruptKeywordIndexError(sqlite_path, str(exc)) from exc
+            raise
         self._closed = False
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_SCHEMA_SQL)
-        self._conn.commit()
         logger.info("FTSIndex initialized at %s", sqlite_path)
+
+    def has_records(self) -> bool:
+        """Whether any record is indexed (the open's first read of ``chunks``)."""
+        with self._lock:
+            try:
+                return self._conn.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() is not None
+            except sqlite3.DatabaseError as exc:
+                if _is_unreadable(exc):
+                    raise CorruptKeywordIndexError(self._sqlite_path, str(exc)) from exc
+                raise
 
     def close(self) -> None:
         """Close the database connection."""
@@ -166,21 +271,25 @@ class FTSIndex:
             logger.debug("Upserted %d records into FTS index", count)
             return count
 
-    def delete_by_content_type(self, content_type: str) -> int:
-        """Delete all records with a given content type. Returns count deleted."""
+    def delete_by_content_type(self, content_type: str, *, without_repo: bool = False) -> int:
+        """Delete all records with a given content type. Returns count deleted.
+
+        ``without_repo`` narrows the delete to records with no repo (the
+        docs-site records); see ``VectorIndex.delete_by_content_type``.
+        """
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM chunks WHERE content_type = ?",
-                (content_type,),
-            )
+            if without_repo:
+                count_sql = "SELECT COUNT(*) FROM chunks WHERE content_type = ? AND repo IS NULL"
+                delete_sql = "DELETE FROM chunks WHERE content_type = ? AND repo IS NULL"
+            else:
+                count_sql = "SELECT COUNT(*) FROM chunks WHERE content_type = ?"
+                delete_sql = "DELETE FROM chunks WHERE content_type = ?"
+            cursor = self._conn.execute(count_sql, (content_type,))
             row = cursor.fetchone()
             count: int = row[0] if row else 0
 
             if count > 0:
-                self._conn.execute(
-                    "DELETE FROM chunks WHERE content_type = ?",
-                    (content_type,),
-                )
+                self._conn.execute(delete_sql, (content_type,))
                 self._conn.commit()
                 logger.debug(
                     "Deleted %d records from FTS index for content_type=%s", count, content_type
@@ -477,14 +586,17 @@ class FTSIndex:
             return dict(cursor.fetchall())
 
     def get_counts_by_repo(self) -> dict[str, int]:
-        """Return record counts grouped by repo. Includes a 'docs' key for doc chunks."""
+        """Return record counts grouped by repo, plus ``DOCS_COUNT_KEY`` for crawled doc chunks."""
         with self._lock:
             counts: dict[str, int] = {}
-            # Doc chunks have no repo — count them separately
-            cursor = self._conn.execute("SELECT COUNT(*) FROM chunks WHERE content_type = 'doc'")
+            # Crawled doc chunks have no repo: count them separately. A repo's
+            # README fallback is a doc chunk with a repo; it counts under its repo.
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM chunks WHERE content_type = 'doc' AND repo IS NULL"
+            )
             doc_count = cursor.fetchone()[0]
             if doc_count:
-                counts["docs.pipecat.ai"] = doc_count
+                counts[DOCS_COUNT_KEY] = doc_count
             # Repo-scoped chunks
             cursor = self._conn.execute(
                 "SELECT repo, COUNT(*) FROM chunks WHERE repo IS NOT NULL GROUP BY repo"

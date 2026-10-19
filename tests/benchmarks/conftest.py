@@ -113,7 +113,7 @@ def bench_seeded_store(bench_embedding_service, tmp_path_factory):
     """Module-scoped IndexStore pre-loaded with 100 embedded records."""
     tmp_dir = tmp_path_factory.mktemp("bench")
     config = StorageConfig(data_dir=tmp_dir / "data")
-    store = IndexStore(config)
+    store = IndexStore(config, create=True)
     writer = EmbeddingIndexWriter(store, bench_embedding_service)
 
     records = _build_records()

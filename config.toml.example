@@ -9,7 +9,7 @@
 # This file only accepts the machine-global-config subset of PIPECAT_HUB_*
 # vars. The refresh command's prune/deletion opt-in is invocation-scoped
 # (set as a real env var per invocation, not here) and is deliberately not
-# among the keys below — see docs/README.md for why. See docs/README.md's
+# among the keys below — see docs/troubleshooting.md for why. See docs/configuration.md's
 # Environment Variables table for the authoritative descriptions (this
 # file's key set is kept in parity with that table by a test).
 #
@@ -23,7 +23,11 @@
 # must honour it.
 # PIPECAT_HUB_DATA_DIR = "~/.pipecat-context-hub"
 
-# Repo slugs to ingest alongside defaults, as a native TOML array.
+# Repo slugs to ingest alongside defaults, as a native TOML array. Edit it by
+# hand, or with `pipecat-context-hub repos add|remove` (offline; `repos list`
+# shows what is in effect). `repos` edits only this key and keeps comments,
+# other keys and CRLF line endings; a removed entry's own trailing comment
+# goes with it, and a comma-separated string value becomes an array.
 # PIPECAT_HUB_EXTRA_REPOS = ["org/repo-a", "org/repo-b"]
 
 # Pin the framework repo to a specific git tag, or "latest" for its newest

@@ -61,6 +61,16 @@ def test_justfile_and_ci_pip_audit_ignores_match() -> None:
     )
 
 
+def test_just_ci_delegates_every_local_gate() -> None:
+    """The one-command gate must not omit quality, tests, or security."""
+    recipes = {
+        line.strip()
+        for line in _JUSTFILE.read_text(encoding="utf-8").splitlines()
+        if line and not line[0].isspace() and not line.startswith("#")
+    }
+    assert "ci: check test audit" in recipes
+
+
 def test_project_declares_the_supported_mcp_major_range() -> None:
     project = _project_data()["project"]
     dependencies = project["dependencies"]

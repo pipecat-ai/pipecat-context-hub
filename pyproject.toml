@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 # after install — the command, the MCP server name, the data dir, the docs —
 # stays `pipecat-context-hub`; see the scripts alias below.
 name = "pipecat-ai-context-hub"
-version = "0.8.0"
+version = "0.9.0"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"
@@ -34,7 +34,9 @@ dependencies = [
     "pydantic>=2.0,<3.0",
     "mcp>=2.0,<3.0",
     "httpx>=0.27,<1.0",
-    "chromadb>=1.5,<2.0",
+    # The pre-open HNSW corruption validator is verified against Chroma's
+    # 1.5.x persisted header. Widen only after validating the next format.
+    "chromadb>=1.5,<1.6",
     # Inference stack. Both were already installed transitively via chromadb;
     # they are declared here because this package imports them directly (see
     # services/onnx_backend.py). Running the MiniLM models through ONNX Runtime
@@ -61,6 +63,8 @@ dependencies = [
     # plain re-lock cannot regress to a vulnerable build (the prior >=48.0.1 still
     # admitted 49.0.0).
     "cryptography>=50.0.0",
+    # Comment-preserving TOML writer for `repos add/remove` (tomli-w drops comments).
+    "tomlkit>=0.15.2,<1.0",
 ]
 
 [project.urls]

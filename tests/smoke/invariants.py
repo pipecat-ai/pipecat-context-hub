@@ -10,7 +10,7 @@ script in ``scripts/check_pipecat_drift.py``.
 
 Design notes
 ------------
-- Invariants parameterise over ``_discover_under_examples`` output, not over
+- Invariants parameterise over ``_find_example_dirs`` output, not over
   hard-coded topic lists. Adding or renaming a topic upstream MUST NOT break
   the assertions; removing *all* topics (the original regression) MUST.
 - Helpers never import from private test modules so the drift script can reuse
@@ -24,29 +24,29 @@ from typing import Iterable
 
 from pipecat_context_hub.services.ingest.github_ingest import (
     _CODE_EXTENSIONS,
-    _discover_under_examples,
     _find_example_dirs,
 )
+from pipecat_context_hub.services.ingest.ingest_filters import is_plain_file
 from pipecat_context_hub.services.ingest.taxonomy import TaxonomyBuilder
 
 
 def _iter_discovered_dirs(repo_root: Path) -> list[Path]:
     """Return the directories a real refresh would discover in ``repo_root``.
 
-    Uses ``_discover_under_examples`` when an ``examples/`` subtree exists
-    (the pipecat-ai/pipecat layout), otherwise falls back to
-    ``_find_example_dirs`` (which matches the pipecat-examples layout where
-    example dirs live at the repo root).
+    Calls ``_find_example_dirs`` itself rather than re-deriving its branching, so
+    the smoke check can never disagree with a refresh about what counts as
+    ``examples/`` (a symlinked one included): it walks ``examples/`` when that is
+    a real directory (the pipecat-ai/pipecat layout) and otherwise the repo's
+    root-level directories (the pipecat-examples layout).
     """
-    examples_dir = repo_root / "examples"
-    if examples_dir.is_dir():
-        return list(_discover_under_examples(examples_dir))
     return list(_find_example_dirs(repo_root))
 
 
 def _dir_contains_code_file(directory: Path) -> bool:
+    # ``is_plain_file`` (not ``Path.is_file``, which follows links) so a symlinked
+    # code file does not count: the ingesters refuse it, and this must agree.
     for entry in directory.rglob("*"):
-        if entry.is_file() and entry.suffix in _CODE_EXTENSIONS:
+        if is_plain_file(entry) and entry.suffix in _CODE_EXTENSIONS:
             return True
     return False
 

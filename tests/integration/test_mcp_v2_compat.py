@@ -137,7 +137,8 @@ NO_STORE_SERVER = textwrap.dedent(
     from pipecat_context_hub.server.main import create_server
     from pipecat_context_hub.server.transport import run_stdio
 
-    asyncio.run(run_stdio(create_server(MagicMock())))
+    server = create_server(MagicMock(), configured_repos=frozenset(), tainted_repos=frozenset())
+    asyncio.run(run_stdio(server))
     """
 )
 
@@ -147,7 +148,7 @@ def seeded_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Create the smallest real index that lets ``serve`` reach MCP."""
     home = tmp_path_factory.mktemp("mcp_v2_home")
     data_dir = home / ".pipecat-context-hub"
-    store = IndexStore(StorageConfig(data_dir=data_dir))
+    store = IndexStore(StorageConfig(data_dir=data_dir), create=True)
     try:
         record = ChunkedRecord(
             chunk_id="mcp-v2-seed",

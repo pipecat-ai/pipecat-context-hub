@@ -14,8 +14,9 @@ Design notes:
 - Output contract: stdout carries exactly the tool handler's JSON — the same
   payload an MCP client receives — so callers can pipe it to a parser. Logs
   and error messages go to stderr. Exit codes: 0 on success, 1 on invalid
-  input, ``_EXIT_INDEX_UNREADY`` (2) when the local index is missing, empty,
-  or unreadable.
+  input, ``EXIT_INDEX_UNREADY`` (2) when the local index is missing, empty,
+  unreadable, or incompatible, and ``EXIT_REFRESH_IN_PROGRESS`` (75) when a ``refresh`` is
+  rewriting the index (stderr says to retry in 60-120 seconds).
 - Quiet by default: query commands downgrade logging to WARNING (explicit
   ``--log-level`` wins) and silence third-party model-loading chatter, since
   the captured stderr of a one-shot command lands in an agent's context.
@@ -42,6 +43,16 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import click
 
+from pipecat_context_hub.shared.exit_codes import (
+    EXIT_INDEX_UNREADY,
+    EXIT_INVALID_INPUT,
+    EXIT_REFRESH_IN_PROGRESS,
+)
+from pipecat_context_hub.shared.index_lock import (
+    RefreshInProgressError,
+    refresh_excluded,
+)
+from pipecat_context_hub.shared.interfaces import IndexUnavailableError
 from pipecat_context_hub.shared.model_loading import quiet_model_loading
 from pipecat_context_hub.shared.paths import redact_home_in_text
 from pipecat_context_hub.shared.reranker import runtime_reranker_reason
@@ -49,6 +60,7 @@ from pipecat_context_hub.shared.support_links import (
     RETRIEVAL_QUALITY_ISSUE_URL,
     bug_report_hint,
 )
+from pipecat_context_hub.shared.terminal import echo, echo_json
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -66,13 +78,7 @@ def _echo_stderr_warning(text: str) -> None:
     change (a common prefix, ``click.secho`` coloring, a log-level tag)
     lands once instead of drifting across call sites.
     """
-    click.echo(redact_home_in_text(text), err=True)
-
-
-# Exit code for a missing/empty/unreadable local index. Keep in sync with
-# ``cli._EXIT_INDEX_UNREADY`` (enforced by tests/unit/test_cli_query.py).
-_EXIT_INDEX_UNREADY = 2
-_EXIT_BAD_INPUT = 1
+    echo(redact_home_in_text(text), err=True)
 
 
 class _SemanticMeta(NamedTuple):
@@ -262,6 +268,11 @@ class _QueryRuntime:
     # caller can check ``.enabled`` *after* dispatch — see
     # ``_maybe_warn_reranker_load_failed``.
     cross_encoder: CrossEncoderReranker | None
+    # Repo slugs captured once by ``config.sources.repo_sets()``, as ``serve``
+    # does; see ``handle_get_hub_status``. No defaults: an empty set would
+    # silently misclassify every configured repo.
+    configured_repos: frozenset[str]
+    tainted_repos: frozenset[str]
 
 
 def _quiet_query_logging(ctx: click.Context) -> None:
@@ -320,49 +331,23 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
     than a traceback, because the primary caller is a coding agent that will
     read stderr and run the suggested command.
     """
-    from pipecat_context_hub.services.index import IncompatibleIndexFormatError
-    from pipecat_context_hub.services.index.store import IndexStore
+    from pipecat_context_hub.services.index.reopening import open_ready_index_store
     from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
 
-    # IndexStore.__init__ opens two backends (Chroma + SQLite) and does not roll
-    # back if a *post-construction* call (get_index_stats) then raises, so close
-    # whatever came up before exiting — mirrors the guarded close `serve` does.
-    index_store: IndexStore | None = None
     try:
-        index_store = IndexStore(config.storage)
-        stats = index_store.get_index_stats()
-    except IncompatibleIndexFormatError as exc:
-        if index_store is not None:
-            with contextlib.suppress(Exception):
-                index_store.close()
-        # exc.__str__ embeds the absolute chroma_path, so redact the whole
-        # composed message (not just a data_dir token, which is absent here).
-        _echo_stderr_warning(f"Error: {exc}\n{bug_report_hint()}")
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
-    except Exception as exc:
-        if index_store is not None:
-            with contextlib.suppress(Exception):
-                index_store.close()
-        # Both the data_dir token and the {exc} rendering (e.g. a
-        # FileNotFoundError carrying .../chroma.sqlite3) can leak an absolute
-        # path, so redact the full formatted string, not a single argument.
-        _echo_stderr_warning(
-            f"Error: failed to open index at {config.storage.data_dir}: {exc}\n"
-            "Run 'pipecat-context-hub refresh --force --reset-index' to rebuild.\n"
-            f"{bug_report_hint()}"
-        )
-        raise SystemExit(_EXIT_INDEX_UNREADY) from exc
+        # Open under a shared hold on the refresh lock, so a refresh can't be
+        # rewriting the index while it is opened (nor start mid-open). Same
+        # open-and-check as `serve`, so the two report the same problems.
+        with refresh_excluded(config.storage.data_dir):
+            index_store = open_ready_index_store(config.storage)
+    except RefreshInProgressError as exc:
+        _echo_stderr_warning(f"Error: {exc}")
+        raise SystemExit(EXIT_REFRESH_IN_PROGRESS) from exc
+    except IndexUnavailableError as exc:
+        _echo_stderr_warning(f"Error: {exc}")
+        raise SystemExit(EXIT_INDEX_UNREADY) from exc
 
     try:
-        if stats.get("total", 0) == 0:
-            _echo_stderr_warning(
-                f"Error: the index at {config.storage.data_dir} is empty.\n"
-                "Run 'pipecat-context-hub refresh' first to build it "
-                "(the first run downloads models and indexes sources — allow a few minutes).\n"
-                f"{bug_report_hint()}"
-            )
-            raise SystemExit(_EXIT_INDEX_UNREADY)
-
         embedding_svc = None
         cross_encoder = None
         if needs_embeddings:
@@ -382,19 +367,19 @@ def _query_runtime(config: HubConfig, *, needs_embeddings: bool) -> Iterator[_Qu
 
         from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
 
-        retriever.deprecation_map = DeprecationMap.load(
-            config.storage.data_dir / "deprecation_map.json"
-        )
+        retriever.deprecation_map = DeprecationMap.load(config.storage.deprecation_map_path)
+        configured_repos, tainted_repos = config.sources.repo_sets()
 
         yield _QueryRuntime(
             retriever=retriever,
             index_store=index_store,
             reranker_status=reranker_status,
             cross_encoder=cross_encoder,
+            configured_repos=configured_repos,
+            tainted_repos=tainted_repos,
         )
     finally:
-        if index_store is not None:
-            index_store.close()
+        index_store.close()
 
 
 def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
@@ -408,7 +393,13 @@ def _dispatch(tool: str, args: dict[str, Any], runtime: _QueryRuntime) -> str:
 
     if tool == "get_hub_status":
         return asyncio.run(
-            handle_get_hub_status(args, runtime.index_store, runtime.reranker_status)
+            handle_get_hub_status(
+                args,
+                runtime.index_store,
+                runtime.reranker_status,
+                configured_repos=runtime.configured_repos,
+                tainted_repos=runtime.tainted_repos,
+            )
         )
     if tool == "check_deprecation":
         dep_map = getattr(runtime.retriever, "deprecation_map", None)
@@ -431,7 +422,7 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
     """
     from pydantic import ValidationError
 
-    from pipecat_context_hub.shared.staleness import annotate_response
+    from pipecat_context_hub.shared.response_finish import finish_response
 
     _quiet_query_logging(ctx)
     quiet_model_loading()
@@ -444,8 +435,8 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         try:
             result = _dispatch(tool, cleaned, runtime)
         except (ValidationError, ValueError) as exc:
-            click.echo(f"Error: {exc}", err=True)
-            raise SystemExit(_EXIT_BAD_INPUT) from exc
+            echo(f"Error: {exc}", err=True)
+            raise SystemExit(EXIT_INVALID_INPUT) from exc
         # Read-only inspection of the handler's raw JSON, before the staleness
         # footer below touches it — the hint must not affect what gets annotated.
         # Only semantic commands need the decode at all; a lookup command's
@@ -474,15 +465,25 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
         reranker_uncached = _maybe_warn_reranker_not_cached(
             needs_embeddings, runtime.reranker_status
         ) or _maybe_warn_reranker_load_failed(needs_embeddings, runtime.cross_encoder)
-        _maybe_warn_poor_results(
-            tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
+        # The same corpus hint and staleness footer the MCP door attaches, from
+        # the one shared step (status excluded: it *is* the staleness report).
+        # Inside the runtime block: the store must still be open to read its
+        # metadata. The poor-results stderr hint yields to a corpus hint: a
+        # vendor miss gets one hint, not two.
+        result, hint = finish_response(
+            runtime.index_store,
+            tool=tool,
+            args=cleaned,
+            result_json=result,
+            configured_repos=runtime.configured_repos,
+            tainted_repos=runtime.tainted_repos,
         )
-        # Same staleness footer the MCP door attaches (status excluded — it
-        # *is* the staleness report). Inside the runtime block: the store
-        # must still be open to read its metadata.
-        if tool != "get_hub_status":
-            result = annotate_response(result, runtime.index_store)
-    click.echo(result)
+        if hint is None:
+            _maybe_warn_poor_results(
+                tool, needs_embeddings, payload, reranker_uncached=reranker_uncached
+            )
+    # Machine output: JSON stays JSON (never the human escaper).
+    echo_json(result)
 
 
 # ── Commands ─────────────────────────────────────────────────────────────────
@@ -755,7 +756,7 @@ def check_deprecation_command(ctx: click.Context, symbol: str, at_version: str |
 @click.command("status")
 @click.pass_context
 def status_command(ctx: click.Context) -> None:
-    """Index health: freshness, record counts, reranker state.
+    """Index health: freshness, record counts, repo coverage, reranker state.
 
     Check ``last_refresh_at`` — if it is stale (or predates a pipecat-ai
     upgrade), run 'pipecat-context-hub refresh'.

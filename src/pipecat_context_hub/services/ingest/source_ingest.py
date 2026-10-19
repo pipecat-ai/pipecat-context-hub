@@ -28,6 +28,8 @@ from pipecat_context_hub.services.ingest.ast_extractor import (
 )
 from pipecat_context_hub.services.ingest.ingest_filters import (
     hash_source,
+    is_plain_dir,
+    is_plain_file,
     is_storybook_file,
 )
 from pipecat_context_hub.services.ingest.rst_type_parser import parse_rst_types
@@ -35,6 +37,7 @@ from pipecat_context_hub.services.ingest.ts_tree_sitter_parser import (
     TsDeclaration,
     parse_ts_source,
 )
+from pipecat_context_hub.shared.interfaces import FatalIndexError
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult
 
 if TYPE_CHECKING:
@@ -145,25 +148,21 @@ class SourceIngester:
         # Root-only glob (not recursive) — stubs are at repo root for known
         # targets like daily-python. .pyi files are NOT in _CODE_EXTENSIONS
         # to avoid duplicate indexing by GitHubRepoIngester.
-        pyi_files: list[Path] = sorted(
-            f for f in clone_dir.glob("*.pyi") if f.is_file() and not f.is_symlink()
-        )
+        pyi_files: list[Path] = sorted(f for f in clone_dir.glob("*.pyi") if is_plain_file(f))
 
         # 3. Discover Python packages under src/
         src_dir = clone_dir / "src"
         pkg_dirs: list[Path] = []
-        if src_dir.is_dir():
+        if is_plain_dir(src_dir):
             pkg_dirs = sorted(
-                d for d in src_dir.iterdir() if d.is_dir() and (d / "__init__.py").is_file()
+                d for d in src_dir.iterdir() if is_plain_dir(d) and is_plain_file(d / "__init__.py")
             )
 
         # 2b. Check for RST type docs in docs/
         rst_files: list[Path] = []
         docs_dir = clone_dir / "docs"
-        if docs_dir.is_dir() and not docs_dir.is_symlink():
-            rst_files = sorted(
-                f for f in docs_dir.rglob("*.rst") if f.is_file() and not f.is_symlink()
-            )
+        if is_plain_dir(docs_dir):
+            rst_files = sorted(f for f in docs_dir.rglob("*.rst") if is_plain_file(f))
 
         # 2c. Detect TypeScript repo (package.json or tsconfig.json at root
         # or in any immediate subdirectory — handles nested-package repos
@@ -202,7 +201,8 @@ class SourceIngester:
             )
 
             for py_file in py_files:
-                # Skip symlinks and files that resolve outside the repo
+                # Defense in depth beyond the is_plain_file discovery filter: skip
+                # symlinks and files that resolve outside the repo
                 if py_file.is_symlink():
                     continue
                 try:
@@ -446,6 +446,10 @@ class SourceIngester:
         if records:
             try:
                 upserted = await self._writer.upsert(records)
+            except FatalIndexError:
+                # Corrupt index (post-write HNSW guard): abort the refresh
+                # rather than keep writing into it. See DocsCrawler.ingest.
+                raise
             except Exception as exc:
                 errors.append(f"IndexWriter.upsert failed: {exc}")
 
@@ -479,6 +483,8 @@ def _find_python_files(src_dir: Path) -> list[Path]:
     """Find all .py files under src_dir, skipping test dirs."""
     files: list[Path] = []
     for p in sorted(src_dir.rglob("*.py")):
+        if not is_plain_file(p):
+            continue
         if any(part in _SKIP_DIRS for part in p.relative_to(src_dir).parts):
             continue
         files.append(p)
@@ -495,11 +501,15 @@ def _has_ts_markers(clone_dir: Path) -> bool:
     if not clone_dir.is_dir():
         return False
     for marker in ("package.json", "tsconfig.json"):
-        if (clone_dir / marker).is_file():
+        if is_plain_file(clone_dir / marker):
             return True
         # Check immediate subdirectories (not recursive — avoids node_modules)
         for child in clone_dir.iterdir():
-            if child.is_dir() and child.name not in _TS_SKIP_DIRS and (child / marker).is_file():
+            if (
+                is_plain_dir(child)
+                and child.name not in _TS_SKIP_DIRS
+                and is_plain_file(child / marker)
+            ):
                 return True
     return False
 
@@ -516,7 +526,7 @@ def _find_ts_files(clone_dir: Path) -> list[Path]:
     files: list[Path] = []
     for ext in (".ts", ".tsx"):
         for p in sorted(clone_dir.rglob(f"*{ext}")):
-            if p.is_symlink():
+            if not is_plain_file(p):
                 continue
             rel_parts = p.relative_to(clone_dir).parts
             if any(part in _TS_SKIP_DIRS for part in rel_parts):

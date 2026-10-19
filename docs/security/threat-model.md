@@ -46,7 +46,7 @@ Out of scope for this document unless they directly affect the server runtime:
 Path:
 
 - `docs.pipecat.ai/llms-full.txt`
-- [`docs_crawler.py`](src/pipecat_context_hub/services/ingest/docs_crawler.py)
+- [`docs_crawler.py`](../../src/pipecat_context_hub/services/ingest/docs_crawler.py)
 - local chunking and index writes
 
 Risks:
@@ -71,8 +71,8 @@ Follow-up checks:
 Path:
 
 - configured default repos plus `PIPECAT_HUB_EXTRA_REPOS`
-- [`github_ingest.py`](src/pipecat_context_hub/services/ingest/github_ingest.py)
-- [`source_ingest.py`](src/pipecat_context_hub/services/ingest/source_ingest.py)
+- [`github_ingest.py`](../../src/pipecat_context_hub/services/ingest/github_ingest.py)
+- [`source_ingest.py`](../../src/pipecat_context_hub/services/ingest/source_ingest.py)
 
 Risks:
 
@@ -85,6 +85,7 @@ Current controls:
 
 - repo slug sanitization and resolved-path containment for clones
 - source-ingest guards against symlinks and resolved paths outside the clone
+- example discovery, the taxonomy builder and the source ingester refuse a symlinked example, topic or `examples/` directory and a symlinked file (tested on POSIX; Windows junctions are skipped by the same check but untested, and the nested-junction walk in the taxonomy builder is unverified: dev plan `20261015` W9/R8)
 - tainted upstream repos can be skipped via `PIPECAT_HUB_TAINTED_REPOS`
 - tainted upstream refs can be skipped via `PIPECAT_HUB_TAINTED_REFS`
 - fetched refs are now evaluated before local checkout is updated
@@ -162,8 +163,8 @@ Follow-up checks:
 
 Path:
 
-- [`server/main.py`](src/pipecat_context_hub/server/main.py)
-- [`server/transport.py`](src/pipecat_context_hub/server/transport.py)
+- [`server/main.py`](../../src/pipecat_context_hub/server/main.py)
+- [`server/transport.py`](../../src/pipecat_context_hub/server/transport.py)
 - local IDE or agent client over stdio
 
 Risks:
@@ -209,7 +210,7 @@ Current exception:
 
 - `pip-audit` ignores `CVE-2026-4539` for `pygments` because the advisory does
   not currently surface a fixed PyPI version. This accepted risk is tracked in
-  [AGENTS.md](AGENTS.md) and
+  [AGENTS.md](../../AGENTS.md) and
   should be revisited as soon as upstream publishes a fix.
 
 ## Residual Risks

@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner, Result
 
-from pipecat_context_hub.cli import _EXIT_INDEX_UNREADY as _SERVE_EXIT_INDEX_UNREADY
 from pipecat_context_hub.cli import main
-from pipecat_context_hub.cli_query import _EXIT_BAD_INPUT, _EXIT_INDEX_UNREADY, _TOOL_TO_COMMAND
+from pipecat_context_hub.cli_query import _TOOL_TO_COMMAND
 from pipecat_context_hub.server.dispatch import iter_tool_definitions
 from pipecat_context_hub.server.main import _BASE_TOOLS, _HUB_STATUS_TOOL, create_server
 from pipecat_context_hub.services.index import IncompatibleIndexFormatError
 from pipecat_context_hub.services.index.errors import RESET_INDEX_REMEDIATION
+from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_INVALID_INPUT
 from pipecat_context_hub.shared.paths import redact_home_in_text as _real_redact_home_in_text
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
@@ -76,7 +76,7 @@ class TestToolCommandParity:
         assert all(spec.input_schema["type"] == "object" for spec in registry)
         assert all(callable(spec.handler) or spec.name == "check_deprecation" for spec in registry)
 
-        server = create_server(MagicMock())
+        server = create_server(MagicMock(), configured_repos=frozenset(), tainted_repos=frozenset())
         list_entry = server.get_request_handler("tools/list")
         assert list_entry is not None
 
@@ -101,9 +101,25 @@ class TestToolCommandParity:
     def test_mapped_commands_are_registered_on_main(self):
         assert set(_TOOL_TO_COMMAND.values()) <= set(main.commands)
 
-    def test_index_unready_exit_code_matches_serve(self):
-        """CLI and serve must report 'index unready' with the same exit code."""
-        assert _EXIT_INDEX_UNREADY == _SERVE_EXIT_INDEX_UNREADY
+    def test_refresh_in_progress_exit_code_is_shared(self):
+        """Queries mid-refresh and a refresh refused by the lock are the same
+        retry-later condition, so both exit with the shared code (75)."""
+        from pipecat_context_hub import cli as hub_cli
+        from pipecat_context_hub.shared.exit_codes import EXIT_REFRESH_IN_PROGRESS
+
+        assert EXIT_REFRESH_IN_PROGRESS == 75
+        assert hub_cli._RefreshLockBusy("x").exit_code == EXIT_REFRESH_IN_PROGRESS
+
+    def test_invalid_input_exit_code_is_shared(self):
+        """The one-shot queries and `repos` refuse bad input with the same
+        shared code (1), defined once in `shared/exit_codes.py`."""
+        from pipecat_context_hub import cli_query
+        from pipecat_context_hub.shared import exit_codes
+
+        assert EXIT_INVALID_INPUT == 1
+        assert exit_codes.EXIT_INVALID_INPUT == EXIT_INVALID_INPUT
+        # No module keeps a private copy that could drift from the shared one.
+        assert not hasattr(cli_query, "_EXIT_BAD_INPUT")
 
     def test_semantic_meta_matches_needs_embeddings_call_sites(self):
         """``_SEMANTIC_META`` must enroll exactly the tools invoked
@@ -226,7 +242,7 @@ class TestIndexUnready:
             return_value=_index_store_mock(total=0),
         ):
             result = runner.invoke(main, ["check-deprecation", "PipelineTask"])
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert result.stdout == ""
         _assert_remediation_before_report_hint(result.stderr, "refresh", BUG_REPORT_ISSUE_URL)
         assert result.stderr.count(BUG_REPORT_ISSUE_URL) == 1
@@ -238,7 +254,7 @@ class TestIndexUnready:
             side_effect=RuntimeError("corrupt"),
         ):
             result = runner.invoke(main, ["status"])
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert result.stdout == ""
         _assert_remediation_before_report_hint(result.stderr, "--reset-index", BUG_REPORT_ISSUE_URL)
         assert result.stderr.count(BUG_REPORT_ISSUE_URL) == 1
@@ -260,7 +276,7 @@ class TestIndexUnready:
             patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(data_dir)}),
         ):
             result = runner.invoke(main, ["status"])
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert result.stdout == ""
         _assert_remediation_before_report_hint(
             result.stderr, RESET_INDEX_REMEDIATION, BUG_REPORT_ISSUE_URL
@@ -269,6 +285,35 @@ class TestIndexUnready:
         assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
         assert str(chroma_path) not in result.stderr
         assert str(tmp_path) not in result.stderr
+
+    def test_cli_and_serve_share_one_reader_open(self):
+        """Regression (cli.py:116): the one-shot CLI and `serve` (first open
+        and every reopen) go through the same open-and-check, so their
+        messages cannot drift, and the empty-index text names no front door."""
+        from pipecat_context_hub.services.index.errors import IndexNotBuiltError
+        from pipecat_context_hub.services.index.reopening import open_ready_index_store
+        from pipecat_context_hub.shared.config import HubConfig
+        from pipecat_context_hub.shared.interfaces import IndexUnavailableError
+
+        with patch(
+            "pipecat_context_hub.services.index.reopening.open_ready_index_store",
+            side_effect=IndexUnavailableError("shared-open-message"),
+        ):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == EXIT_INDEX_UNREADY
+        assert "Error: shared-open-message" in result.stderr
+
+        with patch(
+            "pipecat_context_hub.services.index.store.IndexStore",
+            return_value=_index_store_mock(total=0),
+        ):
+            with pytest.raises(IndexUnavailableError) as exc_info:
+                open_ready_index_store(HubConfig().storage)
+        message = str(exc_info.value)
+        assert "is empty (0 records)" in message
+        # One refusal for both empty halves (store.py and this open).
+        assert isinstance(exc_info.value.__cause__, IndexNotBuiltError)
+        assert "'serve'" not in message and "hang" not in message
 
 
 class TestDispatch:
@@ -967,7 +1012,7 @@ class TestRerankerWarningDoesNotCoFireWithValidationError:
             # fails GetCodeSnippetInput's model validator before any handler
             # runs — a pure input-validation failure, unrelated to reranking.
             result = runner.invoke(main, ["get-code-snippet"])
-        assert result.exit_code == _EXIT_BAD_INPUT
+        assert result.exit_code == EXIT_INVALID_INPUT
         assert "Error:" in result.stderr
         assert BUG_REPORT_ISSUE_URL not in result.stderr
         assert "reranking disabled" not in result.stderr
@@ -1133,7 +1178,7 @@ class TestHomeRedaction:
         ):
             result = runner.invoke(main, ["status"])
 
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         # Redaction happened (tilde present) and nothing leaks the literal home.
         assert "~/" in result.stderr or "~" + os.sep in result.stderr
         assert str(tmp_path) not in result.stderr
@@ -1156,7 +1201,7 @@ class TestHomeRedaction:
         ):
             result = runner.invoke(main, ["status"])
 
-        assert result.exit_code == _EXIT_INDEX_UNREADY
+        assert result.exit_code == EXIT_INDEX_UNREADY
         assert "is empty" in result.stderr
         assert "~/" in result.stderr or "~" + os.sep in result.stderr
         assert str(tmp_path) not in result.stderr
@@ -1178,3 +1223,620 @@ class TestBadInput:
         assert result.exit_code == 1
         assert "doc_id or path" in result.stderr
         assert result.stdout == ""
+
+
+def test_query_exits_75_while_a_refresh_is_running(tmp_path: Path) -> None:
+    """One-shot queries must not open the index mid-refresh; stderr says to retry."""
+    from pipecat_context_hub.shared.index_lock import REFRESH_LOCK, IndexLock
+
+    with (
+        patch("pipecat_context_hub.services.index.store.IndexStore") as store_cls,
+        patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path / "hub")}),
+        IndexLock(tmp_path / "hub", REFRESH_LOCK, exclusive=True),
+    ):
+        result = CliRunner().invoke(main, ["check-deprecation", "PipelineTask"])
+    assert result.exit_code == 75
+    assert "Retry in 60-120 seconds" in result.output
+    store_cls.assert_not_called()
+
+
+# Plausible in indexed docs text; each became invalid JSON when stdout went
+# through the human escaper (\xNN / \UNNNNNNNN are not JSON escapes).
+_JSON_HOSTILE = "nbsp\xa0 shy\xad del\x7f nel\x85 esc\x1b tag\U000e0001"
+
+
+class TestStdoutStaysJson:
+    """Contract: query stdout is valid JSON parsing to the handler's exact value,
+    with no raw non-printable character (the terminal boundary for JSON)."""
+
+    @staticmethod
+    def _document() -> str:
+        from pydantic import BaseModel
+
+        class Out(BaseModel):
+            text: str
+            items: list[str]
+
+        return Out(text=_JSON_HOSTILE, items=[_JSON_HOSTILE]).model_dump_json()
+
+    @pytest.mark.parametrize(
+        ("argv", "fresh"),
+        [
+            (["status"], False),
+            (["get-doc", "--path", "/guides/x"], True),
+            # The staleness footer re-serialises with json.dumps(ensure_ascii).
+            (["get-doc", "--path", "/guides/x"], False),
+        ],
+        ids=["get-hub-status", "get-doc-fresh", "get-doc-with-staleness-footer"],
+    )
+    def test_hostile_text_prints_valid_json(
+        self, argv: list[str], fresh: bool, tmp_path: Path
+    ) -> None:
+        from datetime import UTC, datetime
+
+        document = self._document()
+        store = _index_store_mock(total=10)
+        if fresh:
+            store.get_all_metadata.return_value = {
+                "last_refresh_at": datetime.now(UTC).isoformat(),
+                "last_refresh_duration_seconds": "1.0",
+            }
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore", return_value=store),
+            patch("pipecat_context_hub.cli_query._dispatch", return_value=document),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, argv)
+        assert result.exit_code == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["text"] == _JSON_HOSTILE
+        assert payload["items"] == [_JSON_HOSTILE]
+        assert not any(not (ch in "\n\t" or ch.isprintable()) for ch in result.stdout)
+
+
+_STATUS_CATALOG = """
+verified = 2026-10-17
+
+[groups.acme]
+kind = "vendor"
+description = "Acme"
+aliases = ["acme"]
+repos = [{ slug = "acme/one" }]
+
+[groups.beta]
+kind = "vendor"
+description = "Beta"
+aliases = ["beta"]
+repos = [{ slug = "beta/one" }]
+
+[groups.gamma]
+kind = "topic"
+description = "Gamma"
+aliases = ["gamma"]
+repos = [{ slug = "gamma/one" }]
+"""
+
+
+class TestStatusCoverageFields:
+    """`status` reports indexed / configured-no-records / uncovered catalog groups."""
+
+    @pytest.fixture(autouse=True)
+    def _catalog(self, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        repo_catalog.load_catalog.cache_clear()
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: _STATUS_CATALOG)
+        yield
+        repo_catalog.load_catalog.cache_clear()
+
+    @staticmethod
+    def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
+        return {
+            "PIPECAT_HUB_DATA_DIR": str(tmp_path),
+            "PIPECAT_HUB_EXTRA_REPOS": "acme/one,beta/one",
+            **extra,
+        }
+
+    @staticmethod
+    def _default_counts() -> dict[str, int]:
+        from pipecat_context_hub.shared.config import HubConfig
+
+        return {slug: 1 for slug in HubConfig().sources.repos}
+
+    def _status(self, store: MagicMock, tmp_path: Path, **env: str) -> dict[str, Any]:
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore", return_value=store),
+            patch.dict("os.environ", self._env(tmp_path, **env)),
+        ):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0, result.stderr
+        payload: dict[str, Any] = json.loads(result.stdout)
+        return payload
+
+    def test_reports_the_three_fields(self, tmp_path):
+        store = _index_store_mock(total=10)
+        store.get_counts_by_repo.return_value = {
+            **self._default_counts(),
+            "acme/one": 5,
+            "beta/one": 0,
+        }
+        payload = self._status(store, tmp_path)
+        assert "acme/one" in [s.casefold() for s in payload["indexed_repos"]]
+        assert payload["configured_no_records"] == ["beta/one"]
+        assert payload["catalog_groups_not_indexed"] == ["beta", "gamma"]
+
+    def test_case_variant_configured_slug(self, tmp_path):
+        store = _index_store_mock(total=10)
+        store.get_counts_by_repo.return_value = {**self._default_counts(), "acme/one": 2}
+        payload = self._status(
+            store,
+            tmp_path,
+            PIPECAT_HUB_EXTRA_REPOS="Acme/One",
+        )
+        assert "acme/one" in [s.casefold() for s in payload["indexed_repos"]]
+        assert payload["configured_no_records"] == []
+
+    @pytest.mark.parametrize("failure", ["raises", "non-mapping"])
+    def test_unreadable_counts_leave_the_fields_empty(self, tmp_path, failure):
+        store = _index_store_mock(total=10)
+        if failure == "raises":
+            store.get_counts_by_repo.side_effect = RuntimeError("boom")
+        # else: the bare MagicMock auto-attribute returns a MagicMock, not a mapping
+        payload = self._status(store, tmp_path)
+        assert payload["indexed_repos"] == []
+        assert payload["configured_no_records"] == []
+        assert payload["catalog_groups_not_indexed"] == []
+        assert payload["total_records"] == 10
+
+    def test_catalog_load_failure_leaves_groups_empty(self, tmp_path, monkeypatch):
+        from pipecat_context_hub.shared import repo_catalog
+
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: "not [valid toml")
+        repo_catalog.load_catalog.cache_clear()
+        store = _index_store_mock(total=10)
+        store.get_counts_by_repo.return_value = {**self._default_counts(), "acme/one": 5}
+        payload = self._status(store, tmp_path)
+        assert payload["catalog_groups_not_indexed"] == []
+        assert payload["configured_no_records"] == ["beta/one"]
+
+    def test_query_runtime_captures_the_config_sets_once(self, tmp_path):
+        from pipecat_context_hub.cli_query import _query_runtime
+        from pipecat_context_hub.shared.config import HubConfig
+
+        store = _index_store_mock(total=10)
+        env = self._env(tmp_path, PIPECAT_HUB_TAINTED_REPOS="acme/one")
+        with (
+            patch("pipecat_context_hub.services.index.store.IndexStore", return_value=store),
+            patch.dict("os.environ", env),
+        ):
+            config = HubConfig()
+            with _query_runtime(config, needs_embeddings=False) as rt:
+                assert isinstance(rt.configured_repos, frozenset)
+                assert isinstance(rt.tainted_repos, frozenset)
+                assert rt.configured_repos == frozenset(config.sources.effective_repos)
+                assert "acme/one" not in rt.configured_repos
+                assert "beta/one" in rt.configured_repos
+                assert rt.tainted_repos == frozenset({"acme/one"})
+
+    def test_both_front_doors_emit_identical_coverage_fields(self, tmp_path):
+        from pipecat_context_hub.shared.config import HubConfig
+
+        counts = {**self._default_counts(), "acme/one": 5, "beta/one": 0}
+        cli_store = _index_store_mock(total=10)
+        cli_store.get_counts_by_repo.return_value = counts
+        cli_payload = self._status(cli_store, tmp_path)
+
+        with patch.dict("os.environ", self._env(tmp_path)):
+            sources = HubConfig().sources
+            configured = frozenset(sources.effective_repos)
+            tainted = frozenset(sources.tainted_repos)
+        mcp_store = _index_store_mock(total=10)
+        mcp_store.get_counts_by_repo.return_value = counts
+        mcp_store.data_dir = tmp_path
+        server = create_server(
+            MagicMock(), index_store=mcp_store, configured_repos=configured, tainted_repos=tainted
+        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+        from mcp import types
+
+        import asyncio
+
+        async def _call() -> Any:
+            return await entry.handler(
+                cast(Any, None),
+                types.CallToolRequestParams(name="get_hub_status", arguments={}),
+            )
+
+        result = asyncio.run(_call())
+        assert isinstance(result, types.CallToolResult)
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        mcp_payload = json.loads(block.text)
+
+        for key in ("indexed_repos", "configured_no_records", "catalog_groups_not_indexed"):
+            assert cli_payload[key] == mcp_payload[key], key
+        assert mcp_payload["configured_no_records"] == ["beta/one"]
+
+
+_HINT_CATALOG = """
+verified = 2026-10-17
+
+[groups.acme]
+kind = "vendor"
+description = "Acme"
+aliases = ["acme"]
+repos = [{ slug = "acme/one" }, { slug = "acme/two" }]
+
+[groups.shady]
+kind = "vendor"
+description = "Shady"
+aliases = ["shady"]
+repos = [{ slug = "bad/one" }]
+"""
+
+_ACME_ADD = "pipecat-context-hub repos add --config-only --group acme"
+
+
+def _hint_store(counts: Any = None, *, stale_days: float = 30) -> MagicMock:
+    from datetime import UTC, datetime, timedelta
+
+    store = _index_store_mock(total=10)
+    store.get_all_metadata.return_value = {
+        "last_refresh_at": (datetime.now(UTC) - timedelta(days=stale_days)).isoformat()
+    }
+    if isinstance(counts, Exception):
+        store.get_counts_by_repo.side_effect = counts
+    elif counts is not None:
+        store.get_counts_by_repo.return_value = counts
+    return store
+
+
+def _poor_results_json() -> str:
+    return json.dumps(
+        {"hits": [{"id": "x1"}], "evidence": {"low_confidence": True, "confidence": 0.1}}
+    )
+
+
+def _run_hinted(
+    cli_args: list[str],
+    store: MagicMock,
+    tmp_path: Path,
+    *,
+    handler_target: str = "pipecat_context_hub.server.tools.search_docs.handle_search_docs",
+    handler_json: str | None = None,
+    env: dict[str, str] | None = None,
+) -> Result:
+    handler = AsyncMock(return_value=handler_json or _poor_results_json())
+    full_env = {"PIPECAT_HUB_DATA_DIR": str(tmp_path), **(env or {})}
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch("pipecat_context_hub.services.index.store.IndexStore", return_value=store)
+        )
+        stack.enter_context(
+            patch(
+                "pipecat_context_hub.services.embedding.EmbeddingService",
+                return_value=MagicMock(),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "pipecat_context_hub.services.retrieval.cross_encoder."
+                "CrossEncoderReranker.is_model_cached",
+                return_value=True,
+            )
+        )
+        stack.enter_context(patch(handler_target, handler))
+        stack.enter_context(patch.dict("os.environ", full_env))
+        return runner.invoke(main, cli_args)
+
+
+class _HintCatalogMixin:
+    @pytest.fixture(autouse=True)
+    def _catalog(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from pipecat_context_hub.shared import repo_catalog
+
+        repo_catalog.load_catalog.cache_clear()
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: _HINT_CATALOG)
+        yield
+        repo_catalog.load_catalog.cache_clear()
+
+
+class TestCorpusHintCli(_HintCatalogMixin):
+    def test_golden_hint_for_an_unindexed_vendor_query(self, tmp_path: Path) -> None:
+        result = _run_hinted(["search-docs", "acme avatar"], _hint_store({}), tmp_path)
+        assert result.exit_code == 0, result.stderr
+        hint = json.loads(result.stdout)["corpus_hint"]
+        assert hint["matched_groups"] == ["acme"]
+        assert hint["repos_not_indexed"] == ["acme/one", "acme/two"]
+        assert hint["add_command"] == _ACME_ADD
+        assert hint["report_issue_url"] == RETRIEVAL_QUALITY_ISSUE_URL
+        assert "refresh_command" not in hint
+
+    def test_hint_coexists_with_the_staleness_footer(self, tmp_path: Path) -> None:
+        result = _run_hinted(["search-docs", "acme avatar"], _hint_store({}), tmp_path)
+        payload = json.loads(result.stdout)
+        assert "corpus_hint" in payload
+        assert "refresh" in payload["index_staleness"]["hint"]
+
+    def test_stderr_hint_is_suppressed_when_a_corpus_hint_exists(self, tmp_path: Path) -> None:
+        # Low-confidence payload would normally print the retrieval-quality stderr hint.
+        result = _run_hinted(["search-docs", "acme avatar"], _hint_store({}), tmp_path)
+        assert result.exit_code == 0, result.stderr
+        assert "corpus_hint" in json.loads(result.stdout)
+        assert RETRIEVAL_QUALITY_ISSUE_URL not in result.stderr
+        assert "results were poor or missing" not in result.stderr
+
+    def test_stderr_hint_still_prints_without_a_corpus_hint(self, tmp_path: Path) -> None:
+        result = _run_hinted(["search-docs", "no vendor here"], _hint_store({}), tmp_path)
+        assert "corpus_hint" not in json.loads(result.stdout)
+        assert RETRIEVAL_QUALITY_ISSUE_URL in result.stderr
+
+    def test_indexed_group_has_no_hint_and_stderr_hint_prints(self, tmp_path: Path) -> None:
+        store = _hint_store({"acme/one": 3, "acme/two": 1})
+        result = _run_hinted(["search-docs", "acme avatar"], store, tmp_path)
+        assert "corpus_hint" not in json.loads(result.stdout)
+        assert RETRIEVAL_QUALITY_ISSUE_URL in result.stderr
+
+    @pytest.mark.parametrize(
+        "counts", [RuntimeError("boom"), "bare-magicmock"], ids=["raises", "magicmock"]
+    )
+    def test_unreadable_counts_give_no_key_and_keep_the_stderr_hint(
+        self, tmp_path: Path, counts: Any
+    ) -> None:
+        store = _hint_store(None if counts == "bare-magicmock" else counts)
+        result = _run_hinted(["search-docs", "acme avatar"], store, tmp_path)
+        assert result.exit_code == 0, result.stderr
+        assert "corpus_hint" not in json.loads(result.stdout)
+        assert RETRIEVAL_QUALITY_ISSUE_URL in result.stderr
+
+    def test_store_lacking_the_method_gives_no_key(self, tmp_path: Path) -> None:
+        store = _hint_store({})
+        del store.get_counts_by_repo
+        result = _run_hinted(["search-docs", "acme avatar"], store, tmp_path)
+        assert result.exit_code == 0, result.stderr
+        assert "corpus_hint" not in json.loads(result.stdout)
+        assert RETRIEVAL_QUALITY_ISSUE_URL in result.stderr
+
+    def test_configured_repos_reflect_process_start(self, tmp_path: Path) -> None:
+        result = _run_hinted(
+            ["search-docs", "acme avatar"],
+            _hint_store({"acme/one": 2}),
+            tmp_path,
+            env={"PIPECAT_HUB_EXTRA_REPOS": "acme/two"},
+        )
+        hint = json.loads(result.stdout)["corpus_hint"]
+        assert hint["repos_configured_no_records"] == ["acme/two"]
+        assert hint["refresh_command"] == "pipecat-context-hub refresh"
+        assert "add_command" not in hint
+
+    def test_tainted_repo_is_in_neither_field(self, tmp_path: Path) -> None:
+        result = _run_hinted(
+            ["search-docs", "acme avatar"],
+            _hint_store({}),
+            tmp_path,
+            env={"PIPECAT_HUB_TAINTED_REPOS": "acme/two"},
+        )
+        hint = json.loads(result.stdout)["corpus_hint"]
+        assert hint["repos_not_indexed"] == ["acme/one"]
+        assert "acme/two" not in json.dumps(hint)
+
+    def test_tainted_only_group_gives_no_hint(self, tmp_path: Path) -> None:
+        result = _run_hinted(
+            ["search-docs", "shady stuff"],
+            _hint_store({}),
+            tmp_path,
+            env={"PIPECAT_HUB_TAINTED_REPOS": "bad/one"},
+        )
+        assert "corpus_hint" not in json.loads(result.stdout)
+        assert RETRIEVAL_QUALITY_ISSUE_URL in result.stderr
+
+    @pytest.mark.parametrize(
+        ("cli_args", "handler_target"),
+        [
+            (
+                ["search-examples", "acme avatar"],
+                "pipecat_context_hub.server.tools.search_examples.handle_search_examples",
+            ),
+            (
+                ["search-api", "acme avatar"],
+                "pipecat_context_hub.server.tools.search_api.handle_search_api",
+            ),
+            (
+                ["get-code-snippet", "--symbol", "Acme.connect"],
+                "pipecat_context_hub.server.tools.get_code_snippet.handle_get_code_snippet",
+            ),
+            (
+                ["get-code-snippet", "--intent", "acme setup"],
+                "pipecat_context_hub.server.tools.get_code_snippet.handle_get_code_snippet",
+            ),
+        ],
+    )
+    def test_every_search_tool_hints(
+        self, tmp_path: Path, cli_args: list[str], handler_target: str
+    ) -> None:
+        result = _run_hinted(cli_args, _hint_store({}), tmp_path, handler_target=handler_target)
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["corpus_hint"]["matched_groups"] == ["acme"]
+
+    def test_get_code_snippet_path_alone_never_hints(self, tmp_path: Path) -> None:
+        result = _run_hinted(
+            ["get-code-snippet", "--path", "src/acme/service.py"],
+            _hint_store({}),
+            tmp_path,
+            handler_target=(
+                "pipecat_context_hub.server.tools.get_code_snippet.handle_get_code_snippet"
+            ),
+        )
+        assert "corpus_hint" not in json.loads(result.stdout)
+
+    def test_non_search_commands_never_hint(self, tmp_path: Path) -> None:
+        store = _hint_store({})
+        result = _run_hinted(
+            ["get-doc", "--path", "/acme/overview"],
+            store,
+            tmp_path,
+            handler_target="pipecat_context_hub.server.tools.get_doc.handle_get_doc",
+            handler_json=json.dumps({"doc_id": "d", "title": "acme"}),
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "corpus_hint" not in json.loads(result.stdout)
+
+    def test_status_is_never_hinted(self, tmp_path: Path) -> None:
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_hint_store({}),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, ["status"])
+        assert result.exit_code == 0, result.stderr
+        assert "corpus_hint" not in json.loads(result.stdout)
+
+
+class TestCorpusHintCatalogLoadFailureCli:
+    def test_no_key_and_stderr_hint_still_prints(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pipecat_context_hub.shared import repo_catalog
+
+        repo_catalog.load_catalog.cache_clear()
+        monkeypatch.setattr(repo_catalog, "_read_catalog_text", lambda: "not [valid toml")
+        try:
+            result = _run_hinted(["search-docs", "acme avatar"], _hint_store({}), tmp_path)
+        finally:
+            repo_catalog.load_catalog.cache_clear()
+        assert result.exit_code == 0, result.stderr
+        assert "corpus_hint" not in json.loads(result.stdout)
+        assert RETRIEVAL_QUALITY_ISSUE_URL in result.stderr
+
+
+class TestCorpusHintBothFrontDoors(_HintCatalogMixin):
+    """The CLI and MCP doors emit the same ``corpus_hint`` for the same inputs."""
+
+    @staticmethod
+    def _mcp_payload(
+        store: MagicMock,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        configured: frozenset[str],
+        tainted: frozenset[str],
+    ) -> dict[str, Any]:
+        import asyncio
+
+        from mcp import types
+
+        server = create_server(
+            MagicMock(),
+            index_store=store,
+            configured_repos=configured,
+            tainted_repos=tainted,
+        )
+        entry = server.get_request_handler("tools/call")
+        assert entry is not None
+
+        async def _call() -> Any:
+            with patch(
+                "pipecat_context_hub.server.main.get_tool_handler",
+                return_value=AsyncMock(return_value=_poor_results_json()),
+            ):
+                return await entry.handler(
+                    cast(Any, None),
+                    types.CallToolRequestParams(name=name, arguments=arguments),
+                )
+
+        result = asyncio.run(_call())
+        assert isinstance(result, types.CallToolResult)
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        payload: dict[str, Any] = json.loads(block.text)
+        return payload
+
+    @pytest.mark.parametrize(
+        ("cli_args", "tool", "arguments", "env", "configured", "tainted"),
+        [
+            pytest.param(
+                ["search-docs", "acme avatar"],
+                "search_docs",
+                {"query": "acme avatar"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="plain",
+            ),
+            pytest.param(
+                ["search-docs", "acme avatar"],
+                "search_docs",
+                {"query": "acme avatar"},
+                {"PIPECAT_HUB_EXTRA_REPOS": "acme/two", "PIPECAT_HUB_TAINTED_REPOS": "x/y"},
+                frozenset({"acme/two"}),
+                frozenset({"x/y"}),
+                id="configured",
+            ),
+            pytest.param(
+                ["get-code-snippet", "--symbol", "Acme.connect"],
+                "get_code_snippet",
+                {"symbol": "Acme.connect"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="snippet",
+            ),
+            pytest.param(
+                ["search-docs", "AcmeVideoService"],
+                "search_docs",
+                {"query": "AcmeVideoService"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="camelcase-identifier",
+            ),
+            pytest.param(
+                ["get-code-snippet", "--symbol", "connect", "--class-name", "AcmeVideoService"],
+                "get_code_snippet",
+                {"symbol": "connect", "class_name": "AcmeVideoService"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="snippet-class-name",
+            ),
+            pytest.param(
+                ["search-api", "connect", "--class-name", "AcmeVideoService"],
+                "search_api",
+                {"query": "connect", "class_name": "AcmeVideoService"},
+                {},
+                frozenset(),
+                frozenset(),
+                id="search-api-class-name",
+            ),
+        ],
+    )
+    def test_identical_hint_json(
+        self,
+        tmp_path: Path,
+        cli_args: list[str],
+        tool: str,
+        arguments: dict[str, Any],
+        env: dict[str, str],
+        configured: frozenset[str],
+        tainted: frozenset[str],
+    ) -> None:
+        counts = {"acme/one": 4}
+        cli = _run_hinted(
+            cli_args,
+            _hint_store(counts),
+            tmp_path,
+            handler_target=f"pipecat_context_hub.server.tools.{tool}.handle_{tool}",
+            env=env,
+        )
+        assert cli.exit_code == 0, cli.stderr
+        cli_hint = json.loads(cli.stdout)["corpus_hint"]
+        mcp_store = _hint_store(counts)
+        mcp_store.data_dir = tmp_path
+        mcp_payload = self._mcp_payload(
+            mcp_store, tool, arguments, configured=configured, tainted=tainted
+        )
+        assert mcp_payload["corpus_hint"] == cli_hint
+        assert cli_hint["report_issue_url"] == RETRIEVAL_QUALITY_ISSUE_URL

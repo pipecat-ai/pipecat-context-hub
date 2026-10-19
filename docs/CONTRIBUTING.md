@@ -22,6 +22,7 @@ A [`justfile`](https://github.com/casey/just) provides common tasks
 ```bash
 just check    # lint + format check + typecheck
 just test     # run tests
+just ci       # run check, test and audit together
 just audit    # pip-audit + bandit
 just sbom     # generate CycloneDX SBOM
 ```
@@ -72,16 +73,15 @@ Retrieval:
     `pipecat-ai/pipecat-ui`, `pipecat-ai/pipecat-prebuilt`
   - Tree-sitter-extracted: interfaces, classes, types, functions, enums, const exports
     with individual method chunks and full signatures
-- Additional repos via `PIPECAT_HUB_EXTRA_REPOS` env var
+- Additional repos via `PIPECAT_HUB_EXTRA_REPOS` (env var, `.env`, or `config.toml`, which `repos add` edits)
   - Adjacent pipecat-ai repos that parse cleanly but are opt-in (use the full
     `org/repo` slug in `PIPECAT_HUB_EXTRA_REPOS`):
-    `pipecat-ai/pipecat-cli` (Python CLI — see note below),
-    `pipecat-ai/pipecat-mcp-server` (Python),
-    `pipecat-ai/pipecat-flows-editor` (TS), `pipecat-ai/pipecat-krisp` (Python)
-  - `pipecat-ai/pipecat-cli` is opt-in rather than default: the CLI is used via
-    commands (`pipecat init`, `pipecat cloud deploy`), not imported, and its
-    command reference is already indexed from `docs.pipecat.ai`
-    (`/api-reference/cli/*`). Ingesting the repo only adds CLI-internal source.
+    `pipecat-ai/pipecat-mcp-server` (Python), `pipecat-ai/pipecat-flows-editor` (TS)
+  - `pipecat-ai/pipecat-cli` is archived: the CLI now lives in `pipecat-ai/pipecat`
+    (already indexed), and its command reference is indexed from `docs.pipecat.ai`
+    (`/api-reference/cli/*`). Don't add the archived repo back.
+  - Only list public, non-archived repos in `.env.example`: a private repo cannot
+    be cloned without access. Recheck the list when you edit it.
   - Swift/Kotlin/C++ client SDKs (`pipecat-client-ios`, `pipecat-client-android`,
     `pipecat-client-cxx`, `pipecat-esp32`) are **not** source-indexable — no grammar
     for those languages; adding them clones but yields zero source/API chunks (only
@@ -89,7 +89,34 @@ Retrieval:
   - Repos with `src/` layouts are Python AST-indexed for `search_api`
   - Repos with `.pyi` stubs at root are also AST-indexed
   - Repos with `package.json`/`tsconfig.json` are tree-sitter-indexed
-  - See `.env.example` for curated repo bundles
+  - Users add extra repos with `pipecat-context-hub repos add <owner/repo>` (a
+    catalog repo; a slug outside the catalog needs `--unlisted`) or
+    `repos add --group NAME`, which edit `config.toml`; setting the env var or a
+    `.env` still works
+  - The curated bundles (by topic and by vendor: NVIDIA, Google, AWS, other
+    providers) live in `src/pipecat_context_hub/data/repo_catalog.toml`. The
+    `.env.example` block and the `docs/configuration.md` section are generated
+    from it: edit the catalog, then run `just catalog-regen` (a test fails on
+    drift). Do not hand-edit the generated blocks
+  - Catalog rules, enforced by the parser (`just catalog-regen --check`
+    validates them, and so does the test suite):
+    - Top-level `verified` is a plain ISO date (`YYYY-MM-DD`, not a timestamp);
+      the only top-level keys are `verified` and `groups`.
+    - Group names (`[groups.<name>]`) are lowercase letters, digits and `-`,
+      starting with a letter or digit. Each group has `kind` (`vendor` or
+      `topic`), a non-empty `description`, a non-empty `aliases` list of
+      non-empty strings, and at least one `[[repos]]` entry; no other keys.
+    - Each repo has a `slug` (`owner/repo`, the grammar `refresh` clones) and
+      optionally `note` (a non-empty string), `parseable` and `maintainer`
+      (booleans). `private`, `archived` and `status` are refused: visibility
+      is the health check's job.
+    - A slug appears in one group only and is never a default repo; an alias
+      belongs to one group only. Both compare case-insensitively.
+    - No text (slug, note, kind, description, alias) may hold any control
+      (Unicode category Cc) or format (Cf: bidi, zero-width, BOM) character,
+      U+2028 / U+2029 (Zl / Zp), or anything `str.splitlines()` splits on; a
+      `description` may not hold `|`; and no text may hold `BEGIN GENERATED`
+      or `END GENERATED`.
 
 ## Project Structure
 
@@ -108,7 +135,7 @@ src/pipecat_context_hub/
 │   │   ├── docs_crawler.py         # llms-full.txt ingester + markdown chunker
 │   │   ├── github_ingest.py        # Git clone/fetch + code chunking
 │   │   ├── source_ingest.py        # Source code chunking + module metadata
-│   │   ├── ingest_filters.py       # Per-file filters shared by github/source ingest (Storybook exclusion, content-hash dedup)
+│   │   ├── ingest_filters.py       # Per-file filters shared by github/source ingest (Storybook exclusion, content-hash dedup) + `is_plain_file`/`is_plain_dir` (refuse a symlinked example path; Windows junctions are skipped by the same check but untested)
 │   │   ├── ts_tree_sitter_parser.py # TypeScript/TSX tree-sitter extraction
 │   │   └── taxonomy.py             # Automated capability inference
 │   ├── index/
@@ -232,8 +259,8 @@ comment block at the top of `.github/workflows/release.yml`.
 
 ## Release Process
 
-See the [Release Notes Template](../CLAUDE.md#release-notes-template) in
-CLAUDE.md for the standardised format. Every release needs:
+Use the [Release Notes Template](#release-notes-template) below for the
+standardised format. Every release needs:
 
 1. Update `CHANGELOG.md` (change "Unreleased" → date)
 2. Bump version in both locations above
@@ -249,3 +276,35 @@ CLAUDE.md for the standardised format. Every release needs:
 To dry-run the publish pipeline without touching PyPI, trigger the Release
 workflow manually (`workflow_dispatch`) — it publishes to **TestPyPI**
 instead. Note TestPyPI rejects re-uploads of an existing version.
+
+## Release Notes Template
+
+GitHub releases must follow this format for consistency. Pull content from
+`CHANGELOG.md` — the release note is a reader-friendly version, not a copy-paste.
+
+```markdown
+## What's New
+
+[1-2 sentence summary of the release theme — what capability does this add or what problem does it solve?]
+
+### Added
+- **Feature name** — description
+
+### Changed (if applicable)
+- ...
+
+### Fixed (if applicable)
+- ...
+
+---
+
+**Upgrade:** `uv sync --extra dev --group dev` then `uv run pipecat-context-hub refresh --force`
+**Full changelog:** https://github.com/pipecat-ai/pipecat-context-hub/compare/vPREVIOUS...vCURRENT
+```
+
+Rules:
+- **Title:** version tag only (e.g., `v0.0.17`). No descriptive suffixes.
+- **Sections:** use Keep a Changelog categories (`Added`, `Changed`, `Fixed`, `Security`, `Removed`). Only include sections that apply.
+- **Upgrade line:** always present. Use `uv sync` (not `pip install`).
+- **Full changelog link:** always present (except v0.0.1). Use GitHub compare URL.
+- Do NOT add `Test Coverage`, `Index Impact`, or `Example Queries` sections — these belong in PR descriptions, not releases.

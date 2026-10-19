@@ -422,6 +422,10 @@ def live_quality_context() -> Generator[dict[str, Any], None, None]:
     _require_opt_in()
 
     config = HubConfig()
+    if not config.storage.sqlite_path.is_file():
+        # A reader open never creates the index, so the health probe below would
+        # fail (with reset advice) on a machine that simply has not refreshed yet.
+        pytest.skip("Local index is missing. Run 'pipecat-context-hub refresh' first.")
     _assert_vector_index_healthy(config)
 
     store = IndexStore(config.storage)

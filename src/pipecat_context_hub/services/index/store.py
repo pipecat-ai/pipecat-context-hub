@@ -12,6 +12,12 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from pipecat_context_hub.services.index.errors import (
+    IndexNotBuiltError,
+    LostKeywordIndexError,
+    MissingKeywordIndexError,
+    MissingVectorCollectionError,
+)
 from pipecat_context_hub.services.index.fts import FTSIndex
 from pipecat_context_hub.services.index.vector import VectorIndex
 from pipecat_context_hub.shared.config import StorageConfig
@@ -27,21 +33,101 @@ class IndexStore:
     Reads are dispatched to the appropriate backend based on the search type.
     """
 
-    def __init__(self, config: StorageConfig) -> None:
-        config.data_dir.mkdir(parents=True, exist_ok=True)
+    #: Set by the open: the vector half held no records (new, recreated, or
+    #: emptied), so no skip marker in the keyword half vouches for vectors.
+    vector_empty: bool
+
+    def __init__(
+        self,
+        config: StorageConfig,
+        *,
+        recover: bool = False,
+        create: bool = False,
+        rebuild: bool = False,
+    ) -> None:
+        """Open both backends. *recover*: see :class:`VectorIndex`.
+
+        *create* (``refresh`` only) lets the open create what is missing;
+        without it nothing is created. Either way, a vector half that is
+        missing or empty while the keyword half has records raises
+        :class:`MissingVectorCollectionError` before the vector half is
+        touched (the keyword half's only possible earlier write is completing
+        an incomplete schema, see :class:`FTSIndex`), unless *rebuild* (the
+        caller re-ingests every source, refilling it) lets *create* recreate
+        it; :attr:`vector_empty` then reports it. Readers (and a
+        refresh without ``--force``) therefore never run on an index whose
+        vector search would silently come back empty.
+
+        The mirror case, a keyword half with no records (missing, or created
+        by this open) beside a vector half with records, raises
+        :class:`LostKeywordIndexError` for every open, *rebuild* included:
+        the per-source bookkeeping that lets refresh find (and replace or
+        prune) a source's vectors is gone, so only a reset recovers it. No
+        vector record is written before it is raised.
+        """
+        if rebuild and not create:
+            raise ValueError("rebuild=True requires create=True")
+        if create:
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+        elif (
+            not config.sqlite_path.is_file()
+            and not (config.chroma_path / "chroma.sqlite3").is_file()
+        ):
+            raise IndexNotBuiltError(config.data_dir)
         self._data_dir = config.data_dir
-        self._vector = VectorIndex(config.chroma_path)
+        # The keyword half first: whether it holds records decides whether the
+        # vector half may be created.
         try:
-            self._fts = FTSIndex(config.sqlite_path)
-        except Exception:
-            # Roll back the already-opened vector backend so callers don't
-            # inherit a leaked Chroma handle/lock on a half-constructed store.
-            try:
-                self._vector.close()
-            except Exception:
-                logger.exception("Vector backend close failed during rollback")
+            self._fts = FTSIndex(config.sqlite_path, create=create)
+        except MissingKeywordIndexError:
+            # A reader that finds no keyword database wants a reset only when
+            # the vector half holds records; with nothing indexed there, a
+            # plain `refresh` builds both halves.
+            if not self._vector_half_has_records(config):
+                raise IndexNotBuiltError(config.data_dir) from None
             raise
+        vector: VectorIndex | None = None
+        try:
+            indexed = self._fts.has_records()
+            vector = VectorIndex(
+                config.chroma_path,
+                recover=recover,
+                create=create and (rebuild or not indexed),
+            )
+            # Keyword records with no vectors: only *rebuild* may proceed.
+            self.vector_empty = vector.count() == 0
+            if indexed and self.vector_empty and not rebuild:
+                raise MissingVectorCollectionError(config.chroma_path)
+            # Vectors with no keyword records: not even *rebuild* may proceed,
+            # since the keyword half is how refresh finds a source's records.
+            if not indexed and not self.vector_empty:
+                raise LostKeywordIndexError(config.sqlite_path, config.chroma_path)
+        except BaseException:
+            # Close what came up so callers don't inherit a leaked Chroma
+            # handle (or SQLite connection) on a half-constructed store.
+            for backend in (vector, self._fts):
+                if backend is None:
+                    continue
+                try:
+                    backend.close()
+                except Exception:
+                    logger.exception("Index backend close failed during rollback")
+            raise
+        self._vector = vector
         logger.info("IndexStore initialized with data_dir=%s", config.data_dir)
+
+    @staticmethod
+    def _vector_half_has_records(config: StorageConfig) -> bool:
+        """Whether the vector half holds records, opened read-only. An absent
+        or empty one is ``False``; any other open failure propagates."""
+        try:
+            probe = VectorIndex(config.chroma_path)
+        except MissingVectorCollectionError:
+            return False
+        try:
+            return probe.count() > 0
+        finally:
+            probe.close()
 
     @property
     def data_dir(self) -> Path:
@@ -53,6 +139,10 @@ class IndexStore:
         self._vector.clear()
         self._fts.clear()
         logger.info("IndexStore cleared")
+
+    def compact_vector(self) -> int:
+        """Rebuild the vector graph without dead elements. Returns records kept."""
+        return self._vector.compact()
 
     def reset(self) -> None:
         """Delete all persisted search data and cached metadata."""
@@ -75,22 +165,34 @@ class IndexStore:
         logger.info("IndexStore reset")
 
     async def upsert(self, records: list[ChunkedRecord]) -> int:
-        """Insert or update records in both indexes. Returns count written."""
-        vector_count = self._vector.upsert(records)
+        """Insert or update records in both indexes. Returns count written.
+
+        Keyword rows first, vectors second (deletes run the other way), so a
+        write interrupted at any point leaves no vector without its keyword
+        row. An interrupted first refresh therefore leaves keyword records
+        ahead of the vectors, which ``refresh --force`` rebuilds, never the
+        vectors-without-keyword-rows state :class:`LostKeywordIndexError`
+        refuses (that one means ``index.db`` itself was lost).
+        """
+        fts_count = self._fts.upsert(records)
         try:
-            fts_count = self._fts.upsert(records)
+            vector_count = self._vector.upsert(records)
         except Exception:
-            logger.exception("FTS upsert failed; vector index may have diverged")
+            logger.exception("Vector upsert failed; keyword index may have diverged")
             raise
         if vector_count != fts_count:
             logger.warning("Index divergence: vector=%d fts=%d records", vector_count, fts_count)
         return vector_count
 
-    async def delete_by_content_type(self, content_type: str) -> int:
-        """Delete records by content type from both indexes. Returns count deleted."""
-        vector_count = self._vector.delete_by_content_type(content_type)
+    async def delete_by_content_type(self, content_type: str, *, without_repo: bool = False) -> int:
+        """Delete records by content type from both indexes. Returns count deleted.
+
+        ``without_repo`` limits the delete to records with no repo, so repo-owned
+        records of the same type (README-fallback chunks) survive.
+        """
+        vector_count = self._vector.delete_by_content_type(content_type, without_repo=without_repo)
         try:
-            fts_count = self._fts.delete_by_content_type(content_type)
+            fts_count = self._fts.delete_by_content_type(content_type, without_repo=without_repo)
         except Exception:
             logger.exception("FTS delete_by_content_type failed; indexes may have diverged")
             raise
@@ -180,6 +282,14 @@ class IndexStore:
     def get_index_stats(self) -> dict[str, Any]:
         """Return index statistics (counts by type, total, commit SHAs)."""
         return self._fts.get_index_stats()
+
+    def vector_count(self) -> int:
+        """Records in the vector half (``get_index_stats`` counts the keyword half)."""
+        return self._vector.count()
+
+    def get_vector_page(self, *, offset: int, limit: int, include: list[Any]) -> dict[str, Any]:
+        """Raw vector records for export tools: see :meth:`VectorIndex.get_page`."""
+        return self._vector.get_page(offset=offset, limit=limit, include=include)
 
     def close(self) -> None:
         """Close underlying database connections."""

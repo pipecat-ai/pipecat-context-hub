@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from pipecat_context_hub.services.ingest.taxonomy import TaxonomyBuilder
+from tests.smoke import invariants
 
 # ``tests/`` is not a package on sys.path outside pytest, but pytest's rootdir
 # handling makes ``tests.smoke`` importable here.
@@ -274,6 +275,23 @@ def test_scan_topic_tree_skips_symlinked_example_dirs(tmp_path: Path) -> None:
     assert not any("hijacked" in p for p in paths), (
         f"symlinked topic produced a taxonomy entry: {sorted(paths)!r}"
     )
+
+
+@pytestmark_symlinks
+def test_dir_contains_code_file_does_not_count_a_symlinked_code_file(tmp_path: Path) -> None:
+    # The ingesters refuse a symlinked file, so the invariant must not count one
+    # as ingestible code or it would pass on a dir a refresh indexes nothing from.
+    outside = tmp_path / "outside.py"
+    outside.write_text("# outside\n")
+    only_link = tmp_path / "only_link"
+    only_link.mkdir()
+    (only_link / "bot.py").symlink_to(outside)
+    with_real = tmp_path / "with_real"
+    with_real.mkdir()
+    (with_real / "bot.py").write_text("# real\n")
+
+    assert not invariants._dir_contains_code_file(only_link)
+    assert invariants._dir_contains_code_file(with_real)
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,16 @@
 - **Heavier dependency** than sqlite-vec. Originally ~1 GB (macOS) / 5.1 GB (Linux) because `sentence-transformers` pulled `torch` and, on Linux, 15 `nvidia-*` CUDA packages plus `triton`. Running the same models through ONNX Runtime instead cut this to ~310 MB / ~351 MB. Acceptable for a dev tool; still not ultra-lightweight, since chromadb itself contributes ~57 MB of Rust bindings plus `kubernetes`/`grpc` for a server mode the hub never uses.
 - **Not as fast as FAISS** for large-scale vector search. Not a concern at v0 scale (tens of thousands of chunks, not millions).
 - **Coupling risk.** ChromaDB's internal storage format is opaque. Mitigated by coding against `IndexWriter`/`IndexReader` protocols so the backend can be swapped in v1.
+- **Native pathname boundary.** ChromaDB's `PersistentClient` accepts a
+  pathname, not an already-open directory descriptor. The hub therefore holds
+  the generation lock, validates the directory/database identities immediately
+  before and after construction, and rejects a changed generation before it
+  can be published. A hostile local process can still replace the pathname in
+  the native constructor's final TOCTOU window; the post-open identity check
+  then fails closed, but cannot undo bytes a native library may have touched.
+  This is a bounded residual of the current Chroma API, not an assertion of
+  arbitrary local-attacker isolation. Revisit when Chroma exposes descriptor-
+  relative/open-by-handle support or when the vector backend is replaced.
 
 ## v1 Considerations
 

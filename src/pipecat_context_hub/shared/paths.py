@@ -4,7 +4,7 @@ Startup telemetry and one-shot CLI error messages are included in the "share
 this with maintainers" guidance, so stripping usernames out of absolute paths
 keeps routine bug reports from leaking local filesystem layout.
 
-Two helpers, because the leak has two shapes:
+Three helpers, because the leak has two shapes and one presentation rule:
 
 - :func:`redact_home` — the *whole argument* is a path (banner / cache-dir
   sites). A prefix match suffices.
@@ -12,15 +12,22 @@ Two helpers, because the leak has two shapes:
   message string (e.g. a ``{exc}`` rendering whose ``__str__`` carries an
   absolute path). A prefix-only helper cannot redact this, so the home dir is
   matched and replaced wherever it appears in the text.
+- :func:`shown_path` — naming a configured path in a message:
+  :func:`redact_home`, then ``terminal.shown`` (flagged when not printable).
 
 Lives in ``shared/`` (not ``cli.py``) because ``cli.py`` imports ``cli_query``;
-importing the helper back from ``cli.py`` would be a cycle. ``shared/`` peers
-import neither CLI module, so the layer stays leaf-level.
+importing the helper back from ``cli.py`` would be a cycle. This module imports
+neither CLI module; its only package dependency is the stdlib-only
+``shared/terminal.py`` leaf.
 
-:func:`same_dir`, :func:`is_inside` and :func:`resolution_chain` are the
-general filesystem-identity primitives shared by every deletion and trust guard
-in this project (``env_loading``'s ``config_collides_with_dir()`` /
-``_config_parent_is_trusted()`` and ``cli.py``'s ``_refuse_unsafe_data_dir()``).
+Escaping non-printable text at the output sinks is not a path concern; it
+lives in ``shared/terminal.py``.
+
+:func:`same_dir`, :func:`is_inside`, :func:`resolution_chain` and
+:func:`lookup_target` are the general filesystem-identity primitives shared by
+every deletion, trust and write guard in this project (``env_loading``'s
+``config_collides_with_dir()`` / ``_config_parent_refusal()``, ``cli.py``'s
+``_refuse_unsafe_data_dir()``, and ``config_writer``'s write target).
 They live here rather than in ``env_loading`` because they are path predicates,
 not env-var/config-file loading.
 """
@@ -31,12 +38,26 @@ import os
 import stat as stat_module
 from collections import deque
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
-# Upper bound on symlink hops followed by :func:`resolution_chain`. Chosen to
+from pipecat_context_hub.shared.terminal import shown
+
+# Upper bound on symlink hops followed by `_walk`, the one walk behind
+# :func:`resolution_chain` and :func:`lookup_target`. Chosen to
 # sit above any legitimate layout (the kernel's own ELOOP limit is typically
 # 40 on Linux, 32 on macOS) while still terminating on a cycle.
 _MAX_SYMLINK_HOPS: Final = 64
+
+# Queued by `_walk` after a symlink target that ends in a separator (`name/`,
+# `name/.`): the kernel then requires what precedes it to be a directory.
+# NUL can never be a path component, so it cannot collide with a real name.
+_MUST_BE_DIR: Final = "\0"
+
+
+def _ends_in_separator(raw: str) -> bool:
+    """True when the raw link text ends in a separator (or `/.`), which ``Path`` drops."""
+    seps = [os.sep] + ([os.altsep] if os.altsep else [])
+    return any(raw.endswith(sep) or raw.endswith(sep + os.curdir) for sep in seps)
 
 
 def is_reparse_link(path: Path) -> bool:
@@ -108,7 +129,7 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
       (``config_collides_with_dir``'s concern);
     * a hop whose *holding directory* another local account can write is
       enough to redirect the whole lookup, even though both endpoints sit in
-      well-permissioned directories (``_config_parent_is_trusted``'s concern).
+      well-permissioned directories (``_config_parent_refusal``'s concern).
 
     So this walks ``path`` one component at a time, expanding each symlink by a
     single ``readlink`` (never ``realpath``, which would skip exactly the
@@ -135,27 +156,68 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
     at the right point in the walk, which is what makes the result agree with
     ``os.path.realpath`` on the endpoint.
     """
+    return _walk(path, max_hops).visited
+
+
+class _Walk(NamedTuple):
+    visited: list[Path]
+    endpoint: Path | None
+    problem: str | None
+
+
+def _walk(path: Path, max_hops: int) -> _Walk:
+    """The one hop-by-hop walk behind :func:`resolution_chain` and :func:`lookup_target`.
+
+    ``visited`` is every location stood on (root-first, deduplicated);
+    ``endpoint`` is where the walk ends (``None`` when it stopped on the hop
+    bound); ``problem`` names the first step at which the kernel's lookup of
+    the same path would fail where this walk carries on (a ``..`` after a
+    component that is not an existing directory, a symlink target ending in a
+    separator whose endpoint is not an existing directory, the hop bound, an
+    unreadable link). :func:`resolution_chain` ignores ``problem`` (best-effort by
+    contract); :func:`lookup_target` refuses on it.
+    """
     try:
         raw = Path(path)
         absolute = raw if raw.is_absolute() else Path(os.getcwd()) / raw
     except (OSError, ValueError):
         # `os.getcwd()` raises when the working directory has been unlinked.
-        return []
+        return _Walk([], None, "the working directory cannot be resolved")
     parts = absolute.parts
     if not parts:
-        return []
+        return _Walk([], None, "the path is empty")
 
     resolved = Path(parts[0])
     pending = deque(parts[1:])
     visited: list[Path] = []
     seen: set[str] = set()
     hops = 0
+    problem: str | None = None
 
     while pending:
         name = pending.popleft()
+        if name == _MUST_BE_DIR:
+            # A link target `name/` makes the kernel demand a directory there.
+            # Only the endpoint matters: an intermediate component must be a
+            # directory anyway (a creator makes it one), and a `..` after it is
+            # checked below. `Path(...).parts` drops the separator, so without
+            # this a dangling `link -> "cfg.toml/"` walked to a creatable file
+            # the kernel's open(link) then fails with ENOTDIR.
+            final = all(n in ("", os.curdir, _MUST_BE_DIR) for n in pending)
+            if problem is None and final and not resolved.is_dir():
+                problem = (
+                    f"a symlink target ends in a separator, so the lookup needs {resolved} "
+                    "to be an existing directory"
+                )
+            continue
         if not name or name == os.curdir:
             continue
         if name == os.pardir:
+            # The kernel looks `..` up *inside* `resolved`, so the lookup fails
+            # (ENOENT / ENOTDIR) unless `resolved` is an existing directory;
+            # popping lexically here is what `os.path.realpath` does instead.
+            if problem is None and not resolved.is_dir():
+                problem = f"a `..` follows {resolved}, which is not an existing directory"
             resolved = resolved.parent
             continue
 
@@ -176,12 +238,16 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
 
         hops += 1
         if hops > max_hops:
-            break
+            return _Walk(visited, None, problem or f"more than {max_hops} symlink hops")
         try:
-            target = Path(os.readlink(current))
+            raw_target = os.readlink(current)
+            target = Path(raw_target)
         except (OSError, ValueError, NotImplementedError):
+            problem = problem or f"the symlink {current} cannot be read"
             resolved = current
             continue
+        if _ends_in_separator(raw_target):
+            pending.appendleft(_MUST_BE_DIR)  # checked once the target's own parts are walked
         if target.is_absolute():
             # Fully-qualified target: restart from *its* anchor, which on
             # Windows may be a different drive than the one the walk started on.
@@ -204,7 +270,35 @@ def resolution_chain(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> list[P
             # is `resolved` — deliberately left untouched.
             pending.extendleft(reversed(target.parts))
 
-    return visited
+    return _Walk(visited, resolved, problem)
+
+
+class LookupMismatch(ValueError):
+    """:func:`lookup_target` cannot prove where the kernel's lookup of a path lands."""
+
+
+def lookup_target(path: Path, *, max_hops: int = _MAX_SYMLINK_HOPS) -> Path:
+    """The location ``open(path)`` resolves to, derived hop by hop as the kernel walks it.
+
+    For a writer that must create or replace exactly the file a later
+    ``open(path)`` reads. ``os.path.realpath`` is not that: it pops a ``..``
+    lexically when the component before it is missing or not a directory
+    (``nope/..``), at any hop, including inside a symlink's target, while the
+    kernel fails the same lookup with ENOENT / ENOTDIR. This walks the path
+    exactly as :func:`resolution_chain` does and raises :class:`LookupMismatch`
+    at any such ``..`` (and on the hop bound or an unreadable link).
+    Components that do not exist yet are fine, so long as no ``..`` follows
+    one: a creator makes them, and the kernel then walks the same names.
+
+    POSIX semantics. Windows normalizes ``..`` lexically before the lookup,
+    exactly as ``realpath`` does, so there it returns ``realpath(path)``.
+    """
+    if os.name != "posix":
+        return Path(os.path.realpath(path))
+    walk = _walk(path, max_hops)
+    if walk.problem is not None or walk.endpoint is None:
+        raise LookupMismatch(walk.problem or "the path cannot be walked")
+    return walk.endpoint
 
 
 def same_dir(path: Path, other_stat: os.stat_result) -> bool:
@@ -291,6 +385,19 @@ def redact_home(path: Path | str) -> str:
         return str(path)
 
 
+def shown_path(path: Path | str) -> str:
+    """A configured path, whole, for a message: home-redacted, flagged when not printable.
+
+    The one presentation rule for naming a configured path (``config.toml``, a
+    cwd ``.env``, the data dir...): :func:`redact_home` (prefix match, since the
+    argument is the whole path) then :func:`terminal.shown`. Terminal safety is
+    not this helper's job: the sinks escape every message (``shared/terminal``).
+    A path embedded in other text (an ``OSError`` message) goes through
+    :func:`redact_home_in_text` instead.
+    """
+    return shown(redact_home(path))
+
+
 def redact_home_in_text(text: str) -> str:
     """Replace home-directory occurrences embedded anywhere in ``text`` with ``~``.
 
@@ -320,6 +427,13 @@ def redact_home_in_text(text: str) -> str:
         # longer sibling like `/Users/xavier` when home is `/Users/x`: that
         # path has no separator right after `home`, so it is left intact.
         result = text.replace(home + os.sep, "~" + os.sep)
+        # An OSError renders its filename with repr(), which doubles every
+        # backslash on Windows (`'C:\\Users\\x\\y'`); the plain form above
+        # misses that. Same anchoring on the trailing separator. `home` holds no
+        # backslash on POSIX, so there the escaped form is the plain form.
+        if "\\" in home:
+            escaped = home.replace("\\", "\\\\")
+            result = result.replace(escaped + "\\\\", "~\\\\")
         # Handle a bare `home` occurrence (no trailing separator) only when it
         # is the exact whole message — the `== home` case. A raw substring
         # replace here would reintroduce the partial-username over-match, so it

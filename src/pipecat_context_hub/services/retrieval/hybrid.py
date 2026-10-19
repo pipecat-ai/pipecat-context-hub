@@ -60,6 +60,19 @@ _VersionCompat = Literal["compatible", "newer_required", "older_targeted", "unkn
 # Number of candidate results to fetch for code snippet lookups.
 _DEFAULT_SNIPPET_CANDIDATES = 5
 
+# Floor on the per-backend candidate pool fed to RRF and the cross-encoder.
+# Equal to the largest ``limit`` a tool accepts, so ranking is the same for
+# every ``limit`` and a smaller one only truncates it. Fetching exactly
+# ``limit`` candidates let a bare-identifier query lose its definition to
+# files that merely mention the name (``PipecatClientProvider`` was absent at
+# limit<=15 and rank 1 at limit>=20).
+_MIN_CANDIDATES = 50
+
+
+def _candidate_limit(limit: int) -> int:
+    """Candidates to request from each backend for a caller-visible ``limit``."""
+    return max(limit, _MIN_CANDIDATES)
+
 
 class HybridRetriever:
     """Hybrid retrieval service implementing the Retriever protocol.
@@ -84,6 +97,7 @@ class HybridRetriever:
         self._keyword_weight = keyword_weight
         self._cross_encoder = cross_encoder
         self.deprecation_map: Any = None  # Set externally after refresh
+        self._deprecation_map_path: Any = None
         logger.debug(
             "HybridRetriever init: rrf_k=%d vector_weight=%.2f keyword_weight=%.2f cross_encoder=%s",
             rrf_k,
@@ -135,17 +149,24 @@ class HybridRetriever:
             query_text=query_text,
             query_embedding=query_embedding,
             filters=filters,
-            limit=limit,
+            limit=_candidate_limit(limit),
         )
 
         logger.debug(
             "Single-concept search: query=%r filters=%r limit=%d", query_text, filters, limit
         )
 
-        vector_results, keyword_results = await asyncio.gather(
-            self._index.vector_search(query),
-            self._index.keyword_search(query),
-        )
+        # IndexStore can hold one shared generation lock across both reads.
+        # Keep the fallback for lightweight test doubles and third-party
+        # readers that implement only the original two-method protocol.
+        hybrid_search = getattr(type(self._index), "hybrid_search", None)
+        if hybrid_search is not None:
+            vector_results, keyword_results = await hybrid_search(self._index, query)
+        else:
+            vector_results, keyword_results = await asyncio.gather(
+                self._index.vector_search(query),
+                self._index.keyword_search(query),
+            )
 
         logger.debug(
             "Raw results: vector=%d keyword=%d",
@@ -153,6 +174,24 @@ class HybridRetriever:
             len(keyword_results),
         )
 
+        return await self._rerank_raw(
+            vector_results,
+            keyword_results,
+            query_text,
+            filters,
+            limit,
+            pipecat_version,
+        )
+
+    async def _rerank_raw(
+        self,
+        vector_results: list[IndexResult],
+        keyword_results: list[IndexResult],
+        query_text: str,
+        filters: dict[str, Any],
+        limit: int,
+        pipecat_version: str | None,
+    ) -> tuple[list[IndexResult], dict[str, str]]:
         if not vector_results and not keyword_results:
             return [], {}
 
@@ -208,14 +247,52 @@ class HybridRetriever:
             limit,
         )
 
-        raw_results = await asyncio.gather(
-            *(
-                self._single_concept_search(
-                    c, filters, per_concept, pipecat_version=pipecat_version
+        # IndexStore exposes a batched hybrid read that holds one generation
+        # lock across all concepts. This prevents a refresh from publishing
+        # between the per-concept reads and producing a mixed-generation answer.
+        batch_search = getattr(type(self._index), "hybrid_search_many", None)
+        if batch_search is not None:
+            batch_search = getattr(self._index, "hybrid_search_many")
+        if callable(batch_search):
+
+            async def embed_concept(concept: str) -> list[float] | None:
+                if self._embedding is None:
+                    return None
+                return await asyncio.to_thread(self._embedding.embed_query, concept)
+
+            embeddings = await asyncio.gather(*(embed_concept(concept) for concept in concepts))
+            queries = [
+                IndexQuery(
+                    query_text=c,
+                    query_embedding=embedding,
+                    filters=filters,
+                    limit=_candidate_limit(per_concept),
                 )
-                for c in concepts
+                for c, embedding in zip(concepts, embeddings, strict=True)
+            ]
+            raw_pairs = await batch_search(queries)
+            raw_results = [
+                await self._rerank_raw(
+                    vector_results,
+                    keyword_results,
+                    concept,
+                    filters,
+                    per_concept,
+                    pipecat_version,
+                )
+                for concept, (vector_results, keyword_results) in zip(
+                    concepts, raw_pairs, strict=True
+                )
+            ]
+        else:
+            raw_results = await asyncio.gather(
+                *(
+                    self._single_concept_search(
+                        c, filters, per_concept, pipecat_version=pipecat_version
+                    )
+                    for c in concepts
+                )
             )
-        )
         concept_results = [r for r, _ in raw_results]
         merged_compat: dict[str, str] = {}
         for _, cm in raw_results:

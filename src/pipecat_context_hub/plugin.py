@@ -23,11 +23,13 @@ by the Pipecat CLI, which supplies typer through its own ``cli`` extra.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 
 import typer
 
 from pipecat_context_hub.cli import main as hub_cli
+from pipecat_context_hub.shared import terminal
 
 # The command name mounted in the Pipecat CLI, and its short alias. Both are
 # registered as entry points; the alias is hidden from `pipecat --help`.
@@ -63,6 +65,13 @@ def _dispatch(argv: list[str], log_level: str, prog_name: str) -> None:
     except SystemExit as exc:
         code = exc.code
         raise typer.Exit(code if isinstance(code, int) else (0 if code is None else 1)) from None
+    except Exception:
+        # Click's standalone mode has already handled its own exceptions; this is
+        # an uncaught one. The host's Typer replaced sys.excepthook before the
+        # hub's bootstrap ran, so print it terminal-safe here, exit 1 as Python
+        # would. KeyboardInterrupt and other BaseExceptions pass through.
+        terminal.terminal_safe_excepthook(*sys.exc_info())
+        raise typer.Exit(1) from None
     raise typer.Exit(0)
 
 

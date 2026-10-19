@@ -25,9 +25,14 @@ from packaging.version import InvalidVersion, Version
 
 from pipecat_context_hub.services.ingest.ingest_filters import (
     hash_source,
+    is_plain_dir,
+    is_plain_file,
     is_storybook_file,
 )
 from pipecat_context_hub.shared.config import HubConfig
+from pipecat_context_hub.shared.interfaces import FatalIndexError
+from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
+from pipecat_context_hub.shared.terminal import shown
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
 from pipecat_context_hub.shared.versioning import (
     LATEST_SENTINEL,
@@ -107,7 +112,6 @@ _BOUNDARY_RE = re.compile(
 )
 
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-_REPO_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 # Tag names this tool accepts as operator input and can hand back to git
 # (e.g. "v0.0.96", "0.0.96"). It also bounds `latest` candidacy, since a
 # selected tag is re-resolved through this same validation — see
@@ -500,7 +504,7 @@ def _find_example_dirs(repo_root: Path) -> list[Path]:
       to scanning root-level directories that contain code files.
     """
     examples_dir = repo_root / "examples"
-    if examples_dir.is_dir():
+    if is_plain_dir(examples_dir):
         return _discover_under_examples(examples_dir)
 
     # Fall back: root-level directories (pipecat-examples pattern).
@@ -518,18 +522,28 @@ def _discover_under_examples(examples_dir: Path) -> list[Path]:
        ``examples/rag/<name>/``, ``examples/function-calling/<name>/`` …).
     3. Flat code files directly in ``examples/`` (e.g. ``examples/single_agent.py``)
        — returns ``examples/`` itself so the files are indexed.
+
+    Guarantee: every returned path is ``examples_dir`` itself or a real directory
+    (``is_plain_dir``: never a symlink or junction) one or two levels below it, so
+    callers such as ``taxonomy._scan_topic_tree`` need not re-check for links.
+    Precondition: ``is_plain_dir`` inspects only the last path component, so the
+    caller must already have validated ``examples_dir`` and its ancestors (both
+    callers check ``is_plain_dir(examples_dir)`` first). Pinned by
+    ``TestSymlinkedExampleDirs`` in ``tests/unit/test_github_ingest.py``.
     """
     result: list[Path] = []
     has_flat_code = False
 
     for child in sorted(examples_dir.iterdir()):
-        if child.is_file() and child.suffix in _CODE_EXTENSIONS:
+        if is_plain_file(child) and child.suffix in _CODE_EXTENSIONS:
             has_flat_code = True
             continue
-        if child.name in _SKIP_DIRS or not child.is_dir():
+        if child.name in _SKIP_DIRS or not is_plain_dir(child):
             continue
         # Check if this dir directly contains code files.
-        sub_has_code = any(f.suffix in _CODE_EXTENSIONS for f in child.iterdir() if f.is_file())
+        sub_has_code = any(
+            f.suffix in _CODE_EXTENSIONS for f in child.iterdir() if is_plain_file(f)
+        )
         if sub_has_code:
             result.append(child)
         else:
@@ -537,7 +551,7 @@ def _discover_under_examples(examples_dir: Path) -> list[Path]:
             # Covers legacy ``examples/foundational/`` and the newer topic
             # layout (``examples/voice/``, ``examples/rag/`` etc.).
             for grandchild in sorted(child.iterdir()):
-                if grandchild.is_dir() and grandchild.name not in _SKIP_DIRS:
+                if is_plain_dir(grandchild) and grandchild.name not in _SKIP_DIRS:
                     result.append(grandchild)
 
     # Flat code files directly in examples/ — treat the dir itself as an example.
@@ -556,12 +570,12 @@ def _discover_root_level_examples(repo_root: Path) -> list[Path]:
     """
     result: list[Path] = []
     for child in sorted(repo_root.iterdir()):
-        if not child.is_dir():
+        if not is_plain_dir(child):
             continue
         if child.name.startswith(".") or child.name in _NON_EXAMPLE_ROOT_DIRS:
             continue
         # Only include dirs that directly contain code files.
-        has_code = any(f.suffix in _CODE_EXTENSIONS for f in child.iterdir() if f.is_file())
+        has_code = any(f.suffix in _CODE_EXTENSIONS for f in child.iterdir() if is_plain_file(f))
         if has_code:
             result.append(child)
 
@@ -591,7 +605,7 @@ def _iter_code_files(
     """
     files: list[Path] = []
     for p in sorted(directory.rglob("*")):
-        if not p.is_file():
+        if not is_plain_file(p):
             continue
         if any(part in _SKIP_DIRS for part in p.parts):
             continue
@@ -620,7 +634,7 @@ def _iter_root_level_code_files(directory: Path) -> list[Path]:
     """
     files: list[Path] = []
     for p in sorted(directory.iterdir()):
-        if not p.is_file():
+        if not is_plain_file(p):
             continue
         if p.suffix not in _CODE_EXTENSIONS:
             continue
@@ -748,7 +762,7 @@ def _build_readme_chunk(
     """
     for name in ("README.md", "readme.md", "README.rst", "README.txt", "README"):
         readme_path = repo_path / name
-        if readme_path.is_file() and not readme_path.is_symlink():
+        if is_plain_file(readme_path):
             break
     else:
         return None
@@ -869,17 +883,17 @@ def _extract_pipecat_version(example_dir: Path, repo_root: Path) -> str | None:
     current = example_dir
     while current != repo_root.parent:
         pyproject = current / "pyproject.toml"
-        if pyproject.is_file() and _is_safe_file(pyproject, resolved_root):
+        if is_plain_file(pyproject) and _is_safe_file(pyproject, resolved_root):
             version = _parse_pipecat_version_from_pyproject(pyproject)
             if version is not None:
                 return version
         reqs = current / "requirements.txt"
-        if reqs.is_file() and _is_safe_file(reqs, resolved_root):
+        if is_plain_file(reqs) and _is_safe_file(reqs, resolved_root):
             version = _parse_pipecat_version_from_requirements(reqs)
             if version is not None:
                 return version
         pkg_json = current / "package.json"
-        if pkg_json.is_file() and _is_safe_file(pkg_json, resolved_root):
+        if is_plain_file(pkg_json) and _is_safe_file(pkg_json, resolved_root):
             version = _parse_pipecat_version_from_package_json(pkg_json)
             if version is not None:
                 return version
@@ -1295,11 +1309,12 @@ class GitHubRepoIngester:
                 repo_slug,
             )
 
-        # For Layout B repos (no examples/ dir) where subdirectory examples
+        # For Layout B repos (no real examples/ directory: absent, or a symlink/
+        # junction, which is refused) where subdirectory examples
         # were found, also capture root-level code files (e.g. entry-point
         # scripts like sidekick.py) that would otherwise be missed.
         examples_dir = repo_path / "examples"
-        is_layout_b = not examples_dir.is_dir()
+        is_layout_b = not is_plain_dir(examples_dir)
         has_subdir_examples = any(d != repo_path for d in example_dirs)
         if is_layout_b and has_subdir_examples:
             # Ensure a repo-root taxonomy entry exists so root-level files
@@ -1394,6 +1409,10 @@ class GitHubRepoIngester:
         if records:
             try:
                 upserted = await self._writer.upsert(records)
+            except FatalIndexError:
+                # Corrupt index (post-write HNSW guard): abort the refresh
+                # rather than keep writing into it. See DocsCrawler.ingest.
+                raise
             except Exception as exc:
                 errors.append(f"IndexWriter.upsert failed for {repo_slug}: {exc}")
 
@@ -1424,8 +1443,8 @@ class GitHubRepoIngester:
             was requested (a default-branch refresh); otherwise it names the tag
             the returned commit was resolved from.
         """
-        if not _REPO_SLUG_RE.fullmatch(repo_slug):
-            raise ValueError(f"Invalid repo slug: {repo_slug}")
+        if not is_valid_repo_slug(repo_slug):
+            raise ValueError(f"Invalid repo slug: {shown(repo_slug)}")
         if tag is not None and is_head_sentinel(tag):
             raise ValueError(
                 "clone_or_fetch: tag must not be the 'head' sentinel; "

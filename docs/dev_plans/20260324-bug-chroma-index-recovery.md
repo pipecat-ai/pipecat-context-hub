@@ -76,3 +76,15 @@ The live retrieval-quality benchmark can hang for several minutes against the cu
 - Added `FTSIndex.reset()` and `IndexStore.reset()` so CLI recovery can wipe both search backends and stale metadata in one operation.
 - Added `refresh --reset-index`, ensured both `refresh` and `serve` close the store on exit, and documented the rebuild command.
 - Hardened the live retrieval-quality benchmark with a subprocess-based vector health probe. On the current unhealthy local index, it now fails in about 16 seconds with the rebuild command instead of hanging for several minutes.
+
+## Later correction: persisted HNSW corruption (2026-10-04)
+
+The original explicit reset/rebuild decision remains valid, but the
+[local plugin experiment](20261002-feature-chatgpt-local-plugin.md) disproved an
+implicit assumption that successful initialization and metadata access establish
+vector-index health. Chroma 1.5.9 later crashed on first search while loading an
+oversized persisted `link_lists.bin`. Current code therefore performs a bounded,
+read-only graph-size check before native client construction and routes the observed
+corruption shape to the existing reset remediation. It does not repair the index or
+claim to detect every malformed graph. Detailed reproduction and validation evidence
+lives in the [evaluation report](../evaluations/pipecat-context-hub-plugin.md).

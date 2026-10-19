@@ -6,7 +6,8 @@ Concrete implementations are wired together during integration (T8).
 
 from __future__ import annotations
 
-from typing import Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 from pipecat_context_hub.shared.types import (
     ChunkedRecord,
@@ -27,10 +28,13 @@ from pipecat_context_hub.shared.types import (
     SearchExamplesOutput,
 )
 
-
 # ---------------------------------------------------------------------------
 # Index service protocols
 # ---------------------------------------------------------------------------
+
+# Synthetic key ``get_counts_by_repo`` adds for crawled doc chunks (they have
+# no repo). Not a repo: readers that list repos must skip it.
+DOCS_COUNT_KEY = "docs.pipecat.ai"
 
 
 class IndexWriter(Protocol):
@@ -55,6 +59,53 @@ class IndexReader(Protocol):
     async def keyword_search(self, query: IndexQuery) -> list[IndexResult]:
         """Return results ranked by FTS5 keyword relevance."""
         ...
+
+
+class ServingIndex(IndexReader, Protocol):
+    """The read surface ``serve`` exposes to tool handlers.
+
+    Satisfied by ``IndexStore`` and by ``serve``'s reopening handle.
+    """
+
+    @property
+    def data_dir(self) -> Path:
+        """Path to the index data directory."""
+        ...
+
+    def get_index_stats(self) -> dict[str, Any]:
+        """Return index statistics (counts by type, total, commit SHAs)."""
+        ...
+
+    def get_all_metadata(self) -> dict[str, str]:
+        """Return all persistent index metadata as a dict."""
+        ...
+
+    def get_counts_by_repo(self) -> dict[str, int]:
+        """Return the number of indexed records per repo.
+
+        Keys are each repo's configured slug verbatim (not casefolded), plus the
+        synthetic :data:`DOCS_COUNT_KEY` for crawled doc chunks (no repo) when any
+        exist; that key is not a repo. Each record is counted under one key.
+        """
+        ...
+
+
+class FatalIndexError(RuntimeError):
+    """The on-disk index is unsafe to keep using (incompatible or corrupt).
+
+    Raised by an ``IndexWriter`` (or on open). Ingesters must re-raise it
+    rather than record it as one more per-source error, so a refresh stops
+    instead of writing every remaining source into a damaged index.
+    """
+
+
+class IndexUnavailableError(RuntimeError):
+    """The index cannot serve this call right now; ``str(exc)`` says why.
+
+    The message is meant for the calling agent (e.g. "retry in 60-120
+    seconds" while a refresh rewrites the index, or how to rebuild an empty
+    or unreadable index).
+    """
 
 
 # ---------------------------------------------------------------------------
