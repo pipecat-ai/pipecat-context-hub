@@ -6,15 +6,15 @@ Claude Code, Cursor, VS Code, and Zed.
 > **Quick links:**
 > [Client Setup](#client-setup) |
 > [MCP Tools](#mcp-tools) |
-> [Version-Aware Queries](version-aware-queries.md) |
-> [Troubleshooting](troubleshooting.md) |
+> [Version-Aware Queries](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/version-aware-queries.md) |
+> [Troubleshooting](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/troubleshooting.md) |
 > [Environment Variables](#environment-variables) |
 > [Report an Issue](https://github.com/pipecat-ai/pipecat-context-hub/issues/new/choose)
 
 > **Platform support:** macOS and Linux. On Windows the package installs and the
 > CLI help runs, but `refresh`, `serve` and semantic queries currently fail closed
-> (see the [Platform contract](#platform-contract)). Windows support is planned:
-> [dev plan](dev_plans/20261015-feature-windows-index-locking.md).
+> (see the [Platform contract](#platform-contract)). Windows improvements are planned:
+> [dev plan](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/dev_plans/20261015-feature-windows-index-locking.md).
 
 ## What It Does
 
@@ -52,7 +52,7 @@ invocation downloads the package and local models (allow a few minutes).
 > packages are `pipecat-ai*`); the command and MCP server name are
 > `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
-The optional [skills-only Pipecat plugin](../plugins/pipecat-context-hub/README.md)
+The optional [skills-only Pipecat plugin](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/plugins/pipecat-context-hub/README.md)
 provides Setup, grounded Explore, local Build and approved Cloud Deploy workflows.
 It uses `pipecat context-hub` or standalone `pipecat-context-hub` through native
 execution, with no bundled MCP connection. Plugin installation supplies skills
@@ -62,7 +62,7 @@ covers required Pipecat/Cloud CLIs and Cloud account signup/login. Healthy
 installations/indexes are reused, and existing standalone MCP clients are unchanged.
 Clean local/cloud onboarding and autonomous activation of the CLI-first release
 remain unqualified. The earlier stdio experiment's local build and approved READY
-Cloud evidence remain dated in the [evaluation report](evaluations/pipecat-context-hub-plugin.md); they do not
+Cloud evidence remain dated in the [evaluation report](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/evaluations/pipecat-context-hub-plugin.md); they do not
 prove fresh-user, provider/session or ChatGPT Work support for this release.
 
 ### Platform contract
@@ -142,17 +142,17 @@ afterwards.
 
 Claude Code registrations default to `user` scope; Codex has no scope concept. Scope
 rules, a manual config example and the CLAUDE.md snippet that makes your agent prefer
-these tools are in the [client setup guides](setup/README.md). To set a client up
+these tools are in the [client setup guides](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/README.md). To set a client up
 manually, point its MCP config at `uvx pipecat-ai-context-hub serve`; for a persistent
 install and how `serve` exits when the client goes away, see
-[server lifecycle](setup/server-lifecycle.md). Per-client guides:
+[server lifecycle](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/server-lifecycle.md). Per-client guides:
 
 | Client | Setup Guide |
 |--------|-------------|
-| **Claude Code** | [docs/setup/claude-code.md](setup/claude-code.md) |
-| **Cursor** | [docs/setup/cursor.md](setup/cursor.md) |
-| **VS Code** | [docs/setup/vscode.md](setup/vscode.md) |
-| **Zed** | [docs/setup/zed.md](setup/zed.md) |
+| **Claude Code** | [docs/setup/claude-code.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/claude-code.md) |
+| **Cursor** | [docs/setup/cursor.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/cursor.md) |
+| **VS Code** | [docs/setup/vscode.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/vscode.md) |
+| **Zed** | [docs/setup/zed.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/setup/zed.md) |
 
 ## MCP Tools
 
@@ -171,7 +171,7 @@ All search results include an **EvidenceReport** with confidence scores,
 source-grounded facts, unresolved questions, and suggested follow-up queries.
 
 A search response may also carry a top-level **`corpus_hint`** when the query
-names a [repo catalog](configuration.md#repo-catalog) group whose repos are not indexed: it
+names a [repo catalog](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/configuration.md#repo-catalog) group whose repos are not indexed: it
 lists the missing repos and the `repos add` / `refresh` commands that would add
 them. An alias matches whole words, including the words of a CamelCase or
 snake_case identifier (`TavusVideoService`, `aws_bedrock`). The text checked is
@@ -217,19 +217,19 @@ coverage.
 Pass `pipecat_version` to `search_examples`, `search_api` or `get_code_snippet` to get
 results scored for compatibility with your project's pipecat version; results carry
 `version_compatibility`. Details, filters and examples:
-[Version-Aware Queries](version-aware-queries.md).
+[Version-Aware Queries](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/version-aware-queries.md).
 
 ## Index Metadata Contract
 
 External tooling can read how old the index is and which pipecat version it covers
 straight from the `index_metadata` table in `<data dir>/metadata.db`, a versioned,
 read-only contract. Keys, compatibility rules and a copy-paste example:
-[Index Metadata Contract](index-contract.md).
+[Index Metadata Contract](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/index-contract.md).
 
 ## Environment Variables
 
 Every setting is a `PIPECAT_HUB_*` variable, resolved from real environment variables, a project `.env`, then `~/.config/pipecat-context-hub/config.toml`.
-The full variable table and precedence rules are in [Configuration](configuration.md#environment-variables); curated repo bundles you can copy into a `.env` are in [`.env.example`](../.env.example).
+The full variable table and precedence rules are in [Configuration](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/configuration.md#environment-variables); curated repo bundles you can copy into a `.env` are in [`.env.example`](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/.env.example).
 
 ## Data Sources
 
@@ -241,10 +241,10 @@ The default index includes:
 - **Daily Python SDK** — `daily-co/daily-python` (`.pyi` stubs + RST type definitions)
 - **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `pipecat-client-react-native-transports`, `pipecat-ui`, `pipecat-prebuilt` (tree-sitter-indexed)
 
-To add repos or pin the framework version, see [Adding repos](configuration.md#adding-repos). Only Python, TypeScript, and RST are parsed.
+To add repos or pin the framework version, see [Adding repos](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/configuration.md#adding-repos). Only Python, TypeScript, and RST are parsed.
 
 The `repos` command edits `PIPECAT_HUB_EXTRA_REPOS` in `config.toml` for you
-(rules in [Managing repos from the CLI](configuration.md#managing-repos-from-the-cli));
+(rules in [Managing repos from the CLI](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/configuration.md#managing-repos-from-the-cli));
 run `refresh` afterwards to index the change:
 
 ```bash
@@ -253,15 +253,15 @@ pipecat-context-hub repos add <owner/repo>           # also --group NAME, --unli
 pipecat-context-hub repos remove <owner/repo>        # same options as add
 ```
 
-Maintainers keep the [repo catalog](configuration.md#repo-catalog) current with two
+Maintainers keep the [repo catalog](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/configuration.md#repo-catalog) current with two
 network-only recipes, never run in PR CI: `just catalog-health` (private, missing,
 archived or renamed entries; run weekly by `catalog-health.yml`) and
 `just catalog-curate` (report-only per-repo stats and vendor candidates).
 
 ## Security
 
-- Threat model: [docs/security/threat-model.md](security/threat-model.md)
-- Vulnerability reporting: [SECURITY.md](../SECURITY.md)
+- Threat model: [docs/security/threat-model.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/security/threat-model.md)
+- Vulnerability reporting: [SECURITY.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/SECURITY.md)
 - Upstream denylisting: `PIPECAT_HUB_TAINTED_REPOS` and `PIPECAT_HUB_TAINTED_REFS`
 
 ## Troubleshooting
@@ -270,9 +270,9 @@ archived or renamed entries; run weekly by `catalog-health.yml`) and
 - **Stale results** — run `uvx pipecat-ai-context-hub refresh --force` to re-ingest from latest upstream
 - **Anything else** (index corruption and `--reset-index`, `--prune`, low disk, a busy
   refresh lock, `serve` exits, Windows, config debugging): see
-  [Troubleshooting](troubleshooting.md).
+  [Troubleshooting](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/troubleshooting.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, development workflow,
+See [CONTRIBUTING.md](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/CONTRIBUTING.md) for architecture, development workflow,
 benchmarking, and project structure.

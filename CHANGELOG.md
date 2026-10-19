@@ -11,6 +11,16 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+### Added
+- **PyPI project links and classifiers.** The PyPI page now links to the
+  docs (docs.pipecat.ai), source, issues, and changelog, and lists supported
+  Python versions and topics.
+
+### Fixed
+- **README links on PyPI.** Relative links in the PyPI project description
+  (setup guides, config templates, security docs) pointed nowhere; they now
+  use absolute GitHub URLs.
+
 ### Security
 - **A symlinked example directory is no longer followed.** An indexed repo could
   commit `examples/foo -> /somewhere/else`, and its `README.md` and `.py` files were
