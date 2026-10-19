@@ -13,7 +13,7 @@ Claude Code, Cursor, VS Code, and Zed.
 
 > **Platform support:** macOS and Linux. On Windows the package installs and the
 > CLI help runs, but `refresh`, `serve` and semantic queries currently fail closed
-> (see the [Platform contract](#platform-contract)). Windows support is planned:
+> (see the [Platform contract](#platform-contract)). Windows improvements are planned:
 > [dev plan](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/dev_plans/20261015-feature-windows-index-locking.md).
 
 ## What It Does
