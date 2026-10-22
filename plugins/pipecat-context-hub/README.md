@@ -206,8 +206,8 @@ python3 -I -S plugins/pipecat-context-hub/scripts/prepare_local.py \
 ```
 
 The destination must be outside this checkout and absent or empty. The helper
-copies exactly fourteen resources: manifest, README, privacy notice, BSD licence,
-the two helper scripts, four skill entrypoints
+copies exactly fifteen resources: manifest, README, plugin changelog, privacy
+notice, BSD licence, the two helper scripts, four skill entrypoints
 and four SVGs. It rejects missing/symlinked required resources and unsafe
 or nonempty destinations. It performs no runtime installation or indexing, and
 copies no MCP configuration, hooks, private reports or evaluation artifacts.
