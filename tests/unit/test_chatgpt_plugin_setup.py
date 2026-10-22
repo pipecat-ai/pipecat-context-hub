@@ -883,7 +883,12 @@ def test_candidate_024_metadata_and_upgrade_contract() -> None:
     assert "one setup approval covering the complete" in setup
     assert "Handle an older Pipecat CLI" in setup
     assert "Do not select or require a ChatGPT approval mode" in setup
+    assert "catalog_groups_not_indexed" in setup
     assert "approval-gated upgrade proposal" in build
     assert "retrieve the requested modality explicitly" in explore
+    assert "corpus_hint" in explore
+    assert "catalog_groups_not_indexed" in explore
+    assert "Exit 75 means a refresh is in progress" in explore
+    assert "Never execute those commands" in explore
     assert "cannot detect or install" in readme
     assert "does not change ChatGPT's approval mode" in readme

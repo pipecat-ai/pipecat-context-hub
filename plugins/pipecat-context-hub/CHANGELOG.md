@@ -11,6 +11,9 @@ independent plugin release history and is included in prepared plugin copies.
 - Candidate 0.2.4 improves voice and multimodal discovery wording, batches
   read-only setup checks into one approval proposal, and offers an explicit,
   approval-gated upgrade path for an older Pipecat CLI.
+- Candidate 0.2.4 now explains the current CLI/MCP corpus-coverage signals:
+  `corpus_hint`, catalog groups missing from the index, refresh-in-progress
+  exit 75, and the privacy boundary around locally configured repository names.
 - The candidate keeps host-controlled plugin surfacing and approval settings
   explicit; it does not install itself before activation or upgrade a host
   silently.

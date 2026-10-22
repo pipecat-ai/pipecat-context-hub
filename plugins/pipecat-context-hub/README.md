@@ -98,6 +98,12 @@ controls flags, including source/version preferences. Compatibility annotations
 are not a different source snapshot or proof of compatibility when unknown.
 A `latest` pin is not proof of today's latest release.
 
+Current Hub queries may include a `corpus_hint` when a catalog group is not
+indexed. Treat it as a coverage warning: explain the missing sources and offer
+the returned add/refresh command for the user to run later, without executing it
+during exploration. Keep repository names from `status` out of public issue
+reports because local configuration may include private sources.
+
 Exploration is read-only: no installs, indexing, or persistent project/index file
 creation (semantic queries may create a temporary private Chroma snapshot), example execution,
 secret access or deployment. Missing runtime/index offers explicit Setup. CLI

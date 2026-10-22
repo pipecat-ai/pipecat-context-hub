@@ -39,8 +39,10 @@ Skills supply instructions, not execution permissions or installation hooks.
    verify `pipecat context-hub` or standalone `pipecat-context-hub`, installed
    help and JSON `status`. Inspect failures before choosing a path: exit 2 alone
    does not prove an empty index. Record versions, index path, count, refresh
-   date, framework pin and indexed framework version. Reuse the selected
-   installation/index rather than silently picking another.
+   date, framework pin, indexed framework version and any
+   `catalog_groups_not_indexed` coverage gaps. Treat `indexed_repos` and
+   `configured_no_records` as local metadata that may contain private names;
+   reuse the selected installation/index rather than silently picking another.
    Separately inspect `pipecat --version`, `pipecat init --help` and, for Cloud,
    `pipecat cloud --help`, `pipecat cloud auth login --help` and organisation-list
    help. A listed `cloud` command may be an unavailable-extension stub; require
