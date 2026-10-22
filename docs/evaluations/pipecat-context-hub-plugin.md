@@ -47,6 +47,31 @@ Hub status reported 45,569 records and indexed framework 1.12.0, and
 Live material. This establishes corpus coverage, not plugin surfacing or a live
 vision-agent execution result.
 
+## Post-merge CLI/MCP compatibility audit (2026-10-22)
+
+The 0.2.4 candidate was rechecked against Context Hub 0.9.1 after the CLI/MCP
+updates landed. The command names and shared-handler contract remain compatible:
+`status`, `search-docs`, `search-examples`, `search-api`, `get-doc`,
+`get-example`, `get-code-snippet` and `check-deprecation` are still exposed by
+the standalone CLI, and the Typer bridge parity/dispatch tests pass (80 focused
+plugin and bridge tests). The available host `pipecat` 1.3.0 executable did
+not expose `context-hub`, so the plugin's documented standalone fallback remains
+necessary; this is not a package break.
+
+The live status check returned server version 0.9.1, 50,820 records, indexed
+framework 1.12.0, `framework_version: "latest"`, zero commits ahead, enabled
+reranking, and the new coverage fields. A live `search-docs "lip sync"` query
+returned the top-level `corpus_hint` with the missing catalog group and the
+approval-free command to add it. The plugin's Explore skill now explains that
+hint, catalog coverage, refresh-in-progress exit 75 and the requirement to keep
+local repository names out of public reports. It offers the returned add/refresh
+command to the user without executing it during read-only exploration.
+
+No manifest version bump is needed: 0.2.4 remains an unpublished candidate and
+0.2.3 remains the published baseline. This audit changes the candidate's
+instructions and evidence only; it does not submit or replace an OpenAI review
+artifact.
+
 ## Current source follow-up: durable qualification link (2026-10-07)
 
 The user reports submitting the preceding 0.2.3 listing-fix ZIP. A fresh single

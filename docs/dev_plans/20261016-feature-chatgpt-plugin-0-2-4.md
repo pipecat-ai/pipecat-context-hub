@@ -4,7 +4,7 @@
 **Component**: plugin packaging, discovery instructions, CLI workflows
 **Branch**: `feature/chatgpt-local-plugin`
 **Created**: 2026-10-16
-**Updated**: 2026-10-16
+**Updated**: 2026-10-22
 
 ## Context
 
@@ -115,6 +115,14 @@ Vision and multimodal source coverage at indexed framework 1.12.0.
 
 - 2026-10-16 — Exploration confirmed no current multimodal/vision wording in the plugin source, while the live local index now supplies grounded coverage: `vision + multimodal` returned the Vision supported-services section, `VisionFullResponse*` frames and multimodal Gemini Live material at indexed framework 1.12.0. The skill still reports gaps rather than inferring coverage.
 - 2026-10-16 — The published 0.2.3 package is the comparison baseline; host-side installation prompting, approval mode, and automatic discovery remain outside package control.
+- 2026-10-22 — Post-merge CLI/MCP audit against Context Hub 0.9.1 found no
+  command or Typer-bridge break: the standalone query surface and plugin bridge
+  contract remain compatible. It did find a material documentation gap: current
+  search responses can carry `corpus_hint`, `status` reports catalog coverage,
+  and refresh-in-progress queries use exit 75. The Explore skill now explains
+  these signals, keeps local repository names out of public reports, and offers
+  the user the returned add/refresh command without executing it. Evidence is
+  recorded in the [evaluation report](../evaluations/pipecat-context-hub-plugin.md).
 
 ## Final Results
 
