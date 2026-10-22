@@ -72,9 +72,9 @@ No manifest version bump is needed: 0.2.4 remains an unpublished candidate and
 instructions and evidence only; it does not submit or replace an OpenAI review
 artifact.
 
-The local submission candidate prepared from commit `e477145` is
-`~/Downloads/pipecat-context-hub-0.2.4.zip` (SHA-256
-`034a02a58c3daa155c261345676fdd424b5d5f23b2426626b80ceaa35665169a`). It has
+The local submission candidate prepared from commit `796e882` is
+`~/Downloads/pipecat-context-hub-0.2.4-final.zip` (SHA-256
+`19c52657758328c1b1d0299f239902f16c08e4f1ce9debfe464c97cf9d982857`). It has
 15 regular resource files, includes the packaged changelog, and contains no MCP
 configuration, private evaluation report or repository metadata. The ZIP is
 prepared but not uploaded; if the plugin files change before submission,
