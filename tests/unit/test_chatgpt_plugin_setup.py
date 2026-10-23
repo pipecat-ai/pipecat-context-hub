@@ -422,10 +422,10 @@ def test_skills_only_manifest_and_onboarding(renderer: ModuleType, tmp_path: Pat
     assert not {"mcpServers", "apps", "hooks"}.intersection(manifest)
     assert not {"apps", "hooks"}.intersection(settings)
     assert (destination / settings["onboardingSkill"]).is_file()
-    # Keep the UI label short without coupling this packaging test to one
-    # particular reviewed wording. The current copy is 40 characters.
+    # Keep the UI label within the directory subtitle limit without coupling
+    # this packaging test to one particular reviewed wording.
     short_description = settings["interface"]["shortDescription"]
-    assert 0 < len(short_description) <= 50
+    assert 0 < len(short_description) <= 30
 
 
 def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) -> None:
@@ -876,14 +876,20 @@ def test_candidate_024_metadata_and_upgrade_contract() -> None:
 
     assert manifest["version"] == "0.2.4"
     assert "multimodal" in manifest["description"]
-    assert "multimodal" in interface["shortDescription"]
+    assert interface["shortDescription"] == "Build Voice Agents: Pipecat"
+    assert len(interface["shortDescription"]) <= 30
     assert "multimodal" in interface["longDescription"]
     assert any("multimodal" in prompt for prompt in interface["defaultPrompt"])
     assert "Batch the bounded read-only preflight" in setup
     assert "one setup approval covering the complete" in setup
     assert "Handle an older Pipecat CLI" in setup
     assert "Do not select or require a ChatGPT approval mode" in setup
+    assert "catalog_groups_not_indexed" in setup
     assert "approval-gated upgrade proposal" in build
     assert "retrieve the requested modality explicitly" in explore
+    assert "corpus_hint" in explore
+    assert "catalog_groups_not_indexed" in explore
+    assert "Exit 75 means a refresh is in progress" in explore
+    assert "Never execute those commands" in explore
     assert "cannot detect or install" in readme
     assert "does not change ChatGPT's approval mode" in readme

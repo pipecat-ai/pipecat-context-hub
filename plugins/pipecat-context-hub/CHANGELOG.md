@@ -6,12 +6,23 @@ independent plugin release history and is included in prepared plugin copies.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-23
+
+> Submitted to OpenAI for review. The submitted artifact is frozen; later
+> fixes should use 0.2.5 unless OpenAI authorises a same-version replacement.
+
 ### Changed
 
-- Candidate 0.2.4 improves voice and multimodal discovery wording, batches
+- 0.2.4 uses the 27-character listing subtitle `Build Voice
+  Agents: Pipecat`, which describes the plugin's purpose within the directory
+  metadata limit.
+- 0.2.4 improves voice and multimodal discovery wording, batches
   read-only setup checks into one approval proposal, and offers an explicit,
   approval-gated upgrade path for an older Pipecat CLI.
-- The candidate keeps host-controlled plugin surfacing and approval settings
+- 0.2.4 now explains the current CLI/MCP corpus-coverage signals:
+  `corpus_hint`, catalog groups missing from the index, refresh-in-progress
+  exit 75, and the privacy boundary around locally configured repository names.
+- The plugin keeps host-controlled surfacing and approval settings
   explicit; it does not install itself before activation or upgrade a host
   silently.
 

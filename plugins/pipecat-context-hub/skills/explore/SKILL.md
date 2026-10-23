@@ -32,8 +32,12 @@ executable permissions.
    exist, run CLI `status` before retrieval. Record the selected executable/prefix,
    record count, refresh date, `framework_version` (operator pin),
    `indexed_framework_version` (observed release) and
-   `indexed_framework_commits_ahead` when present. A `latest` pin is not proof
-   of today's latest release. Retain relevant commit citations.
+   `indexed_framework_commits_ahead` when present. Also record
+   `catalog_groups_not_indexed` as a coverage boundary. Treat
+   `indexed_repos` and `configured_no_records` as local machine metadata: use
+   them to explain coverage to the user, but never copy them into a public
+   issue because they may contain private repository names. A `latest` pin is
+   not proof of today's latest release. Retain relevant commit citations.
 2. Check exit codes and parse stdout as JSON, keeping stderr diagnostics separate.
    Missing execution/runtime/index means retrieval unavailable; offer Setup and
    wait for an explicit request before installation or initial indexing. Index
@@ -41,9 +45,15 @@ executable permissions.
    are not reasons to select another index or silently switch installations.
    Explain startup remediation without running it. An empty index cannot ground
    an answer. A stale index can supply explicitly dated evidence with a coverage
-   limitation. Unknown provenance is not a freshness pass. Never refresh/reset/
-   repair during exploration. Describe reranker limitations from status;
-   `config_disabled` is an operator choice, not a bug.
+   limitation. Unknown provenance is not a freshness pass. A query may carry a
+   top-level `corpus_hint`; report its matched group and missing/configured
+   repositories before using the results, and offer its `add_command` or
+   `refresh_command` for the user to run later. Never execute those commands,
+   refresh/reset/repair during exploration, or treat a missing hint as proof of
+   complete coverage. Exit 75 means a refresh is in progress; explain that the
+   user can retry after it finishes rather than selecting another index.
+   Describe reranker limitations from status; `config_disabled` is an operator
+   choice, not a bug.
 3. Extract the user's idea/concept, Pipecat version and source preference.
    Inspect installed CLI help before mapping preferences:
    installed command versions may differ from this source package. Use only supported
@@ -108,6 +118,11 @@ commands, with safe argument quoting:
 The query commands return the same handler JSON on stdout; keep stderr
 diagnostics separate and check exit codes. Inspect stderr on a nonzero exit to
 distinguish invalid input from an unready index; neither is successful retrieval.
+Search responses may include a top-level `corpus_hint` when a catalog group is
+not indexed. Treat it as coverage metadata, disclose the supplied add/refresh
+command without running it, and keep local repository names out of public issue
+reports. A query that exits 75 is waiting on a refresh; do not switch to a
+different installation or index.
 Use the selected Hub data directory and installed command consistently. Record
 status again after retrieval and require unchanged index/version provenance.
 Do not silently change the index, corpus or installation.

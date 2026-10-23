@@ -98,6 +98,12 @@ controls flags, including source/version preferences. Compatibility annotations
 are not a different source snapshot or proof of compatibility when unknown.
 A `latest` pin is not proof of today's latest release.
 
+Current Hub queries may include a `corpus_hint` when a catalog group is not
+indexed. Treat it as a coverage warning: explain the missing sources and offer
+the returned add/refresh command for the user to run later, without executing it
+during exploration. Keep repository names from `status` out of public issue
+reports because local configuration may include private sources.
+
 Exploration is read-only: no installs, indexing, or persistent project/index file
 creation (semantic queries may create a temporary private Chroma snapshot), example execution,
 secret access or deployment. Missing runtime/index offers explicit Setup. CLI
@@ -200,8 +206,8 @@ python3 -I -S plugins/pipecat-context-hub/scripts/prepare_local.py \
 ```
 
 The destination must be outside this checkout and absent or empty. The helper
-copies exactly fourteen resources: manifest, README, privacy notice, BSD licence,
-the two helper scripts, four skill entrypoints
+copies exactly fifteen resources: manifest, README, plugin changelog, privacy
+notice, BSD licence, the two helper scripts, four skill entrypoints
 and four SVGs. It rejects missing/symlinked required resources and unsafe
 or nonempty destinations. It performs no runtime installation or indexing, and
 copies no MCP configuration, hooks, private reports or evaluation artifacts.
