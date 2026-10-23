@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from importlib.metadata import requires
 from pathlib import Path
 from typing import Any
 
@@ -113,18 +114,12 @@ def test_lock_keeps_mcp_2x_transitives_and_security_floors() -> None:
     constraints = project["tool"]["uv"]["constraint-dependencies"]
     requirements = {Requirement(value).name: Requirement(value) for value in constraints}
     expected_requirements = {
-        "certifi": Requirement("certifi>=2026.10.19"),
-        "opentelemetry-api": Requirement("opentelemetry-api>=1.45.1"),
         "starlette": Requirement("starlette>=1.0.1"),
     }
     assert requirements == expected_requirements
 
     lock = _lock_data()
-    assert lock["manifest"]["constraints"] == [
-        {"name": "certifi", "specifier": ">=2026.10.19"},
-        {"name": "opentelemetry-api", "specifier": ">=1.45.1"},
-        {"name": "starlette", "specifier": ">=1.0.1"},
-    ]
+    assert lock["manifest"]["constraints"] == [{"name": "starlette", "specifier": ">=1.0.1"}]
 
     packages_by_name = {package["name"]: package for package in lock["package"]}
     for name, requirement in expected_requirements.items():
@@ -135,3 +130,15 @@ def test_lock_keeps_mcp_2x_transitives_and_security_floors() -> None:
         dependency["name"] for dependency in packages_by_name["mcp"]["dependencies"]
     }
     assert {"httpx2", "mcp-types", "opentelemetry-api", "starlette"} <= mcp_dependencies
+
+
+def test_published_metadata_carries_dependency_security_floors() -> None:
+    """The floors must reach PyPI/uvx installs, not only this lockfile."""
+    requirements = {
+        Requirement(value).name: Requirement(value)
+        for value in (requires("pipecat-ai-context-hub") or [])
+        if "extra ==" not in value
+    }
+
+    assert requirements["certifi"] == Requirement("certifi>=2026.10.19")
+    assert requirements["opentelemetry-api"] == Requirement("opentelemetry-api>=1.45.1")

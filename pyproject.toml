@@ -34,6 +34,12 @@ dependencies = [
     "pydantic>=2.0,<3.0",
     "mcp>=2.0,<3.0",
     "httpx>=0.27,<1.0",
+    # These are transitive at runtime, but the floors must be published in
+    # Requires-Dist so PyPI/uvx installs cannot resolve vulnerable versions.
+    # certifi < 2026.10.19: PYSEC-2026-4320.
+    "certifi>=2026.10.19",
+    # opentelemetry-api < 1.45.1: CVE-2026-114603.
+    "opentelemetry-api>=1.45.1",
     # The pre-open HNSW corruption validator is verified against Chroma's
     # 1.5.x persisted header. Widen only after validating the next format.
     "chromadb>=1.5,<1.6",
@@ -105,18 +111,11 @@ context-hub = "pipecat_context_hub.plugin:app"
 ch = "pipecat_context_hub.plugin:alias"
 
 [tool.uv]
-# Security floors for transitive dependencies the project does not import directly.
-# Recorded as constraints (not project dependencies) so a plain `uv lock` keeps the
-# fixed version instead of regressing to the highest version an intermediate package
-# (e.g. an older fastapi) would otherwise allow.
+# Security floor for a transitive dependency the project does not import directly.
+# Keep it as a constraint because the floor is not part of published package
+# metadata; unlike certifi and opentelemetry-api, starlette is unreachable in the
+# hub's stdio-only runtime and should not become a direct install requirement.
 constraint-dependencies = [
-    # certifi < 2026.10.19: PYSEC-2026-4320. Reached through httpx, requests
-    # and kubernetes; the hub does not import certifi directly.
-    "certifi>=2026.10.19",
-    # opentelemetry-api < 1.45.1: CVE-2026-114603. Reached through chromadb
-    # and mcp's telemetry dependencies; keep the whole resolved telemetry
-    # family aligned by constraining the API floor.
-    "opentelemetry-api>=1.45.1",
     # starlette < 1.0.1: Host-header validation bypass poisoning request.url.path
     # (PYSEC-2026-161 / GHSA-86qp-5c8j-p5mr). Reached only via mcp / fastapi /
     # sse-starlette; the hub speaks MCP over stdio and never serves HTTP itself.
