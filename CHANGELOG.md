@@ -12,12 +12,17 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-23
+
 ### Security
-- **Dependency audit fixes.** Raised the direct `gitpython` floor to `3.2.1` for
-  CVE-2026-114145 and constrained transitive `certifi` and
+- **Dependency audit fixes.** Raised the direct `gitpython` floor to `3.2.1`
+  for CVE-2026-114145 and constrained transitive `certifi` and
   `opentelemetry-api` to their fixed floors (`2026.10.19` and `1.45.1`) for
   PYSEC-2026-4320 and CVE-2026-114603. The lockfile resolves the complete
   OpenTelemetry family to the compatible `1.45.1`/`0.66b1` releases.
+- **Known audit exceptions.** The CI audit continues to document five ChromaDB
+  1.5.9 server-mode advisories with no upstream fixed release; they remain
+  tracked in [issue #134](https://github.com/pipecat-ai/pipecat-context-hub/issues/134).
 
 ## [0.9.1] - 2026-10-18
 
