@@ -108,19 +108,27 @@ def test_lock_freezes_one_in_range_mcp_sdk_and_matching_types_package() -> None:
     assert "mcp" in root_dependency_names
 
 
-def test_lock_keeps_mcp_2x_transitives_and_starlette_security_floor() -> None:
+def test_lock_keeps_mcp_2x_transitives_and_security_floors() -> None:
     project = _project_data()
     constraints = project["tool"]["uv"]["constraint-dependencies"]
-    starlette_requirement = next(
-        Requirement(value) for value in constraints if Requirement(value).name == "starlette"
-    )
-    assert starlette_requirement == Requirement("starlette>=1.0.1")
+    requirements = {Requirement(value).name: Requirement(value) for value in constraints}
+    expected_requirements = {
+        "certifi": Requirement("certifi>=2026.10.19"),
+        "opentelemetry-api": Requirement("opentelemetry-api>=1.45.1"),
+        "starlette": Requirement("starlette>=1.0.1"),
+    }
+    assert requirements == expected_requirements
 
     lock = _lock_data()
-    assert lock["manifest"]["constraints"] == [{"name": "starlette", "specifier": ">=1.0.1"}]
+    assert lock["manifest"]["constraints"] == [
+        {"name": "certifi", "specifier": ">=2026.10.19"},
+        {"name": "opentelemetry-api", "specifier": ">=1.45.1"},
+        {"name": "starlette", "specifier": ">=1.0.1"},
+    ]
 
     packages_by_name = {package["name"]: package for package in lock["package"]}
-    assert Version(packages_by_name["starlette"]["version"]) in starlette_requirement.specifier
+    for name, requirement in expected_requirements.items():
+        assert Version(packages_by_name[name]["version"]) in requirement.specifier
     assert {"httpcore2", "httpx2", "truststore"} <= packages_by_name.keys()
 
     mcp_dependencies = {
