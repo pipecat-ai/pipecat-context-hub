@@ -422,10 +422,10 @@ def test_skills_only_manifest_and_onboarding(renderer: ModuleType, tmp_path: Pat
     assert not {"mcpServers", "apps", "hooks"}.intersection(manifest)
     assert not {"apps", "hooks"}.intersection(settings)
     assert (destination / settings["onboardingSkill"]).is_file()
-    # Keep the UI label short without coupling this packaging test to one
-    # particular reviewed wording. The current copy is 40 characters.
+    # Keep the UI label within the directory subtitle limit without coupling
+    # this packaging test to one particular reviewed wording.
     short_description = settings["interface"]["shortDescription"]
-    assert 0 < len(short_description) <= 50
+    assert 0 < len(short_description) <= 30
 
 
 def test_cloud_metadata_wrapper_never_exposes_raw_credentials(tmp_path: Path) -> None:
@@ -876,7 +876,8 @@ def test_candidate_024_metadata_and_upgrade_contract() -> None:
 
     assert manifest["version"] == "0.2.4"
     assert "multimodal" in manifest["description"]
-    assert "multimodal" in interface["shortDescription"]
+    assert interface["shortDescription"] == "Build Voice Agents: Pipecat"
+    assert len(interface["shortDescription"]) <= 30
     assert "multimodal" in interface["longDescription"]
     assert any("multimodal" in prompt for prompt in interface["defaultPrompt"])
     assert "Batch the bounded read-only preflight" in setup

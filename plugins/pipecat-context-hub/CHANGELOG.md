@@ -8,6 +8,9 @@ independent plugin release history and is included in prepared plugin copies.
 
 ### Changed
 
+- Candidate 0.2.4 uses the 27-character listing subtitle `Build Voice
+  Agents: Pipecat`, which describes the plugin's purpose within the directory
+  metadata limit.
 - Candidate 0.2.4 improves voice and multimodal discovery wording, batches
   read-only setup checks into one approval proposal, and offers an explicit,
   approval-gated upgrade path for an older Pipecat CLI.
