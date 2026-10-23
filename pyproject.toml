@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 # after install — the command, the MCP server name, the data dir, the docs —
 # stays `pipecat-context-hub`; see the scripts alias below.
 name = "pipecat-ai-context-hub"
-version = "0.9.1"
+version = "0.9.2"
 description = "Local-first MCP server providing fresh Pipecat docs/examples context for Claude Code, Cursor, VS Code, and Zed."
 readme = "docs/README.md"
 license = "BSD-2-Clause"
@@ -34,6 +34,12 @@ dependencies = [
     "pydantic>=2.0,<3.0",
     "mcp>=2.0,<3.0",
     "httpx>=0.27,<1.0",
+    # These are transitive at runtime, but the floors must be published in
+    # Requires-Dist so PyPI/uvx installs cannot resolve vulnerable versions.
+    # certifi < 2026.10.19: PYSEC-2026-4320.
+    "certifi>=2026.10.19",
+    # opentelemetry-api < 1.45.1: CVE-2026-114603.
+    "opentelemetry-api>=1.45.1",
     # The pre-open HNSW corruption validator is verified against Chroma's
     # 1.5.x persisted header. Widen only after validating the next format.
     "chromadb>=1.5,<1.6",
@@ -53,8 +59,8 @@ dependencies = [
     # -3786, -3787, -3788 (unsafe git-config options, cross-repo directory
     # traversal on clone, config-parsing boundary issues), fixed in 3.1.59.
     # Floor raised above the fixes so a plain re-lock cannot regress to a
-    # vulnerable build.
-    "gitpython>=3.1.59,<4.0",
+    # vulnerable build. gitpython < 3.2.1: CVE-2026-114145.
+    "gitpython>=3.2.1,<4.0",
     "click>=8.0,<9.0",
     "tree-sitter>=0.25,<1.0",
     "tree-sitter-typescript>=0.23,<1.0",
@@ -105,10 +111,10 @@ context-hub = "pipecat_context_hub.plugin:app"
 ch = "pipecat_context_hub.plugin:alias"
 
 [tool.uv]
-# Security floors for transitive dependencies the project does not import directly.
-# Recorded as constraints (not project dependencies) so a plain `uv lock` keeps the
-# fixed version instead of regressing to the highest version an intermediate package
-# (e.g. an older fastapi) would otherwise allow.
+# Security floor for a transitive dependency the project does not import directly.
+# Keep it as a constraint because the floor is not part of published package
+# metadata; unlike certifi and opentelemetry-api, starlette is unreachable in the
+# hub's stdio-only runtime and should not become a direct install requirement.
 constraint-dependencies = [
     # starlette < 1.0.1: Host-header validation bypass poisoning request.url.path
     # (PYSEC-2026-161 / GHSA-86qp-5c8j-p5mr). Reached only via mcp / fastapi /
