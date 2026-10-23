@@ -67,18 +67,17 @@ hint, catalog coverage, refresh-in-progress exit 75 and the requirement to keep
 local repository names out of public reports. It offers the returned add/refresh
 command to the user without executing it during read-only exploration.
 
-No manifest version bump is needed: 0.2.4 remains an unpublished candidate and
-0.2.3 remains the published baseline. This audit changes the candidate's
-instructions and evidence only; it does not submit or replace an OpenAI review
-artifact.
+The manifest is 0.2.4 and 0.2.3 remains the published baseline. This audit
+changes the candidate's instructions and evidence only; it does not replace the
+submitted OpenAI review artifact.
 
 The local submission candidate prepared from the current candidate tree is
 `~/Downloads/pipecat-context-hub-0.2.4-final.zip` (SHA-256
 `56cf77b4d05f184624f2f2916f28d1dc3cb247d4bc762e7d7fddf8773c0e8ac1`). It has
 15 regular resource files, includes the packaged changelog, and contains no MCP
-configuration, private evaluation report or repository metadata. The ZIP is
-prepared but not uploaded; if the plugin files change before submission,
-regenerate the artifact and checksum once from the final merged tree.
+configuration, private evaluation report or repository metadata. The ZIP was
+submitted to OpenAI for review on 2026-10-23 and is now frozen; later fixes
+should use 0.2.5 unless OpenAI explicitly authorises a same-version replacement.
 
 ## Current source follow-up: durable qualification link (2026-10-07)
 

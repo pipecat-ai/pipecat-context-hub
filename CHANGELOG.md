@@ -5,7 +5,8 @@ All notable changes to the Pipecat Context Hub are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/).
 
-Plugin-specific release notes live in
+Plugin-specific release notes, including the independent 0.2.4 plugin release,
+live in
 [`plugins/pipecat-context-hub/CHANGELOG.md`](plugins/pipecat-context-hub/CHANGELOG.md).
 This changelog retains repository and Context Hub package history.
 

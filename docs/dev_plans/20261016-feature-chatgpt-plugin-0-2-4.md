@@ -1,10 +1,10 @@
 # ChatGPT plugin 0.2.4 visibility and setup refinement
 
-**Status**: Complete — candidate ready for consolidated review
+**Status**: Complete — 0.2.4 submitted for review; follow-up fixes require 0.2.5
 **Component**: plugin packaging, discovery instructions, CLI workflows
-**Branch**: `feature/chatgpt-local-plugin`
+**Branch**: `chore/plugin-024-cli-compat`
 **Created**: 2026-10-16
-**Updated**: 2026-10-22
+**Updated**: 2026-10-23
 
 ## Context
 
@@ -17,7 +17,8 @@ change host approval settings, or silently mutate installations.
 
 ## Requirements
 
-- Preserve 0.2.3 as the published baseline; this work is an unpublished 0.2.4 candidate.
+- Preserve 0.2.3 as the published baseline; this work produces the submitted and
+  frozen 0.2.4 plugin release.
 - Keep the package skills-only with no MCP or lifecycle hooks.
 - Batch bounded read-only setup checks and present one consolidated approval for mutations.
 - Detect an older Pipecat CLI and offer an exact, manager-aware upgrade path only after explicit approval; never upgrade automatically by default.
@@ -72,7 +73,7 @@ change host approval settings, or silently mutate installations.
 - `plugins/pipecat-context-hub/README.md` — user-facing setup, upgrade, discovery, and evaluation limits.
 - `docs/evaluations/pipecat-context-hub-plugin.md` — compact 0.2.4 evaluation matrix and baseline boundary.
 - `plugins/pipecat-context-hub/CHANGELOG.md` — packaged plugin release history,
-  with 0.2.3 as the published baseline and 0.2.4 under `Unreleased`.
+  with 0.2.3 as the published baseline and the submitted 0.2.4 release recorded.
 - `plugins/pipecat-context-hub/scripts/prepare_local.py` — include the plugin
   changelog in prepared submission copies.
 - `CHANGELOG.md` — repository-level pointer to the plugin changelog.
@@ -123,14 +124,18 @@ Vision and multimodal source coverage at indexed framework 1.12.0.
   these signals, keeps local repository names out of public reports, and offers
   the user the returned add/refresh command without executing it. Evidence is
   recorded in the [evaluation report](../evaluations/pipecat-context-hub-plugin.md).
+- 2026-10-23 — The final 0.2.4 artifact was submitted to OpenAI for review and
+  frozen. The plugin changelog now records 0.2.4; later fixes should use 0.2.5
+  unless OpenAI authorises a same-version replacement.
 
 ## Final Results
 
-The unpublished 0.2.4 candidate now carries neutral voice/multimodal discovery
+The 0.2.4 release now carries neutral voice/multimodal discovery
 metadata, one bounded setup approval boundary, and an explicit manager-aware CLI
 upgrade proposal that never upgrades silently. Historic 0.2.3 acceptance is
-cross-linked without rewriting its chronology. Submission and publication remain
-separate follow-up actions.
+cross-linked without rewriting its chronology. The 0.2.4 artifact was submitted
+for OpenAI review on 2026-10-23 and is now frozen. Any later fixes should start a
+0.2.5 branch unless OpenAI authorises a same-version replacement.
 
 Plugin-specific release notes are packaged beside the plugin README. The root
 changelog remains the Context Hub repository/package history and points to that
@@ -140,11 +145,9 @@ independent plugin changelog.
 
 - Merge this candidate branch into `main` with a regular merge; do not squash the
   focused implementation and documentation commits.
-- From the merged `main`, create one immutable 0.2.4 package and record its
-  checksum before submitting it for review.
-- Once that 0.2.4 artifact is submitted, freeze it. Do not replace it with
-  same-version ZIPs while review is active unless OpenAI explicitly permits that
-  workflow.
+- The immutable 0.2.4 package was submitted for review on 2026-10-23 and is
+  frozen. Do not replace it with a same-version ZIP while review is active unless
+  OpenAI explicitly permits that workflow.
 - Keep later employee traces and user feedback in the evaluation evidence. Start
   a new branch from `main`, such as
   `feature/chatgpt-plugin-0.2.4-followups`, for one consolidated follow-up.
