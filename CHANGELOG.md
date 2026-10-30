@@ -12,6 +12,11 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-30
+
+### Changed
+- Updated the locked `filelock` dependency from `3.24.2` to `4.2.1`.
+
 ### Security
 - **MessagePack dependency update.** Updated the locked `msgpack` dependency
   from `1.2.1` to `1.2.4`, which includes the fix for
