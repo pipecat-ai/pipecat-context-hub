@@ -12,6 +12,11 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+### Security
+- **MessagePack dependency update.** Updated the locked `msgpack` dependency
+  from `1.2.1` to `1.2.4`, which includes the fix for
+  [CVE-2026-114613](https://github.com/msgpack/msgpack-python/security/advisories/GHSA-j586-36cw-2gc2).
+
 ## [0.9.2] - 2026-10-23
 
 ### Security
