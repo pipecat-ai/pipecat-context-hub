@@ -308,3 +308,10 @@ Rules:
 - **Upgrade line:** always present. Use `uv sync` (not `pip install`).
 - **Full changelog link:** always present (except v0.0.1). Use GitHub compare URL.
 - Do NOT add `Test Coverage`, `Index Impact`, or `Example Queries` sections — these belong in PR descriptions, not releases.
+
+## Repo Catalog Maintenance
+
+Maintainers keep the [repo catalog](https://github.com/pipecat-ai/pipecat-context-hub/blob/main/docs/configuration.md#repo-catalog) current with two
+network-only recipes, never run in PR CI: `just catalog-health` (private, missing,
+archived or renamed entries; run weekly by `catalog-health.yml`) and
+`just catalog-curate` (report-only per-repo stats and vendor candidates).
