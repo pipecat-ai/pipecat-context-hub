@@ -12,6 +12,10 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+### Changed
+- Shortened the package README and moved setup, tool, CLI, data-source and
+  maintainer reference material into linked documentation guides.
+
 ## [0.9.3] - 2026-10-30
 
 ### Changed

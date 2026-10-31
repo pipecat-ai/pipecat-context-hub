@@ -6,10 +6,41 @@ Pipecat Context Hub is a local-first MCP server that provides fresh Pipecat docu
 
 | Client | Config File | Guide |
 |--------|-------------|-------|
-| [Claude Code](claude-code.md) | `.mcp.json` (project root) | [Setup guide](claude-code.md) |
+| [Claude Code](claude-code.md) | `~/.claude.json` (default user scope); `.mcp.json` (project scope) | [Setup guide](claude-code.md) |
+| Codex | Managed by `codex mcp` | [Install command](#install-command-and-scopes) |
 | [Cursor](cursor.md) | `.cursor/mcp.json` | [Setup guide](cursor.md) |
 | [VS Code](vscode.md) | `.vscode/mcp.json` | [Setup guide](vscode.md) |
 | [Zed](zed.md) | `~/.config/zed/settings.json` | [Setup guide](zed.md) |
+
+## Installation
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then choose
+one installation route.
+
+### With the Pipecat CLI
+
+```bash
+uv tool install "pipecat-ai[cli]" --with pipecat-ai-context-hub
+pipecat context-hub install
+```
+
+This registers detected CLI clients and builds the index. Restart your agent
+afterwards. See [the CLI bridge](../cli.md#inside-the-pipecat-cli) for command
+aliases and MCP launch details.
+
+### Standalone
+
+For a persistent installation:
+
+```bash
+uv tool install pipecat-ai-context-hub
+pipecat-context-hub install
+```
+
+Or use `uvx pipecat-ai-context-hub` to fetch and run the package on demand,
+as in the manual quick start below. The first index build downloads sources and
+local models; allow a few minutes. The index lives at `~/.pipecat-context-hub/`
+unless [configured otherwise](../configuration.md).
 
 ## Quick Start
 
@@ -39,17 +70,10 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 > **Naming:** the PyPI package is `pipecat-ai-context-hub` (official pipecat packages are `pipecat-ai*`); the command and MCP server name are `pipecat-context-hub`. Both spellings of the command resolve once installed.
 
 The optional [skills-only Pipecat plugin](../../plugins/pipecat-context-hub/README.md)
-provides Setup, grounded Explore, local Build and approved Cloud Deploy workflows.
-It uses `pipecat context-hub` or standalone `pipecat-context-hub` through native
-execution, with no bundled MCP connection. Plugin installation supplies skills
-and assets; ask "Set up Pipecat Context Hub" to check prerequisites and perform
-only authorised missing-runtime and initial-index setup. Full-plugin setup also
-covers required Pipecat/Cloud CLIs and Cloud account signup/login. Healthy
-installations/indexes are reused, and existing standalone MCP clients are unchanged.
-Clean local/cloud onboarding and autonomous activation of the CLI-first release
-remain unqualified. The earlier stdio experiment's local build and approved READY
-Cloud evidence remain dated in the [evaluation report](../evaluations/pipecat-context-hub-plugin.md); they do not
-prove fresh-user, provider/session or ChatGPT Work support for this release.
+provides Setup, Explore, Build and Deploy workflows through native CLI execution.
+It has no bundled MCP connection. See its README for prerequisites, setup and
+qualification limits, and the [evaluation report](../evaluations/pipecat-context-hub-plugin.md)
+for dated evidence.
 
 ## How It Works
 
@@ -62,6 +86,20 @@ IDE/Agent  ←stdio→  pipecat-context-hub serve  ←→  Local index (~/.pipec
 No network requests are made during tool calls — all data is served from the local index.
 
 ## Install Command and Scopes
+
+`install` does this for you where the client ships a CLI:
+
+```bash
+pipecat-context-hub install                     # every detected client, then refresh
+pipecat-context-hub install --client codex      # just one
+pipecat-context-hub install --print-config      # show the config, change nothing
+```
+
+Claude Code and Codex are registered through their own CLI, so they own the edit
+to their config file. Cursor, VS Code, and Zed are configured by hand, so
+`install` prints the exact JSON and where it goes rather than writing to a file
+it does not own. MCP servers are read at session start — restart your agent
+afterwards.
 
 A fresh Claude Code registration is made at Claude's `user` scope, so it applies
 in every directory rather than only the one `install` ran in. Nothing about the
@@ -131,3 +169,16 @@ package manager:
 
 How `serve` exits when the client goes away, `uv tool install` vs `uvx`, and the idle
 timeout: [MCP Client Configuration and Server Lifecycle](server-lifecycle.md).
+
+## Refresh and Start the Server
+
+Build the index before starting the server:
+
+```bash
+uvx pipecat-ai-context-hub refresh
+uvx pipecat-ai-context-hub serve
+```
+
+MCP clients normally start `serve` themselves. It exits with code `2` if the
+index is empty or cannot be opened. For full re-ingest or recovery with
+`--force --reset-index`, see [troubleshooting](../troubleshooting.md).

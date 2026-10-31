@@ -76,6 +76,28 @@ on every platform, matching its POSIX/macOS path structure rather than
 Windows convention, so the same relative path (`.config/pipecat-context-hub/config.toml`)
 works everywhere `Path.home()` resolves.
 
+## Data Sources
+
+The default index includes:
+
+- **Pipecat documentation** — `docs.pipecat.ai` (200+ pages)
+- **Pipecat framework** — `pipecat-ai/pipecat` (Python AST-indexed: classes, methods, imports, call graphs; includes Pipecat Flows as `pipecat.flows` plus its `examples/flows/`)
+- **Pipecat examples** — `pipecat-ai/pipecat-examples` (project-level code examples)
+- **Daily Python SDK** — `daily-co/daily-python` (`.pyi` stubs + RST type definitions)
+- **TypeScript SDKs** — `pipecat-client-web`, `pipecat-client-web-transports`, `pipecat-client-react-native-transports`, `pipecat-ui`, `pipecat-prebuilt` (tree-sitter-indexed)
+
+To add repos or pin the framework version, see [Adding repos](#adding-repos). Only Python, TypeScript, and RST are parsed.
+
+The `repos` command edits `PIPECAT_HUB_EXTRA_REPOS` in `config.toml` for you
+(rules in [Managing repos from the CLI](#managing-repos-from-the-cli));
+run `refresh` afterwards to index the change:
+
+```bash
+pipecat-context-hub repos list [--groups]            # effective repos (default / catalog / unlisted)
+pipecat-context-hub repos add <owner/repo>           # also --group NAME, --unlisted, --config-only
+pipecat-context-hub repos remove <owner/repo>        # same options as add
+```
+
 ## Adding repos
 
 CLI usage (`pipecat init`, `pipecat cloud deploy`) is covered by the indexed `docs.pipecat.ai` pages (`/api-reference/cli/*`); the `pipecat-ai/pipecat-cli` repo is archived (the CLI now ships inside `pipecat-ai/pipecat`, which is indexed). Add more repos via `PIPECAT_HUB_EXTRA_REPOS` (full `org/repo` slugs, e.g. `pipecat-ai/pipecat-mcp-server`, `pipecat-ai/pipecat-flows-editor`), by hand or with `pipecat-context-hub repos add` ([Managing repos from the CLI](#managing-repos-from-the-cli); the curated list is the [Repo catalog](#repo-catalog)). Only Python, TypeScript, and RST are parsed — Swift/Kotlin/C++ client SDKs (iOS, Android, cxx, esp32) clone but yield zero source/API chunks (only a few README/config fallback chunks), so they don't surface in `search_api` / `get_code_snippet`.

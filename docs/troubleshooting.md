@@ -157,6 +157,14 @@ Part of the [Pipecat Context Hub README](README.md).
 
 ## Windows
 
+The persisted Chroma/SQLite index and semantic retrieval path currently require
+POSIX descriptor-relative, no-reparse filesystem operations. On Windows the
+package and path/ingest helpers remain installable, but `refresh`, `serve` and
+semantic queries fail closed with an index-safety error rather than using an
+unsafe pathname-only fallback. Do not treat the Windows CI package smoke as
+index support; use a POSIX host for a populated local index.
+
+
 - **Index commands fail closed** — populated `refresh`, `serve`, and semantic
   queries require POSIX descriptor-relative filesystem operations. The Windows
   CI job proves package installation and path/ingest helpers only; it does not
