@@ -29,7 +29,11 @@ No package version or runtime changes.
 - [x] CLI help examples checked; `tests/unit/test_cli_query.py`: 96 passed.
 - [x] Reviewed relocation diff; README reduced from 1,707 to 294 words.
 
-Full runtime suite not run for this documentation-only change; no PR opened.
+Pre-merge validation: full suite **3,503 passed, 8 skipped**; ruff format/check
+and mypy passed. Package build succeeded and wheel metadata contains the exact
+shortened UTF-8 README. Catalog generation check and repository link/anchor
+validation passed. Live index refresh and MCP smoke are outside this docs-only
+change: retrieval, tool handlers, index backends and types are unchanged.
 
 Sibling plans mentioning the README/catalog/plugin record historical delivery
 and unchanged runtime decisions; no corrections are needed for this relocation.
