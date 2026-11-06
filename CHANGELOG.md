@@ -16,6 +16,11 @@ This changelog retains repository and Context Hub package history.
 - Shortened the package README and moved setup, tool, CLI, data-source and
   maintainer reference material into linked documentation guides.
 
+### Security
+- **OAuthLib dependency update.** Updated the locked transitive `oauthlib`
+  dependency from `4.0.0` to `4.0.1`, which fixes CVE-2026-49272 /
+  GHSA-3jp2-3mrg-2vxc (the device-code flow accepted an unknown `device_code`).
+
 ## [0.9.3] - 2026-10-30
 
 ### Changed
