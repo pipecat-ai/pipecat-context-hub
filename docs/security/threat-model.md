@@ -206,12 +206,15 @@ Residual risks:
 These gates do not replace manual review. They reduce obvious regressions and
 provide repeatable evidence during release review.
 
-Current exception:
+Current exceptions:
 
-- `pip-audit` ignores `CVE-2026-4539` for `pygments` because the advisory does
-  not currently surface a fixed PyPI version. This accepted risk is tracked in
-  [AGENTS.md](../../AGENTS.md) and
-  should be revisited as soon as upstream publishes a fix.
+- `pip-audit` ignores four ChromaDB HTTP-server advisories (`CVE-2026-45829`,
+  `CVE-2026-45830`, `CVE-2026-45831`, `CVE-2026-45833`) because no fixed
+  release exists and the hub runs only the embedded `PersistentClient` (no
+  server, endpoint or listener). The ignore set lives in `ci.yml` and the
+  `justfile` (kept identical by a test); the accepted risk is tracked in
+  [AGENTS.md](../../AGENTS.md) and should be revisited as soon as upstream
+  publishes a fix.
 
 ## Residual Risks
 

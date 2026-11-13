@@ -167,7 +167,7 @@ jobs:
         # left the dependency tree when embedding and reranking moved to ONNX
         # Runtime, so there is nothing left to ignore.
         #
-        # CVE-2026-45830 (GHSA-...): SimpleRBACAuthorizationProvider-adjacent
+        # CVE-2026-45830 (GHSA-2wm9-hf6c-p5cr): SimpleRBACAuthorizationProvider-adjacent
         # cross-tenant read/write/update/delete in chromadb's HTTP SERVER mode —
         # any authenticated user can act on another tenant's collection. Affects
         # 0.4.17-1.5.9 with no fixed release yet. Unreachable here: same reason
