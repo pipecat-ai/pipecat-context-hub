@@ -3,6 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-11-13 | fix | Raise OpenTelemetry API security floor for CVE-2026-126360 | PR pending | Codex | `fix/opentelemetry-api-cve-2026-126360` | `20261113-fix-opentelemetry-api-cve-2026-126360.md` |
 | 2026-10-15 | feature | Windows index locking: shared locks via `LockFileEx`, `--reset-index` vs running `serve`, Windows CI for the lock path | Planned (design notes) | vr000m | _(not started)_ | `20261015-feature-windows-index-locking.md` |
 | 2026-10-17 | feature | Repo catalog PR 1: catalog, generator and the `repos` command | Complete (signed off 2026-10-17; Phases 1, 2a-2d implemented; PR #144 merged) | vr000m | `feature/repo-catalog-pr1` | `20261017-feature-repo-catalog-pr1-catalog-and-repos.md` |
 

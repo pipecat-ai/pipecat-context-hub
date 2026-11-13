@@ -141,4 +141,4 @@ def test_published_metadata_carries_dependency_security_floors() -> None:
     }
 
     assert requirements["certifi"] == Requirement("certifi>=2026.10.19")
-    assert requirements["opentelemetry-api"] == Requirement("opentelemetry-api>=1.45.1")
+    assert requirements["opentelemetry-api"] == Requirement("opentelemetry-api>=1.45.2")

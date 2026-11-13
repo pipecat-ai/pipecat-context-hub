@@ -17,6 +17,10 @@ This changelog retains repository and Context Hub package history.
   maintainer reference material into linked documentation guides.
 
 ### Security
+- **OpenTelemetry API dependency update.** Raised the published
+  `opentelemetry-api` floor to `1.45.2` and refreshed the lockfile to fix
+  [CVE-2026-126360](https://github.com/advisories/GHSA-mf5v-w3w3-f6cg), retaining
+  the earlier CVE-2026-114603 fix.
 - **OAuthLib dependency update.** Updated the locked transitive `oauthlib`
   dependency from `4.0.0` to `4.0.1`, which fixes CVE-2026-49272 /
   GHSA-3jp2-3mrg-2vxc (the device-code flow accepted an unknown `device_code`).
