@@ -167,15 +167,6 @@ jobs:
         # left the dependency tree when embedding and reranking moved to ONNX
         # Runtime, so there is nothing left to ignore.
         #
-        # PYSEC-2026-3721 (pip <=26.1.2, fixed in 26.2): doubly-encoded package
-        # URLs from a malicious index can make pip install a wheel to an
-        # arbitrary disk location. Only reachable via `pip download
-        # --only-binary` against an untrusted index. Unreachable here: CI and
-        # local dev only ever run `uv sync --frozen` against locked, trusted
-        # PyPI — no `pip download`, no untrusted index. pip itself isn't a
-        # project dependency (nothing to bump in pyproject.toml/uv.lock); it's
-        # whatever setup-python/uv bundles into the runner's venv.
-        #
         # CVE-2026-45830 (GHSA-...): SimpleRBACAuthorizationProvider-adjacent
         # cross-tenant read/write/update/delete in chromadb's HTTP SERVER mode —
         # any authenticated user can act on another tenant's collection. Affects
@@ -203,7 +194,6 @@ jobs:
           --ignore-vuln CVE-2026-45830
           --ignore-vuln CVE-2026-45831
           --ignore-vuln CVE-2026-45833
-          --ignore-vuln PYSEC-2026-3721
 
       - name: Bandit
         run: uv run bandit -r src
