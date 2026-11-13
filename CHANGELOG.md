@@ -17,6 +17,9 @@ This changelog retains repository and Context Hub package history.
   maintainer reference material into linked documentation guides.
 
 ### Security
+- **Dropped the stale pip audit ignore.** Removed `--ignore-vuln PYSEC-2026-3721`
+  from the CI audit and the `audit-deps` recipe. pip 26.2 fixes it, and the
+  unfiltered audit no longer reports it.
 - **OpenTelemetry API dependency update.** Raised the published
   `opentelemetry-api` floor to `1.45.2` and refreshed the lockfile to fix
   [CVE-2026-126360](https://github.com/advisories/GHSA-mf5v-w3w3-f6cg), retaining
