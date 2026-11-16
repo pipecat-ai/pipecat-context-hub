@@ -200,6 +200,10 @@ scripts/                      # Not packaged; scripts run by `just` recipes and 
 ├── curate_repo_catalog.py    # `just catalog-curate`: report-only curation (file counts, code-search vendor candidates)
 └── catalog_script_common.py  # shared by both: catalog loading, GitHub headers, validated_body (the one response validator)
 
+.claude/skills/context-hub-session-audit/   # maintainer skill: audit session transcripts for Context Hub usage
+├── SKILL.md                  # workflow: participant share-or-discard, organizer ingest + judgment
+└── scripts/                  # extract.py (transcripts -> flags + share bundle), ingest.py (validate/merge bundles); tests/unit/test_session_audit_skill.py
+
 dashboard/
 ├── public/                   # Served by `just dashboard-serve`
 │   ├── index.html            # Stats dashboard (loads dashboard_data.json)

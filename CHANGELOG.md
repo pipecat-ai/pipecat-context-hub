@@ -12,6 +12,13 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+### Added
+- **`context-hub-session-audit` maintainer skill** (`.claude/skills/`). Extracts Context Hub
+  usage from Claude Code, Codex and pi transcripts (MCP and shell CLI calls), flags
+  inefficiency heuristically, and writes a scrubbed, self-describing `share/` bundle plus a
+  deterministic `share.tar.gz`. `ingest.py` validates and merges bundles from other people. Nothing
+  is sent without an explicit participant choice (secret gist, tarball, or discard).
+
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and
   maintainer reference material into linked documentation guides.
