@@ -12,6 +12,8 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-16
+
 ### Added
 - **`pipecat-context-hub audit` command group** (`extract`, `repack`, `gist`, `discard`, `ingest`)
   for reviewing how coding agents used Context Hub in real sessions. Reads Claude Code, Codex and
