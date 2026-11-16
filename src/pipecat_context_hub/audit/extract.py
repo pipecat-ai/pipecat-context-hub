@@ -187,7 +187,12 @@ def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
 
 
 def _call_expression(text: str, start: int, limit: int = 2000) -> str:
-    """``text`` from ``start`` to the paren closing the first call (quote-aware), else 300 chars."""
+    """``text`` from ``start`` to the paren closing the first call (quote-aware).
+
+    Fails closed: when no closing paren is found within ``limit`` (unterminated string, template
+    literal, hostile batch) only the call prefix up to its opening paren is returned, never the
+    unrelated code that follows.
+    """
     depth, quote, i = 0, "", start
     end = min(len(text), start + limit)
     while i < end:
@@ -206,7 +211,8 @@ def _call_expression(text: str, start: int, limit: int = 2000) -> str:
             if depth == 0:
                 return text[start : i + 1]
         i += 1
-    return text[start : start + 300]
+    opening = text.find("(", start)
+    return text[start : opening + 1] + "...)" if opening >= 0 else ""
 
 
 def hub_invocation(inp: Any) -> str:
@@ -223,7 +229,7 @@ def hub_invocation(inp: Any) -> str:
     if m:
         return clip(_call_expression(text, m.start()), 300)
     m = MCP_RE.search(text)
-    return clip(text[m.start() : m.start() + 300], 300) if m else ""
+    return m.group(0) if m else ""  # name only: the arguments of a direct call live in `input`
 
 
 def _text_blocks(c: Any) -> tuple[str, list[str]]:

