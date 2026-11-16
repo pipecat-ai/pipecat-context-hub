@@ -1,34 +1,28 @@
-#!/usr/bin/env python3
-"""Extract Pipecat Context Hub usage facts from coding-agent transcripts.
+"""Extract Context Hub usage facts from coding-agent transcripts (``pipecat-context-hub audit``).
 
-Deterministic, offline, stdlib only. Judgment (was a result right?) is left to
-the skill; this script only collects evidence and cheap heuristic flags.
+Deterministic, offline, stdlib only. Judgment (was a result right?) is left to the caller (the
+``context-hub-session-audit`` skill); this module only collects evidence and cheap heuristic flags,
+and builds the scrubbed ``share/`` bundle plus its tarball.
 
-Usage:
-    extract.py --input DIR [--input DIR ...] --out OUT_DIR [--anonymize] [--since YYYY-MM-DD]
-    extract.py --repack OUT_DIR      # after editing OUT_DIR/share/ by hand
-
-Input layout: any directory tree of transcripts, e.g. one sub-directory per
-participant. Adapters: Claude Code, Codex, pi (auto-detected per file). Anything
-else (Cursor exports, chat dumps) falls back to a text scan: Context Hub use is detected
-but not analysed, and the session is flagged needs_manual_read. The first path
-component under --input is the participant label.
-
-Output (OUT_DIR):
-    sessions.jsonl  one line per session: usage flags + counters + flagged issues
-    calls.jsonl     one line per Context Hub call: input, parsed result, follow-up window
-    summary.json    aggregate counts across all sessions
+Adapters: Claude Code, Codex, pi (auto-detected per file). Anything else (Cursor exports, chat
+dumps) falls back to a text scan: Context Hub use is detected but not analysed, and the session
+is flagged ``needs_manual_read``. The first path component under an input root is the participant
+label.
 """
 
 from __future__ import annotations
 
-import argparse
+import dataclasses
 import hashlib
+import hmac
+import secrets
 import json
 import re
-import sys
 from collections import Counter
+from collections.abc import Iterator, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 SEARCH_TOOLS = {"search_docs", "search_examples", "search_api", "get_code_snippet"}
 LARGE_RESULT_BYTES = 30_000
@@ -75,8 +69,8 @@ def parse_ts(s: str | None) -> float | None:
         return None
 
 
-def summarize_hub_result(text: str, extras: list[str], via: str | None = None) -> dict:
-    out: dict = {"bytes": len(text.encode()) + sum(len(e.encode()) for e in extras)}
+def summarize_hub_result(text: str, extras: list[str], via: str | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {"bytes": len(text.encode()) + sum(len(e.encode()) for e in extras)}
     data = None
     try:
         data = json.loads(text)
@@ -157,7 +151,7 @@ PIPECAT_WORK_RE = re.compile(
 TEXT_SUFFIXES = {".jsonl", ".json", ".md", ".txt"}
 
 
-def categorize(name: str, inp) -> str | None:
+def categorize(name: str, inp: Any) -> str | None:
     """Tag events where the agent went around Context Hub (reading source / web docs). Heuristic."""
     blob = json.dumps(inp) if not isinstance(inp, str) else inp
     n = name.lower()
@@ -172,8 +166,9 @@ def categorize(name: str, inp) -> str | None:
     return None
 
 
-def detect_hub(name: str, inp) -> tuple[str | None, str | None, int]:
-    """Return (hub_tool, via, n_calls_in_event); via is 'mcp' or 'cli'."""
+def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
+    """Return (hub_tool, via, n_calls_in_event); via is 'mcp' (a direct tool call), 'mcp_js' (inside a
+    JS ``exec`` batch) or 'cli' (shell)."""
     m = MCP_RE.search(name)
     if m:
         return m.group(1), "mcp", 1
@@ -183,7 +178,7 @@ def detect_hub(name: str, inp) -> tuple[str | None, str | None, int]:
         MCP_JS_CALL_RE.findall(blob) if n in SHELLISH else []
     )  # codex wraps MCP calls in a JS `exec`
     if mm:
-        return mm[0], "mcp", len(mm)
+        return mm[0], "mcp_js", len(mm)
     if n in SHELLISH:
         cm = CLI_RE.findall(blob)
         if cm:
@@ -191,7 +186,30 @@ def detect_hub(name: str, inp) -> tuple[str | None, str | None, int]:
     return None, None, 0
 
 
-def hub_invocation(inp) -> str:
+def _call_expression(text: str, start: int, limit: int = 2000) -> str:
+    """``text`` from ``start`` to the paren closing the first call (quote-aware), else 300 chars."""
+    depth, quote, i = 0, "", start
+    end = min(len(text), start + limit)
+    while i < end:
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+        i += 1
+    return text[start : start + 300]
+
+
+def hub_invocation(inp: Any) -> str:
     """Just the Context Hub part of a call: the CLI segment or the MCP call, never the whole shell line."""
     if isinstance(inp, dict):
         text = inp.get("command") or inp.get("cmd") or json.dumps(inp)
@@ -201,11 +219,14 @@ def hub_invocation(inp) -> str:
     if m:
         seg = re.split(r"\s*(?:\|\||&&|[|;&>\n])", text[m.start() :], maxsplit=1)[0]
         return clip(seg, 300)
+    m = MCP_JS_CALL_RE.search(text)
+    if m:
+        return clip(_call_expression(text, m.start()), 300)
     m = MCP_RE.search(text)
     return clip(text[m.start() : m.start() + 300], 300) if m else ""
 
 
-def _text_blocks(c) -> tuple[str, list[str]]:
+def _text_blocks(c: Any) -> tuple[str, list[str]]:
     if isinstance(c, str):
         return c, []
     if isinstance(c, list):
@@ -235,7 +256,7 @@ def detect_harness(lines: list[str]) -> str:
     return "unknown"
 
 
-def adapt_claude(lines):
+def adapt_claude(lines: list[str]) -> Iterator[tuple[Any, ...]]:
     for line in lines:
         try:
             o = json.loads(line)
@@ -281,7 +302,7 @@ def adapt_claude(lines):
                 )
 
 
-def adapt_pi(lines):
+def adapt_pi(lines: list[str]) -> Iterator[tuple[Any, ...]]:
     for line in lines:
         try:
             o = json.loads(line)
@@ -319,7 +340,7 @@ def adapt_pi(lines):
             )
 
 
-def adapt_codex(lines):
+def adapt_codex(lines: list[str]) -> Iterator[tuple[Any, ...]]:
     for line in lines:
         try:
             o = json.loads(line)
@@ -355,7 +376,7 @@ def adapt_codex(lines):
 ADAPTERS = {"claude": adapt_claude, "pi": adapt_pi, "codex": adapt_codex}
 
 
-def event_target(name: str, inp) -> str:
+def event_target(name: str, inp: Any) -> str:
     if isinstance(inp, str):
         return clip(inp, 120)
     for k in ("file_path", "path", "pattern", "command", "cmd", "url", "query", "description"):
@@ -364,11 +385,13 @@ def event_target(name: str, inp) -> str:
     return ""
 
 
-def process_text_scan(path: Path, label: str, anonymize: bool, raw: str) -> tuple[dict, list[dict]]:
+def process_text_scan(
+    path: Path, label: str, raw: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fallback for harnesses without an adapter (Cursor exports, chat dumps, ...): detect only."""
     tools = Counter(m for m in MCP_RE.findall(raw))
     tools.update(CLI_TO_TOOL.get(c, c.replace("-", "_")) for c in CLI_RE.findall(raw))
-    participant = hashlib.sha256(label.encode()).hexdigest()[:10] if anonymize else label
+    participant = label
     return {
         "participant": participant,
         "session_id": path.stem,
@@ -388,18 +411,19 @@ def process_text_scan(path: Path, label: str, anonymize: bool, raw: str) -> tupl
     }, []
 
 
-def process_session(path: Path, label: str, anonymize: bool) -> tuple[dict, list[dict]]:
+def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     raw = path.read_text(errors="replace")
     lines = raw.splitlines()
     harness = detect_harness(lines) if path.suffix == ".jsonl" else "unknown"
     if harness == "unknown":
         if "pipecat" not in raw.lower():
             return {"tool_calls_total": 0}, []
-        return process_text_scan(path, label, anonymize, raw)
+        return process_text_scan(path, label, raw)
 
-    events: list[dict] = []  # every tool call, in order
-    by_id: dict[str, dict] = {}
-    meta: dict = {}
+    events: list[dict[str, Any]] = []  # every tool call, in order
+    by_id: dict[str, dict[str, Any]] = {}
+    ev: dict[str, Any] | None
+    meta: dict[str, Any] = {}
     pipecat_work = False
     user_prompts = 0
 
@@ -459,13 +483,13 @@ def process_session(path: Path, label: str, anonymize: bool) -> tuple[dict, list
         path.stem != session_id
     ):  # subagent files share the parent's id: keep rows/refs unique per file
         session_id = f"{session_id}/{path.stem}"
-    participant = hashlib.sha256(label.encode()).hexdigest()[:10] if anonymize else label
+    participant = label
 
-    calls: list[dict] = []
-    seen: Counter = Counter()
-    prev_search: dict | None = None
-    flags: Counter = Counter()
-    issues: list[dict] = []
+    calls: list[dict[str, Any]] = []
+    seen: Counter[tuple[str, str]] = Counter()
+    prev_search: dict[str, Any] | None = None
+    flags: Counter[str] = Counter()
+    issues: list[dict[str, Any]] = []
 
     for e in hub_events:
         tool = e["hub_tool"]
@@ -598,7 +622,7 @@ SHARE_PATH_RE = re.compile(
 )
 
 
-def scrub_paths(v):
+def scrub_paths(v: Any) -> Any:
     """Replace local absolute paths in every string of a share row (doc paths like /guides/x stay)."""
     if isinstance(v, str):
         return SHARE_PATH_RE.sub("<path>", v)
@@ -650,9 +674,9 @@ FIELDS_MD = """\
 | `ref` | stable id `participant/session#call_idx`; cite it in findings |
 | `participant`, `session` | hashed ids |
 | `tool` | `search_docs`, `search_api`, `search_examples`, `get_doc`, `get_example`, `get_code_snippet`, `check_deprecation`, `get_hub_status` |
-| `via` | `mcp` (tool call) or `cli` (shell: `pipecat-context-hub <cmd>`) |
+| `via` | `mcp` (direct tool call), `mcp_js` (inside a Codex-style JS batch) or `cli` (shell: `pipecat-context-hub <cmd>`) |
 | `hub_invocation` | the Context Hub part of the call only (CLI segment / MCP call text) |
-| `input` | MCP tool arguments; `{}` for CLI/batched calls (use `hub_invocation`) |
+| `input` | MCP tool arguments for direct `mcp` calls only; `{}` otherwise (use `hub_invocation`) |
 | `ts`, `latency_s` | start time; seconds to result (includes harness overhead) |
 | `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = JSON found; `cli_unparsed` = shell text, not a defect) |
 | `flags` | heuristic flags, glossary below |
@@ -701,7 +725,7 @@ def pack_share(share: Path) -> tuple[Path, str]:
     return tar_path, digest
 
 
-def tool_rows(calls: list[dict]) -> list[str]:
+def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
     import statistics
 
     rows = []
@@ -724,7 +748,11 @@ def tool_rows(calls: list[dict]) -> list[str]:
 
 
 def build_share_bundle(
-    out: Path, summary: dict, sessions: list[dict], calls: list[dict], scope: dict
+    out: Path,
+    summary: dict[str, Any],
+    sessions: list[dict[str, Any]],
+    calls: list[dict[str, Any]],
+    scope: dict[str, Any],
 ) -> Path:
     """Write out/share/: a stricter, human-reviewable subset that is safe to send on.
 
@@ -735,8 +763,10 @@ def build_share_bundle(
     share = out / "share"
     share.mkdir(exist_ok=True)
 
+    key = secrets.token_bytes(16)  # per run, never written: ids cannot be dictionary-reversed
+
     def sid(x: str) -> str:
-        return hashlib.sha256(x.encode()).hexdigest()[:10]
+        return hmac.new(key, x.encode(), hashlib.sha256).hexdigest()[:12]
 
     with (share / "sessions.jsonl").open("w") as fh:
         for r in sessions:
@@ -751,8 +781,8 @@ def build_share_bundle(
     with (share / "calls.jsonl").open("w") as fh:
         for c in calls:
             keep = dict(c)
-            if c["via"] == "cli" or not isinstance(c["input"], dict):
-                keep["input"] = {}  # whole shell line / JS batch: only hub_invocation is shared
+            if c["via"] != "mcp" or not isinstance(c["input"], dict):
+                keep["input"] = {}  # shell line / JS batch: only hub_invocation is shared
             keep["session"] = sid(keep.pop("session_id"))
             keep["participant"] = sid(keep["participant"])
             keep["ref"] = f"{keep['participant']}/{keep['session']}#{keep['call_idx']}"
@@ -849,72 +879,96 @@ def build_share_bundle(
     return share
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    ap.add_argument("--input", action="append", type=Path)
-    ap.add_argument("--out", type=Path)
-    ap.add_argument(
-        "--repack",
-        type=Path,
-        metavar="OUT_DIR",
-        help="rebuild share.tar.gz from an edited OUT_DIR/share/",
-    )
-    ap.add_argument("--anonymize", action="store_true", help="hash participant labels")
-    ap.add_argument(
-        "--since", help="YYYY-MM-DD: skip sessions that started earlier (limit to the event)"
-    )
-    args = ap.parse_args()
-    if args.repack:
-        share = args.repack / "share"
-        missing = [n for n in BUNDLE_FILES if not (share / n).is_file()]
-        if missing:
-            print(f"cannot repack: {share} is missing {missing}", file=sys.stderr)
-            return 1
-        tar_path, digest = pack_share(share)
-        print(f"{tar_path} sha256 {digest}")
-        return 0
-    if not args.input or not args.out:
-        ap.error("--input and --out are required (unless --repack)")
+@dataclasses.dataclass
+class ExtractResult:
+    summary: dict[str, Any]
+    share: Path
+    tarball: Path
+    sha256: str
+    warnings: list[str]
 
-    args.out.mkdir(parents=True, exist_ok=True)
-    sessions: list[dict] = []
-    all_calls: list[dict] = []
-    for root in args.input:
+
+_LOCAL_OUTPUTS = (
+    "summary.json",
+    "sessions.jsonl",
+    "calls.jsonl",
+    "share.tar.gz",
+    "share.tar.gz.sha256",
+)
+
+
+def generated_paths(out_dir: Path) -> list[Path]:
+    """Exactly the files ``run_extract`` writes into ``out_dir`` (nothing else is ever listed).
+
+    Refuses a directory that does not look like extract output, and symlinks, so a typo'd path
+    cannot delete someone's files.
+    """
+    if (
+        not (out_dir / "summary.json").is_file()
+        or not (out_dir / "share" / "manifest.json").is_file()
+    ):
+        raise ValueError(f"{out_dir.name or out_dir} does not look like `audit extract` output")
+    candidates = [out_dir / n for n in _LOCAL_OUTPUTS] + [
+        out_dir / "share" / n for n in BUNDLE_FILES
+    ]
+    found = [p for p in candidates if p.exists() or p.is_symlink()]
+    if any(p.is_symlink() or not p.is_file() for p in found):
+        raise ValueError("refusing to delete: output contains a symlink or non-file")
+    return found
+
+
+def repack(out_dir: Path) -> tuple[Path, str]:
+    """Rebuild ``share.tar.gz`` from an (edited) ``out_dir/share/``."""
+    share = out_dir / "share"
+    missing = [n for n in BUNDLE_FILES if not (share / n).is_file()]
+    if missing:
+        raise ValueError(f"cannot repack: {share.name}/ is missing {missing}")
+    return pack_share(share)
+
+
+def run_extract(
+    inputs: Sequence[Path], out: Path, *, anonymize: bool = False, since: str | None = None
+) -> ExtractResult:
+    """Extract every transcript under ``inputs`` into ``out`` and build the share bundle."""
+    for root in inputs:
         if not root.is_dir():
-            print(f"not a directory: {root}", file=sys.stderr)
-            return 1
+            raise ValueError(f"not a directory: {root.name or root}")
+    out.mkdir(parents=True, exist_ok=True)
+    sessions: list[dict[str, Any]] = []
+    all_calls: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    aliases: dict[str, str] = {}
+    for root in inputs:
         for f in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in TEXT_SUFFIXES):
             rel = f.relative_to(root)
             label = rel.parts[0] if len(rel.parts) > 1 else root.name
+            if anonymize:  # sequential aliases: nothing derived from the label survives
+                label = aliases.setdefault(label, f"participant-{len(aliases) + 1}")
             try:
-                s, c = process_session(f, label, args.anonymize)
+                s, c = process_session(f, label)
             except Exception as exc:  # one bad file must not sink the batch
-                print(f"skip {f.name}: {exc}", file=sys.stderr)
+                warnings.append(f"skipped {f.name}: {type(exc).__name__}")
                 continue
             if s["tool_calls_total"] == 0 and s.get("fidelity") != "text_scan":
                 continue
-            if args.since:
-                from datetime import datetime, timezone
-
+            if since:
                 started = (s.get("start") or "")[:10] or datetime.fromtimestamp(
                     f.stat().st_mtime, timezone.utc
                 ).strftime("%Y-%m-%d")
-                if started < args.since:
+                if started < since:
                     continue
             sessions.append(s)
             all_calls.extend(c)
 
-    with (args.out / "sessions.jsonl").open("w") as fh:
+    with (out / "sessions.jsonl").open("w") as fh:
         for s in sessions:
             fh.write(json.dumps(s) + "\n")
-    with (args.out / "calls.jsonl").open("w") as fh:
-        for c in all_calls:
-            fh.write(json.dumps(c) + "\n")
+    with (out / "calls.jsonl").open("w") as fh:
+        for row in all_calls:
+            fh.write(json.dumps(row) + "\n")
 
-    flag_totals: Counter = Counter()
-    tool_totals: Counter = Counter()
+    flag_totals: Counter[str] = Counter()
+    tool_totals: Counter[str] = Counter()
     for s in sessions:
         flag_totals.update(s["flag_counts"])
         tool_totals.update(s["hub_calls_by_tool"])
@@ -932,19 +986,9 @@ def main() -> int:
         "needs_manual_read": sum(bool(s.get("needs_manual_read")) for s in sessions),
         "sessions_with_issues": sum(bool(s["issues"]) for s in sessions),
     }
-    (args.out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2))
     share = build_share_bundle(
-        args.out, summary, sessions, all_calls, {"since": args.since, "anonymized": args.anonymize}
+        out, summary, sessions, all_calls, {"since": since, "anonymized": anonymize}
     )
     tar_path, digest = pack_share(share)
-    print(
-        f"share bundle (review before sending): {share}\n"
-        f"tarball: {tar_path} ({tar_path.stat().st_size} bytes, sha256 {digest[:16]}...)",
-        file=sys.stderr,
-    )
-    print(json.dumps(summary, indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return ExtractResult(summary, share, tar_path, digest, warnings)

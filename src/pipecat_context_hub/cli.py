@@ -26,6 +26,7 @@ import click
 
 from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
+from pipecat_context_hub.cli_audit import audit_group, register_audit_commands
 from pipecat_context_hub.cli_repos import register_repos_commands, repos_group
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
@@ -759,12 +760,15 @@ def main(ctx: click.Context, log_level: str) -> None:
     # configured logging instead of Python's last-resort handler.
     _configure_logging(log_level)
     # `repos` is a config editor: the loader's "Loaded N key(s) from config.toml" INFO line is
-    # noise there, and `repos add` is about to rewrite that very file. Warnings still show.
+    # noise there, and `repos add` is about to rewrite that very file. `audit` never reads the
+    # config at all. Warnings still show.
     # An explicit `--log-level` is honoured: only the default level is muted.
     log_level_is_default = (
         ctx.get_parameter_source("log_level") is click.core.ParameterSource.DEFAULT
     )
-    with _loader_info_muted(ctx.invoked_subcommand == repos_group.name and log_level_is_default):
+    with _loader_info_muted(
+        ctx.invoked_subcommand in {repos_group.name, audit_group.name} and log_level_is_default
+    ):
         provenance = env_loading.load_env_layers()
     ctx.ensure_object(dict)
     ctx.obj["env_provenance"] = provenance
@@ -2243,6 +2247,7 @@ def _print_refresh_summary(
 register_query_commands(main)
 register_install_command(main)
 register_repos_commands(main)
+register_audit_commands(main)
 
 
 if __name__ == "__main__":
