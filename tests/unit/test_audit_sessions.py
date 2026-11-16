@@ -227,6 +227,134 @@ class TestShareBundle:
         assert _invoke("repack", str(tmp_path)).exit_code == 1
 
 
+HUB_TOOL_NAMES = [
+    f"mcp__pipecat-context-hub__{t}" for t in ("search_docs", "get_doc", "get_hub_status")
+]
+
+
+def _deferred(sid: str) -> dict[str, Any]:
+    """Claude Code's tool-list attachment: the hub tools listed as *deferred* (callable only after ToolSearch)."""
+    att = {"type": "deferred_tools_delta", "addedNames": [*HUB_TOOL_NAMES, "Read"]}
+    return {"type": "attachment", "sessionId": sid, "attachment": att}
+
+
+def _prompt(sid: str, text: str) -> dict[str, Any]:
+    return {
+        "type": "user",
+        "sessionId": sid,
+        "timestamp": "2026-11-18T10:00:00Z",
+        "message": {"content": text},
+    }
+
+
+def _pipecat_work(sid: str) -> list[dict[str, Any]]:
+    write = _use(
+        1,
+        "2026-11-18T10:00:01Z",
+        "Write",
+        {"file_path": "bot.py", "content": "from pipecat.pipeline import P"},
+    )
+    write["sessionId"] = sid
+    done = _result(1, "2026-11-18T10:00:02Z", "ok")
+    done["sessionId"] = sid
+    return [write, done]
+
+
+class TestAnalysis:
+    """The extractor answers the four audit questions itself, with coded evidence only."""
+
+    def _tree(self, root: Path, *, tool_search: bool = False) -> None:
+        # Claude Code layout: <project>/<parent>.jsonl and <project>/<parent>/subagents/agent-x.jsonl
+        parent = [_deferred("p1"), _prompt("p1", "build a bot"), *_pipecat_work("p1")]
+        if tool_search:
+            ts = _use(
+                9,
+                "2026-11-18T10:00:03Z",
+                "ToolSearch",
+                {"query": "select:mcp__pipecat-context-hub__search_docs"},
+            )
+            ts["sessionId"] = "p1"
+            parent.append(ts)
+        sub = [_deferred("p1"), _prompt("p1", "write the pipeline"), *_pipecat_work("p1")]
+        _jl(root / "p1.jsonl", parent)
+        _jl(root / "p1" / "subagents" / "agent-x.jsonl", sub)
+
+    def test_unused_hub_is_explained_and_a_session_tree_is_one_participant(
+        self, tmp_path: Path
+    ) -> None:
+        self._tree(tmp_path / "proj")
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "proj", out).exit_code == 0
+        summary = json.loads((out / "summary.json").read_text())
+        usage = summary["analysis"]["usage"]
+        assert summary["participants"] == 1  # a session directory is not a person
+        assert usage["session_trees"] == 1 and usage["subagent_sessions"] == 1
+        assert usage["hub_tools_listed_deferred"] == 2 and usage["tool_search_ever_used"] == 0
+        assert usage["missed_opportunity"] == 2
+        rows = {
+            r["is_subagent"]: r
+            for r in map(json.loads, (out / "sessions.jsonl").read_text().splitlines())
+        }
+        assert "hub_tools_deferred_never_loaded" in rows[False]["no_use_signals"]
+        assert "parent_also_unused" in rows[True]["no_use_signals"]
+        assert "parent_also_unused" not in rows[False]["no_use_signals"]
+        report = (out / "share" / "report.md").read_text()
+        assert (
+            "Answers to the four questions" in report
+            and "hub_tools_deferred_never_loaded" in report
+        )
+
+    def test_loading_the_tools_with_toolsearch_clears_the_deferred_signal(
+        self, tmp_path: Path
+    ) -> None:
+        self._tree(tmp_path / "proj", tool_search=True)
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "proj", out).exit_code == 0
+        rows = [json.loads(r) for r in (out / "sessions.jsonl").read_text().splitlines()]
+        parent = next(r for r in rows if not r["is_subagent"])
+        assert parent["hub_tool_search_calls"] == 1
+        assert "hub_tools_deferred_never_loaded" not in parent["no_use_signals"]
+
+    def test_calls_carry_outcome_and_target_and_the_manifest_the_answers(
+        self, audited: Path
+    ) -> None:
+        calls = [
+            json.loads(r) for r in (audited / "share" / "calls.jsonl").read_text().splitlines()
+        ]
+        by_tool = {c["tool"]: c for c in calls}
+        assert (by_tool["search_docs"]["outcome"], by_tool["search_docs"]["suspect_target"]) == (
+            "miss",
+            "hub-retrieval",
+        )
+        assert (by_tool["get_doc"]["outcome"], by_tool["get_doc"]["suspect_target"]) == (
+            "failed",
+            "hub-tools",
+        )
+        manifest = json.loads((audited / "share" / "manifest.json").read_text())
+        analysis = manifest["analysis"]
+        assert analysis["heuristic"] is True
+        assert analysis["usage"]["used"] == 1
+        targets = {b["target"] for b in analysis["improvement_backlog"]}
+        assert {"hub-retrieval", "hub-tools"} <= targets
+        # example refs are the share bundle's own (hashed) refs, and nothing sensitive leaks into the answers
+        refs = {c["ref"] for c in calls}
+        assert all(r in refs for b in analysis["improvement_backlog"] for r in b["example_refs"])
+        blob = json.dumps(analysis)
+        assert SECRET not in blob and "/Users/" not in blob
+
+    def test_outcome_priority_is_failed_then_miss_then_the_rest(self) -> None:
+        from pipecat_context_hub.audit.analysis import classify_call
+
+        assert classify_call({"flags": ["zero_hits", "error"]}) == ("failed", "hub-tools")
+        assert classify_call({"flags": ["corpus_hint", "zero_hits"]}) == ("miss", "hub-corpus")
+        assert classify_call({"flags": ["slow", "downstream_error"]}) == (
+            "suspect",
+            "needs-judgment",
+        )
+        assert classify_call({"flags": ["exact_repeat"]}) == ("inefficient", "agent-misuse")
+        assert classify_call({"flags": []}) == ("no_negative_signal", None)
+
+
 class TestOtherHarnesses:
     def test_pi_cli_call(self, tmp_path: Path) -> None:
         rows: list[dict[str, Any]] = [

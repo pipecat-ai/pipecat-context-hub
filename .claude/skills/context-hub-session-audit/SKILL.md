@@ -102,6 +102,11 @@ glossary, analysis steps), then work from the merged `calls.jsonl`.
 
 ## 2. Judge
 
+The extractor already answered the four questions in `manifest.json` `analysis` (top of
+`report.md`): usage with coded `no_use_signals`, efficiency, `outcome` counts and a backlog by
+suspected owner. Start there and judge only what it flags. Its `outcome` and `suspect_target` are
+signal classes from structure, never verdicts; `no_negative_signal` is not proof an answer was right.
+
 Flags are places to look, never verdicts.
 
 | Flag | Meaning |

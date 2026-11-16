@@ -23,6 +23,14 @@ This changelog retains repository and Context Hub package history.
   `ingest` validates and merges bundles from other people as untrusted input. Also reachable as
   `pipecat context-hub audit`. When no Context Hub call is found, `extract` says there is nothing
   to share and `gist` refuses unless `--allow-empty`.
+- **`audit extract` answers the four audit questions itself** (used it? inefficient? correct? what to
+  improve), so a bundle is analysable without raw transcripts: a computed section at the top of
+  `report.md` and under `manifest.json` `analysis`, plus per-call `outcome` / `suspect_target`. For
+  sessions that did Pipecat work without Context Hub it records coded `no_use_signals` (tools listed as
+  deferred but never loaded with `ToolSearch`, prompt silent about it, parent session also unused,
+  source or web read instead). Subagents are linked to their parent (`parent_session`) and a Claude
+  Code session tree counts as one participant, not one per session directory. All heuristic: signals,
+  not verdicts.
 - **`context-hub-session-audit` skill** (`.claude/skills/`): agent front end for `audit` with
   the share-or-discard flow and the organizer's judgment rubric.
 

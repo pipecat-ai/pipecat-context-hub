@@ -24,6 +24,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pipecat_context_hub.audit.analysis import annotate_calls, link_parents
+from pipecat_context_hub.audit.analysis import analyze
+from pipecat_context_hub.audit.analysis import render as render_analysis
+
+HUB_MENTION_RE = re.compile(r"context[- ]hub|pipecat[-_]context[-_]hub|\\bPCH\\b", re.IGNORECASE)
+HUB_TOOLSEARCH_RE = re.compile(
+    r"pipecat|context[-_ ]hub|search_docs|search_api|search_examples", re.IGNORECASE
+)
 SEARCH_TOOLS = {"search_docs", "search_examples", "search_api", "get_code_snippet"}
 LARGE_RESULT_BYTES = 30_000
 SLOW_SECONDS = 8.0
@@ -268,6 +276,13 @@ def adapt_claude(lines: list[str]) -> Iterator[tuple[Any, ...]]:
             o = json.loads(line)
         except ValueError:
             continue
+        att = o.get("attachment")
+        if o.get("type") == "attachment" and isinstance(att, dict):
+            if att.get("type") == "deferred_tools_delta":
+                names = att.get("addedNames") or []
+                listed = [n for n in names if isinstance(n, str) and MCP_RE.search(n)]
+                yield ("tools", {"hub_deferred": len(listed)})
+            continue
         # `api-request-blob` lines duplicate real messages; counting them double-counts calls.
         if o.get("type") not in ("assistant", "user"):
             continue
@@ -282,7 +297,7 @@ def adapt_claude(lines: list[str]) -> Iterator[tuple[Any, ...]]:
         )
         content = (o.get("message") or {}).get("content")
         if o["type"] == "user" and isinstance(content, str):
-            yield ("prompt",)
+            yield ("prompt", content)
         if not isinstance(content, list):
             continue
         for b in content:
@@ -432,10 +447,17 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
     meta: dict[str, Any] = {}
     pipecat_work = False
     user_prompts = 0
+    hub_deferred = 0
+    prompt_texts = 0
+    prompt_mentions = False
+    tool_search_calls = 0
+    hub_tool_search_calls = 0
 
     for rec in ADAPTERS[harness](lines):
         kind = rec[0]
-        if kind == "meta":
+        if kind == "tools":
+            hub_deferred += rec[1]["hub_deferred"]
+        elif kind == "meta":
             for k, v in rec[1].items():
                 if k == "ts":
                     meta.setdefault("start", v)
@@ -444,6 +466,9 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
                     meta.setdefault(k, v)
         elif kind == "prompt":
             user_prompts += 1
+            if len(rec) > 1 and isinstance(rec[1], str):
+                prompt_texts += 1
+                prompt_mentions = prompt_mentions or bool(HUB_MENTION_RE.search(rec[1]))
         elif kind == "call":
             _, cid, ts, name, inp = rec
             tool, via, n_in_event = detect_hub(name, inp)
@@ -465,6 +490,9 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
                 and PIPECAT_WORK_RE.search(json.dumps(inp))
             ):
                 pipecat_work = True
+            if name == "ToolSearch":
+                tool_search_calls += 1
+                hub_tool_search_calls += bool(HUB_TOOLSEARCH_RE.search(json.dumps(inp)))
             events.append(ev)
             by_id[cid] = ev
         elif kind == "result":
@@ -598,6 +626,11 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
         "session_id": session_id,
         "file": redact(str(path.name)),
         "is_subagent": "subagents" in path.parts,
+        "parent_session_id": meta.get("sessionId") if "subagents" in path.parts else None,
+        "hub_tools_deferred": hub_deferred if harness == "claude" else None,
+        "tool_search_calls": tool_search_calls,
+        "hub_tool_search_calls": hub_tool_search_calls,
+        "prompt_mentions_hub": prompt_mentions if prompt_texts else None,
         "harness": harness,
         "fidelity": "events" if harness != "codex" else "events_approx_batched",
         "harness_version": meta.get("version"),
@@ -669,7 +702,7 @@ FIELDS_MD = """\
 ## Files
 
 - `manifest.json`: schema_version, extractor_version, counts, scope, what was removed. Read first.
-- `report.md`: auto-generated summary and "look first" list. **Unjudged**: flags are heuristics.
+- `report.md`: starts with computed answers to four questions (used it? inefficient? correct? what to improve), then a "look first" list. **Unjudged**: all of it is heuristic. The same answers are in `manifest.json` under `analysis`.
 - `calls.jsonl`: one row per Context Hub call (the raw dataset).
 - `sessions.jsonl`: one row per session.
 
@@ -689,15 +722,18 @@ FIELDS_MD = """\
 | `severity` | sum of flag weights; sort by it to triage |
 | `followups` | next 8 tool calls: `tool`, `category` (`read_pipecat_source`/`web_pipecat`/null), `hub` (another Context Hub call) |
 | `downstream_errors` | Python error class names seen in the next 25 non-hub results (text removed) |
+| `outcome` | signal class, NOT a verdict: `failed` / `miss` / `suspect` / `bypassed` / `inefficient` / `no_negative_signal` (first match wins; see `manifest.json` analysis.correctness.glossary) |
+| `suspect_target` | likely owner of the signal: `hub-tools` / `hub-retrieval` / `hub-corpus` / `agent-misuse` / `needs-judgment`; null when `no_negative_signal` |
 
 ## sessions.jsonl row
 
-`harness` (`claude`/`codex`/`pi`/`unknown`), `fidelity` (`events`; `events_approx_batched` = Codex JS batches count as one event; `text_scan` = detection only, no calls), `hub_available` (name seen in transcript, not proof the server connected), `hub_used`, `pipecat_work` (real Pipecat code/commands seen), `missed_opportunity` (pipecat_work and not hub_used), `hub_calls`, `hub_calls_by_tool`, `hub_via`, `bypass_events_before_first_hub`, `bypass_events_total`, `hub_share_of_calls`, `hub_via`, `harness_version`, `start`/`end`, `flag_counts`, `user_prompts`, `tool_calls_total`.
+`parent_session` (a subagent's parent `session` hash), `parent_used_hub`, `hub_tools_deferred` (how many Context Hub tools the harness listed as deferred, Claude Code only; deferred tools cannot be called until `ToolSearch` loads them), `tool_search_calls`, `hub_tool_search_calls`, `prompt_mentions_hub` (a user prompt, for a subagent its delegation prompt, names Context Hub; it may only cite it as a source of a fact, not tell the agent to use it; null when prompt text is not available), `no_use_signals` (coded reasons for a `missed_opportunity`: `hub_not_in_transcript`, `hub_tools_deferred_never_loaded`, `prompt_silent_about_hub`, `parent_also_unused`, `read_source_or_web_instead`, `unexplained`), `harness` (`claude`/`codex`/`pi`/`unknown`), `fidelity` (`events`; `events_approx_batched` = Codex JS batches count as one event; `text_scan` = detection only, no calls), `hub_available` (name seen in transcript, not proof the server connected), `hub_used`, `pipecat_work` (real Pipecat code/commands seen), `missed_opportunity` (pipecat_work and not hub_used), `hub_calls`, `hub_calls_by_tool`, `hub_via`, `bypass_events_before_first_hub`, `bypass_events_total`, `hub_share_of_calls`, `hub_via`, `harness_version`, `start`/`end`, `flag_counts`, `user_prompts`, `tool_calls_total`.
 
 ## How to analyse
 
 1. Check `manifest.json` schema_version is 1; if not, stop and look for the matching skill version.
-2. Start from the "Look first" list in `report.md`; read each row's `followups` and `downstream_errors`.
+2. Read `manifest.json` `analysis` (or the top of `report.md`): usage, efficiency, outcome counts and the improvement backlog are already computed. Judge only what it flags.
+2b. Start from the "Look first" list in `report.md`; read each row's `followups` and `downstream_errors`.
 3. A flag is a place to look, never a verdict. Judge each as correct / partial / incorrect / unused / unverifiable, citing `ref` and the follow-up evidence. If the evidence is not in the row, say unverifiable.
 4. To confirm a retrieval defect, re-run `hub_invocation` against a current index and say which index version.
 5. Group non-correct findings by target: hub-retrieval, hub-corpus, hub-tools, pipecat-docs, pipecat-lib, agent-misuse.
@@ -759,7 +795,7 @@ def build_share_bundle(
     sessions: list[dict[str, Any]],
     calls: list[dict[str, Any]],
     scope: dict[str, Any],
-) -> Path:
+) -> tuple[Path, dict[str, Any]]:
     """Write out/share/: a stricter, human-reviewable subset that is safe to send on.
 
     Kept: Context Hub tool, query/inputs, result shape (hit count, confidence, top hit ids), flags,
@@ -779,8 +815,12 @@ def build_share_bundle(
             keep = {
                 k: v
                 for k, v in r.items()
-                if k not in {"file", "session_id", "participant", "issues"}
+                if k not in {"file", "session_id", "participant", "issues", "parent_session_id"}
             }
+            if r.get("parent_session_id"):
+                keep["parent_session"] = sid(
+                    r["parent_session_id"]
+                )  # links to the parent's `session`
             keep["session"] = sid(r["session_id"])
             keep["participant"] = sid(r["participant"])
             fh.write(json.dumps(scrub_paths(keep)) + "\n")
@@ -803,6 +843,9 @@ def build_share_bundle(
             keep["result"] = {k: v for k, v in c["result"].items() if k != "text_head"}
             fh.write(json.dumps(scrub_paths(keep)) + "\n")
 
+    analysis = analyze(
+        sessions, calls, lambda c: f"{sid(c['participant'])}/{sid(c['session_id'])}#{c['call_idx']}"
+    )
     flagged = sorted(
         (c for c in calls if c["flags"]),
         key=lambda c: -sum(SEVERITY.get(f, 1) for f in c["flags"]),
@@ -825,6 +868,7 @@ def build_share_bundle(
         f"Calls by tool: {summary['calls_by_tool']}",
         f"Flags: {summary['flag_totals']}",
         "",
+        *render_analysis(analysis),
         "## Look first (flagged calls, highest severity first)"
         + (f" — first 60 of {len(flagged)}" if len(flagged) > 60 else ""),
         "",
@@ -873,6 +917,7 @@ def build_share_bundle(
                     "raw non-JSON result text",
                 ],
                 "redaction": "best-effort regexes for keys/tokens/home paths; queries are verbatim",
+                "analysis": analysis,
                 "caveats": [
                     "flags are heuristics, not verdicts",
                     "downstream_error is correlation only",
@@ -882,7 +927,7 @@ def build_share_bundle(
             indent=2,
         )
     )  # fmt: skip
-    return share
+    return share, analysis
 
 
 @dataclasses.dataclass
@@ -947,7 +992,10 @@ def run_extract(
     for root in inputs:
         for f in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in TEXT_SUFFIXES):
             rel = f.relative_to(root)
-            label = rel.parts[0] if len(rel.parts) > 1 else root.name
+            # One sub-directory per participant when collecting. A Claude Code project directory
+            # holds `<session-id>/subagents/...`: that first component is a session, not a person.
+            nested = len(rel.parts) > 1 and rel.parts[1] != "subagents"
+            label = rel.parts[0] if nested else root.name
             if anonymize:  # sequential aliases: nothing derived from the label survives
                 label = aliases.setdefault(label, f"participant-{len(aliases) + 1}")
             try:
@@ -966,6 +1014,8 @@ def run_extract(
             sessions.append(s)
             all_calls.extend(c)
 
+    link_parents(sessions)
+    annotate_calls(all_calls)
     with (out / "sessions.jsonl").open("w") as fh:
         for s in sessions:
             fh.write(json.dumps(s) + "\n")
@@ -992,9 +1042,10 @@ def run_extract(
         "needs_manual_read": sum(bool(s.get("needs_manual_read")) for s in sessions),
         "sessions_with_issues": sum(bool(s["issues"]) for s in sessions),
     }
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
-    share = build_share_bundle(
+    share, analysis = build_share_bundle(
         out, summary, sessions, all_calls, {"since": since, "anonymized": anonymize}
     )
+    summary["analysis"] = analysis
+    (out / "summary.json").write_text(json.dumps(summary, indent=2))
     tar_path, digest = pack_share(share)
     return ExtractResult(summary, share, tar_path, digest, warnings)
