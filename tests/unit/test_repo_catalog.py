@@ -412,6 +412,7 @@ class TestSlugGrammar:
         pass it while spelling a second slug identity. Every call counted here
         folds something that is not a slug (env flags, SHAs, paths, prose)."""
         not_slugs = {
+            "audit/extract.py": 6,  # harness tool names and transcript text, never slugs
             "cli.py": 1,  # log level
             "cli_install.py": 1,  # subprocess output
             "services/ingest/github_ingest.py": 10,  # SHAs, a tag's `v`, a file path
