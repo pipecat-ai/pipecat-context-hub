@@ -391,6 +391,29 @@ class TestSharing:
         assert argv[1:3] == ["gist", "create"] and "--public" not in argv
         assert {Path(a).name for a in argv if a.endswith((".md", ".json", ".jsonl"))} == set(BUNDLE)
 
+    def test_zero_call_bundle_says_so_and_gist_refuses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _jl(
+            tmp_path / "in" / "zed" / "s.jsonl",
+            [_use(1, "2026-11-18T10:00:00Z", "Bash", {"command": "ls"})],
+        )
+        out = tmp_path / "out"
+        extracted = _extract(tmp_path / "in", out)
+        assert extracted.exit_code == 0 and "nothing to share" in extracted.output
+
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise AssertionError("must not run gh for an empty bundle")
+
+        monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/gh")
+        monkeypatch.setattr(subprocess, "run", boom)
+        for extra in ([], ["--yes"]):
+            refused = _invoke("gist", str(out), *extra)
+            assert refused.exit_code == 1 and "no Context Hub calls" in refused.output
+
+    def test_bundle_with_calls_does_not_say_nothing_to_share(self, audited: Path) -> None:
+        assert _invoke("gist", str(audited)).exit_code == 0
+
     def test_gist_leaves_out_an_empty_file_and_ingest_accepts_the_result(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -411,7 +434,7 @@ class TestSharing:
 
         monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/gh")
         monkeypatch.setattr(subprocess, "run", fake_run)
-        assert _invoke("gist", str(out), "--yes").exit_code == 0
+        assert _invoke("gist", str(out), "--yes", "--allow-empty").exit_code == 0
         posted = {Path(a).name for a in seen[0] if a.endswith((".md", ".json", ".jsonl"))}
         assert posted == set(BUNDLE) - {"calls.jsonl"}
         # a cloned gist is the posted files only: ingest must accept it

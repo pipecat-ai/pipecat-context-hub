@@ -19,7 +19,8 @@ This changelog retains repository and Context Hub package history.
   scrubbed, self-describing `share/` bundle plus a deterministic `share.tar.gz` with opaque
   (per-run HMAC) ids. Sends nothing unless `gist --yes` (always a secret gist, never public);
   `ingest` validates and merges bundles from other people as untrusted input. Also reachable as
-  `pipecat context-hub audit`.
+  `pipecat context-hub audit`. When no Context Hub call is found, `extract` says there is nothing
+  to share and `gist` refuses unless `--allow-empty`.
 - **`context-hub-session-audit` skill** (`.claude/skills/`): agent front end for `audit` with
   the share-or-discard flow and the organizer's judgment rubric.
 
