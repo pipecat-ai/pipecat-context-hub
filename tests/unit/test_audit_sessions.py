@@ -381,7 +381,12 @@ class TestSharing:
         monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/gh")
         monkeypatch.setattr(subprocess, "run", fake_run)
         result = _invoke("gist", str(audited), "--yes")
-        assert result.exit_code == 0 and "gist.github.com" in result.output
+        assert result.exit_code == 0
+        # whole-line match on the fake gh's URL (a hostname substring check is what CodeQL flags)
+        assert (
+            "Gist created (secret, unlisted): https://gist.github.com/x/abc"
+            in result.output.splitlines()
+        )
         (argv,) = seen
         assert argv[1:3] == ["gist", "create"] and "--public" not in argv
         assert {Path(a).name for a in argv if a.endswith((".md", ".json", ".jsonl"))} == set(BUNDLE)
