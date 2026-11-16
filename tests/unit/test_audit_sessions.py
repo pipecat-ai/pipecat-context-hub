@@ -539,6 +539,17 @@ class TestSharing:
             refused = _invoke("gist", str(out), *extra)
             assert refused.exit_code == 1 and "no Context Hub calls" in refused.output
 
+    def test_zero_call_bundle_that_explains_non_use_is_shareable(self, tmp_path: Path) -> None:
+        """Zero calls but Pipecat work without Context Hub is the adoption data organizers need."""
+        _jl(tmp_path / "in" / "zed" / "s.jsonl", _pipecat_work("s1"))
+        out = tmp_path / "out"
+        extracted = _extract(tmp_path / "in", out)
+        assert extracted.exit_code == 0
+        assert "nothing to share" not in extracted.output
+        assert "worth sending" in extracted.output
+        preview = _invoke("gist", str(out))
+        assert preview.exit_code == 0 and "manifest.json" in preview.output
+
     def test_bundle_with_calls_does_not_say_nothing_to_share(self, audited: Path) -> None:
         assert _invoke("gist", str(audited)).exit_code == 0
 

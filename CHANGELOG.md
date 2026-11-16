@@ -22,7 +22,8 @@ This changelog retains repository and Context Hub package history.
   (per-run HMAC) ids. Sends nothing unless `gist --yes` (always a secret gist, never public);
   `ingest` validates and merges bundles from other people as untrusted input. Also reachable as
   `pipecat context-hub audit`. When no Context Hub call is found, `extract` says there is nothing
-  to share and `gist` refuses unless `--allow-empty`.
+  to share and `gist` refuses unless `--allow-empty`. A zero-call bundle that did Pipecat work
+  without Context Hub is still shareable: it carries the coded reasons for non-use.
 - **`audit extract` answers the four audit questions itself** (used it? inefficient? correct? what to
   improve), so a bundle is analysable without raw transcripts: a computed section at the top of
   `report.md` and under `manifest.json` `analysis`, plus per-call `outcome` / `suspect_target`. For

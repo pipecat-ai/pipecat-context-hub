@@ -57,10 +57,10 @@ flags, latency. Ids are opaque (HMAC with a per-run random key). Dropped: transc
 commands, JS batches (only the one call expression survives), file paths, other tools' output
 (only an error class name survives). Queries are the participant's own words.
 
-0. **Nothing to share?** If `summary.json` / the `extract` message says no Context Hub calls were
-   found, report the adoption findings (sessions, availability, `missed_opportunity`) and offer only
-   keep-local or discard. Do not offer a gist or tarball: `audit gist` refuses such a bundle (override:
-   `--allow-empty`, only if the user insists).
+0. **Nothing to share?** If the `extract` message says there is nothing to share (no Context Hub calls
+   and no Pipecat work without it), offer only keep-local or discard: `audit gist` refuses such a
+   bundle (override: `--allow-empty`, only if the user insists). Zero calls *with* Pipecat work
+   without it is shareable: the bundle's `no_use_signals` explain why, which is what organizers need.
 1. **Show before asking.** Print `<out-dir>/share/report.md` in full; offer to show rows. If they
    edit or delete rows in `share/calls.jsonl` (valid JSONL), run
    `pipecat-context-hub audit repack <out-dir>` before anything is sent.

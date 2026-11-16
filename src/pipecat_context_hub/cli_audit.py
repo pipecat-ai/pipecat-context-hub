@@ -35,15 +35,23 @@ def _fail(message: str) -> NoReturn:
     raise SystemExit(EXIT_INVALID_INPUT)
 
 
-def _hub_calls(share: Path) -> int | None:
-    """``hub_calls`` from the bundle's manifest, or None when it cannot be read."""
+def _nothing_to_share(share: Path) -> bool:
+    """True when the manifest says no Context Hub calls AND no session did Pipecat work without it.
+
+    A zero-call bundle is still worth sending when it explains non-use (``analysis.usage``):
+    that is the adoption data an organizer most needs. An unreadable manifest is not "empty".
+    """
     import json
 
     try:
-        counts = json.loads((share / "manifest.json").read_text())["counts"]
-        return int(counts["hub_calls"])
+        manifest = json.loads((share / "manifest.json").read_text())
+        calls = int(manifest["counts"]["hub_calls"])
+        missed = int(
+            ((manifest.get("analysis") or {}).get("usage") or {}).get("missed_opportunity", 0)
+        )
     except (OSError, ValueError, KeyError, TypeError):
-        return None
+        return False
+    return calls == 0 and missed == 0
 
 
 def _since(_ctx: click.Context, _param: click.Parameter, value: str | None) -> str | None:
@@ -98,15 +106,21 @@ def extract_cmd(inputs: tuple[Path, ...], out: Path, anonymize: bool, since: str
     for warning in result.warnings:
         echo(f"warning: {warning}", err=True)
     summary = result.summary
-    if summary["hub_calls"] == 0:
+    if summary["hub_calls"] == 0 and summary["missed_opportunity"] == 0:
         echo(
             f"No Context Hub calls found in {summary['sessions']} sessions, so there is nothing to "
-            f"share: Context Hub was available in {summary['hub_available']}, and "
-            f"{summary['missed_opportunity']} did Pipecat work without it. Local detail is in "
+            f"share: no Context Hub calls and no Pipecat work without it. Local detail is in "
             f"{out}; `audit discard {out} --yes` removes it. Nothing has been sent.",
             err=True,
         )
     else:
+        if summary["hub_calls"] == 0:
+            echo(
+                f"No Context Hub calls, but {summary['missed_opportunity']} session(s) did Pipecat "
+                "work without it: the bundle explains why (see 'Answers to the four questions' in "
+                "share/report.md), and that is worth sending.",
+                err=True,
+            )
         echo(
             f"Share bundle (review before sending): {result.share}\n"
             f"Tarball: {result.tarball} (sha256 {result.sha256[:16]}...)\n"
@@ -138,7 +152,7 @@ def repack_cmd(out_dir: Path) -> None:
 @click.option(
     "--allow-empty",
     is_flag=True,
-    help="Post even when the bundle holds no Context Hub calls (it carries nothing useful).",
+    help="Post even when the bundle has no Context Hub calls and no Pipecat work without it.",
 )
 def gist_cmd(out_dir: Path, yes: bool, allow_empty: bool) -> None:
     """Post OUT_DIR/share/ as a SECRET GitHub gist (unlisted, NOT private).
@@ -153,10 +167,11 @@ def gist_cmd(out_dir: Path, yes: bool, allow_empty: bool) -> None:
     missing = [f.name for f in files if not f.is_file() or f.is_symlink()]
     if missing:
         _fail(f"{share.name}/ is missing {missing}; run `audit extract` first")
-    if not allow_empty and _hub_calls(share) == 0:
+    if not allow_empty and _nothing_to_share(share):
         _fail(
-            "this bundle has no Context Hub calls, so a gist would carry nothing useful "
-            "(only session counters and timestamps); pass --allow-empty to post it anyway"
+            "this bundle has no Context Hub calls and no Pipecat work without it, so a gist would "
+            "carry nothing useful (only session counters and timestamps); pass --allow-empty to "
+            "post it anyway"
         )
     # A gist cannot hold an empty file (calls.jsonl is empty when no Context Hub call was found);
     # `audit ingest` accepts a bundle without it when the manifest says zero calls.

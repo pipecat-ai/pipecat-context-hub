@@ -42,7 +42,7 @@ unless you run `gist --yes`**.
 ```bash
 pipecat-context-hub audit extract -i ~/.claude/projects/<project> --out ./hub-audit --since 2026-11-18
 # read ./hub-audit/share/report.md (what would be shared), then choose one:
-pipecat-context-hub audit gist ./hub-audit --yes      # secret gist: unlisted, NOT private (refuses a bundle with no Context Hub calls)
+pipecat-context-hub audit gist ./hub-audit --yes      # secret gist: unlisted, NOT private (refuses a bundle with no calls and no Pipecat work without Context Hub)
 #   ...or send ./hub-audit/share.tar.gz yourself (email, chat), or:
 pipecat-context-hub audit discard ./hub-audit --yes   # deletes only files `extract` wrote
 pipecat-context-hub audit repack ./hub-audit          # after editing share/ by hand
