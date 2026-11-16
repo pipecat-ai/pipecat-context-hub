@@ -386,6 +386,48 @@ class TestSharing:
         assert argv[1:3] == ["gist", "create"] and "--public" not in argv
         assert {Path(a).name for a in argv if a.endswith((".md", ".json", ".jsonl"))} == set(BUNDLE)
 
+    def test_gist_leaves_out_an_empty_file_and_ingest_accepts_the_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Real `gh` rejects blank files (frozen from a real failure): no Context Hub calls means an
+        empty calls.jsonl, which must be left out of the gist and still ingest as a zero-call bundle."""
+        _jl(
+            tmp_path / "in" / "zed" / "s.jsonl",
+            [_use(1, "2026-11-18T10:00:00Z", "Bash", {"command": "ls"})],
+        )
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        assert (out / "share" / "calls.jsonl").stat().st_size == 0
+        seen: list[list[str]] = []
+
+        def fake_run(argv: list[str], **_k: Any) -> subprocess.CompletedProcess[str]:
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "https://gist.github.com/x/abc\n", "")
+
+        monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/gh")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _invoke("gist", str(out), "--yes").exit_code == 0
+        posted = {Path(a).name for a in seen[0] if a.endswith((".md", ".json", ".jsonl"))}
+        assert posted == set(BUNDLE) - {"calls.jsonl"}
+        # a cloned gist is the posted files only: ingest must accept it
+        gist_dir = tmp_path / "gist"
+        gist_dir.mkdir()
+        for n in posted:
+            (gist_dir / n).write_bytes((out / "share" / n).read_bytes())
+        merged = tmp_path / "merged"
+        assert _invoke("ingest", str(gist_dir), "--out", str(merged)).exit_code == 0
+        assert json.loads((merged / "ingest.json").read_text())[0]["status"] == "ok"
+
+    def test_ingest_still_requires_calls_when_the_manifest_claims_calls(
+        self, audited: Path, tmp_path: Path
+    ) -> None:
+        gist_dir = tmp_path / "gist"
+        gist_dir.mkdir()
+        for n in set(BUNDLE) - {"calls.jsonl"}:
+            (gist_dir / n).write_bytes((audited / "share" / n).read_bytes())
+        result = _invoke("ingest", str(gist_dir), "--out", str(tmp_path / "m"))
+        assert result.exit_code == 1 and "REJECTED" in result.output
+
     def test_gist_yes_without_gh_fails_cleanly(
         self, audited: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

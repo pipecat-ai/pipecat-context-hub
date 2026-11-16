@@ -127,9 +127,15 @@ def gist_cmd(out_dir: Path, yes: bool) -> None:
     missing = [f.name for f in files if not f.is_file() or f.is_symlink()]
     if missing:
         _fail(f"{share.name}/ is missing {missing}; run `audit extract` first")
+    # A gist cannot hold an empty file (calls.jsonl is empty when no Context Hub call was found);
+    # `audit ingest` accepts a bundle without it when the manifest says zero calls.
+    empty = [f for f in files if f.stat().st_size == 0]
+    files = [f for f in files if f.stat().st_size > 0]
     echo("Would post as a SECRET gist (unlisted, not private: anyone with the link can read it):")
     for f in files:
         echo(f"  {f.name}  {f.stat().st_size} bytes")
+    for f in empty:
+        echo(f"  ({f.name} is empty and is left out: a gist cannot hold an empty file)")
     if not yes:
         echo("Preview only. Re-run with --yes to create the gist.", err=True)
         return

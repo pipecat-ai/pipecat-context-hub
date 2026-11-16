@@ -75,10 +75,15 @@ def load(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[st
     else:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         files = read_tar(path)
-    missing = [n for n in ("manifest.json", "calls.jsonl", "sessions.jsonl") if n not in files]
+    missing = [n for n in ("manifest.json", "sessions.jsonl") if n not in files]
     if missing:
         raise ValueError(f"missing {missing}")
     manifest = json.loads(files["manifest.json"])
+    if "calls.jsonl" not in files:
+        # A gist cannot hold an empty file, so `audit gist` omits calls.jsonl when it is empty.
+        if (manifest.get("counts") or {}).get("hub_calls") != 0:
+            raise ValueError("missing ['calls.jsonl']")
+        files["calls.jsonl"] = b""
     if manifest.get("schema_version") != SUPPORTED_SCHEMA:
         raise ValueError(
             f"schema_version {manifest.get('schema_version')!r} unsupported (expected {SUPPORTED_SCHEMA})"
