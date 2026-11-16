@@ -33,6 +33,28 @@ semantic queries do.
 (and, when present, `scripts/deprecations/removals.json`) from the indexed
 framework checkout. Deprecation checks do not require GitHub CLI authentication.
 
+## Audit commands (session feedback)
+
+`audit` reviews how coding agents used Context Hub in real sessions. It reads local transcripts
+(Claude Code, Codex, pi; other formats are only text-scanned), works offline, and **sends nothing
+unless you run `gist --yes`**.
+
+```bash
+pipecat-context-hub audit extract -i ~/.claude/projects/<project> --out ./hub-audit --since 2026-11-18
+# read ./hub-audit/share/report.md (what would be shared), then choose one:
+pipecat-context-hub audit gist ./hub-audit --yes      # secret gist: unlisted, NOT private
+#   ...or send ./hub-audit/share.tar.gz yourself (email, chat), or:
+pipecat-context-hub audit discard ./hub-audit --yes   # deletes only files `extract` wrote
+pipecat-context-hub audit repack ./hub-audit          # after editing share/ by hand
+pipecat-context-hub audit ingest a.tar.gz b.tar.gz --out ./merged   # organizers
+```
+
+The `share/` bundle carries tool names, queries, result shapes (hit counts, confidence), flags and
+latency, with opaque ids; transcript text, shell commands and paths are dropped or replaced. Redaction
+is best-effort and queries are your own words, so read `report.md` first. `ingest` treats bundles as
+untrusted (in-memory reads, five known filenames, schema-version and row validation). The
+`context-hub-session-audit` skill (`.claude/skills/`) adds the organizer's judgment rubric.
+
 ## Exit codes
 
 | Code | Meaning |

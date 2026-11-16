@@ -13,11 +13,15 @@ This changelog retains repository and Context Hub package history.
 ## [Unreleased]
 
 ### Added
-- **`context-hub-session-audit` maintainer skill** (`.claude/skills/`). Extracts Context Hub
-  usage from Claude Code, Codex and pi transcripts (MCP and shell CLI calls), flags
-  inefficiency heuristically, and writes a scrubbed, self-describing `share/` bundle plus a
-  deterministic `share.tar.gz`. `ingest.py` validates and merges bundles from other people. Nothing
-  is sent without an explicit participant choice (secret gist, tarball, or discard).
+- **`pipecat-context-hub audit` command group** (`extract`, `repack`, `gist`, `discard`, `ingest`)
+  for reviewing how coding agents used Context Hub in real sessions. Reads Claude Code, Codex and
+  pi transcripts (MCP and shell CLI calls), flags inefficiency heuristically, and writes a
+  scrubbed, self-describing `share/` bundle plus a deterministic `share.tar.gz` with opaque
+  (per-run HMAC) ids. Sends nothing unless `gist --yes` (always a secret gist, never public);
+  `ingest` validates and merges bundles from other people as untrusted input. Also reachable as
+  `pipecat context-hub audit`.
+- **`context-hub-session-audit` skill** (`.claude/skills/`): agent front end for `audit` with
+  the share-or-discard flow and the organizer's judgment rubric.
 
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and

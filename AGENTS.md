@@ -25,6 +25,8 @@ uv run pipecat-context-hub serve                    # start MCP server (`start` 
 uv run pipecat-context-hub install --print-config   # show MCP client config; change nothing
 uv run pipecat-context-hub repos list [--groups]    # effective repos (default/catalog/unlisted) and the catalog groups
 uv run pipecat-context-hub repos add <slug>         # edit PIPECAT_HUB_EXTRA_REPOS in config.toml, or the file PIPECAT_HUB_CONFIG_FILE names (--unlisted, --group NAME, --config-only); also `remove`
+uv run pipecat-context-hub audit extract -i <transcripts> --out <dir> [--since YYYY-MM-DD]  # participant: scrubbed share/ bundle + tarball; sends nothing
+uv run pipecat-context-hub audit gist <dir> [--yes]  # secret (unlisted) gist of share/; preview without --yes (also: repack, discard, ingest)
 just catalog-regen                                  # regenerate .env.example / docs from data/repo_catalog.toml (--check, --bump-verified)
 just catalog-health                                 # network: flag private/missing/archived/renamed catalog repos (weekly in catalog-health.yml)
 just catalog-curate                                 # network, report-only: per-repo stats + code-search vendor candidates (needs a GitHub token)
@@ -157,6 +159,7 @@ src/pipecat_context_hub/
 ├── cli.py                    # CLI entry point (serve + refresh)
 ├── cli_query.py              # One-shot query subcommands (the MCP tools as shell commands)
 ├── cli_install.py            # `install` — register the MCP server with a coding agent
+├── cli_audit.py              # `audit extract|repack|gist|discard|ingest` — review how agents used Context Hub in real sessions (participant side is the CLI alone; the skill adds organizer judgment)
 ├── cli_repos.py              # `repos list|add|remove` — edit PIPECAT_HUB_EXTRA_REPOS in config.toml (check order, shadow refusal, hand-edit advice naming the resolved config path, `parseable = false` add warning)
 ├── data/repo_catalog.toml    # curated public repos by vendor/topic; source for generated .env.example / docs sections
 ├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat context-hub`
@@ -184,6 +187,7 @@ src/pipecat_context_hub/
 │   ├── support_links.py      # RETRIEVAL_QUALITY_ISSUE_URL / BUG_REPORT_ISSUE_URL — single source for MCP + CLI report-hint URLs
 │   ├── markdown.py           # fence-aware heading utils (fenced_ranges, inside_fence, iter_headings, extract_section, heading_titles) — shared by docs ingest + retrieval
 │   └── versioning.py         # LATEST_SENTINEL / HEAD_SENTINEL / DEFAULT_FRAMEWORK_PIN / is_latest_sentinel / is_head_sentinel / canonicalize_framework_pin / parse_release_version / exact_release_version — shared tag/version helpers for `--framework-version` (pin, the `latest`/`head` sentinels, the default pin, and provenance stamping)
+├── audit/                    # extract.py (Claude Code/Codex/pi adapters, heuristic flags, scrubbed share/ bundle + deterministic tarball), ingest.py (validate/merge untrusted bundles: in-memory tar reads, five known filenames only)
 ├── services/
 │   ├── embedding.py          # EmbeddingService
 │   ├── onnx_backend.py       # ONNX Runtime inference (bi-encoder + cross-encoder); repo-id resolution, cache probe
@@ -200,9 +204,7 @@ scripts/                      # Not packaged; scripts run by `just` recipes and 
 ├── curate_repo_catalog.py    # `just catalog-curate`: report-only curation (file counts, code-search vendor candidates)
 └── catalog_script_common.py  # shared by both: catalog loading, GitHub headers, validated_body (the one response validator)
 
-.claude/skills/context-hub-session-audit/   # maintainer skill: audit session transcripts for Context Hub usage
-├── SKILL.md                  # workflow: participant share-or-discard, organizer ingest + judgment
-└── scripts/                  # extract.py (transcripts -> flags + share bundle), ingest.py (validate/merge bundles); tests/unit/test_session_audit_skill.py
+.claude/skills/context-hub-session-audit/SKILL.md   # agent front end for `audit`: share-or-discard flow, organizer judgment rubric
 
 dashboard/
 ├── public/                   # Served by `just dashboard-serve`
