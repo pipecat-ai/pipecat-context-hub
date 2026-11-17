@@ -122,7 +122,8 @@ Before anything is kept or posted, `extract`, `repack` and `gist` run a leak che
 finished files: JSON is checked decoded (every string, key and repeated key, so a `\u0073k-...`
 escape cannot hide a token), and a hit refuses the whole bundle, naming the file and rule but never
 the matched text; `report.md` is checked one table cell (or other line) at a time, so no match joins
-two rendered values, and `SCHEMA.md` is checked whole. "Nothing to share" means no call rows, no session that used Context Hub and no
+two rendered values, and `SCHEMA.md` is checked whole (`report.md` joins call/count pairs with ` ↦ `,
+because `→` is a label separator). "Nothing to share" means no call rows, no session that used Context Hub and no
 session that did Pipecat work without it; `gist` refuses such a bundle unless `--allow-empty`, and
 leaves out a `calls.jsonl` or `sessions.jsonl` with no rows (a file holding only whitespace counts
 as empty; a gist cannot hold an empty file). `gist`, `repack` and `ingest` read a share/ directory
