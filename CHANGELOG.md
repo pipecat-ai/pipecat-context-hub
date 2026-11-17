@@ -53,7 +53,15 @@ This changelog retains repository and Context Hub package history.
   constant limits (archive size, members, member size, decompressed bytes), and merged rows are
   namespaced by their source bundle, so a tampered copy cannot shadow another participant's rows.
   `gist` passes absolute paths after `--`, so an out dir named like a flag cannot make gh post a
-  public gist.
+  public gist. The shell parser fails closed: a line using a construct it does not model (`$'...'`,
+  `${...}`, `$((...))`, a pipe or here-string into a shell, an expanding here-document) is counted
+  but shares no command text, an escaped `\$(...)` is not a call, and `<(...)` and a here-document
+  fed to a shell are parsed as the commands they run. A JS batch call shares only its literal
+  arguments as JSON. Labelled credentials in free text (`password: ...`, `--api-key ...`,
+  `Authorization: Basic ...`, a URL password containing `@`) and 32+ digit numbers are redacted and
+  refused by the leak check, and `report.md` renders every value as text (never a Python repr),
+  so a clean row can no longer fail the leak check once rendered. The audit skill and `SCHEMA.md`
+  tell organizers to rebuild a call by hand, never to run `hub_invocation`.
 
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and

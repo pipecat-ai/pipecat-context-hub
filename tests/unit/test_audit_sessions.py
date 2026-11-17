@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import shlex
 import subprocess
 import tarfile
 from pathlib import Path
@@ -434,7 +435,10 @@ class TestOtherHarnesses:
         assert (c["tool"], c["via"]) == ("search_docs", "cli") and "zero_hits" in c["flags"]
 
     def test_codex_js_batch_never_leaks_its_input(self, tmp_path: Path) -> None:
-        """A JS `exec` batch carries unrelated code; only the one call expression may be shared."""
+        """A JS `exec` batch carries unrelated code; only the call's literal arguments are shared.
+
+        Changed with round-2 F27: the call expression as written is no longer shared (it can carry
+        comments and credential values); the tool name plus its parsed literal arguments are."""
         js = (
             f'const k = "{SECRET}"; const p = "{HOME_PATH}";\n'
             'const r = await tools.mcp__pipecat_context_hub__search_docs({query: "TTS (fast)"});\n'
@@ -446,7 +450,7 @@ class TestOtherHarnesses:
         assert _extract(tmp_path / "in", out).exit_code == 0
         (c,) = _rows(out / "share" / "calls.jsonl")
         assert c["via"] == "mcp_js" and c["input"] == {}
-        assert c["hub_invocation"].endswith('{query: "TTS (fast)"})')
+        assert c["hub_invocation"] == 'search_docs({"query": "TTS (fast)"})'
         shared = "".join(p.read_text() for p in (out / "share").iterdir())
         for needle in (SECRET, "/Users/alice", BEARER):
             assert needle not in shared
@@ -457,7 +461,8 @@ class TestOtherHarnesses:
         ids=["template-literal", "open-string", "paren-storm"],
     )
     def test_unterminated_js_call_fails_closed(self, tmp_path: Path, tail: str) -> None:
-        """No closing paren found: share the call prefix only, never the code that follows."""
+        """No closing paren found: share nothing, never the code that follows (round-2 F27: the
+        call prefix `...(...)` is no longer shared either; only parsed literal arguments are)."""
         js = (
             f"const r = await tools.mcp__pipecat_context_hub__search_docs({tail}\n"
             f'const k = "{SECRET}"; fetch("https://x.example/?t={BEARER}")'
@@ -467,7 +472,7 @@ class TestOtherHarnesses:
         out = tmp_path / "out"
         assert _extract(tmp_path / "in", out).exit_code == 0
         (c,) = _rows(out / "share" / "calls.jsonl")
-        assert c["via"] == "mcp_js" and c["hub_invocation"].endswith("(...)")
+        assert c["via"] == "mcp_js" and c["hub_invocation"] == ""
         shared = "".join(p.read_text() for p in (out / "share").iterdir())
         assert SECRET not in shared and BEARER not in shared
         rows = (out / "share" / "calls.jsonl").read_text()
@@ -1223,6 +1228,12 @@ SECRET_SHAPES = [
     (HOME_PATH, "secret-project"),
     ("C:\\Users\\alice\\proj\\bot.py", "alice"),
     ("/tmp/xyz/secret.py", "xyz/secret"),
+    # Round-2 F21: labelled credentials in free text (the label, not the value, says it is one)
+    ('{"password": "hunter2hunter2"}', "hunter2hunter2"),
+    ("--password hunter2hunter2", "hunter2hunter2"),
+    ("--api-key=cobalt-lantern-private", "cobalt-lantern-private"),
+    ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
+    ("postgres://user:p@ss@host/db", "ss@host"),
 ]
 # How a transcript can carry a string into a share row.
 REPRESENTATIONS: dict[str, Any] = {
@@ -1249,6 +1260,13 @@ BENIGN = [
     "https://docs.pipecat.ai/guides/x",
     "http://localhost:8080/x@y",
     "pypi-simple and ghs short and glpat",
+    # Round-2 F21: labels that are not credential names, and values too short to be one
+    "password_hint: your pet",
+    "--password-file ./pw.txt",
+    "max_tokens: 4096",
+    "token_count=12",
+    "a token: is",
+    "Authorization header docs",
 ]
 
 
@@ -1477,7 +1495,9 @@ class TestEgressParity:
             "input": {"query": f"{SECRET} a|b\nc"},
         }
         report = render_report({}, [row])
-        assert f"{SECRET} a\\|b c" in report  # escaped and joined, never rewritten
+        # escaped and joined, never rewritten (round-2 G1: a line break renders as ` · `, a
+        # separator no rule matches across, instead of a space that could join a label to a value)
+        assert f"{SECRET} a\\|b · c" in report
         _write_sink(tmp_path / "share", "report.md", report)
         assert egress.verify_share(tmp_path / "share", ("report.md",))
 
@@ -2248,3 +2268,476 @@ class TestHygiene:
         paths = argv[sep + 1 :]
         assert paths and all(Path(p).is_absolute() for p in paths)
         assert {Path(p).name for p in paths} == set(BUNDLE)
+
+
+# ---- Contract G1: report.md is a function of rows the tripwire already accepted -----------------
+#
+# Closure under sanitize: whatever `sanitize` emits passes `verify_share`. Closure under rendering:
+# `render_report` of rows (and manifest values) that pass `verify_share` passes it too. Both are
+# checked over generated values below, built from printable text, the characters the rules key on
+# and the secret-shape corpus.
+
+_FUZZ_ALPHABET = "abcXYZ019 .,_-/" + "|\\\n:@=\"'$()" + "\t\r·→…<>`;{}[]#~%"
+_FUZZ_FRAGMENTS = [
+    *(t for t, _ in SECRET_SHAPES), *BENIGN, "password", "TOKEN=", "MONKEY=", "api_key",
+    "--api-key ", "--password=", "--password", "Authorization: Basic ", "Bearer ", "C:\\",
+    "/tmp/", "/Users/", "Users", "sk-", "0123456789abcdef", "<redacted>", "<user>", "<path>",
+    "\\|", " · ", " → ", " | ", "MONKEY=a|b|c|d", "s:\n", "eyJ", "AKIA", "@", "://", "u:p@h",
+    '"', "'", "abcdefgh", "-----BEGIN RSA PRIVATE KEY-----",
+]  # fmt: skip
+
+
+def _fuzz_text(rng: Any) -> str:
+    parts = []
+    for _ in range(rng.randint(0, 6)):
+        if rng.random() < 0.45:
+            parts.append(rng.choice(_FUZZ_FRAGMENTS))
+        else:
+            parts.append("".join(rng.choice(_FUZZ_ALPHABET) for _ in range(rng.randint(0, 12))))
+    return "".join(parts)
+
+
+def _fuzz_value(rng: Any, depth: int = 0) -> Any:
+    kind = rng.randrange(8 if depth < 2 else 5)
+    if kind in (0, 1):
+        return _fuzz_text(rng)
+    if kind == 2:
+        return rng.choice([0, 7, 2**63, 10 ** rng.randint(0, 45), -(10 ** rng.randint(20, 40))])
+    if kind == 3:
+        return rng.choice([None, True, False, 0.25, 1e40, float("inf")])
+    if kind == 4:
+        return rng.random() * 10 ** rng.randint(0, 40)
+    if kind in (5, 6):
+        return [_fuzz_value(rng, depth + 1) for _ in range(rng.randint(0, 3))]
+    return {_fuzz_text(rng): _fuzz_value(rng, depth + 1) for _ in range(rng.randint(0, 3))}
+
+
+def _json_clean(v: Any) -> bool:
+    return egress._file_leaks("calls.jsonl", json.dumps(v)) == []
+
+
+def _report_clean(text: str) -> bool:
+    return egress._file_leaks("report.md", text) == []
+
+
+class TestRenderClosure:
+    @pytest.mark.parametrize("seed", range(4))
+    def test_sanitize_and_render_are_closed_over_generated_values(self, seed: int) -> None:
+        """Property: sanitize-closure, render-closure, value_text-closure and the cell identity."""
+        import random
+
+        from pipecat_context_hub.audit import flags
+
+        rng = random.Random(seed)
+        names = sorted(flags.FLAGS)
+        for _ in range(400):
+            text = _fuzz_text(rng)
+            assert egress.md_decoded(egress.md_cell(text)) == egress.one_line(text)
+            query, n_hits = _fuzz_value(rng), _fuzz_value(rng)
+            row: dict[str, Any] = {
+                "ref": _fuzz_text(rng),
+                "tool": _fuzz_text(rng),
+                "via": "mcp",
+                "flags": rng.sample(names, rng.randint(1, 3)),
+                "severity": 1,
+                "result": {"n_hits": n_hits, "confidence": _fuzz_value(rng)},
+                "followups": [],
+                "input": {"query": query, "path": _fuzz_value(rng)},
+                "hub_invocation": _fuzz_text(rng),
+                "latency_s": rng.choice([None, rng.random() * 20]),
+            }
+            clean = egress.sanitize(row)
+            assert _json_clean(clean), clean  # closure under sanitize
+            manifest = egress.sanitize({"harnesses": _fuzz_value(rng)})
+            candidates = [clean] + ([row] if _json_clean(row) else [])
+            for r in candidates:  # closure under rendering
+                report = render_report(manifest, [r])
+                assert _report_clean(report), (r, egress._file_leaks("report.md", report))
+            for v in (query, n_hits, manifest["harnesses"]):
+                if _json_clean(v):
+                    assert egress.leaks_in(egress.value_text(v)) == [], v
+
+    def test_a_pipe_escape_never_creates_a_match_the_row_lacks(self, tmp_path: Path) -> None:
+        """F2: `TOKEN=a|b|c|d` (7 chars after `=`) rendered as `TOKEN=a\\|b\\|c\\|d` matched the
+        8+ non-space rule, so verify_share refused report.md and extract deleted the bundle."""
+        row = {"ref": "r", "tool": "search_docs", "flags": ["zero_hits"], "result": {},
+               "input": {"query": "search MONKEY=a|b|c|d"}}  # fmt: skip
+        assert _json_clean(row)
+        report = render_report({}, [row])
+        assert "search MONKEY=a\\|b\\|c\\|d" in report  # meaning kept: escaped, not substituted
+        assert _report_clean(report)
+        # the finding's own query, end to end: extract keeps a bundle the tripwire accepts
+        _hub_session(tmp_path / "in" / "zed" / "s.jsonl", "search TOKEN=a|b|c|d", confident=False)
+        out = tmp_path / "out"
+        result = _extract(tmp_path / "in", out)
+        assert result.exit_code == 0, result.output
+        assert egress.verify_share(out / "share", tuple(BUNDLE)) == []
+
+    def test_a_non_string_query_renders_as_text_not_repr(self, tmp_path: Path) -> None:
+        """F22: `str(["voice options:\\nTTS"])` wrote `\\n` after `s:`, read as a Windows path."""
+        empty = json.dumps({"hits": [], "evidence": {"confidence": 0.1, "low_confidence": True}})
+        inp = {"query": ["voice options:\nTTS"]}
+        _jl(
+            tmp_path / "in" / "zed" / "s.jsonl",
+            [
+                _use(1, "2026-11-18T10:00:00Z", "mcp__pipecat-context-hub__search_docs", inp),
+                _result(1, "2026-11-18T10:00:01Z", empty),
+            ],
+        )
+        out = tmp_path / "out"
+        result = _extract(tmp_path / "in", out)
+        assert result.exit_code == 0, result.output
+        report = (out / "share" / "report.md").read_text()
+        assert "| voice options: · TTS |" in report and "['" not in report
+        assert egress.verify_share(out / "share", tuple(BUNDLE)) == []
+        # headers render dicts the same way, never as a Python dict repr
+        assert "Calls by tool: search_docs → 1" in report
+
+    def test_the_number_rule_is_the_same_on_both_sides(self, tmp_path: Path) -> None:
+        """Q2: numbers were scanned by neither side, so a 32+ digit integer passed both."""
+        big = 12345678901234567890123456789012345678
+        out = egress.sanitize({"n": big, "small": 7, "max": 2**63, "f": 1e40, "b": True})
+        assert out == {"n": egress.REDACTED, "small": 7, "max": 2**63, "f": 1e40, "b": True}
+        share = tmp_path / "share"
+        _write_sink(share, "calls.jsonl", json.dumps(out))
+        assert egress.verify_share(share, ("calls.jsonl",)) == []
+        _write_sink(share, "calls.jsonl", json.dumps({"input": {"n": big}}))  # a hand edit
+        assert egress.verify_share(share, ("calls.jsonl",)) == ["calls.jsonl: secret pattern 7"]
+        assert egress.value_text(big) == str(big) and egress.value_text(1e40) == "1e+40"
+
+    # (representation, how the shape reaches a share row). `argv` goes through a real shell line.
+    LABELLED = [
+        ('{"password": "hunter2hunter2"}', "hunter2hunter2"),
+        ("--password hunter2hunter2", "hunter2hunter2"),
+        ("--api-key=cobalt-lantern-private", "cobalt-lantern-private"),
+        ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
+        ("postgres://user:p@ss@host/db", "ss@host"),
+    ]
+    REPS: dict[str, Any] = {
+        "value": lambda t: {"query": t},
+        "key": lambda t: {t: "x"},
+        "nested": lambda t: {"a": [{"b": t}]},
+        "free-text-in-query": lambda t: {"query": f"how do I set {t} for the TTS service"},
+        "header": lambda t: {"query": f"curl -H '{t}' https://api.example.com"},
+    }
+
+    @pytest.mark.parametrize("rep", list(REPS))
+    @pytest.mark.parametrize("shape", LABELLED, ids=[p for _, p in LABELLED])
+    def test_a_labelled_credential_is_removed_and_refused_in_every_representation(
+        self, tmp_path: Path, shape: tuple[str, str], rep: str
+    ) -> None:
+        """F21: these carry a key name, yet sanitize left them unchanged and verify_share passed."""
+        text, payload = shape
+        row = self.REPS[rep](text)
+        clean = egress.sanitize(row)
+        assert payload not in json.dumps(clean, ensure_ascii=False)  # ground truth, not the rules
+        assert _json_clean(clean) and _report_clean(
+            render_report(
+                {},
+                [{"ref": "r", "tool": "t", "flags": ["zero_hits"], "result": {}, "input": clean}],
+            )  # fmt: skip
+        )
+        share = tmp_path / "share"
+        _write_sink(share, "calls.jsonl", json.dumps(row))  # a hand edit: refused independently
+        assert egress.verify_share(share, ("calls.jsonl",))
+        _write_sink(share, "report.md", f"| q | {text} |")
+        assert egress.verify_share(share, ("report.md",))
+
+    @pytest.mark.parametrize(
+        ("flag", "payload"),
+        [("--password hunter2hunter2", "hunter2hunter2"),
+         ("--api-key=cobalt-lantern-private", "cobalt-lantern-private"),
+         ("--token 'two words'", "two words")],
+    )  # fmt: skip
+    def test_a_credential_flag_in_a_shared_argv_is_redacted_by_structure(
+        self, tmp_path: Path, flag: str, payload: str
+    ) -> None:
+        """F21 (argv flag representation): the invocation is rebuilt from argv, so the value after a
+        credential flag is replaced before re-quoting and the result stays one inert command."""
+        line = f"pipecat-context-hub search-docs TTS {flag}"
+        inv = audit_extract.hub_invocation({"command": line}, "cli")
+        assert inv and payload not in inv and egress.sanitize(inv) == inv
+        from pipecat_context_hub.audit.shell import shell_hub_calls
+
+        assert shell_hub_calls(inv) == [shlex.split(inv)]  # pasted, it is one command
+        cli_json = json.dumps({"hits": [{"doc_id": "d"}], "evidence": {"confidence": 0.9}})
+        _jl(
+            tmp_path / "in" / "zed" / "s.jsonl",
+            [
+                _use(1, "2026-11-18T10:00:00Z", "Bash", {"command": line}),
+                _result(1, "2026-11-18T10:00:01Z", cli_json),
+            ],
+        )
+        assert _extract(tmp_path / "in", tmp_path / "out").exit_code == 0
+        shared = "".join((tmp_path / "out" / "share" / n).read_text() for n in BUNDLE)
+        assert payload not in shared
+
+
+# ---- Contract G2: a shared invocation is shell-inert data; the tokenizer fails closed -----------
+
+F28_LINE = 'printf "%s\\n" "\\$(pipecat-context-hub search-docs Acquisition-Acme-17m)"'
+F23_ANSI = "printf $'note\\'; pipecat-context-hub search-docs MY PRIVATE NOTES' \\'"
+F23_BRACE = "echo ${GREETING:-hi; pipecat-context-hub search-docs MY PRIVATE NOTES}"
+F19_LINE = "diff <(pipecat-context-hub status) x"
+F20_LINE = "bash <<EOF\npipecat-context-hub status\nEOF"
+
+# (shell line, the tool counted or None, the invocation shared). A line the tokenizer does not
+# fully model is still counted by the regex fallback, but shares "".
+G2_CASES = [
+    ("pipecat-context-hub search-docs TTS", "search_docs", "pipecat-context-hub search-docs TTS"),
+    ("uv run pipecat-context-hub search-docs TTS", "search_docs", "pipecat-context-hub search-docs TTS"),
+    ("/opt/x/bin/pipecat-context-hub search-docs TTS", "search_docs", "pipecat-context-hub search-docs TTS"),
+    ("pipecat context-hub status", "get_hub_status", "pipecat context-hub status"),
+    ('pipecat-context-hub search-docs "TTS & STT; x | y"', "search_docs",
+     "pipecat-context-hub search-docs 'TTS & STT; x | y'"),
+    ("pipecat-context-hub search-docs TTS # private note", "search_docs", "pipecat-context-hub search-docs TTS"),
+    ('echo "pipecat-context-hub search-docs x"', None, ""),
+    (F28_LINE, None, ""),  # escaped `\$(` in double quotes is literal text (modelled)
+    (F23_ANSI, "search_docs", ""),  # ANSI-C quoting: not modelled, fails closed
+    (F23_BRACE, "search_docs", ""),  # `${...}` with operators: fails closed
+    ('cd "${HOME}/x" && pipecat-context-hub search-docs a', "search_docs", "pipecat-context-hub search-docs a"),
+    (F19_LINE, "get_hub_status", "pipecat-context-hub status"),  # process substitution (modelled)
+    ("echo x | tee >(pipecat-context-hub search-docs a)", "search_docs", "pipecat-context-hub search-docs a"),
+    ("echo $((1+2)); pipecat-context-hub status", "get_hub_status", ""),  # arithmetic: fails closed
+    ("x=`pipecat-context-hub status`", "get_hub_status", "pipecat-context-hub status"),
+    ("x=`echo \\`pipecat-context-hub status\\``", "get_hub_status", ""),  # backslash in backticks
+    ("cat <<'EOF'\npipecat-context-hub search-docs x\nEOF", None, ""),  # heredoc to cat: data
+    ("cat <<EOF\n$(pipecat-context-hub status)\nEOF", "get_hub_status", ""),  # expanded: fails closed
+    (F20_LINE, "get_hub_status", "pipecat-context-hub status"),  # heredoc to a shell: a script
+    ("bash <<'EOF'\npipecat-context-hub status\nEOF", "get_hub_status", "pipecat-context-hub status"),
+    ("python3 <<'EOF'\npipecat-context-hub status\nEOF", None, ""),  # heredoc to python: data
+    ('pipecat-context-hub search-docs x <<< "data"', "search_docs", "pipecat-context-hub search-docs x"),
+    ('bash <<< "pipecat-context-hub status"', "get_hub_status", ""),  # stdin script: fails closed
+    ("echo 'pipecat-context-hub status' | sh", "get_hub_status", ""),  # pipe into a shell
+    ("mkdir -p {a,b} && pipecat-context-hub status", "get_hub_status", ""),  # brace expansion
+    ('pipecat-context-hub search-docs "$(cat notes.txt)"', "search_docs", ""),  # substituted arg
+    ("pipecat-context-hub search-docs 'unterminated", "search_docs", ""),
+    ("echo (pipecat-context-hub status)", "get_hub_status", ""),  # `(` mid-command: syntax error
+    # words clean one by one, but joined they form `TOKEN= <value>`: cleaning the joined text would
+    # rewrite it (an unquoted `<redacted>` is a redirection), so nothing is shared
+    ("pipecat-context-hub search-docs TOKEN= abcdefghij", "search_docs", ""),
+]  # fmt: skip
+
+# Lines whose ground truth is taken from bash itself, with stand-in executables named like the hub
+# that only log their argv. Only harmless commands (echo, printf, cat, diff, true, eval, sh).
+BASH_TRUTH = [
+    "pipecat-context-hub search-docs TTS",
+    "pipecat context-hub status",
+    'pipecat-context-hub search-docs "TTS & STT" --limit 3 | cat',
+    "pipecat-context-hub search-docs TTS # Acquisition target: Acme",
+    "printf '%s' 'pipecat-context-hub search-docs TTS'",
+    'echo "pipecat-context-hub search-docs x"',
+    F28_LINE,
+    F23_ANSI,
+    F23_BRACE,
+    "cat <(pipecat-context-hub status) > /dev/null",
+    "diff <(pipecat-context-hub status) /dev/null",
+    "echo $((1+2)); pipecat-context-hub status",
+    "x=`pipecat-context-hub status`",
+    "cat <<'EOF'\npipecat-context-hub search-docs x\nEOF",
+    "cat <<EOF\npipecat-context-hub search-docs x\nEOF",
+    "cat <<EOF\n$(pipecat-context-hub status)\nEOF",
+    "bash <<'EOF'\npipecat-context-hub status\nEOF",
+    F20_LINE,
+    "bash -c 'echo hi' <<EOF\npipecat-context-hub status\nEOF",
+    "echo 'pipecat-context-hub status' | bash",
+    "bash <<< 'pipecat-context-hub status'",
+    "cat <<EOF | bash\npipecat-context-hub status\nEOF",
+    'pipecat-context-hub search-docs x <<< "data"',
+    "bash -c 'pipecat-context-hub status'",
+    "eval 'pipecat-context-hub status'",
+    'x=$(pipecat-context-hub search-api Foo) && echo "$x"',
+    'echo "$(echo "pipecat-context-hub status")"',
+    "echo {pipecat-context-hub,status}",
+    "( pipecat-context-hub status )",
+    "echo \\$(pipecat-context-hub status)",
+    "pipecat-context-hub search-docs 'unterminated",
+    'true && pipecat-context-hub search-docs "a b" ; echo done',
+    'pipecat-context-hub search-docs "a $(pipecat-context-hub status)"',
+]
+
+_STUB = """#!/bin/sh
+{ printf '%s' "$(basename "$0")"; for a in "$@"; do printf '\\037%s' "$a"; done; printf '\\036'; } >> "$HUB_LOG"
+"""
+
+
+def _bash_runs(line: str, tmp: Path) -> list[list[str]]:
+    """The hub argv lists bash actually executes for ``line`` (stand-in binaries log them)."""
+    import os
+    import shutil
+
+    stubs = tmp / "stubs"
+    stubs.mkdir(exist_ok=True)
+    for name in ("pipecat-context-hub", "pipecat"):
+        (stubs / name).write_text(_STUB)
+        (stubs / name).chmod(0o755)
+    log = tmp / "hub.log"
+    log.write_text("")
+    bash = shutil.which("bash")
+    assert bash is not None
+    env = {"PATH": f"{stubs}{os.pathsep}/usr/bin{os.pathsep}/bin", "HUB_LOG": str(log),
+           "HOME": str(tmp)}  # fmt: skip
+    subprocess.run(  # noqa: S603 - a fixed list of harmless lines, stand-in binaries only
+        [bash, "--noprofile", "--norc", "-c", line],
+        cwd=tmp, env=env, capture_output=True, timeout=10, check=False,
+    )  # fmt: skip
+    runs = []
+    for rec in log.read_text().split("\x1e"):
+        if rec:
+            name, *args = rec.split("\x1f")
+            runs.append([name, *args])
+    return runs
+
+
+class TestShellFailClosed:
+    @pytest.mark.parametrize(("line", "tool", "invocation"), G2_CASES)
+    def test_every_form_is_counted_and_shared_as_specified(
+        self, line: str, tool: str | None, invocation: str
+    ) -> None:
+        found, via, _ = audit_extract.detect_hub("Bash", {"command": line})
+        assert (found, via) == ((tool, "cli") if tool else (None, None))
+        shared = audit_extract.hub_invocation({"command": line}, "cli")
+        assert shared == invocation
+        if shared:  # inert data: re-sanitising cannot change it, pasted it is ONE command
+            from pipecat_context_hub.audit.shell import shell_hub_calls
+
+            assert egress.sanitize(shared) == shared
+            assert shell_hub_calls(shared) == [shlex.split(shared)]
+
+    @pytest.mark.skipif(
+        __import__("shutil").which("bash") is None or __import__("os").name == "nt",
+        reason="needs a POSIX bash",
+    )
+    @pytest.mark.parametrize("line", BASH_TRUTH)
+    def test_the_tokenizer_agrees_with_bash_on_what_runs(self, tmp_path: Path, line: str) -> None:
+        """Ground truth from bash: a line the tokenizer parses must run exactly the hub commands it
+        says (same argv when the words are literal); a line it cannot model must share nothing."""
+        from pipecat_context_hub.audit.shell import ShellSyntaxError, literal_argv, shell_hub_calls
+
+        ran = _bash_runs(line, tmp_path)
+        if ran:  # an executed hub call is always counted (parsed, or by the regex fallback)
+            assert audit_extract.detect_hub("Bash", {"command": line})[0] is not None
+        try:
+            calls = shell_hub_calls(line)
+        except ShellSyntaxError:
+            assert audit_extract.hub_invocation({"command": line}, "cli") == ""
+            return
+        heads = sorted(c[: (3 if c[0] == "pipecat" else 2)] for c in calls)
+        assert heads == sorted(r[: (3 if r[0] == "pipecat" else 2)] for r in ran), ran
+        literal = [w for c in calls if (w := literal_argv(c)) is not None]
+        assert all(c in ran for c in literal), (literal, ran)
+
+    def test_an_escaped_substitution_is_not_a_call(self, tmp_path: Path) -> None:
+        """F28: the scanner ignored the backslash in `"\\$(...)"` and shared the text as a call."""
+        assert audit_extract.detect_hub("Bash", {"command": F28_LINE}) == (None, None, 0)
+        rows = [
+            _use(1, "2026-11-18T10:00:00Z", "Bash", {"command": F28_LINE}),
+            _result(1, "2026-11-18T10:00:01Z", "$(pipecat-context-hub search-docs ...)"),
+        ]
+        _jl(tmp_path / "in" / "zed" / "s.jsonl", rows)
+        assert _extract(tmp_path / "in", tmp_path / "out").exit_code == 0
+        shared = "".join((tmp_path / "out" / "share" / n).read_text() for n in BUNDLE)
+        assert "Acquisition" not in shared and "Acme" not in shared
+
+    @pytest.mark.parametrize("line", [F23_ANSI, F23_BRACE], ids=["ansi-c", "brace"])
+    def test_an_unmodelled_construct_shares_no_text(self, tmp_path: Path, line: str) -> None:
+        """F23: `$'...'` and `${...}` were not understood, so string text became a hub_invocation."""
+        assert audit_extract.hub_invocation({"command": line}, "cli") == ""
+        rows = [
+            _use(1, "2026-11-18T10:00:00Z", "Bash", {"command": line}),
+            _result(1, "2026-11-18T10:00:01Z", "note"),
+        ]
+        _jl(tmp_path / "in" / "zed" / "s.jsonl", rows)
+        assert _extract(tmp_path / "in", tmp_path / "out").exit_code == 0
+        shared = "".join((tmp_path / "out" / "share" / n).read_text() for n in BUNDLE)
+        assert "PRIVATE" not in shared and "NOTES" not in shared
+
+    def test_a_process_substitution_runs_its_command(self) -> None:
+        """F19: `<(` was read as a redirect, so the hub binary was eaten as its target."""
+        assert audit_extract.detect_hub("Bash", {"command": F19_LINE}) == (
+            "get_hub_status",
+            "cli",
+            1,
+        )
+        assert (
+            audit_extract.hub_invocation({"command": F19_LINE}, "cli")
+            == "pipecat-context-hub status"
+        )
+
+    def test_a_heredoc_fed_to_a_shell_is_its_script(self) -> None:
+        """F20: `bash <<EOF` bodies were skipped as data although bash runs them."""
+        assert audit_extract.detect_hub("Bash", {"command": F20_LINE}) == (
+            "get_hub_status",
+            "cli",
+            1,
+        )
+
+    JS = "const r = await tools.mcp__pipecat_context_hub__search_docs({args});"
+    JS_CASES = [
+        ('{query: "TTS"}', 'search_docs({"query": "TTS"})'),
+        ("{'query': 'TTS', limit: 3, deep: [true, null, -1.5e2],}",
+         'search_docs({"query": "TTS", "limit": 3, "deep": [true, null, -150.0]})'),
+        ('{"query": "TTS", "api_key": "cobalt-lantern-private"}',
+         'search_docs({"query": "TTS", "api_key": "<redacted>"})'),
+        ('/* Acquisition: Acme for 17m */ {"query":"TTS","api_key":"cobalt-lantern-private"}', ""),
+        ('{query: "TTS" /* note */}', ""),
+        ('{query: "TTS" // note\n}', ""),
+        ("{query: q}", ""),
+        ("{query}", ""),
+        ("{query: `TTS ${x}`}", ""),
+        ('{query: "a" + secret}', ""),
+        ("{...opts}", ""),
+        ('{query: "TTS"}, fn()', ""),
+    ]  # fmt: skip
+
+    @pytest.mark.parametrize(("args", "shared"), JS_CASES)
+    def test_a_js_call_shares_only_literal_arguments(self, args: str, shared: str) -> None:
+        """F27: the raw call expression kept comments and credential values."""
+        js = self.JS.replace("{args}", args)
+        assert audit_extract.detect_hub("exec", js)[:2] == ("search_docs", "mcp_js")
+        assert audit_extract.hub_invocation(js, "mcp_js") == shared
+
+    def test_the_js_evidence_never_reaches_the_bundle(self, tmp_path: Path) -> None:
+        js = self.JS.replace("{args}", self.JS_CASES[3][0])
+        call = {"type": "custom_tool_call", "name": "exec", "input": js}
+        _jl(tmp_path / "in" / "dan" / "r.jsonl", TestOtherHarnesses._codex(call, '{"hits": []}'))
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        (c,) = _rows(out / "share" / "calls.jsonl")
+        assert c["via"] == "mcp_js" and c["hub_invocation"] == ""
+        shared = "".join((out / "share" / n).read_text() for n in BUNDLE)
+        assert "Acquisition" not in shared and "cobalt-lantern-private" not in shared
+
+    def test_no_doc_tells_an_organizer_to_execute_bundle_text(self) -> None:
+        """F29: SKILL.md (and the bundle's own SCHEMA.md) said to re-run `hub_invocation`."""
+        import re
+
+        root = Path(audit_extract.__file__).parents[3]
+        skill = (root / ".claude/skills/context-hub-session-audit/SKILL.md").read_text()
+        for text in (skill, audit_extract.FIELDS_MD):
+            flat = " ".join(text.split())
+            assert not re.search(r"re-?run[^.]{0,40}`hub_invocation`", flat), flat
+            assert "never paste or execute it" in flat
+            assert "rebuild the call by hand" in flat
+
+    def test_one_vocabulary_for_tools_and_subcommands(self) -> None:
+        """F6 / F7: the tool and subcommand names were written four times; command_text
+        duplicated shell_source with a different list rule."""
+        from pipecat_context_hub.audit import analysis, shell
+
+        assert audit_extract.HUB_TOOLS == tuple(shell.HUB_TOOL_SUBCOMMANDS)
+        assert set(audit_extract.HUB_RESULT_KEY) == set(shell.HUB_TOOL_SUBCOMMANDS)
+        assert analysis.SEARCH_TOOLS <= set(shell.HUB_TOOL_SUBCOMMANDS)
+        assert set(shell.CLI_TO_TOOL.values()) == set(shell.HUB_TOOL_SUBCOMMANDS)
+        for sub, tool in shell.CLI_TO_TOOL.items():
+            m = audit_extract.CLI_RE.search(f"pipecat-context-hub {sub} x")
+            assert m is not None and audit_extract._cli_tool(m.group(1)) == tool
+            assert audit_extract.MCP_RE.search(f"mcp__pipecat-context-hub__{tool}")
+        src = Path(audit_extract.__file__).read_text()
+        assert "search-api|search-docs" not in src and '"status": "get_hub_status"' not in src
+        argv = {"command": ["bash", "-lc", "echo 'a b'"]}
+        assert (
+            audit_extract.command_text(argv)
+            == shell.shell_source(argv)
+            == shlex.join(argv["command"])
+        )

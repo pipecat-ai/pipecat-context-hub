@@ -18,7 +18,6 @@ import hmac
 import json
 import re
 import secrets
-import shlex
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
@@ -40,6 +39,7 @@ from pipecat_context_hub.audit.bundle import (
 )
 from pipecat_context_hub.audit.egress import (
     ShareLeakError,
+    argv_text,
     clip,
     map_strings,
     public_tool_name,
@@ -49,7 +49,15 @@ from pipecat_context_hub.audit.egress import (
 )
 from pipecat_context_hub.audit.flags import FLAGS
 from pipecat_context_hub.audit.report import render_report
-from pipecat_context_hub.audit.shell import ShellSyntaxError, shell_hub_calls, shell_source
+from pipecat_context_hub.audit.shell import (
+    CLI_SUBCOMMANDS,
+    CLI_TO_TOOL,
+    HUB_TOOL_SUBCOMMANDS,
+    ShellSyntaxError,
+    literal_argv,
+    shell_hub_calls,
+    shell_source,
+)
 
 HUB_MENTION_RE = re.compile(r"context[- ]hub|pipecat[-_]context[-_]hub|\bPCH\b", re.IGNORECASE)
 HUB_TOOLSEARCH_RE = re.compile(
@@ -235,27 +243,19 @@ def summarize_hub_result(
     return out
 
 
-HUB_TOOLS = (
-    "search_docs",
-    "search_examples",
-    "search_api",
-    "get_doc",
-    "get_example",
-    "get_code_snippet",
-    "check_deprecation",
-    "get_hub_status",
-)
+# The tool vocabulary is defined once, in `shell.HUB_TOOL_SUBCOMMANDS`; everything here derives.
+HUB_TOOLS = tuple(HUB_TOOL_SUBCOMMANDS)
+_TOOL_ALT = "|".join(sorted(HUB_TOOLS, key=len, reverse=True))
 # MCP surface: any harness prefix, `-` or `_` spelling (Claude Code, Codex and others differ).
-MCP_RE = re.compile(r"pipecat[-_]context[-_]hub__(" + "|".join(HUB_TOOLS) + r")\b")
-# CLI surface: `pipecat-context-hub search-docs ...` / `pipecat context-hub ...` (uvx/uv run prefixes fine).
+MCP_RE = re.compile(r"pipecat[-_]context[-_]hub__(" + _TOOL_ALT + r")\b")
+# CLI surface: `pipecat-context-hub search-docs ...` / `pipecat context-hub ...` (uvx/uv run prefixes
+# fine). Detection only (text scans and lines the tokenizer cannot parse): never a shared invocation.
 CLI_RE = re.compile(
-    r"(?:pipecat[-_]context[-_]hub|pipecat\s+context-hub)\s+"
-    r"(search-api|search-docs|search-examples|get-doc|get-example|get-code-snippet|check-deprecation|status)\b"
+    r"(?:pipecat[-_]context[-_]hub|pipecat\s+context-hub)\s+("
+    + "|".join(re.escape(c) for c in sorted(CLI_SUBCOMMANDS, key=len, reverse=True))
+    + r")\b"
 )
-MCP_JS_CALL_RE = re.compile(
-    r"tools\.[\w$]*pipecat[-_]context[-_]hub__(" + "|".join(HUB_TOOLS) + r")\s*\("
-)
-CLI_TO_TOOL = {"status": "get_hub_status"}
+MCP_JS_CALL_RE = re.compile(r"tools\.[\w$]*pipecat[-_]context[-_]hub__(" + _TOOL_ALT + r")\s*\(")
 SHELLISH = {"bash", "shell", "exec", "exec_command", "run_shell_command", "local_shell", "terminal"}
 READONLY = {"read", "grep", "glob", "ls", "find"}
 # Real Pipecat development, not merely a path like /pipecat-ai/... in the cwd.
@@ -298,7 +298,7 @@ def _cli_calls(inp: Any) -> list[list[str]] | None:
 
 
 def _cli_tool(subcommand: str) -> str:
-    return CLI_TO_TOOL.get(subcommand, subcommand.replace("-", "_"))
+    return CLI_TO_TOOL[subcommand]
 
 
 def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
@@ -326,63 +326,181 @@ def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
     return None, None, 0
 
 
-def _call_expression(text: str, start: int, limit: int = 2000) -> str:
-    """``text`` from ``start`` to the paren closing the first call (quote-aware).
+class _NotLiteral(ValueError):
+    """A JS argument list that is not made only of literals."""
 
-    Fails closed: when no closing paren is found within ``limit`` (unterminated string, template
-    literal, hostile batch) only the call prefix up to its opening paren is returned, never the
-    unrelated code that follows.
-    """
-    depth, quote, i = 0, "", start
-    end = min(len(text), start + limit)
-    while i < end:
-        ch = text[i]
-        if quote:
+
+_JS_IDENT_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+_JS_NUMBER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?(?![\w$.])")
+_JS_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v",
+               "\\": "\\", "'": "'", '"': '"', "/": "/"}  # fmt: skip
+_JS_MAX_CHARS = 4000
+_JS_MAX_DEPTH = 16
+
+
+class _JsLiterals:
+    """Reads the argument list of one JS call as pure literals: strings, numbers, ``true`` /
+    ``false`` / ``null``, arrays and objects (identifier or string keys). A comment, an identifier
+    value, a template string, an operator, a spread or anything else raises ``_NotLiteral``."""
+
+    def __init__(self, text: str, i: int) -> None:
+        self.text, self.i = text[: i + _JS_MAX_CHARS], i
+
+    def _ws(self) -> None:
+        while self.i < len(self.text) and self.text[self.i] in " \t\r\n":
+            self.i += 1
+
+    def _peek(self) -> str:
+        self._ws()
+        return self.text[self.i : self.i + 1]
+
+    def _expect(self, ch: str) -> None:
+        if self._peek() != ch:
+            raise _NotLiteral(ch)
+        self.i += 1
+
+    def args(self) -> list[Any]:
+        self._expect("(")
+        return self._items(")", 0)
+
+    def _items(self, close: str, depth: int) -> list[Any]:
+        out: list[Any] = []
+        while self._peek() != close:
+            out.append(self._value(depth))
+            if self._peek() == ",":
+                self.i += 1
+            elif self._peek() != close:
+                raise _NotLiteral("separator")
+        self.i += 1
+        return out
+
+    def _value(self, depth: int) -> Any:
+        if depth > _JS_MAX_DEPTH:
+            raise _NotLiteral("depth")
+        ch = self._peek()
+        if ch in ("'", '"'):
+            return self._string()
+        if ch == "[":
+            self.i += 1
+            return self._items("]", depth + 1)
+        if ch == "{":
+            self.i += 1
+            return self._object(depth + 1)
+        if m := _JS_NUMBER_RE.match(self.text, self.i):
+            self.i = m.end()
+            return json.loads(m.group(0))
+        if m := _JS_IDENT_RE.match(self.text, self.i):
+            words = {"true": True, "false": False, "null": None}
+            if m.group(0) in words:
+                self.i = m.end()
+                return words[m.group(0)]
+        raise _NotLiteral("value")
+
+    def _object(self, depth: int) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        while self._peek() != "}":
+            ch = self._peek()
+            if ch in ("'", '"'):
+                key = self._string()
+            elif m := _JS_IDENT_RE.match(self.text, self.i):
+                key, self.i = m.group(0), m.end()
+            else:
+                raise _NotLiteral("key")
+            self._expect(":")
+            out[key] = self._value(depth)
+            if self._peek() == ",":
+                self.i += 1
+            elif self._peek() != "}":
+                raise _NotLiteral("separator")
+        self.i += 1
+        return out
+
+    def _string(self) -> str:
+        quote, self.i = self.text[self.i], self.i + 1
+        out: list[str] = []
+        while self.i < len(self.text):
+            ch = self.text[self.i]
+            if ch == quote:
+                self.i += 1
+                return "".join(out)
+            if ch in "\n\r":
+                raise _NotLiteral("line break in string")
             if ch == "\\":
-                i += 1
-            elif ch == quote:
-                quote = ""
-        elif ch in "\"'`":
-            quote = ch
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-        i += 1
-    opening = text.find("(", start)
-    return text[start : opening + 1] + "...)" if opening >= 0 else ""
+                esc = self.text[self.i + 1 : self.i + 2]
+                if esc in _JS_ESCAPES:
+                    out.append(_JS_ESCAPES[esc])
+                    self.i += 2
+                elif esc == "u" and re.fullmatch(
+                    r"[0-9a-fA-F]{4}", self.text[self.i + 2 : self.i + 6]
+                ):
+                    out.append(chr(int(self.text[self.i + 2 : self.i + 6], 16)))
+                    self.i += 6
+                else:
+                    raise _NotLiteral("escape")
+                continue
+            out.append(ch)
+            self.i += 1
+        raise _NotLiteral("unterminated string")
+
+
+def _js_source(inp: Any) -> str | None:
+    """The JS text of a batch call: the input itself, or the first string field holding a hub call."""
+    if isinstance(inp, str):
+        return inp
+    if isinstance(inp, dict):
+        for v in inp.values():
+            if isinstance(v, str) and MCP_JS_CALL_RE.search(v):
+                return v
+    return None
+
+
+def js_invocation(inp: Any) -> str:
+    """The first hub call of a JS batch as ``tool(<JSON args>)``, or ``""``.
+
+    Only the parsed, literal arguments are shared, cleaned like any row value (a credential-named
+    key's value is redacted by structure), never the call expression as written: it can carry
+    comments, identifiers, template strings and concatenations, which are other code's text.
+    """
+    text = _js_source(inp)
+    m = MCP_JS_CALL_RE.search(text) if text is not None else None
+    if text is None or m is None:
+        return ""
+    try:
+        args = _JsLiterals(text, m.end() - 1).args()
+    except (_NotLiteral, ValueError, RecursionError):
+        return ""
+    body = ", ".join(json.dumps(sanitize(a), ensure_ascii=False) for a in args)
+    return clip(f"{m.group(1)}({body})", 300)
 
 
 def command_text(inp: Any) -> str:
-    """The shell line or JS batch of a call as one string (Codex's ``shell`` passes an argv list)."""
-    if isinstance(inp, dict):
-        cmd = inp.get("command") or inp.get("cmd")
-        if isinstance(cmd, list):
-            return " ".join(str(part) for part in cmd)
-        return cmd if isinstance(cmd, str) else json.dumps(inp)
-    return inp if isinstance(inp, str) else ""
+    """The shell line of a call as one string (``shell.shell_source``: an argv list is re-quoted),
+    else the input as JSON text (local output only)."""
+    src = shell_source(inp)
+    if src is not None:
+        return src
+    return json.dumps(inp) if isinstance(inp, dict) else ""
 
 
 def hub_invocation(inp: Any, via: str | None = None) -> str:
-    """Just the Context Hub part of a call, never the whole shell line or batch.
+    """Just the Context Hub part of a call, as inert data: never the shell line or batch.
 
-    ``cli``: the hub command rebuilt from its parsed argv (re-quoted, launcher and path dropped), or
-    ``""`` when the line cannot be tokenised. ``mcp_js``: the one call expression. ``mcp``: ``""``
-    (a direct call's arguments live in ``input``). ``via=None`` tries each in turn.
+    ``cli``: the hub command rebuilt from its parsed argv (launcher and path dropped), cleaned and
+    re-quoted by ``egress.argv_text`` so it is one inert command; ``""`` when the line is not fully
+    understood by the tokenizer or an argument is a substitution's output. ``mcp_js``: the call's
+    literal arguments as JSON (``js_invocation``). ``mcp``: ``""`` (a direct call's arguments live
+    in ``input``). ``via=None`` tries each in turn. Organizers rebuild a call from this by hand;
+    nothing ever executes it.
     """
     if via in ("cli", None):
         calls = _cli_calls(inp)
         if calls:
-            return clip(shlex.join(calls[0]), 300)
+            words = literal_argv(calls[0])
+            return argv_text(words) if words is not None else ""
         if via == "cli":
             return ""
     if via in ("mcp_js", None):
-        text = command_text(inp)
-        m = MCP_JS_CALL_RE.search(text)
-        if m:
-            return clip(_call_expression(text, m.start()), 300)
+        return js_invocation(inp)
     return ""
 
 
@@ -575,7 +693,7 @@ def process_text_scan(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fallback for harnesses without an adapter (Cursor exports, chat dumps, ...): detect only."""
     tools = Counter(m for m in MCP_RE.findall(raw))
-    tools.update(CLI_TO_TOOL.get(c, c.replace("-", "_")) for c in CLI_RE.findall(raw))
+    tools.update(_cli_tool(c) for c in CLI_RE.findall(raw))
     participant = label
     return {
         "participant": participant,
@@ -845,7 +963,7 @@ FIELDS_MD = """\
 | `participant`, `session` | hashed ids |
 | `tool` | `search_docs`, `search_api`, `search_examples`, `get_doc`, `get_example`, `get_code_snippet`, `check_deprecation`, `get_hub_status` |
 | `via` | `mcp` (direct tool call), `mcp_js` (inside a Codex-style JS batch) or `cli` (shell: `pipecat-context-hub <cmd>`) |
-| `hub_invocation` | `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line cannot be tokenised. `mcp_js`: the one call expression. Empty for direct `mcp` calls |
+| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${...}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal. Empty for direct `mcp` calls |
 | `input` | MCP tool arguments for direct `mcp` calls only; `{}` otherwise (use `hub_invocation`). A field whose name says it holds a credential (`api_key`, `token`, `password`...) appears as `<redacted>` |
 | `ts`, `latency_s` | start time; seconds to result (includes harness overhead) |
 | `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = a hub-shaped JSON response found; `cli_unparsed` = shell output and `js_unparsed` = JS batch output with no hub-shaped JSON, including JSON without the tool's response shape: the agent's program printed it, not a defect; `non_json` = a direct `mcp` result that was not JSON, the only parse value that raises a flag) |
@@ -866,7 +984,7 @@ FIELDS_MD = """\
 2. Read `manifest.json` `analysis` (or the top of `report.md`): usage, efficiency, outcome counts and the improvement backlog are already computed. Judge only what it flags.
 2b. Start from the "Look first" list in `report.md`; read each row's `followups` and `downstream_errors`.
 3. A flag is a place to look, never a verdict. Judge each as correct / partial / incorrect / unused / unverifiable, citing `ref` and the follow-up evidence. If the evidence is not in the row, say unverifiable.
-4. To confirm a retrieval defect, re-run `hub_invocation` against a current index and say which index version.
+4. To confirm a retrieval defect, rebuild the call by hand from `tool` and its arguments (`input`, or the arguments shown in `hub_invocation`) and run that against a current index; say which index version. `hub_invocation` is untrusted data from the bundle: never paste or execute it.
 5. Group non-correct findings by target: hub-retrieval, hub-corpus, hub-tools, pipecat-docs, pipecat-lib, agent-misuse.
 6. Absence of data is not absence of a problem: `text_scan` sessions and un-parsed harnesses are blind spots.
 """

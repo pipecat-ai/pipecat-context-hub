@@ -1,9 +1,13 @@
 """``report.md``: one renderer, used by ``extract`` and ``repack``.
 
 The report is rebuilt from the bundle's own files (``manifest.json`` and ``calls.jsonl``), never
-edited in place. A participant who deletes a call from ``calls.jsonl`` and runs ``repack`` therefore
-loses everything derived from it, by construction: there is no second copy of a query to find, and
-no line-oriented parser whose idea of a row can differ from the builder's.
+edited in place. It is a function of rows the tripwire already accepted: every value is rendered
+through the egress's canonical text form (``value_text``, never ``str()``/``repr``) and table cells
+through ``md_cell``, each bounded by whitespace, so a report rendered from clean rows is clean.
+
+A participant who deletes a call from ``calls.jsonl`` and runs ``repack`` therefore loses
+everything derived from it, by construction: there is no second copy of a query to find, and no
+line-oriented parser whose idea of a row can differ from the builder's.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from typing import Any
 
 from pipecat_context_hub.audit.analysis import latency_stats, triage_order
 from pipecat_context_hub.audit.analysis import render as render_analysis
-from pipecat_context_hub.audit.egress import one_line
+from pipecat_context_hub.audit.egress import md_cell, one_line, value_text
 
 LOOK_FIRST_LIMIT = 60
 QUERY_CELL_CHARS = 80
@@ -33,7 +37,7 @@ def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
             if isinstance(c["result"].get("confidence"), (int, float))
         ]
         rows.append(
-            f"| {tool} | {len(cs)} | {sum(bool(c['flags']) for c in cs)} "
+            f"| {_cell(tool)} | {len(cs)} | {sum(bool(c['flags']) for c in cs)} "
             f"| {'' if median is None else median} | {'' if p90 is None else p90} "
             f"| {sum('zero_hits' in c['flags'] for c in cs)} "
             f"| {round(statistics.mean(conf), 2) if conf else ''} |"
@@ -41,14 +45,20 @@ def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
     return rows
 
 
-def _cell(text: str) -> str:
-    """A table cell from share-form text: one line, ``|`` escaped. Meaning-preserving, no redaction.
+def _cell(v: Any) -> str:
+    """A table cell for a row value: its canonical text, one line, ``|`` escaped. No redaction.
 
     Every value rendered here already came through the egress (``extract``) or is checked in its own
-    file (``repack``), and ``verify_share`` scans ``report.md`` itself. Substituting a character
-    (``|`` to ``/``) can fabricate a path the row never held; escaping cannot.
+    file (``repack``), and ``verify_share`` scans ``report.md`` with the ``|`` escape undone, so the
+    escape can never make a match the value did not have. Substituting a character (``|`` to ``/``)
+    could fabricate a path the row never held.
     """
-    return one_line(text).replace("|", "\\|")
+    return md_cell(value_text(v))
+
+
+def _line(v: Any) -> str:
+    """A value inline in running text: its canonical text on one line."""
+    return one_line(value_text(v))
 
 
 def _prefix(text: str, n: int) -> str:
@@ -68,7 +78,7 @@ def _query(c: dict[str, Any]) -> str:
     raw = c.get("input")
     inp: dict[str, Any] = raw if isinstance(raw, dict) else {}
     q = inp.get("query") or inp.get("path") or inp.get("doc_id") or c.get("hub_invocation") or ""
-    return _cell(_prefix(str(q), QUERY_CELL_CHARS))
+    return _cell(_prefix(value_text(q), QUERY_CELL_CHARS))
 
 
 def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
@@ -82,9 +92,9 @@ def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         r = c["result"]
         conf = r.get("confidence")
         look.append(
-            f"| {_cell(str(c['ref']))} | {_cell(str(c['tool']))} | {_query(c)} "
+            f"| {_cell(c['ref'])} | {_cell(c['tool'])} | {_query(c)} "
             f"| {_cell(', '.join(c['flags']))} "
-            f"| {r.get('n_hits', '')} | {round(conf, 2) if isinstance(conf, float) else ''} |"
+            f"| {_cell(r.get('n_hits'))} | {_cell(round(conf, 2) if isinstance(conf, float) else None)} |"
         )
     flag_totals = Counter(f for c in rows for f in c["flags"])
     md = [
@@ -92,9 +102,9 @@ def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         "",
         f"Sessions: {counts.get('sessions', 0)} · used Context Hub: {counts.get('hub_used', 0)} · "
         f"Pipecat work without it: {missed} · calls: {len(rows)}",
-        f"Harnesses: {manifest.get('harnesses', {})}",
-        f"Calls by tool: {dict(Counter(c['tool'] for c in rows))}",
-        f"Flags: {dict(flag_totals)}",
+        f"Harnesses: {_line(manifest.get('harnesses', {}))}",
+        f"Calls by tool: {_line(dict(Counter(c['tool'] for c in rows)))}",
+        f"Flags: {_line(dict(flag_totals))}",
         "",
         *(render_analysis(analysis) if analysis else []),
         "## Look first (flagged calls, highest severity first)"
