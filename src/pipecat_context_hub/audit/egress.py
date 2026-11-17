@@ -52,16 +52,28 @@ REDACTED = "<redacted>"
 # labels with their own code over the same grammar (below), so a weakened locator on one side is
 # caught by the other.
 #
-# Rule 1, the recogniser. A label is normalised (NFKC, so fullwidth letters fold; ASCII letters
-# lowered by a translation table; every character that is not a letter a-z dropped, so `_ - . `,
-# spaces and digit suffixes vanish). It names a credential when, after each benign word below is
-# blanked out, it still CONTAINS a credential stem: `password1`, `api_key_prod`, `OPENAI_API_KEY_2`,
-# `secret_key_base`, `X-Api-Key`, `db.password` and `API key` are credentials; `max_tokens`,
-# `token_count`, `tokens_used`, `password_hint`, `password_file`, `secret_santa`, `keys` are not.
-# A single-word label whose last segment (split at `_ - .` and camel-case) is `key` also names one
-# (`STRIPE_KEY`, `ssh_key`): an env-style key the stems do not cover. `MONKEY` and `keys` do not.
+# Rule 1, the recogniser, over the label's word SEGMENTS: NFKC (fullwidth letters fold), split at
+# every non-letter (`_ - . `, spaces, digits) and at camel-case humps, ASCII-lowered by a table.
+#   1a. A segment that STARTS with a different word sharing a stem's letters
+#       (`NON_CREDENTIAL_SEGMENTS`: `tokenizer`, `secretary`) has that prefix blanked, wherever the
+#       segment sits: blanking a non-credential word cannot hide a stem in another segment, and the
+#       rest of the segment is still read (`TOKENIZERSECRET` is a credential).
+#   1b. A label that is exactly one of `BENIGN_WHOLE_LABELS` (`tokens`, `keys`) is not a credential.
+#   1c. When the label's TRAILING segments spell a benign phrase (`BENIGN_LABEL_WORDS`: a count, a
+#       hint, a file or a policy about a credential: `max_tokens`, `token_count`, `tokens_used`,
+#       `password_hint`, `password_file`, `secret_santa`), those segments are dropped. A benign
+#       phrase anywhere else in the label is not dropped, and `tokens` alone is never a benign
+#       phrase: `API_TOKENS` and `MY_TOKENS` are plurals of credential labels.
+#   1d. What is left names a credential when its letters, joined, CONTAIN a credential stem
+#       (`password1`, `api_key_prod`, `OPENAI_API_KEY_2`, `secret_key_base`, `X-Api-Key`,
+#       `db.password`, `API key`, `SECRETS`, `PASSWORDS`), or when its last segment is `key` or
+#       `keys` (`STRIPE_KEY`, `SSH_KEYS`, a bare `key`): an env-style key the stems do not cover.
+#       `MONKEY` (no `key` segment), `KeyError` and `key_id` (`key` not last) are not.
 # Known cost: a value under a label that merely contains a stem (`next_token`, `authorization_url`,
-# `primary_key`, `cookie_policy`) is redacted too; over-redacting is the safe direction.
+# `primary_key`, `cookie_policy`, `api_tokens_used`) is redacted too; over-redacting is the safe
+# direction. Invariant (tested): every label the earlier `KEY|TOKEN|SECRET|PASSWORD`-substring rule
+# redacted, whose stem is a whole segment, is still redacted, except the benign phrases and whole
+# labels above and a label whose `key` segment is not its last.
 #
 # Rule 2, the separator. In text a label is one word (a maximal run of word characters, `.` and
 # `-`, except the `-` of `->`), optionally preceded by one more word and a single space or tab (`API key`), optionally
@@ -73,10 +85,15 @@ REDACTED = "<redacted>"
 # same quote character after exactly as many backslashes, so `\"` inside `"..."` and `\\\"` inside
 # `\"...\"` are not the end. An unterminated quote is a value to the end of the text. A flag's
 # unquoted value is one word. Any other unquoted value runs to the end of its segment: a line break,
-# `,` `;` `&` `)` `]` `}`, a sentence end (`.` then whitespace), two spaces, or a separator the
-# report renders between values (` | `, ` · `, ` → `), so a passphrase with spaces loses its tail
-# too. There is no minimum length: any non-empty value is redacted except the redaction marker and
-# a placeholder (`<token>`, `$TOKEN`, `${TOKEN}`, `YOUR_API_KEY`, `...`, `…`, `xxx`, `***`).
+# a sentence end (`.` then whitespace), two blanks, or a separator the report renders between
+# values (` | `, ` · `, ` → `), so a passphrase with spaces loses its tail too; a value with no
+# blank in it goes whole, whatever punctuation it holds. Two terminators depend on the context
+# before the label: `&` (and `#`, a blank) ends the value of a URL-query key (a label right after
+# `?` or `&`, separated by `=`: `a=b&password=x&c=d` loses exactly `x`); `)` `]` `}` end it when
+# they close a bracket opened before the label, and `,` `;` when any bracket opened before the
+# label is still open (`(password: abc)`, `{"password": abc, ...}`). Elsewhere they are part of the
+# value (`password: abc&def123`, `pwd: ab,cd1234`). There is no minimum length: any non-empty value
+# is redacted except the redaction marker and a placeholder (:func:`is_placeholder`).
 #
 # Rule 4, URL userinfo: `scheme://user:pass@host` and `scheme://:pass@host` are credentials;
 # `scheme://user@host` is kept (a value-shape rule in ``SECRET_RES``).
@@ -85,46 +102,142 @@ CREDENTIAL_STEMS = (
     "password", "passwd", "passphrase", "pwd", "secret", "token", "apikey", "accesskey",
     "privatekey", "secretkey", "credential", "authorization", "bearer", "cookie",
 )  # fmt: skip
-# Words that contain a stem but name something else: LLM token counts, a hint or file that points
-# at a credential, a gift exchange. Blanked out before the stems are looked for.
+# Rule 1c: phrases (letters of whole trailing segments, joined) that qualify a stem into something
+# else: an LLM token count, a hint, file or policy about a credential, a gift exchange.
 BENIGN_LABEL_WORDS = (
-    "tokens", "tokeniz", "tokencount", "tokenlimit", "tokenbudget", "passwordhint",
-    "passwordfile", "passwordpolicy", "secretsanta", "secretary",
+    "maxtokens", "mintokens", "numtokens", "totaltokens", "prompttokens", "completiontokens",
+    "inputtokens", "outputtokens", "cachedtokens", "reasoningtokens", "tokencount",
+    "tokenscount", "tokenlimit", "tokenbudget", "tokensused", "tokensremaining", "tokenusage",
+    "passwordhint", "passwordfile", "passwordpolicy", "secretsanta",
 )  # fmt: skip
+# Rule 1a: segment prefixes of other words that share a stem's letters.
+NON_CREDENTIAL_SEGMENTS = ("tokeniz", "secretar")
+# Rule 1b: a label that is exactly this one segment is not a credential (a count, a keyboard term).
+BENIGN_WHOLE_LABELS = ("tokens", "keys")
+_KEY_SEGMENTS = ("key", "keys")
 _SEGMENT_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
 
 
-def label_key(name: str) -> str:
-    """``name`` normalised for recognition (rule 1): NFKC, ASCII-lowered, letters a-z only."""
-    folded = unicodedata.normalize("NFKC", name).translate(_FOLD)
-    return "".join(ch for ch in folded if "a" <= ch <= "z")
+def label_segments(name: str) -> list[str]:
+    """``name``'s word segments for recognition (rule 1): NFKC, split at non-letters and camel-case
+    humps, ASCII-lowered, letters a-z only."""
+    norm = unicodedata.normalize("NFKC", name)
+    return [w.translate(_FOLD) for w in _SEGMENT_RE.findall(norm) if w.isalpha()]
 
 
-def _ends_in_key(name: str) -> bool:
-    if any(ch.isspace() for ch in name):
-        return False
-    words = [w for w in _SEGMENT_RE.findall(unicodedata.normalize("NFKC", name)) if w.isalpha()]
-    return len(words) >= 2 and words[-1].translate(_FOLD) == "key"
+def _blank_non_credential(seg: str) -> str:
+    for word in NON_CREDENTIAL_SEGMENTS:
+        if seg.startswith(word):
+            return "|" + seg[len(word) :]
+    return seg
 
 
 def is_credential_name(name: str) -> bool:
     """True when ``name`` (a dict key, a flag or a label in text) names a credential (rule 1)."""
-    key = label_key(name)
-    for word in BENIGN_LABEL_WORDS:
-        key = key.replace(word, "|")
-    return any(stem in key for stem in CREDENTIAL_STEMS) or _ends_in_key(name)
+    segs = [_blank_non_credential(s) for s in label_segments(name)]
+    if len(segs) == 1 and segs[0] in BENIGN_WHOLE_LABELS:
+        return False
+    for i in range(len(segs)):
+        if "".join(segs[i:]) in BENIGN_LABEL_WORDS:
+            segs = segs[:i]
+            break
+    letters = "".join(segs)
+    return any(stem in letters for stem in CREDENTIAL_STEMS) or (
+        bool(segs) and segs[-1] in _KEY_SEGMENTS
+    )
+
+
+# ---- Placeholders (rule 3's exemption): text that stands for a credential without being one. The
+# one rule, shared by both locators:
+#   * an ellipsis or mask: `..`, `…`, `xxx`, `***` (any length);
+#   * `$VAR` or `${VAR}` with VAR upper-case letters, digits and `_`, under 33 characters;
+#   * `<name>` with name lower-case words (`a-z`, digits after the first letter) joined by `_` `-`;
+#   * `YOUR_...` / `your-...`: `YOUR` or `your`, then words each all upper- or all lower-case;
+# and in every form the name holds no secret shape (``SECRET_RES``), does not start with a token
+# prefix followed by 8 more characters (`AKIA...`, `ghp_...`, `sk-...`), and has no run of 12+
+# letters and digits mixing both. Anything else after a credential label is a value.
+_ELLIPSIS_RE = re.compile(r"\.{2,}|…+|[xX*]{3,}")
+_PLACEHOLDER_NAME_RE = re.compile(
+    r"\$(?:\{(?P<braced>[A-Z_][A-Z0-9_]{0,31})\}|(?P<var>[A-Z_][A-Z0-9_]{0,31}))"
+    r"|<(?P<angle>[a-z][a-z0-9]*(?:[_\-][a-z][a-z0-9]*)*)>"
+    r"|(?P<your>(?:YOUR|your)(?:[_\-](?:[A-Z0-9]+|[a-z0-9]+))+)"
+)
+# The token kinds of ``SECRET_RES``'s prefixed-token rule, shared so the two cannot drift.
+_PREFIX_KINDS = r"sk|pk|rk|dg|gsk|hf|xox[abprs]|ghp|gho|ghs|ghu|ghr|github_pat|glpat"
+_TOKEN_PREFIX_RE = re.compile(
+    r"(?:(?:" + _PREFIX_KINDS + r")[-_]|pypi-|AKIA|AIza|eyJ)[A-Za-z0-9_\-]{8}"
+)
+_MIXED_RUN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{12,}(?![A-Za-z0-9])"
+)
+
+
+def is_placeholder(value: str) -> bool:
+    """True when ``value`` stands for a credential rather than being one (the rule above)."""
+    if _ELLIPSIS_RE.fullmatch(value):
+        return True
+    m = _PLACEHOLDER_NAME_RE.fullmatch(value)
+    if m is None:
+        return False
+    name = next(g for g in m.groups() if g is not None)
+    return not (
+        _TOKEN_PREFIX_RE.match(name)
+        or _MIXED_RUN_RE.search(name)
+        or any(rx.search(name) for rx in SECRET_RES)
+    )
 
 
 _QUOTE_TOKEN_RE = re.compile(r"\\*[\"']")
-_VALUE_END_RE = re.compile(
-    r"[ \t]*(?:[\r\n,;&)\]}]|(?<=[ \t])[|·→](?=\s|\Z)|\.(?=\s|\Z)|\Z)|[ \t]{2}"
-)
-_PLACEHOLDER_RE = re.compile(
-    r"<[A-Za-z_][\w\-]{0,40}>|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\.{2,}|…+|[xX*]{3,}"
-    r"|(?i:your)[_\-][A-Za-z0-9_\-]+"
-)
 _RENDER_SEPS = frozenset("|·→")
 _SPACE_RE = re.compile(r"\s")
+_CLOSERS = {")": "(", "]": "[", "}": "{"}
+
+
+def _open_brackets(text: str, end: int) -> list[str]:
+    """The brackets opened in ``text[:end]`` and still open there (a closer pops only the bracket
+    it matches on top; any other closer is ignored)."""
+    stack: list[str] = []
+    for ch in text[:end]:
+        if ch in "([{":
+            stack.append(ch)
+        elif ch in _CLOSERS and stack and stack[-1] == _CLOSERS[ch]:
+            stack.pop()
+    return stack
+
+
+def _is_query_key(text: str, label_start: int, sep: str) -> bool:
+    """A URL-query key: the label follows `?` or `&` and is separated from its value by `=`."""
+    return sep == "=" and label_start > 0 and text[label_start - 1] in "?&"
+
+
+def _bare_end(text: str, pos: int, opened: list[str], query: bool) -> int:
+    """Where an unquoted, non-flag value starting at ``pos`` ends (rule 3), trailing blanks off."""
+    n, i, inner = len(text), pos, []
+    while i < n:
+        ch = text[i]
+        if ch in "\r\n":
+            break
+        end_follows = i + 1 == n or text[i + 1].isspace()
+        if ch in " \t":
+            if query or (i + 1 < n and text[i + 1] in " \t"):  # two blanks
+                break
+        elif ch in _RENDER_SEPS and i > 0 and text[i - 1] in " \t" and end_follows:
+            break  # a separator the report renders between values: ` | ` ` · ` ` → `
+        elif (ch == "." and end_follows) or (query and ch in "&#"):
+            break
+        elif ch in "([{":
+            inner.append(ch)
+        elif ch in _CLOSERS:
+            if inner and inner[-1] == _CLOSERS[ch]:
+                inner.pop()
+            elif not inner and opened and opened[-1] == _CLOSERS[ch]:
+                break
+        elif ch in ",;" and not inner and opened:
+            break
+        i += 1
+    while i > pos and text[i - 1] in " \t":
+        i -= 1
+    return i
 
 
 def _closing_quote(text: str, start: int, token: str) -> int | None:
@@ -142,9 +255,12 @@ def _closing_quote(text: str, start: int, token: str) -> int | None:
     return None
 
 
-def _value_span(text: str, pos: int, word: bool) -> tuple[int, int, str] | None:
-    """The value of a label whose separator ends at ``pos`` (rule 3): ``(start, end, kind)`` or
-    None when there is none. ``kind`` is ``quoted`` (the span is the content between the quotes),
+def _value_span(
+    text: str, pos: int, word: bool, label_start: int, sep: str
+) -> tuple[int, int, str] | None:
+    """The value of a label starting at ``label_start`` whose separator ``sep`` (empty for a flag
+    followed by blanks) ends, blanks skipped, at ``pos`` (rule 3): ``(start, end, kind)`` or None
+    when there is none. ``kind`` is ``quoted`` (the span is the content between the quotes),
     ``open`` (an unterminated quote: the span starts at the quote) or ``bare``."""
     if m := _QUOTE_TOKEN_RE.match(text, pos):
         close = _closing_quote(text, m.end(), m.group(0))
@@ -157,8 +273,8 @@ def _value_span(text: str, pos: int, word: bool) -> tuple[int, int, str] | None:
         if text[pos:end] in _RENDER_SEPS:
             end = pos
     else:
-        m = _VALUE_END_RE.search(text, pos)
-        end = m.start() if m else len(text)
+        query = _is_query_key(text, label_start, sep)
+        end = _bare_end(text, pos, _open_brackets(text, label_start), query)
     return (pos, end, "bare") if end > pos else None
 
 
@@ -171,7 +287,7 @@ def _is_secret_value(text: str, span: tuple[int, int, str]) -> bool:
     value = text[start:end]
     if kind == "bare":  # quotes, backslashes and a cut mark (`…`) around a bare value are not it
         value = value.strip(" \t\"'\\…")
-    return not (value in ("", REDACTED) or _PLACEHOLDER_RE.fullmatch(value))
+    return not (value in ("", REDACTED) or is_placeholder(value))
 
 
 # Locator A (the sanitizer's): the grammar of rule 2 as two patterns.
@@ -180,8 +296,8 @@ _WC = r"(?:[\w.]|-(?!>))"
 _W = _WC + r"+(?!" + _WC + r")"
 _SEP = r"(?:=>|->|[:=：﹕＝])"
 _SEP_LABEL_RE = re.compile(
-    r"(?<![\w.\-])(?:(?P<w0>" + _W + r")[ \t])?(?P<w1>" + _W + r")(?:\\*[\"'])?[ \t]*" + _SEP
-    + r"[ \t]*"
+    r"(?<![\w.\-])(?:(?P<w0>" + _W + r")[ \t])?(?P<w1>" + _W + r")(?:\\*[\"'])?[ \t]*(?P<sep>"
+    + _SEP + r")[ \t]*"
 )  # fmt: skip
 _FLAG_LABEL_RE = re.compile(
     r"(?<![\w.\-])(?P<flag>-"
@@ -201,13 +317,14 @@ def _label_spans(text: str) -> list[tuple[int, int, str]]:
     while (m := _SEP_LABEL_RE.search(text, pos)) is not None:
         names = [m.group("w1")] + ([m.group(0)[: m.end("w1") - m.start()]] if m.group("w0") else [])
         if any(is_credential_name(n) for n in names):
-            span = _value_span(text, m.end(), m.group("w1").startswith("-"))
+            w1 = m.group("w1")
+            span = _value_span(text, m.end(), w1.startswith("-"), m.start("w1"), m.group("sep"))
             if span is not None and _is_secret_value(text, span):
                 spans.append(span)
         pos = m.end()
     for m in _FLAG_LABEL_RE.finditer(text):
         if is_credential_name(m.group("flag")):
-            span = _value_span(text, m.end(), True)
+            span = _value_span(text, m.end(), True, m.start("flag"), "")
             if span is not None and _is_secret_value(text, span):
                 spans.append(span)
     return spans
@@ -283,7 +400,8 @@ def labelled_value_leaks(text: str) -> bool:
             if start >= 2 and text[start - 1] in " \t" and _is_word_char(text, start - 2):
                 names.append(text[_word_start(text, start - 1) : j])
             if any(is_credential_name(w) for w in names):
-                span = _value_span(text, _skip_blanks(text, i + sep), names[0].startswith("-"))
+                v = _skip_blanks(text, i + sep)
+                span = _value_span(text, v, names[0].startswith("-"), start, text[i : i + sep])
                 if span is not None and _is_secret_value(text, span):
                     return True
         if text[i] == "-" and not _is_word_char(text, i - 1):
@@ -298,7 +416,7 @@ def labelled_value_leaks(text: str) -> bool:
             if v == k or _sep_at(text, v):
                 continue
             if is_credential_name(text[i:end]):
-                span = _value_span(text, v, True)
+                span = _value_span(text, v, True, i, "")
                 if span is not None and _is_secret_value(text, span):
                     return True
     return False
@@ -323,10 +441,7 @@ SECRET_RES: list[re.Pattern[str]] = [
     re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"
     ),
-    re.compile(
-        _B + r"(sk|pk|rk|dg|gsk|hf|xox[abprs]|ghp|gho|ghs|ghu|ghr|github_pat|glpat)"
-        r"[-_][A-Za-z0-9_\-]{16,}"
-    ),
+    re.compile(_B + r"(" + _PREFIX_KINDS + r")[-_][A-Za-z0-9_\-]{16,}"),
     re.compile(_B + r"pypi-AgE[A-Za-z0-9_\-]{16,}"),  # PyPI API token (a macaroon: always AgE...)
     # Credentials in a URL (rule 4): scheme://user:password@host, scheme://:password@host (an
     # empty user: the Redis shape); a user without a password is kept. The password runs to the

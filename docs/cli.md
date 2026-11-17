@@ -59,7 +59,12 @@ comment or regex) and shares only its literal arguments, and only when it surely
 a block, branch or function). A field whose name contains a credential word (`api_key`,
 `password1`, `OPENAI_API_KEY_2`...) is replaced whole, and so is a labelled value in free text
 (`password: ...`, `API key = ...`, `--api-key ...`, `Authorization: Basic ...`, URL userinfo, an
-escaped `\"token\": \"...\"`); a quoted value goes whole and there is no minimum length. A number
+escaped `\"token\": \"...\"`); a quoted value goes whole, an unquoted value with no space goes
+whole whatever punctuation it holds (`&` ends it only in a URL query, `,` `;` `)` `]` `}` only
+inside brackets opened before the label), and there is no minimum length. Plural labels count
+(`API_TOKENS`, `SSH_KEYS`); `max_tokens`, `token_count`, `password_hint`, `password_file` do not. A
+placeholder is kept only in a fixed shape (`$TOKEN`, `${API_KEY}`, `<token>`, `YOUR_API_KEY`,
+`...`, `xxx`) that holds no token shape, so `${AKIA...}` is redacted. A number
 of 32+ digits is replaced too. Redaction is best-effort and queries are your own words, so read
 `report.md` first.
 

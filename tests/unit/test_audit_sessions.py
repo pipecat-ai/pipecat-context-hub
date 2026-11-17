@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import shlex
 import subprocess
 import tarfile
@@ -1654,9 +1655,9 @@ class TestResultShapeAndErrors:
         """F4: get_code_snippet answers with `snippets`, not `hits`. Table-driven over all tools."""
         from typing import get_origin
 
-        from pipecat_context_hub.audit.shell import SEARCH_TOOLS
         from pydantic import BaseModel
 
+        from pipecat_context_hub.audit.shell import SEARCH_TOOLS
         from pipecat_context_hub.shared import types as T
 
         models: dict[str, type[BaseModel]] = {
@@ -2302,8 +2303,8 @@ class TestHygiene:
 # and the secret-shape corpus.
 
 _FUZZ_ALPHABET = (
-    "abcXYZ0123456789 .,_-/" + "|\\\n:@=\"'$()" + "\t\r·→…<>`;{}[]#~%" + "：=:_-\\\"'"
-)  # round 3 (K1): the label model's separators, quotes and escapes weigh more
+    "abcXYZ0123456789 .,_-/" + "|\\\n:@=\"'$()" + "\t\r·→…<>`;{}[]#~%" + "：=:_-\\\"'" + "&?&?"
+)  # round 3 (K1): the label model's separators, quotes and escapes weigh more; round 4: `&` `?`
 _FUZZ_FRAGMENTS = [
     *(t for t, _ in SECRET_SHAPES), *BENIGN, "password", "TOKEN=", "MONKEY=", "api_key",
     "--api-key ", "--password=", "--password", "Authorization: Basic ", "Bearer ", "C:\\",
@@ -2314,6 +2315,10 @@ _FUZZ_FRAGMENTS = [
     *egress.CREDENTIAL_STEMS, *egress.BENIGN_LABEL_WORDS, "API key", "STRIPE_KEY", "password1",
     "：", "=>", "->", ": ", " = ", '\\"', '\\\\"', '{\\"password\\": \\"', "redis://:",
     "OPENAI_API_KEY_2", "my secret phrase",
+    # round 4: context-dependent terminators, plural labels and placeholder forms
+    *egress.NON_CREDENTIAL_SEGMENTS, *egress.BENIGN_WHOLE_LABELS, "API_TOKENS=", "SSH_KEYS",
+    "?x=1&", "&password=", "abc&def", "ab,cd", "(password: ", "[token: ", '{"secret": ', "${",
+    "${AKIA", "$TOKEN", "<token>", "YOUR_API_KEY", "max_tokens", "key: ",
 ]  # fmt: skip
 
 
@@ -3038,10 +3043,10 @@ class TestShareDirOneReader:
     ) -> None:
         """F11: gist's pre-flight (leak check, validator, nothing-to-share, omission) lived in the
         click command; gh then re-read share/ after the checks."""
+        import inspect
+
         from pipecat_context_hub import cli_audit
         from pipecat_context_hub.audit import sharedir
-
-        import inspect
 
         plan = sharedir.gist_plan(audited, allow_empty=False)
         assert list(plan.post) == BUNDLE and plan.omitted == []
@@ -3404,11 +3409,14 @@ class TestOneDescriptionPerConcept:
 #
 # Invariant. A value written after a credential LABEL is redacted, and the tripwire refuses any
 # text that still holds one. The label model is defined once (egress): the recogniser
-# (`is_credential_name`: NFKC, letters only, contains a CREDENTIAL_STEM once BENIGN_LABEL_WORDS are
-# blanked, or a single word ending in `key`), the separators (`:` `=` `：` `=>` `->`, or a flag
-# followed by blanks), the quote token (optionally backslash-escaped, any depth) and the value
-# extent (`_value_span`: quoted runs to its matching close, an open quote to the end; unquoted runs
-# to the end of the segment; no minimum length; placeholders exempt). Sanitize finds labels with a
+# (`is_credential_name` over `label_segments`: NON_CREDENTIAL_SEGMENTS blanked anywhere, a
+# BENIGN_WHOLE_LABELS label exempt, a BENIGN_LABEL_WORDS phrase dropped only as the TRAILING
+# segments, then a CREDENTIAL_STEM contained or a last segment `key`/`keys`), the separators (`:`
+# `=` `：` `=>` `->`, or a flag followed by blanks), the quote token (optionally backslash-escaped,
+# any depth) and the value extent (`_value_span`: quoted runs to its matching close, an open quote
+# to the end; unquoted runs to the end of the segment, through `& , ; ) ] }` unless the context
+# before the label makes them terminators: a URL-query key, a bracket still open; no minimum length;
+# placeholders exempt by `is_placeholder`, round 4). Sanitize finds labels with a
 # regex (locator A, `redact_labelled`); the tripwire with a character walk from each separator
 # (locator B, `labelled_value_leaks`). Both share the recogniser and the value rules, so a mutation
 # of either locator shows up as a disagreement over the generated space below.
@@ -3451,6 +3459,69 @@ _K1_BENIGN = [
     "keys: 3", "password: <your-password>", "API_KEY=${API_KEY}", "token: ...", "password: xxxx",
     "api_key: YOUR_API_KEY", 'secret: ""', "x->y: z", "a -> b", "tokens -> 5", "TTS -> STT",
 ]  # fmt: skip
+
+
+_R4_CREDENTIAL = [
+    "API_TOKENS", "MY_TOKENS", "SECRETS", "PASSWORDS", "secret_key_base", "apiTokens",
+    "SSH_KEYS", "key", "password", "x-api-key", "DB_PASSWORD",
+    # a benign phrase that is not the TRAILING segments exempts nothing
+    "MAX_TOKENS_SECRET", "password_hint_token",
+    # a non-credential word blanks only itself: the rest of its segment is still read
+    "TOKENIZERSECRET", "secretaryPassword",
+]  # fmt: skip
+_R4_BENIGN = [
+    "tokens", "max_tokens", "token_count", "password_hint", "tokens_used", "keys", "tokenizer",
+    "secretary", "tokenizer_name", "MONKEY", "KeyError", "OPENAI_MAX_TOKENS",
+]  # fmt: skip
+_R4_SEPARATORS = [": ", "=", " = ", "：", " => ", "->"]
+# Unquoted values with no blank: redacted through the whole token, whatever punctuation they hold.
+_R4_BARE_VALUES = ["abc&def123", "ab,cd1234", "x)y1234", "a]b1234", "a}b;c1234", "ab#cd?e=f"]
+_R4_PLACEHOLDERS = [
+    "$TOKEN", "${API_KEY}", "<token>", "YOUR_API_KEY", "<your-password>", "your-api-key", "...",
+    "…", "xxx", "***", "${OPENAI_API_KEY}",
+]  # fmt: skip
+_R4_NOT_PLACEHOLDERS = [
+    "${AKIAABCDEFGHIJKL}", "$AKIAABCDEFGHIJKL", "<ghp_abcdefghijkl>", "<API_KEY>", "$token",
+    "${A_VARIABLE_NAME_LONGER_THAN_32_CH}", "$AB12CD34EF56GH78", "YOUR_abcd1234efgh5678",
+    "<sk-proj-abcdefgh>", "${ABCDEF0123456789ABCDEF}", "Your_Key",
+]  # fmt: skip
+# `{0}` is the label, `{1}` the value; the expected output keeps everything around the value.
+_R4_CONTEXTS = [
+    "({0}: {1}) tail", "[{0}: {1}] tail", '{{"{0}": {1}, "u": 1}}', "{{{0}: {1}}}",
+    "https://h/p?x=1&{0}={1}&y=2", "https://h/p?{0}={1}#frag", "a=b&{0}={1}&c=d",
+    "f({0}={1}, y=2)", "f({0}={1}; y)", "see ({0}: {1}). Next",
+    # a closer pops only the bracket it matches: `]` leaves `(` open, so `)` ends the value
+    "[(] {0}: {1}) tail",
+]  # fmt: skip
+_R4_FORMS = [
+    "{s}", "{s}s", "my_{s}", "api_{s}", "my_{s}s", "api_{s}s", "openai_{s}", "x-{s}", "{s}_2",
+    "{s}_prod", "{s}_base", "{s}_value", "{s}_id", "{s}_name", "db_{s}_prod", "x_{s}s_y",
+    "max_{s}s", "{s}_count", "{s}s_used", "{s}_hint", "{s}_file", "{s}_santa",
+]  # fmt: skip
+# Documented exceptions to "never less than before": the brief's benign phrases, the existing
+# BENIGN fixtures (`tokens`, `keys`), and a label whose `key`/`keys` segment is not its last
+# (`KEY_ID`, `KeyError`, `db_key_prod`): `key` is a common word, so only a label ending in it names
+# one (`STRIPE_KEY`, `SSH_KEYS`, a bare `key` do).
+_R4_OLD_RULE_EXCEPTIONS = {
+    "maxtokens", "tokencount", "tokensused", "passwordhint", "passwordfile", "secretsanta",
+    "tokens", "keys",
+}  # fmt: skip
+
+
+def _r4_case(label: str, case: str) -> str:
+    if case == "upper":
+        return label.upper()
+    if case == "camel":
+        head, *rest = re.split(r"[_\-]", label)
+        return head + "".join(w.capitalize() for w in rest)
+    return label
+
+
+def _r4_old_rule_exception(label: str) -> bool:
+    segs = egress.label_segments(label)
+    if "".join(segs) in _R4_OLD_RULE_EXCEPTIONS:
+        return True
+    return bool(set(segs) & {"key", "keys"}) and segs[-1] not in ("key", "keys")
 
 
 class TestLabelModelK1:
@@ -3569,6 +3640,102 @@ class TestLabelModelK1:
         edited = {**json.loads(first), "flags": row["flags"]}
         f.write_text("".join(line + "\n" for line in [json.dumps(edited), *rest]))
         assert _invoke("repack", str(audited)).exit_code == 0
+
+    # ---- Round 4 (K1 continued): segment recogniser, context-aware extent, narrow placeholders.
+
+    @pytest.mark.parametrize("text", ["API_TOKENS=abcd1234efgh", "MY_TOKENS: s3cr3tvalue99"])
+    def test_r4_a_plural_credential_label_is_a_credential(self, text: str) -> None:
+        """R4-1: `tokens` was blanked anywhere in a label (for max_tokens), so API_TOKENS kept its
+        value; the KEY|TOKEN|SECRET|PASSWORD rule before round 3 caught it."""
+        label, value = text.split("=" if "=" in text else ": ")
+        assert value not in egress.sanitize(text)
+        assert egress.leaks_in(text) == ["credential label"]
+        assert egress.sanitize({label: value}) == {label: egress.REDACTED}
+
+    @pytest.mark.parametrize(
+        ("text", "clean"),
+        [
+            ("password: abc&def123", "password: <redacted>"),
+            ("pwd: ab,cd1234xyz", "pwd: <redacted>"),
+        ],
+    )
+    def test_r4_an_unquoted_value_goes_whole_through_punctuation(
+        self, text: str, clean: str
+    ) -> None:
+        """R4-2: `&` and `,` always ended a value, so the tail after them was shared."""
+        assert egress.sanitize(text) == clean
+        assert egress.sanitize(f"note {text}") == f"note {clean}"
+
+    def test_r4_a_token_shaped_variable_is_not_a_placeholder(self) -> None:
+        """R4-3: any `${NAME}` counted as a placeholder, so `${AKIA...}` was kept."""
+        text = "secret: ${AKIAABCDEFGHIJKL}"
+        assert egress.sanitize(text) == "secret: <redacted>"
+        assert egress.leaks_in(text) == ["credential label"]
+
+    def test_r4_the_whole_space(self) -> None:
+        """Label forms x separators x value shapes x contexts x placeholders, each with the
+        outcome the stated rules give, both locators and closure checked on every text."""
+        import itertools
+
+        r = egress.REDACTED
+        cases: list[tuple[str, str]] = []  # (text, expected sanitize output)
+        for lab, sep in itertools.product(_R4_CREDENTIAL + _R4_BENIGN, _R4_SEPARATORS):
+            cred = lab in _R4_CREDENTIAL
+            for v in _R4_BARE_VALUES:
+                cases.append((f"{lab}{sep}{v}", f"{lab}{sep}{r if cred else v}"))
+            for p in _R4_PLACEHOLDERS:
+                cases.append((f"{lab}{sep}{p}", f"{lab}{sep}{p}"))
+            for p in _R4_NOT_PLACEHOLDERS:
+                cases.append((f"{lab}{sep}{p}", f"{lab}{sep}{r if cred else p}"))
+        for lab in _R4_CREDENTIAL + _R4_BENIGN:
+            cred = lab in _R4_CREDENTIAL
+            for shape in _R4_CONTEXTS:
+                cases.append((shape.format(lab, "abc"), shape.format(lab, r if cred else "abc")))
+        for text, expected in cases:
+            clean = egress.sanitize(text)
+            assert clean == expected, (text, clean, expected)
+            assert egress.leaks_in(clean) == [], (text, clean)
+            assert egress._file_leaks("calls.jsonl", json.dumps({"q": clean})) == [], text
+            leaks = clean != text
+            assert ("credential label" in egress.leaks_in(text)) is leaks, text
+            # A/B: the locators agree on the input and on the output
+            assert egress.labelled_value_leaks(text) == bool(egress._label_spans(text)), text
+            assert egress.labelled_value_leaks(clean) is False and not egress._label_spans(clean)
+
+    @pytest.mark.parametrize("value", _R4_PLACEHOLDERS)
+    def test_r4_placeholders_by_the_rule(self, value: str) -> None:
+        assert egress.is_placeholder(value), value
+
+    @pytest.mark.parametrize("value", _R4_NOT_PLACEHOLDERS)
+    def test_r4_values_by_the_rule(self, value: str) -> None:
+        assert not egress.is_placeholder(value), value
+
+    def test_r4_never_less_than_the_pre_round_3_rule(self) -> None:
+        """Every label the 8cabcbe `KEY|TOKEN|SECRET|PASSWORD`-substring rule redacted (with an
+        8+ character value) in the generated table is still redacted, except the documented
+        exceptions. Substring-only hits (`MONKEY`, `keyboard`, `secretary`, `tokenizer`) are not
+        in the table: the old rule over-redacted them, they name no credential."""
+        import itertools
+
+        old = re.compile(r"(?i)\b([A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*[=:]\s*\S{8,}")
+        value = "abcd1234efgh"
+        checked, excepted = 0, set()
+        for stem, form, case in itertools.product(
+            ("key", "token", "secret", "password"), _R4_FORMS, ("lower", "upper", "camel")
+        ):
+            label = _r4_case(form.format(s=stem), case)
+            for sep in ("=", ": "):
+                text = f"{label}{sep}{value}"
+                if not old.search(text):
+                    continue
+                checked += 1
+                if _r4_old_rule_exception(label):
+                    assert value in egress.sanitize(text), text  # the exception is real
+                    excepted.add(label)
+                else:
+                    assert value not in egress.sanitize(text), text
+                    assert egress.is_credential_name(label), label
+        assert checked > 300 and excepted
 
 
 # ---- Round 3, contract K2: what extract, repack, gist and ingest accept is total ---------------

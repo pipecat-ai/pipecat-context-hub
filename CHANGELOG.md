@@ -78,7 +78,13 @@ This changelog retains repository and Context Hub package history.
   that contains a credential word (`password1`, `api_key_prod`, `OPENAI_API_KEY_2`, `API key`)
   loses its value, with `:` `=` `：` `=>` `->` separators, backslash-escaped quotes (stringified
   JSON), a quoted value taken whole and no minimum length; `redis://:password@host` is redacted;
-  the leak check locates labels with separate code over the same rules. `extract` refuses an
+  the leak check locates labels with separate code over the same rules. Labels are read by word
+  segment, so a plural (`API_TOKENS`, `SSH_KEYS`) is a credential and only a trailing count, hint
+  or file phrase (`max_tokens`, `token_count`, `password_hint`) is not; an unquoted value with no
+  space is redacted whole (`abc&def`, `ab,cd`), with `&` ending it only in a URL query and `,` `;`
+  `)` `]` `}` only inside brackets opened before the label; a placeholder is kept only in a fixed
+  shape with no token in it (`$TOKEN`, `${API_KEY}`, `<token>`, `YOUR_API_KEY`), so
+  `${AKIA...}` is redacted. `extract` refuses an
   `--out` that is, contains or sits inside an input directory, or that holds files it did not
   write; an unmeasurable latency (a result stamped before its call) is null instead of failing the
   run; a non-string transcript timestamp no longer aborts `--since`. `gist` refuses a `report.md`
