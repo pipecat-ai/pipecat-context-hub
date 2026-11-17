@@ -164,6 +164,14 @@ def gist_cmd(out_dir: Path, yes: bool, allow_empty: bool) -> None:
     missing = [f.name for f in files if not f.is_file() or f.is_symlink()]
     if missing:
         _fail(f"{share.name}/ is missing {missing}; run `audit extract` first")
+    from pipecat_context_hub.audit.egress import verify_share
+
+    leaks = verify_share(share, BUNDLE_FILES)
+    if leaks:
+        _fail(
+            f"share/ failed the leak check ({'; '.join(leaks)}): remove what it names, then run "
+            "`audit repack`"
+        )
     if not allow_empty and _nothing_to_share(share):
         _fail(
             "this bundle has no Context Hub calls and no Pipecat work without it, so a gist would "

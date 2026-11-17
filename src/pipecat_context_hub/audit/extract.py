@@ -19,13 +19,30 @@ import json
 import re
 import secrets
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pipecat_context_hub.audit.analysis import SEARCH_TOOLS, analyze, annotate_calls, link_parents
-from pipecat_context_hub.audit.analysis import render as render_analysis
+from pipecat_context_hub.audit.analysis import prune_refs
+from pipecat_context_hub.audit.report import render_report
+from pipecat_context_hub.audit.egress import (  # noqa: F401  (re-exported: tests call extract.redact)
+    HOME_RE,
+    SECRET_RES,
+    SHARE_PATH_RE,
+    WIN_HOME_RE,
+    ShareLeakError,
+    public_tool_name,
+    clean_text,
+    clip,
+    map_strings,
+    one_line,
+    redact,
+    sanitize,
+    scrub_paths,
+    verify_share,
+)
 
 HUB_MENTION_RE = re.compile(r"context[- ]hub|pipecat[-_]context[-_]hub|\bPCH\b", re.IGNORECASE)
 HUB_TOOLSEARCH_RE = re.compile(
@@ -40,63 +57,7 @@ ERROR_RE = re.compile(
     r"Traceback \(most recent call last\)|ImportError|ModuleNotFoundError|AttributeError|"
     r"unexpected keyword argument|TypeError:|ValidationError|NameError",
 )
-# Secrets must never reach the output files. Over-redact rather than under-redact.
-SECRET_RES = [
-    re.compile(r"\b(sk|pk|rk|dg|gsk|hf|xox[abprs]|ghp|gho|github_pat)[-_][A-Za-z0-9_\-]{16,}"),
-    re.compile(r"(?i)\b(bearer|token)\s+[A-Za-z0-9._\-]{20,}"),
-    re.compile(r"(?i)\b([A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*[=:]\s*\S{8,}"),
-    # Bare hex keys (Deepgram 40, Twilio/AssemblyAI 32, Daily 64) and git SHAs alike: a commit
-    # SHA in a query is worth nothing, a key that escapes is worth a lot.
-    re.compile(r"\b[0-9a-fA-F]{32,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),  # AWS access key id
-    re.compile(r"\bAIza[0-9A-Za-z_\-]{30,}"),  # Google API key
-    re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),  # JWT
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-]
-HOME_RE = re.compile(r"/(Users|home)/[^/\s\"']+")
-WIN_HOME_RE = re.compile(r"([A-Za-z]:\\{1,2}Users\\{1,2})[^\\/\s\"']+")
 HIT_ID_KEYS = ("doc_id", "example_id", "path", "file_path", "title", "class_name", "name", "id")
-
-
-def redact(text: str) -> str:
-    text = HOME_RE.sub(r"/\1/<user>", text)
-    text = WIN_HOME_RE.sub(r"\1<user>", text)
-    for rx in SECRET_RES:
-        text = rx.sub("<redacted>", text)
-    return text
-
-
-def map_strings(v: Any, fn: Callable[[str], str]) -> Any:
-    """``v`` with ``fn`` applied to every string value and every string dict key, structure untouched.
-
-    Keys matter: a hub call's argument names are chosen by the agent, so a secret or a path can sit
-    in a key as easily as in a value.
-
-    Redaction must walk the parsed value, never the serialised text: a secret pattern's ``\\S{8,}``
-    swallows the closing quote and brace of a JSON dump, and the result no longer parses.
-    """
-    if isinstance(v, str):
-        return fn(v)
-    if isinstance(v, list):
-        return [map_strings(x, fn) for x in v]
-    if isinstance(v, dict):
-        return {(fn(k) if isinstance(k, str) else k): map_strings(x, fn) for k, x in v.items()}
-    return v
-
-
-def one_line(text: str) -> str:
-    """``text`` on a single line under EVERY line break ``str.splitlines`` honours.
-
-    ``repack`` finds report rows with ``splitlines()``; a row built with a narrower rule (just
-    ``\\n``) splits there on ``\\r``, ``\\x0b``, ``\\u2028`` and friends, and a deleted call's
-    query survives in the fragment.
-    """
-    return " ".join(text.splitlines())
-
-
-def clip(text: str, n: int) -> str:
-    text = redact(text)
-    return text if len(text) <= n else text[:n] + f"…[+{len(text) - n}]"
 
 
 def parse_ts(s: str | None) -> float | None:
@@ -723,16 +684,6 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
     return session, calls
 
 
-SHARE_PATH_RE = re.compile(
-    r"(?:/(?:Users|home|private|tmp|var|mnt|opt|root|Volumes|etc)/[^\s\"'`;|)\]]+|[A-Za-z]:\\[^\s\"'`;|)\]]+)"
-)
-
-
-def scrub_paths(v: Any) -> Any:
-    """Replace local absolute paths in every string of a share row (doc paths like /guides/x stay)."""
-    return map_strings(v, lambda text: SHARE_PATH_RE.sub("<path>", text))
-
-
 SCHEMA_VERSION = 1
 EXTRACTOR_VERSION = "0.1.0"
 
@@ -781,7 +732,7 @@ FIELDS_MD = """\
 | `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = JSON found; `cli_unparsed` = shell text, not a defect) |
 | `flags` | heuristic flags, glossary below |
 | `severity` | sum of flag weights; sort by it to triage |
-| `followups` | next 8 tool calls: `tool`, `category` (`read_pipecat_source`/`web_pipecat`/null), `hub` (another Context Hub call) |
+| `followups` | next 8 tool calls: `tool` (a Context Hub tool, a standard harness tool such as `Bash`/`Read`, or `other`: names of the participant's other tools are not shared), `category` (`read_pipecat_source`/`web_pipecat`/null), `hub` (another Context Hub call) |
 | `downstream_errors` | Python error class names seen in the next 25 non-hub results (text removed) |
 | `outcome` | signal class, NOT a verdict: `failed` / `miss` / `suspect` / `bypassed` / `inefficient` / `no_negative_signal` (first match wins; see `manifest.json` analysis.correctness.glossary) |
 | `suspect_target` | likely owner of the signal: `hub-tools` / `hub-retrieval` / `hub-corpus` / `agent-misuse` / `needs-judgment`; null when `no_negative_signal` |
@@ -828,26 +779,10 @@ def pack_share(share: Path) -> tuple[Path, str]:
     return tar_path, digest
 
 
-def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
-    import statistics
-
-    rows = []
-    for tool in sorted({c["tool"] for c in calls}):
-        cs = [c for c in calls if c["tool"] == tool]
-        lat = sorted(c["latency_s"] for c in cs if c.get("latency_s") is not None)
-        conf = [
-            c["result"]["confidence"]
-            for c in cs
-            if isinstance(c["result"].get("confidence"), (int, float))
-        ]
-        p90 = lat[min(len(lat) - 1, int(0.9 * len(lat)))] if lat else ""
-        rows.append(
-            f"| {tool} | {len(cs)} | {sum(bool(c['flags']) for c in cs)} "
-            f"| {round(statistics.median(lat), 1) if lat else ''} | {p90} "
-            f"| {sum('zero_hits' in c['flags'] for c in cs)} "
-            f"| {round(statistics.mean(conf), 2) if conf else ''} |"
-        )
-    return rows
+def _hub_name(name: str, is_hub: bool) -> str | None:
+    """A hub follow-up's own tool name (``search_docs``), ``hub`` if it cannot be read, else None."""
+    m = MCP_RE.search(name)
+    return m.group(1) if m else ("hub" if is_hub else None)
 
 
 def build_share_bundle(
@@ -862,6 +797,10 @@ def build_share_bundle(
     Kept: Context Hub tool, query/inputs, result shape (hit count, confidence, top hit ids), flags,
     latency. Dropped: session ids/file names (hashed), shell commands, file paths, and error text of
     the agent's other tool calls (only the error class name survives). Nothing is sent from here.
+
+    Every row and the manifest go through ``sanitize`` as they are written, ``report.md`` is
+    rendered from the sanitised rows, and the finished files must pass ``verify_share`` or none of
+    them is kept: a sink that bypassed the egress fails the build instead of shipping.
     """
     share = out / "share"
     share.mkdir(exist_ok=True)
@@ -884,7 +823,8 @@ def build_share_bundle(
                 )  # links to the parent's `session`
             keep["session"] = sid(r["session_id"])
             keep["participant"] = sid(r["participant"])
-            fh.write(json.dumps(scrub_paths(keep)) + "\n")
+            fh.write(json.dumps(sanitize(keep)) + "\n")
+    share_calls: list[dict[str, Any]] = []
     with (share / "calls.jsonl").open("w") as fh:
         for c in calls:
             keep = dict(c)
@@ -895,103 +835,72 @@ def build_share_bundle(
             keep["ref"] = f"{keep['participant']}/{keep['session']}#{keep['call_idx']}"
             keep["severity"] = sum(SEVERITY.get(f, 1) for f in c["flags"])
             keep["followups"] = [
-                {k: w[k] for k in ("tool", "category", "hub")} for w in c["followups"]
+                {
+                    "tool": public_tool_name(w["tool"], _hub_name(w["tool"], w["hub"])),
+                    "category": w["category"],
+                    "hub": w["hub"],
+                }
+                for w in c["followups"]
             ]
             keep["downstream_errors"] = [
-                {"tool": d["tool"], "error": (ERR_NAME_RE.search(d["err"]) or [""])[0]}
+                {
+                    "tool": public_tool_name(d["tool"], None),
+                    "error": (ERR_NAME_RE.search(d["err"]) or [""])[0],
+                }
                 for d in c["downstream_errors"]
             ]
             keep["result"] = {k: v for k, v in c["result"].items() if k != "text_head"}
-            fh.write(json.dumps(scrub_paths(keep)) + "\n")
+            row = sanitize(keep)
+            share_calls.append(row)
+            fh.write(json.dumps(row) + "\n")
 
     analysis = analyze(
         sessions, calls, lambda c: f"{sid(c['participant'])}/{sid(c['session_id'])}#{c['call_idx']}"
     )
-    flagged = sorted(
-        (c for c in calls if c["flags"]),
-        key=lambda c: -sum(SEVERITY.get(f, 1) for f in c["flags"]),
-    )
-    rows = []
-    for c in flagged[:60]:
-        r = c["result"]
-        inp = c["input"] if isinstance(c["input"], dict) else {}
-        q = inp.get("query") or inp.get("path") or inp.get("doc_id") or c["hub_invocation"]
-        rows.append(
-            f"| {sid(c['participant'])}/{sid(c['session_id'])}#{c['call_idx']} | {c['tool']} "
-            f"| {one_line(scrub_paths(clip(str(q), 80))).replace('|', '/')} | {', '.join(c['flags'])} "
-            f"| {r.get('n_hits', '')} | {round(r['confidence'], 2) if isinstance(r.get('confidence'), float) else ''} |"
-        )
-    md = [
-        "# Context Hub session report (auto-generated, unjudged)",
-        "",
-        f"Sessions: {summary['sessions']} · used Context Hub: {summary['hub_used']} · "
-        f"Pipecat work without it: {summary['missed_opportunity']} · calls: {summary['hub_calls']}",
-        f"Harnesses: {summary['by_harness']}",
-        f"Calls by tool: {summary['calls_by_tool']}",
-        f"Flags: {summary['flag_totals']}",
-        "",
-        *render_analysis(analysis),
-        "## Look first (flagged calls, highest severity first)"
-        + (f" — first 60 of {len(flagged)}" if len(flagged) > 60 else ""),
-        "",
-        "| ref | tool | query | flags | hits | confidence |",
-        "|---|---|---|---|---|---|",
-        *rows,
-        "",
-        "## Per-tool stats",
-        "",
-        "| tool | calls | flagged | median s | p90 s | zero hits | mean confidence |",
-        "|---|---|---|---|---|---|---|",
-        *tool_rows(calls),
-        "",
-        "## What is in this bundle",
-        "",
-        "- `calls.jsonl`: one row per Context Hub call. Contains your search queries and result shape "
-        "(hit counts, confidence, top hit ids), flags, latency.",
-        "- `sessions.jsonl`: per-session counters. Session and participant ids are hashed.",
-        "- **Not included:** transcript text, shell commands, file paths, other tools' output "
-        "(only an error class name such as `ImportError`).",
-        "- Redaction is best-effort. Queries are your own words: read them before sharing.",
-    ]
-    (share / "report.md").write_text("\n".join(md) + "\n")
+    manifest = sanitize(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "extractor_version": EXTRACTOR_VERSION,
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "scope": scope,
+            "counts": {
+                **{k: summary[k] for k in ("sessions", "participants", "hub_used", "hub_calls")},
+                # rows in calls.jsonl: `hub_calls` also counts mentions in text-scanned sessions
+                "call_rows": len(calls),
+            },
+            "harnesses": summary["by_harness"],
+            "needs_manual_read": summary["needs_manual_read"],
+            "files": list(BUNDLE_FILES),
+            "removed": [
+                "transcript text", "shell commands", "file paths (replaced with <path>)",
+                "other tools' output (error class names kept)", "session/participant ids (hashed)",
+                "raw non-JSON result text",
+            ],
+            "redaction": "best-effort regexes for keys/tokens/home paths; queries are verbatim",
+            "analysis": analysis,
+            "caveats": [
+                "flags are heuristics, not verdicts",
+                "downstream_error is correlation only",
+                "latency includes harness overhead",
+            ],
+        }
+    )  # fmt: skip
+    (share / "report.md").write_text(render_report(manifest, share_calls))
     (share / "SCHEMA.md").write_text(
         "# Context Hub session bundle: schema v" + str(SCHEMA_VERSION) + "\n\n" + FIELDS_MD
         + "\n## Flag glossary (severity weight)\n\n"
         + "\n".join(f"- `{k}` ({SEVERITY.get(k, 1)}): {v}" for k, v in FLAG_GLOSSARY.items())
         + "\n"
     )  # fmt: skip
-    (share / "manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "extractor_version": EXTRACTOR_VERSION,
-                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "scope": scope,
-                "counts": {
-                    **{k: summary[k] for k in ("sessions", "participants", "hub_used", "hub_calls")},
-                    # rows in calls.jsonl: `hub_calls` also counts mentions in text-scanned sessions
-                    "call_rows": len(calls),
-                },
-                "harnesses": summary["by_harness"],
-                "needs_manual_read": summary["needs_manual_read"],
-                "files": ["manifest.json", "SCHEMA.md", "report.md", "calls.jsonl", "sessions.jsonl"],
-                "removed": [
-                    "transcript text", "shell commands", "file paths (replaced with <path>)",
-                    "other tools' output (error class names kept)", "session/participant ids (hashed)",
-                    "raw non-JSON result text",
-                ],
-                "redaction": "best-effort regexes for keys/tokens/home paths; queries are verbatim",
-                "analysis": analysis,
-                "caveats": [
-                    "flags are heuristics, not verdicts",
-                    "downstream_error is correlation only",
-                    "latency includes harness overhead",
-                ],
-            },
-            indent=2,
+    (share / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    leaks = verify_share(share, BUNDLE_FILES)
+    if leaks:
+        for name in BUNDLE_FILES:  # fail closed: keep nothing that failed the check
+            (share / name).unlink(missing_ok=True)
+        raise ShareLeakError(
+            f"share bundle failed the leak check and was not kept: {'; '.join(leaks)}"
         )
-    )  # fmt: skip
-    return share, analysis
+    return share, manifest["analysis"]
 
 
 @dataclasses.dataclass
@@ -1034,21 +943,18 @@ def generated_paths(out_dir: Path) -> list[Path]:
     return found
 
 
-_REPORT_ROW_RE = re.compile(r"^\| ([0-9a-f]{12}/[0-9a-f]{12}#\d+) \|")
-
-
 def repack(out_dir: Path) -> tuple[Path, str]:
     """Rebuild ``share.tar.gz`` from an (edited) ``out_dir/share/``.
 
-    A call deleted from ``calls.jsonl`` is also dropped from ``report.md``'s "Look first" table,
-    which repeats each flagged call's query: deleting a row must delete what it said.
+    ``report.md`` is regenerated from ``calls.jsonl`` and ``manifest.json`` rather than patched, so
+    a call deleted from ``calls.jsonl`` disappears from everything derived from it (the "Look first"
+    table repeats each flagged call's query). The finished files must pass the leak check.
     """
     share = out_dir / "share"
     missing = [n for n in BUNDLE_FILES if not (share / n).is_file() or (share / n).is_symlink()]
     if missing:
         raise ValueError(f"cannot repack: {share.name}/ is missing {missing}")
-    refs: set[str] = set()
-    rows = 0
+    rows: list[dict[str, Any]] = []
     for i, line in enumerate((share / "calls.jsonl").read_text().splitlines(), 1):
         if not line.strip():
             continue
@@ -1056,25 +962,35 @@ def repack(out_dir: Path) -> tuple[Path, str]:
             row = json.loads(line)
         except ValueError:
             raise ValueError(f"cannot repack: calls.jsonl line {i} is not valid JSON") from None
-        rows += 1
-        if isinstance(row, dict) and isinstance(row.get("ref"), str):
-            refs.add(row["ref"])
-    try:  # keep the manifest's row count honest: `audit gist` / `ingest` rely on it
+        ok = (
+            isinstance(row, dict)
+            and isinstance(row.get("ref"), str)
+            and isinstance(row.get("tool"), str)
+            and isinstance(row.get("result"), dict)
+            and isinstance(row.get("flags"), list)
+            and all(isinstance(f, str) for f in row["flags"])
+        )
+        if not ok:
+            raise ValueError(f"cannot repack: calls.jsonl line {i} is not a call row")
+        rows.append(row)
+    try:
         manifest = json.loads((share / "manifest.json").read_text())
         counts = manifest["counts"]
-        if counts.get("call_rows") != rows:
-            counts["call_rows"] = rows
-            (share / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    except (ValueError, KeyError, TypeError, AttributeError):
-        pass  # an unreadable manifest is the participant's edit to own; ingest rejects it
-    report = (share / "report.md").read_text()
-    kept = [
-        ln
-        for ln in report.splitlines()
-        if not ((m := _REPORT_ROW_RE.match(ln)) and m.group(1) not in refs)
-    ]
-    if len(kept) != len(report.splitlines()):
-        (share / "report.md").write_text("\n".join(kept) + "\n")
+        if not isinstance(counts, dict):
+            raise TypeError
+    except (ValueError, KeyError, TypeError):
+        raise ValueError("cannot repack: manifest.json is unreadable or has no counts") from None
+    counts["call_rows"] = len(rows)  # `audit gist` / `ingest` rely on it
+    if isinstance(manifest.get("analysis"), dict):
+        prune_refs(manifest["analysis"], {r["ref"] for r in rows})
+    (share / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    (share / "report.md").write_text(render_report(manifest, rows))
+    leaks = verify_share(share, BUNDLE_FILES)
+    if leaks:
+        raise ValueError(
+            f"cannot repack: the bundle still holds a secret or local path ({'; '.join(leaks)}); "
+            "remove it from the file named and run repack again"
+        )
     return pack_share(share)
 
 

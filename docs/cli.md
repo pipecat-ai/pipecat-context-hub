@@ -45,7 +45,7 @@ pipecat-context-hub audit extract -i ~/.claude/projects/<project> --out ./hub-au
 pipecat-context-hub audit gist ./hub-audit --yes      # secret gist: unlisted, NOT private (refuses a bundle with no calls and no Pipecat work without Context Hub)
 #   ...or send ./hub-audit/share.tar.gz yourself (email, chat), or:
 pipecat-context-hub audit discard ./hub-audit --yes   # deletes only files `extract` wrote
-pipecat-context-hub audit repack ./hub-audit          # after editing share/ by hand
+pipecat-context-hub audit repack ./hub-audit          # after editing calls.jsonl by hand: regenerates report.md, re-checks for leaks
 pipecat-context-hub audit ingest a.tar.gz b.tar.gz --out ./merged   # organizers
 ```
 

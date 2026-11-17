@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner, Result
 
+from pipecat_context_hub.audit import egress
 from pipecat_context_hub.audit import extract as audit_extract
 from pipecat_context_hub.cli import main
 
@@ -773,8 +774,8 @@ class TestReviewRegressions:
 
     def test_bare_hex_keys_are_redacted_even_beside_the_word_commit(self) -> None:
         for key in ("a" * 40, "b" * 32, "c" * 64):
-            assert key not in audit_extract.redact(f"key {key} commit")
-        assert "C:\\Users\\alice" not in audit_extract.redact("C:\\Users\\alice\\proj\\bot.py")
+            assert key not in egress.redact(f"key {key} commit")
+        assert "C:\\Users\\alice" not in egress.redact("C:\\Users\\alice\\proj\\bot.py")
 
     def test_report_md_scrubs_paths_like_the_jsonl_rows(self, tmp_path: Path) -> None:
         q = r"error in C:\Users\alice\proj\bot.py and /tmp/xyz/secret.py"
@@ -1024,3 +1025,168 @@ class TestReviewRegressions:
         assert (
             SECRET not in (out / "calls.jsonl").read_text()
         )  # the local detail file is redacted too
+
+
+def _canary(name: str, *, path: bool = True) -> str:
+    """A secret-shaped token (and optionally a home path) unique to one field."""
+    s = f"sk-CANARY{name}ABCDEFGHIJKLMNOP"
+    return f"{s} /Users/CANARYP{name}/proj" if path else s
+
+
+# Every field a transcript can put text into that reaches the share bundle in some form.
+CANARY_FIELDS = (
+    "query", "path", "argkey", "argval", "hit", "unknown", "nextq", "corpus", "errtext", "stale",
+    "cli", "version", "ts", "label", "sid", "file", "downstream", "toolname", "prompt",
+)  # fmt: skip
+
+
+class TestEgress:
+    """One egress, one tripwire: no participant text reaches share/ except through `sanitize`."""
+
+    def _canary_transcript(self, root: Path) -> Path:
+        c = _canary
+        sid = c("sid", path=False)
+        base = {"sessionId": sid, "cwd": "/Users/CANARYPcwd/proj", "version": c("version")}
+
+        def use(i: int, ts: str, name: str, inp: dict[str, Any]) -> dict[str, Any]:
+            block = {"type": "tool_use", "id": f"t{i}", "name": name, "input": inp}
+            return {**base, "type": "assistant", "timestamp": ts, "message": {"content": [block]}}
+
+        def res(i: int, ts: str, *texts: str, err: bool = False) -> dict[str, Any]:
+            content = [{"type": "text", "text": t} for t in texts]
+            block = {
+                "type": "tool_result",
+                "tool_use_id": f"t{i}",
+                "is_error": err,
+                "content": content,
+            }
+            return {**base, "type": "user", "timestamp": ts, "message": {"content": [block]}}
+
+        ts0, ts1 = f"2026-11-18T10:00:00Z {c('ts')}", "2026-11-18T10:00:05Z"
+        hub = json.dumps(
+            {
+                "hits": [{"doc_id": c("hit")}],
+                "evidence": {
+                    "confidence": 0.1,
+                    "low_confidence": True,
+                    "unknown": [c("unknown")],
+                    "next_retrieval_queries": [c("nextq")],
+                },
+                "corpus_hint": {"note": c("corpus")},
+            }
+        )
+        rows = [
+            {**base, "type": "user", "timestamp": ts0, "message": {"content": c("prompt")}},
+            use(
+                1,
+                ts0,
+                "mcp__pipecat-context-hub__search_docs",
+                {"query": c("query"), "path": c("path"), c("argkey"): c("argval")},
+            ),
+            res(1, ts1, hub, f"index stale since {c('stale')}"),
+            use(2, ts1, "mcp__pipecat-context-hub__search_api", {"query": "x"}),
+            res(2, ts1, json.dumps({"error": c("errtext")})),
+            use(3, ts1, "Bash", {"command": f"pipecat-context-hub search-docs '{c('cli')}'"}),
+            res(3, ts1, "exit=0\n" + hub),
+            use(4, ts1, f"mcp__{c('toolname', path=False)}__x", {"a": 1}),
+            res(4, ts1, f"Traceback (most recent call last):\nImportError: {c('downstream')}"),
+        ]
+        src = root / "in" / c("label", path=False)
+        _jl(src / f"{c('file', path=False)}.jsonl", rows)
+        return root / "in"
+
+    def _shared_text(self, out: Path) -> str:
+        parts = [(out / "share" / n).read_text() for n in BUNDLE]
+        with tarfile.open(out / "share.tar.gz") as tf:
+            parts += [tf.extractfile(m).read().decode() for m in tf.getmembers() if m.isfile()]  # type: ignore[union-attr]
+        return "\n".join(parts)
+
+    def test_no_canary_reaches_any_share_file_or_the_tarball(self, tmp_path: Path) -> None:
+        out = tmp_path / "out"
+        result = _extract(self._canary_transcript(tmp_path), out)
+        assert result.exit_code == 0, result.output
+        blob = self._shared_text(out)
+        leaked = [f for f in CANARY_FIELDS if f"CANARY{f}" in blob]
+        assert not leaked, f"fields reached the share bundle: {leaked}"
+        assert "CANARYP" not in blob  # no canary home path either
+        # the hub calls were really extracted (the test would pass vacuously on an empty bundle)
+        rows = [json.loads(r) for r in (out / "share" / "calls.jsonl").read_text().splitlines()]
+        assert {r["via"] for r in rows} == {"mcp", "cli"}
+
+    def test_other_tool_names_are_not_shared_only_an_allowlist(self, tmp_path: Path) -> None:
+        """Names of the participant's other MCP servers identify their setup: share `other`, not the name."""
+        rows = [
+            _use(
+                1, "2026-11-18T10:00:00Z", "mcp__pipecat-context-hub__search_docs", {"query": "TTS"}
+            ),
+            _result(1, "2026-11-18T10:00:01Z", json.dumps({"hits": [{"doc_id": "d"}]})),
+            _use(2, "2026-11-18T10:00:02Z", "mcp__acme-internal-db__query", {"q": "x"}),
+            _result(2, "2026-11-18T10:00:03Z", "ok"),
+            _use(3, "2026-11-18T10:00:04Z", "Bash", {"command": "ls"}),
+            _result(3, "2026-11-18T10:00:05Z", "ok"),
+        ]
+        _jl(tmp_path / "in" / "zed" / "s.jsonl", rows)
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        row = json.loads((out / "share" / "calls.jsonl").read_text().splitlines()[0])
+        assert [w["tool"] for w in row["followups"]] == ["other", "Bash"]
+        assert "acme" not in self._shared_text(out)
+        local = (out / "calls.jsonl").read_text()
+        assert "acme-internal-db" in local  # the participant's own local detail keeps it
+
+    def test_a_sink_that_bypasses_sanitize_fails_the_build_not_the_participant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation of the contract: if rows skip the egress, the tripwire refuses to keep anything."""
+        monkeypatch.setattr(audit_extract, "sanitize", lambda v: v)
+        out = tmp_path / "out"
+        result = _extract(self._canary_transcript(tmp_path), out)
+        assert result.exit_code == 1 and "leak check" in result.output
+        assert "CANARY" not in result.output  # the error names rules, never the matched text
+        assert not any((out / "share" / n).exists() for n in BUNDLE)
+
+    @pytest.mark.parametrize("cmd", ["gist", "repack"])
+    def test_a_hand_edit_that_adds_a_secret_is_refused_before_it_leaves(
+        self, audited: Path, cmd: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise AssertionError("must not run gh")
+
+        monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/gh")
+        monkeypatch.setattr(subprocess, "run", boom)
+        sessions = audited / "share" / "sessions.jsonl"
+        sessions.write_text(sessions.read_text() + json.dumps({"note": SECRET}) + "\n")
+        args = ("gist", str(audited), "--yes") if cmd == "gist" else ("repack", str(audited))
+        refused = _invoke(*args)
+        assert refused.exit_code == 1 and "sessions.jsonl" in refused.output
+        assert SECRET not in refused.output
+
+    def test_sanitize_removes_every_known_secret_shape_however_it_is_glued(self) -> None:
+        """Ground truth, not the patterns' own opinion: the planted payload must be gone.
+
+        The tripwire shares the redactor's patterns, so `leaks_in(...) == []` alone would pass when
+        both are weakened together (mutation-checked). Underscore-glued shapes are the regression.
+        """
+        from pipecat_context_hub.audit.egress import leaks_in, sanitize
+
+        hexkey = "0123456789abcdef" * 4
+        # (text, the payload that must not survive)
+        cases = [
+            (SECRET, SECRET), (BEARER, "abcdefghijklmnopqrstuvwxyz0123456789"),
+            (HOME_PATH, "secret-project"), ("C:\\Users\\alice\\proj\\bot.py", "alice"),
+            ("TOKEN=abcdefghij12", "abcdefghij12"), ("a" * 40, "a" * 40), (hexkey, hexkey),
+            ("API_KEY_" + hexkey, hexkey), ("key_" + "b" * 40, "b" * 40),
+            ("AKIA" + "A" * 16, "A" * 16), ("x_AKIA" + "Q" * 16, "Q" * 16),
+            ("mcp__sk-" + "A" * 20, "A" * 20), ("key_sk-" + "B" * 20, "B" * 20),
+            ("my_ghp_" + "C" * 20, "C" * 20),
+            ("eyJabcdefgh.eyJabcdefgh.abcdefghij", "abcdefghij"),
+            ("-----BEGIN RSA PRIVATE KEY-----", "BEGIN RSA PRIVATE KEY"),
+        ]  # fmt: skip
+        for text, payload in cases:
+            once = sanitize({text: [text, {"k": text}]})
+            blob = json.dumps(once)
+            assert payload not in blob, text
+            assert sanitize(once) == once  # idempotent
+            assert leaks_in(blob) == [], text
+        benign = sanitize("see /guides/x and plain words and /home/<user>/y")
+        assert "/guides/x" in benign and "plain words" in benign

@@ -254,6 +254,14 @@ def analyze(
     }
 
 
+def prune_refs(a: dict[str, Any], keep: set[str]) -> None:
+    """Drop example refs that point at calls no longer in the bundle (in place)."""
+    for b in a.get("improvement_backlog") or []:
+        b["example_refs"] = [r for r in b.get("example_refs", []) if r in keep]
+    c = a.get("correctness") or {}
+    c["read_these_first"] = [r for r in c.get("read_these_first", []) if r in keep]
+
+
 def render(a: dict[str, Any]) -> list[str]:
     """Markdown for the top of report.md."""
     u, e, c = a["usage"], a["efficiency"], a["correctness"]

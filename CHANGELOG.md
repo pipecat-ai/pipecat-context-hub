@@ -24,6 +24,12 @@ This changelog retains repository and Context Hub package history.
   `pipecat context-hub audit`. When no Context Hub call is found, `extract` says there is nothing
   to share and `gist` refuses unless `--allow-empty`. A zero-call bundle that did Pipecat work
   without Context Hub is still shareable: it carries the coded reasons for non-use.
+- **One egress for everything shared.** Every string and dict key of every `share/` file goes
+  through `sanitize`, the finished files must pass a leak check or none is kept, and `gist` and
+  `repack` run the same check on hand-edited bundles. `repack` regenerates `report.md` from
+  `calls.jsonl` instead of patching it. Names of the participant's other tools are not shared (only
+  Context Hub tools, standard harness tools, or `other`). Key patterns no longer miss a secret glued
+  to an identifier with `_` (`key_sk-...`).
 - **`audit extract` answers the four audit questions itself** (used it? inefficient? correct? what to
   improve), so a bundle is analysable without raw transcripts: a computed section at the top of
   `report.md` and under `manifest.json` `analysis`, plus per-call `outcome` / `suspect_target`. For

@@ -63,8 +63,10 @@ commands, JS batches (only the one call expression survives), file paths, other 
    without it is shareable: the bundle's `no_use_signals` explain why, which is what organizers need.
 1. **Show before asking.** Print `<out-dir>/share/report.md` in full; offer to show rows. If they
    edit or delete rows in `share/calls.jsonl` (valid JSONL), run
-   `pipecat-context-hub audit repack <out-dir>` before anything is sent; it also drops the deleted
-   calls' rows from `report.md` and fixes the manifest's row count.
+   `pipecat-context-hub audit repack <out-dir>` before anything is sent. `repack` regenerates
+   `report.md` from `calls.jsonl` and the manifest (so edits to `report.md` itself are overwritten
+   and a deleted call disappears from it), fixes the row count, and refuses if any bundle file still
+   holds a secret or local path. `gist` runs the same check.
 2. **Ask, with no default** (AskUserQuestion, single-select):
    - **Post as a secret GitHub gist** (unlisted, *not private*; they then pass you the URL)
    - **Take the tarball** (nothing is sent; they send `share.tar.gz` themselves by email, chat,
