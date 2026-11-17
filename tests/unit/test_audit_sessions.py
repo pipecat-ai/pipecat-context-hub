@@ -2086,9 +2086,10 @@ class TestIngestLimits:
     def test_decompression_past_the_archive_cap_stops_the_read(
         self, audited: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from pipecat_context_hub.audit import ingest
+        from pipecat_context_hub.audit import bundle
 
-        monkeypatch.setattr(ingest, "MAX_DECOMPRESSED_BYTES", 2048)
+        # round 4 (F8): the limit is the bundle contract's own, read at call time
+        monkeypatch.setattr(bundle, "MAX_BUNDLE_BYTES", 2048)
         (rejected,) = _merge([audited / "share.tar.gz"], tmp_path / "m")["report"]
         assert rejected["status"] == "rejected" and "decompresses past 2048" in rejected["reason"]
 
@@ -2303,7 +2304,12 @@ class TestHygiene:
 # and the secret-shape corpus.
 
 _FUZZ_ALPHABET = (
-    "abcXYZ0123456789 .,_-/" + "|\\\n:@=\"'$()" + "\t\r·→…<>`;{}[]#~%" + "：=:_-\\\"'" + "&?&?"
+    "abcXYZ0123456789 .,_-/"
+    + "|\\\n:@=\"'$()"
+    + "\t\r·→…<>`;{}[]#~%"
+    + "：=:_-\\\"'"
+    + "&?&?"
+    + "*_\\`[]\n|#?/@\u00a0\u200b\u2018\u201c"  # round 4 fixer (K1): markdown, unicode
 )  # round 3 (K1): the label model's separators, quotes and escapes weigh more; round 4: `&` `?`
 _FUZZ_FRAGMENTS = [
     *(t for t, _ in SECRET_SHAPES), *BENIGN, "password", "TOKEN=", "MONKEY=", "api_key",
@@ -2319,6 +2325,9 @@ _FUZZ_FRAGMENTS = [
     *egress.NON_CREDENTIAL_SEGMENTS, *egress.BENIGN_WHOLE_LABELS, "API_TOKENS=", "SSH_KEYS",
     "?x=1&", "&password=", "abc&def", "ab,cd", "(password: ", "[token: ", '{"secret": ', "${",
     "${AKIA", "$TOKEN", "<token>", "YOUR_API_KEY", "max_tokens", "key: ",
+    # round 4 fixer (K1): the keyword forms, the whole credential words and markdown wrappers
+    *egress.CREDENTIAL_WORDS, "mysql ", "-p", "login ", "password ", "-u ", "machine ", "--user ",
+    "Cookie: ", "**", "`", "|\n  ", ': """', "os.environ[", "].", "#frag", "\u00a0",
 ]  # fmt: skip
 
 
@@ -4036,8 +4045,12 @@ class TestRound3Hygiene:
     def test_f7_tool_vocabularies_derive_from_one_place(self) -> None:
         from pipecat_context_hub.audit import shell
 
-        assert audit_extract.SHELLISH <= {n.lower() for n in egress.STANDARD_TOOLS}
-        assert audit_extract.READONLY <= {n.lower() for n in egress.STANDARD_TOOLS}
+        # round 4 (F6): the groups live in egress only; extract keeps no alias of them
+        standard = {n.lower() for n in egress.STANDARD_TOOLS}
+        assert egress.SHELL_TOOLS | egress.READONLY_TOOLS | egress.JS_BATCH_TOOLS <= standard
+        for alias in ("SHELLISH", "READONLY"):
+            assert not hasattr(audit_extract, alias)
+        assert getattr(audit_extract, "JS_BATCH_TOOLS") is egress.JS_BATCH_TOOLS
         tools = set(shell.HUB_TOOL_SUBCOMMANDS)
         assert shell.SEARCH_TOOLS | shell.FETCH_TOOLS | shell.VERSIONED_TOOLS <= tools
         assert shell.STATUS_TOOL in tools and shell.VERSIONED_TOOLS <= shell.SEARCH_TOOLS
@@ -4074,3 +4087,383 @@ class TestRound3Hygiene:
         assert "response shape" in skill
         assert "Re-run the CLI rather than hand-editing" not in skill  # F11
         assert "run `audit repack` before sending" in skill
+
+
+# ---- Round 4 fixer, contract K1: the label model is one grammar, and the tests come from it ------
+#
+# Invariant. For every form in `egress.LABEL_FORMS`, every credential label (each stem and whole
+# credential word, in several spellings), every value shape the form carries and every place a
+# value reaches a bundle (free text, a dict value, a rebuilt argv, a JSON document nested in a
+# string), sanitize removes the value, its output passes the tripwire, sanitize is idempotent on it,
+# and the tripwire flags the input. Both locators (sanitize's regex locator and the tripwire's char
+# walk) agree on every input. A new form is one row in LABEL_FORMS.
+
+_R4F_VALUES = {
+    "word": "zq7Canary",
+    "one": "Q",
+    "punct": "P@ss/w0rd!$%+,;~",
+    "spaced": "my zq7 phrase",
+    "unicode": "pässwörd‑ßé",
+}
+_R4F_SPELLINGS = (
+    lambda s: s,
+    lambda s: s.upper(),
+    lambda s: f"DB_{s.upper()}",
+    lambda s: f"smtp-{s}",
+    lambda s: f"my{s.capitalize()}",
+)
+
+
+def _r4f_labels() -> list[str]:
+    stems = (*egress.CREDENTIAL_STEMS, *egress.CREDENTIAL_WORDS)
+    return [_R4F_SPELLINGS[i % len(_R4F_SPELLINGS)](s) for i, s in enumerate(stems)] + list(stems)
+
+
+def _r4f_cases(form: egress.LabelForm) -> list[tuple[str, str, str]]:
+    """(text, value, expected free-text output) for every example x label x value shape."""
+    cases = []
+    for example in form.examples:
+        template, expected = example if isinstance(example, tuple) else (example, None)
+        labels = _r4f_labels() if "{label}" in template else [""]
+        for i, label in enumerate(labels):
+            for shape in form.values:
+                if shape == "spaced" and "{label}" in template and i % 3:
+                    continue  # bounded: every label sees the other shapes, a third see "spaced"
+                value = _R4F_VALUES[shape]
+                text = template.format(label=label, value=value)
+                out = (expected or template).format(
+                    label=label, value=egress.REDACTED, redacted=egress.REDACTED
+                )
+                cases.append((text, value, out))
+    return cases
+
+
+def _r4f_representations(text: str) -> list[Any]:
+    return [
+        {"input": {"query": text}},
+        {"hub_invocation": egress.argv_text(["pipecat-context-hub", "search-docs", text])},
+        {"q": json.dumps({"query": text}, ensure_ascii=False)},
+    ]
+
+
+class TestLabelFormsK1:
+    def test_every_form_is_documented_and_has_examples(self) -> None:
+        names = [f.name for f in egress.LABEL_FORMS]
+        assert len(names) == len(set(names)) >= 16
+        for form in egress.LABEL_FORMS:
+            assert form.rule and form.examples and set(form.values) <= set(_R4F_VALUES)
+        docs = (Path(audit_extract.__file__).parents[3] / "docs" / "cli.md").read_text()
+        assert "egress.LABEL_FORMS" in docs and "**Limit.**" in docs
+
+    @pytest.mark.parametrize("form", egress.LABEL_FORMS, ids=lambda f: f.name)
+    def test_the_whole_space_of_a_form(self, form: egress.LabelForm) -> None:
+        cases = _r4f_cases(form)
+        assert cases
+        for text, value, expected in cases:
+            clean = egress.sanitize(text)
+            assert clean == expected, (text, clean)
+            assert egress.leaks_in(clean) == [], (text, clean)
+            assert egress.sanitize(clean) == clean, text
+            assert egress.leaks_in(text), text  # the tripwire sees the input
+            assert egress.labelled_value_leaks(text) == bool(egress._label_spans(text)), text
+            assert egress.labelled_value_leaks(clean) is False, (text, clean)
+            for row in _r4f_representations(text):
+                out = egress.sanitize(row)
+                dumped = json.dumps(out, ensure_ascii=False)
+                assert value not in dumped, (form.name, row, out)
+                assert _json_clean(out), (row, out)
+
+    def test_benign_fixtures_are_unchanged_by_the_new_forms(self) -> None:
+        kept = [
+            "http://localhost:8080/x@y", "https://example.com/a@b", "mailto:a@b.c",
+            "git@github.com:org/repo", 'os.getenv("API_KEY")', "bypass: yes", "author: me",
+            "max_tokens: 4", "Authorization: Bearer $TOKEN", "tokenizer: v", "secretary: v",
+            "password_hint: your pet", "--password-file ./pw.txt", 'environ["API_KEY"]',
+        ]  # fmt: skip
+        for text in kept:
+            assert egress.sanitize(text) == text, text
+            assert egress.leaks_in(text) == [], text
+            assert egress.labelled_value_leaks(text) is False and egress._label_spans(text) == []
+
+
+def _r4_gone(text: str, *secrets: str) -> None:
+    clean = egress.sanitize(text)
+    for secret in secrets:
+        assert secret not in clean, (text, clean)
+    assert egress.leaks_in(clean) == [], (text, clean)
+    assert egress.leaks_in(text), text
+    assert egress._file_leaks("calls.jsonl", json.dumps({"q": text})), text
+
+
+class TestRound4FixerFindings:
+    @pytest.mark.parametrize(
+        "text", ["SMTP_PASS=Tr0ub4dor&3 auth fails", "DB_PASS=hunter2", "DB_AUTH: Tr0ub4dor&3"]
+    )
+    def test_f1_pass_and_auth_are_credential_words(self, text: str) -> None:
+        _r4_gone(text, "Tr0ub4dor" if "Tr0ub4dor" in text else "hunter2")
+
+    @pytest.mark.parametrize(
+        ("text", "secret"),
+        [
+            ("a=b&password=P@ss#w0rd", "w0rd"),
+            ("a&password=correct horse battery", "horse"),
+            ("https://h/p?a=1&password=correct horse&b=2", "horse"),
+            ("https://h/p?password=P@ss/w0rd!#frag", "w0rd"),
+        ],
+    )
+    def test_f2_a_query_value_runs_to_the_next_ampersand(self, text: str, secret: str) -> None:
+        _r4_gone(text, secret)
+
+    def test_f2_a_url_fragment_and_the_next_pair_are_kept(self) -> None:
+        assert (
+            egress.sanitize("https://h/p?password=x1#frag")
+            == "https://h/p?password=<redacted>#frag"
+        )
+        assert egress.sanitize("?password=x1&b=2") == "?password=<redacted>&b=2"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'os.environ["DAILY_API_KEY"] = "my-real-key-value"',
+            "headers['X-Api-Token'] = 'my-real-key-value'",
+            "password:\n  my-real-key-value",
+            "password:\\n  my-real-key-value",
+        ],
+    )
+    def test_f3_subscript_assignment_and_next_line_values(self, text: str) -> None:
+        _r4_gone(text, "my-real-key-value")
+
+    @pytest.mark.parametrize(
+        ("text", "secret"),
+        [
+            ("connect postgres://admin:Ab/Cd+ef@db:5432/app", "Cd+ef"),
+            ("redis://default:ab/cd==@r:6379", "cd=="),
+            ("https://user@corp.com:Hunter2pw@host", "Hunter2pw"),
+        ],
+    )
+    def test_f5_url_passwords_with_slash_or_at(self, text: str, secret: str) -> None:
+        _r4_gone(text, secret)
+
+    @pytest.mark.parametrize(
+        "text",
+        ["http://localhost:8080/x@y", "https://example.com/a@b", "ssh://git@github.com:22/x"],
+    )
+    def test_f5_a_port_or_a_path_at_sign_is_not_a_password(self, text: str) -> None:
+        assert egress.sanitize(text) == text and egress.leaks_in(text) == []
+
+    def test_f10_a_run_together_label_ending_in_a_credential_stem(self) -> None:
+        _r4_gone("tokenizerkey: abcdefgh12", "abcdefgh12")
+        assert egress.is_credential_name("tokenizerkey")
+        assert not egress.is_credential_name("tokenizer")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "**password**: Hunter2", "`password`: Hunter2", "‘password’: Hunter2",
+            "[password]: Hunter2", "login bob password Hunter2pw", "curl --user alice:Hunter2pw",
+            "curl -u alice:Hunter2", "mysql -pHunter2pw", "DB_PASS=Hunter2",
+            "password = Hunter2",
+        ],
+    )  # fmt: skip
+    def test_f16_common_labelled_forms(self, text: str) -> None:
+        _r4_gone(text, "Hunter2")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "**password**: violet-marmalade-27",
+            "`password`: violet-marmalade-27",
+            'password = """violet-marmalade-27"""',
+            "password: |\n  violet-marmalade-27",
+        ],
+    )
+    def test_f20_f21_config_and_markdown_forms_never_reach_the_bundle(
+        self, tmp_path: Path, text: str
+    ) -> None:
+        _r4_gone(text, "violet-marmalade-27")
+        src = tmp_path / "in"
+        _hub_session(src / "alice" / "s.jsonl", query=text)
+        out = tmp_path / "out"
+        assert _extract(src, out).exit_code == 0
+        share = b"".join(p.read_bytes() for p in sorted((out / "share").iterdir()))
+        assert b"violet-marmalade-27" not in share
+        assert b"violet-marmalade-27" not in (out / "share.tar.gz").read_bytes()
+        assert _invoke("repack", str(out)).exit_code == 0
+
+
+class TestJsLexerK2:
+    C = 'tools.mcp__pipecat_context_hub__search_docs({query: "q"})'
+    SHARED = 'search_docs({"query": "q"})'
+
+    @pytest.mark.parametrize(
+        ("js", "count", "shared"),
+        [
+            # F12: `/` after a postfix `++` divides
+            ('let n = 0; n++ / 2; tools.pipecat_context_hub__search_docs({query: "q"}); y = 1 / 3',
+             1, SHARED),
+            (f"i-- /2/ 3; {C}", 1, SHARED),
+            (f"a / b / c; {C}", 1, SHARED),
+            (f"x = a.b / 2; {C}", 1, SHARED),
+            (f"f(/re/); x = /re/; [a, /re/]; {C}", 1, SHARED),
+            # F17: a string after a division is a string, so its text is no call
+            ("let y = i++ / 2; let s = \"/ ; tools.mcp__pipecat-context-hub__search_docs("
+             "{query: 'my private draft text'}); \"; let t = \"\"; // \"", 0, ""),
+            # F22: `/` after an `if (...)` header (or after `}`) is undecidable: nothing shared
+            ('if (false) /;tools.mcp__pipecat_context_hub__search_docs('
+             '{"query":"confidential merger discussion"})/;', 1, ""),
+            (f"if (x) {{}}\n/re/.test(y); {C}", 1, ""),
+            (f"x = {{a: 1}} / 2; {C}", 1, ""),
+            (f"i\n++ / 2; {C}", 1, ""),
+            # F13: a loop body, parentheses and a label do not surely run
+            (f"for (let i = 0; i < n; i++) {C}", 1, ""),
+            (f"while (x) {C}", 1, ""),
+            (f"({C})", 1, ""),
+            (f"f({C})", 1, ""),
+            (f"label: {C}", 1, ""),
+            (f"x ?? {C}", 1, ""),
+            (f"const [a, b] = await Promise.all([{C}, {C}]);", 2, SHARED),
+            (f"await {C}", 1, SHARED),
+        ],
+    )  # fmt: skip
+    def test_regex_division_and_surely_runs(self, js: str, count: int, shared: str) -> None:
+        found = audit_extract.detect_hub("exec", js)
+        assert found == (("search_docs", "mcp_js", count) if count else (None, None, 0)), js
+        assert audit_extract.hub_invocation(js, "mcp_js") == shared, js
+
+    def test_regex_literal_content_never_reaches_an_invocation(self) -> None:
+        secret = "confidential merger discussion"
+        for prefix in ("if (a) ", "while (a) ", "for (;;) ", "{} ", "x = {} ", "do {} while (a) "):
+            js = f'{prefix}/;tools.mcp__pipecat_context_hub__search_docs({{"query":"{secret}"}})/;'
+            assert secret not in audit_extract.hub_invocation(js, "mcp_js"), js
+
+
+class TestExtractTargetAndLabelK2:
+    def test_f15_f18_a_case_flipped_out_inside_an_input_is_refused(self, tmp_path: Path) -> None:
+        src = tmp_path / "transcripts"
+        _hub_session(src / "sessions.jsonl")
+        if not (tmp_path / "TRANSCRIPTS").exists():
+            pytest.skip("case-sensitive filesystem")
+        before = (src / "sessions.jsonl").read_bytes()
+        for out in (tmp_path / "TRANSCRIPTS" / "out", tmp_path / "TRANSCRIPTS"):
+            result = _extract(src, out)
+            assert result.exit_code == 1 and "input directory" in result.output, result.output
+        assert (src / "sessions.jsonl").read_bytes() == before
+        assert not (src / "out").exists() and not (src / "share").exists()
+
+    def test_f15_f18_identity_not_spelling_decides(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A simulated case-insensitive volume: two spellings, one directory."""
+        import os
+
+        from pipecat_context_hub.audit import sharedir
+
+        src = tmp_path / "transcripts"
+        src.mkdir()
+        real_stat = os.stat
+
+        def folded_stat(p: Any, *a: Any, **k: Any) -> os.stat_result:
+            return real_stat(os.fspath(p).replace("TRANSCRIPTS", "transcripts"), *a, **k)
+
+        monkeypatch.setattr(os, "stat", folded_stat)  # sharedir reads os.stat at call time
+        for out in (tmp_path / "TRANSCRIPTS" / "out", tmp_path / "TRANSCRIPTS"):
+            with pytest.raises(ValueError, match="input directory"):
+                sharedir.refuse_extract_target(out, [src])
+        sharedir.refuse_extract_target(tmp_path / "elsewhere", [src])  # unrelated: allowed
+
+    def test_f14_codex_date_directories_are_not_participants(self, tmp_path: Path) -> None:
+        rel = Path("2026/11/17/rollout-a.jsonl")
+        assert audit_extract.participant_label(Path("/x/sessions"), rel) == "sessions"
+        assert audit_extract.participant_label(Path("/x/in"), Path("alice/s.jsonl")) == "alice"
+        assert audit_extract.participant_label(Path("/x/p"), Path("sid/subagents/a.jsonl")) == "p"
+        assert audit_extract.participant_label(Path("/x/p"), Path("s.jsonl")) == "p"
+        codex = tmp_path / "sessions"
+        call = {
+            "type": "function_call",
+            "name": "exec_command",
+            "arguments": json.dumps({"cmd": 'pipecat-context-hub search-docs "TTS"'}),
+        }
+        for day in ("2025/12/31", "2026/01/01"):
+            _jl(codex / day / "rollout-a.jsonl", TestOtherHarnesses._codex(call, '{"hits": []}'))
+        claude = tmp_path / "proj"
+        _hub_session(claude / "s.jsonl")
+        out = tmp_path / "out"
+        result = _extract(codex, out, "-i", str(claude))
+        assert result.exit_code == 0, result.output
+        summary = json.loads((out / "summary.json").read_text())
+        assert summary["participants"] == 2
+        assert {r["participant"] for r in _rows(out / "sessions.jsonl")} == {"sessions", "proj"}
+
+
+class TestRound4FixerHygiene:
+    def test_f4_f11_the_skill_says_what_is_shared_and_where_the_digest_is(self) -> None:
+        root = Path(audit_extract.__file__).parents[3]
+        skill = " ".join(
+            (root / ".claude/skills/context-hub-session-audit/SKILL.md").read_text().split()
+        )
+        assert "JS batches (only the one call expression survives)" not in skill
+        assert "rebuilt from its parsed argv" in skill and "surely runs" in skill
+        assert "share.tar.gz.sha256" in skill.split("**Tarball:**")[1].split("**Discard:**")[0]
+        assert "outside that grammar is not detected" in skill
+
+    def test_f7_one_report_recipe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from pipecat_context_hub.audit import sharedir
+
+        assert getattr(audit_extract, "expected_report") is sharedir.expected_report
+        assert not hasattr(audit_extract, "_report_bytes")
+        assert "render_report(" not in Path(audit_extract.__file__).read_text()
+        assert Path(sharedir.__file__).read_text().count("render_report(") == 1
+        src = tmp_path / "in"
+        _hub_session(src / "alice" / "s.jsonl")
+        out = tmp_path / "out"
+        assert _extract(src, out).exit_code == 0
+        files = {p.name: p.read_bytes() for p in (out / "share").iterdir()}
+        assert files["report.md"] == sharedir.expected_report(files)
+        monkeypatch.setattr(sharedir, "expected_report", lambda _f: b"other\n")
+        with pytest.raises(Exception, match="report.md"):
+            sharedir.check_share(files)
+
+    @pytest.mark.parametrize("limit", ["MAX_FILE_BYTES", "MAX_BUNDLE_BYTES"])
+    def test_f8_ingest_reads_the_bundle_limits_at_call_time(
+        self, audited: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: str
+    ) -> None:
+        from pipecat_context_hub.audit import bundle, ingest
+
+        for alias in ("MAX_MEMBER_BYTES", "MAX_DECOMPRESSED_BYTES"):
+            assert not hasattr(ingest, alias)
+        monkeypatch.setattr(bundle, limit, 64)
+        (rejected,) = _merge([audited / "share.tar.gz"], tmp_path / "m")["report"]
+        assert rejected["status"] == "rejected", rejected
+
+    def test_f9_sharedir_names_every_role_and_spells_share_once(self) -> None:
+        from pipecat_context_hub.audit import sharedir
+
+        doc = " ".join((sharedir.__doc__ or "").split())
+        for role in ("read_share", "SafeDir", "check_share", "expected_report",
+                     "refuse_extract_target", "discard", "tar_bytes", "gist_plan", "staged",
+                     "SHARE_DIR"):  # fmt: skip
+            assert role in doc, role
+        for mod in (sharedir, audit_extract):
+            assert Path(str(mod.__file__)).read_text().count('"share"') <= (mod is sharedir), mod
+
+    def test_f19_gh_through_a_relative_path_entry_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        from pipecat_context_hub import cli_audit
+
+        planted = tmp_path / "checkout" / "node_modules" / ".bin" / "gh"
+        planted.parent.mkdir(parents=True)
+        planted.write_text("#!/bin/sh\nexit 0\n")
+        planted.chmod(0o755)
+        monkeypatch.chdir(tmp_path / "checkout")
+        monkeypatch.setenv("PATH", os.pathsep.join(["node_modules/.bin", "/usr/bin", "/bin"]))
+        with pytest.raises(SystemExit):
+            cli_audit._resolve_gh()
+        trusted = tmp_path / "bin" / "gh"
+        trusted.parent.mkdir()
+        trusted.write_text("#!/bin/sh\nexit 0\n")
+        trusted.chmod(0o755)
+        monkeypatch.setenv("PATH", os.pathsep.join([str(trusted.parent), "/usr/bin"]))
+        assert cli_audit._resolve_gh() == str(trusted)

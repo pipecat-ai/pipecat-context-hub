@@ -35,6 +35,7 @@ from pipecat_context_hub.audit.bundle import (
     row_counts,
 )
 from pipecat_context_hub.audit.egress import (
+    JS_BATCH_TOOLS,
     READONLY_TOOLS,
     SHELL_TOOLS,
     ShareLeakError,
@@ -55,9 +56,9 @@ from pipecat_context_hub.audit.flags import (
     REFORMULATION_EVENTS,
     SLOW_SECONDS,
 )
-from pipecat_context_hub.audit.report import render_report
 from pipecat_context_hub.audit.sharedir import (
     SHARE_DIR,
+    expected_report,
     SafeDir,
     check_share,
     read_share,
@@ -279,11 +280,6 @@ CLI_RE = re.compile(
     + r")\b"
 )
 MCP_JS_CALL_RE = re.compile(r"tools\.[\w$]*pipecat[-_]context[-_]hub__(" + _TOOL_ALT + r")\s*\(")
-# Harness tool groups, from the one harness vocabulary (egress.STANDARD_TOOLS); compared lower-case.
-SHELLISH = SHELL_TOOLS
-READONLY = READONLY_TOOLS
-# Codex's code-mode tool: its input is a JavaScript batch that calls MCP tools as `tools.<name>(...)`.
-JS_BATCH_TOOLS = frozenset({"exec"})
 # Real Pipecat development, not merely a path like /pipecat-ai/... in the cwd.
 PIPECAT_WORK_RE = re.compile(
     r"(from|import)\s+pipecat\b|pipecat-ai\s*(\[|[<>=~])|uv add[^\"]*pipecat|"
@@ -301,7 +297,7 @@ def categorize(name: str, inp: Any) -> str | None:
     """Tag events where the agent went around Context Hub (reading source / web docs). Heuristic."""
     blob = json.dumps(inp) if not isinstance(inp, str) else inp
     n = name.lower()
-    if (n in READONLY or n in SHELLISH) and (
+    if (n in READONLY_TOOLS or n in SHELL_TOOLS) and (
         "site-packages/pipecat" in blob or re.search(r"\.venv[^\"]*pipecat", blob)
     ):
         return "read_pipecat_source"
@@ -354,7 +350,7 @@ def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
                     return mm[0], "mcp_js", len(mm)
             elif found:
                 return found[0][0].group(1), "mcp_js", len(found)
-    if n in SHELLISH:
+    if n in SHELL_TOOLS:
         calls = _cli_calls(inp)
         if calls:
             sub = calls[0][2] if calls[0][0] == "pipecat" else calls[0][1]
@@ -371,19 +367,36 @@ def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
 #
 # A JS batch is masked first: string, template-literal text, comments and regex literals become
 # spaces, so a hub call found in the masked text is a call expression in code position. A
-# template's `${...}` is code, but nested (never "surely runs"). A call surely runs when it sits at
-# brace depth 0 and no control-flow token (`if`, `else`, a loop, `switch`, `try`/`catch`,
-# `function`, `return`, `=>`, `?`, `&&`, `||`, `??`) precedes it in its statement (since the last
-# `;` at depth 0). Only such a call's literal arguments are shared; any other code-position call is
-# counted with no text. A batch the lexer cannot read (an unterminated string, comment, template or
-# regex) is counted by the regex alone and shares nothing.
+# template's `${...}` is code, but nested (never "surely runs").
+#
+# Regex or division. A `/` that does not start a comment is read by the previous significant
+# token: after an operator or punctuation that ends no expression (`( , = : [ ! & | ? { ; + - * %
+# < > ~ ^`), at the start, or after a keyword that takes an expression (`return`, `typeof`, ...) it
+# starts a regex literal; after an identifier, a number, a string, a template, a regex, `]`, a `)`
+# that closes a call or a grouping, or a postfix `++`/`--` it is division. Where the token does not
+# decide (after `}`, after the `)` of an `if`/`while`/`for`/`with` header, after `++`/`--` on a new
+# line, after `.`), the batch is not lexed: it is counted by the regex alone and shares nothing.
+#
+# Surely runs. A call surely runs when it sits at brace depth 0, outside every parenthesis and
+# bracket, and its statement (since the last `;` at brace depth 0 outside parentheses: a `for`
+# header's `;` is not a statement end) holds no control-flow token (`if`, `else`, a loop, `switch`,
+# `case`, `try`/`catch`/`finally`, `function`, `return`, `yield`, `=>`, `?`, `&&`, `||`, `??`) and
+# no label (`name:`). The one bracket allowed is an element of `Promise.all([...])` /
+# `Promise.allSettled([...])`, whose elements all run. Only such a call's literal arguments are
+# shared; any other code-position call is counted with no text. A batch the lexer cannot read (an
+# unterminated string, comment, template or regex, or an undecidable `/`) is counted by the regex
+# alone and shares nothing.
 _JS_CONTROL_RE = re.compile(
     r"(?<![\w$.])(?:if|else|while|for|do|switch|case|default|try|catch|finally|function|return"
     r"|yield)(?![\w$])|=>|\?|&&|\|\|"
 )
-_JS_REGEX_AFTER = set("(,=:[!&|?{};+-*%<>~^") | {""}
+_JS_REGEX_AFTER = frozenset("(,=:[!&|?{;+-*%<>~^")  # `}` is undecidable: not here
 _JS_REGEX_KEYWORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
                       "throw", "case", "do", "else", "yield", "await"}  # fmt: skip
+_JS_HEADER_KEYWORDS = {"if", "while", "for", "with"}
+_JS_PROMISE_ALL_RE = re.compile(r"(?<![\w$.])Promise\s*\.\s*(?:all|allSettled)\s*$")
+# What the previous significant token says a `/` is (see above).
+_REGEX, _DIVISION, _UNDECIDED = "regex", "division", "undecided"
 
 
 class _JsLexError(ValueError):
@@ -399,9 +412,12 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
     n = len(text)
     i = 0
     stack: list[int] = []  # open template expressions: the brace depth inside each
+    parens: list[bool] = []  # open `(`: whether it opens an if/while/for/with header
     brace = 0
-    prev = ""  # the last code character that is not whitespace
-    word = ""  # the last identifier in code
+    slash = _REGEX  # what a `/` here would be (the previous significant token decides)
+    operand = False  # the previous token ends an expression (a `++` after it is postfix)
+    newline = False  # a line break since the previous token
+    word = ""  # the previous identifier in code
 
     def blank(a: int, b: int) -> None:
         for k in range(a, b):
@@ -423,6 +439,10 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
                 i += 1
         raise _JsLexError("unterminated template")
 
+    def token(kind: str, ends_expression: bool, ident: str = "") -> None:
+        nonlocal slash, operand, newline, word
+        slash, operand, newline, word = kind, ends_expression, False, ident
+
     while i < n:
         ch = text[i]
         if ch in "'\"":
@@ -434,7 +454,8 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
             if j >= n:
                 raise _JsLexError("unterminated string")
             blank(i, j + 1)
-            i, prev, word = j + 1, ch, ""
+            i = j + 1
+            token(_DIVISION, True)
         elif ch == "`" or (ch == "}" and stack and brace == stack[-1]):
             if ch == "}":
                 stack.pop()
@@ -443,10 +464,11 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
                 blank(i, j + 2)
                 stack.append(brace)
                 i = j + 2
-                prev = "{"
+                token(_REGEX, False)
             else:
                 blank(i, j)
-                i, prev, word = j, "`", ""
+                i = j
+                token(_DIVISION, True)
         elif text.startswith("//", i):
             j = text.find("\n", i)
             j = n if j < 0 else j
@@ -458,7 +480,9 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
                 raise _JsLexError("unterminated comment")
             blank(i, j + 2)
             i = j + 2
-        elif ch == "/" and (prev in _JS_REGEX_AFTER or word in _JS_REGEX_KEYWORDS):
+        elif ch == "/" and slash == _UNDECIDED:
+            raise _JsLexError("a `/` that may start a regex or divide")
+        elif ch == "/" and slash == _REGEX:
             j, in_class = i + 1, False
             while j < n and (in_class or text[j] != "/"):
                 if text[j] in "\n\r":
@@ -476,28 +500,89 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
             while j < n and (text[j].isalnum() or text[j] in "_$"):
                 j += 1
             blank(i, j)
-            i, prev, word = j, "/", ""
+            i = j
+            token(_DIVISION, True)
+        elif ch.isspace():
+            newline = newline or ch in "\n\r"
+            i += 1
+        elif ch.isalnum() or ch in "_$":
+            j = i
+            while j < n and (text[j].isalnum() or text[j] in "_$"):
+                j += 1
+            ident = text[i:j]
+            for k in range(i, j):
+                extra[k] = len(stack)
+            i = j
+            if ident in _JS_REGEX_KEYWORDS:
+                token(_REGEX, False, ident)
+            elif ident in _JS_HEADER_KEYWORDS:
+                token(_UNDECIDED, False, ident)
+            else:
+                token(_DIVISION, True, ident)
         else:
+            extra[i] = len(stack)
+            if text.startswith(("++", "--"), i):
+                extra[i + 1] = len(stack)
+                i += 2
+                if not operand:  # prefix: an operator
+                    token(_REGEX, False)
+                else:  # postfix, unless a line break puts it on the next statement
+                    token(_UNDECIDED if newline else _DIVISION, not newline)
+                continue
             if ch == "{":
                 brace += 1
             elif ch == "}":
                 brace -= 1
-            if not ch.isspace():
-                if ch.isalnum() or ch in "_$":
-                    j = i
-                    while j < n and (text[j].isalnum() or text[j] in "_$"):
-                        j += 1
-                    word, prev = text[i:j], text[j - 1]
-                    for k in range(i, j):
-                        extra[k] = len(stack)
-                    i = j
-                    continue
-                prev, word = ch, ""
-            extra[i] = len(stack)
+            if ch == "(":
+                parens.append(word in _JS_HEADER_KEYWORDS)
+                token(_REGEX, False)
+            elif ch == ")":
+                header = parens.pop() if parens else False
+                token(_UNDECIDED if header else _DIVISION, not header)
+            elif ch == "]":
+                token(_DIVISION, True)
+            elif ch in _JS_REGEX_AFTER:
+                token(_REGEX, False)
+            else:  # `}` (a block or an object literal) and `.` `#` `@` ...: undecidable
+                token(_UNDECIDED, False)
             i += 1
     if stack:
         raise _JsLexError("unterminated template expression")
     return "".join(out), extra
+
+
+def _js_surely_runs(masked: str, start: int) -> bool:
+    """Whether the code-position call at ``start`` of a masked batch surely runs (see above)."""
+    stmt, level, groups, label = 0, 0, [], False
+    for k, ch in enumerate(masked[:start]):
+        if ch == "{":
+            level += 1
+        elif ch == "}":
+            level -= 1
+        elif level != 0:
+            continue
+        elif ch in "([":
+            groups.append(k)
+        elif ch in ")]":
+            if groups:
+                groups.pop()
+        elif ch == ";" and not groups:
+            stmt, label = k + 1, False
+        elif ch == ":" and not groups:
+            label = True
+    if level != 0 or label or _JS_CONTROL_RE.search(masked, stmt, start):
+        return False
+    if not groups:
+        return True
+    if len(groups) != 2:
+        return False
+    paren, bracket = groups
+    return (
+        masked[paren] == "("
+        and masked[bracket] == "["
+        and not masked[paren + 1 : bracket].strip()
+        and _JS_PROMISE_ALL_RE.search(masked, stmt, paren) is not None
+    )
 
 
 def _js_hub_calls(text: str) -> list[tuple[re.Match[str], bool]] | None:
@@ -507,22 +592,10 @@ def _js_hub_calls(text: str) -> list[tuple[re.Match[str], bool]] | None:
         masked, extra = _js_mask(text)
     except _JsLexError:
         return None
-    found: list[tuple[re.Match[str], bool]] = []
-    for m in MCP_JS_CALL_RE.finditer(masked):
-        before = masked[: m.start()]
-        depth = before.count("{") - before.count("}") + extra[m.start()]
-        stmt = 0
-        level = 0
-        for k, ch in enumerate(before):  # the last `;` at brace depth 0 starts the statement
-            if ch == "{":
-                level += 1
-            elif ch == "}":
-                level -= 1
-            elif ch == ";" and level == 0:
-                stmt = k + 1
-        sure = depth == 0 and not _JS_CONTROL_RE.search(masked, stmt, m.start())
-        found.append((m, sure))
-    return found
+    return [
+        (m, extra[m.start()] == 0 and _js_surely_runs(masked, m.start()))
+        for m in MCP_JS_CALL_RE.finditer(masked)
+    ]
 
 
 class _NotLiteral(ValueError):
@@ -979,7 +1052,7 @@ def process_session(
             }
             if (
                 tool is None
-                and name.lower() not in READONLY
+                and name.lower() not in READONLY_TOOLS
                 and PIPECAT_WORK_RE.search(json.dumps(inp))
             ):
                 pipecat_work = True
@@ -1171,8 +1244,8 @@ FIELDS_MD = f"""\
 | `participant`, `session` | hashed ids |
 | `tool` | `search_docs`, `search_api`, `search_examples`, `get_doc`, `get_example`, `get_code_snippet`, `check_deprecation`, `get_hub_status` |
 | `via` | `mcp` (direct tool call), `mcp_js` (inside a Codex-style JS batch) or `cli` (shell: `pipecat-context-hub <cmd>`) |
-| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${{...}}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal or the call does not surely run (inside a block, a branch or a function). Empty for direct `mcp` calls |
-| `input` | MCP tool arguments for direct `mcp` calls only; `{{}}` otherwise (use `hub_invocation`). A field whose name contains a credential word (`api_key`, `token`, `password1`, `OPENAI_API_KEY_2`...) appears as `<redacted>`, and so does a value written after such a label in free text |
+| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${{...}}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal, the call does not surely run (inside a block, a branch, a function, parentheses, a loop body or a labelled statement), or a `/` in the batch cannot be read as regex or division. Empty for direct `mcp` calls |
+| `input` | MCP tool arguments for direct `mcp` calls only; `{{}}` otherwise (use `hub_invocation`). A field whose name contains a credential word (`api_key`, `token`, `password1`, `OPENAI_API_KEY_2`...) appears as `<redacted>`, and so does a value written after such a label in free text (the forms `docs/cli.md` lists: separators, flags, quoted and markdown labels, next-line and YAML block values, URL query and userinfo, authorization headers, cookies, netrc, curl user flags, MySQL glued password flags). Best-effort: a form outside that grammar is not detected |
 | `ts`, `latency_s` | start time; seconds to result (includes harness overhead), a non-negative number, or null when it cannot be measured (a timestamp missing, or the result stamped before the call) |
 | `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = a hub-shaped JSON response found; `cli_unparsed` = shell output and `js_unparsed` = JS batch output with no hub-shaped JSON, including JSON without the tool's response shape: the agent's program printed it, not a defect; `non_json` = a direct `mcp` result that was not JSON, the only parse value that raises a flag) |
 | `flags` | heuristic flags, glossary below |
@@ -1305,7 +1378,7 @@ def build_share_files(
         "calls.jsonl": "".join(json.dumps(r) + "\n" for r in share_calls).encode(),
         "sessions.jsonl": "".join(json.dumps(r) + "\n" for r in share_sessions).encode(),
     }
-    files["report.md"] = _report_bytes(files)
+    files["report.md"] = expected_report(files)
     try:  # what extract writes is what ingest accepts and the leak check passes, or nothing is
         check_share(files)
     except ShareLeakError as exc:
@@ -1334,16 +1407,8 @@ def _repacked(files: dict[str, bytes]) -> dict[str, bytes]:
     manifest["counts"] = {**manifest["counts"], **row_counts(rows, sessions)}
     prune_refs(manifest["analysis"], {r["ref"] for r in rows})
     new = {**files, "manifest.json": json.dumps(manifest, indent=2).encode()}
-    new["report.md"] = _report_bytes(new)
+    new["report.md"] = expected_report(new)
     return new
-
-
-def _report_bytes(files: dict[str, bytes]) -> bytes:
-    """``report.md`` rendered from the bundle's own ``manifest.json`` and ``calls.jsonl`` bytes,
-    decoded the way ``check_share`` decodes them, so the two renderings are equal by construction."""
-    return render_report(
-        decode_manifest(files["manifest.json"]), jsonl_rows(files, "calls.jsonl")
-    ).encode()
 
 
 def repack(out_dir: Path) -> tuple[Path, str]:
@@ -1384,6 +1449,27 @@ def session_date(start: Any, path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d")
 
 
+_DATE_DIRS = (re.compile(r"[0-9]{4}"), re.compile(r"[0-9]{2}"), re.compile(r"[0-9]{2}"))
+
+
+def participant_label(root: Path, rel: Path) -> str:
+    """The participant a transcript at ``root / rel`` belongs to.
+
+    One sub-directory per participant when collecting (``collected/<person>/...``): the first
+    directory between the input root and the file. Two layouts nest without naming a person, and
+    their files belong to the input root's own participant, labelled by the root's name (the label
+    a file directly under the root gets): a Claude Code project directory holds
+    ``<session-id>/subagents/...`` (that first component is a session), and Codex stores sessions
+    under ``YYYY/MM/DD/`` (``-i ~/.codex/sessions``: that first component is a year).
+    """
+    dirs = rel.parts[:-1]
+    if not dirs or (len(dirs) > 1 and dirs[1] == "subagents"):
+        return root.name
+    if len(dirs) >= 3 and all(rx.fullmatch(d) for rx, d in zip(_DATE_DIRS, dirs)):
+        return root.name
+    return dirs[0]
+
+
 def run_extract(
     inputs: Sequence[Path], out: Path, *, anonymize: bool = False, since: str | None = None
 ) -> ExtractResult:
@@ -1405,10 +1491,7 @@ def run_extract(
                 NOT_SESSION_SUFFIXES
             ):
                 continue
-            # One sub-directory per participant when collecting. A Claude Code project directory
-            # holds `<session-id>/subagents/...`: that first component is a session, not a person.
-            nested = len(rel.parts) > 1 and rel.parts[1] != "subagents"
-            label = rel.parts[0] if nested else root.name
+            label = participant_label(root, rel)
             if anonymize:  # sequential aliases: nothing derived from the label survives
                 label = aliases.setdefault(label, f"participant-{len(aliases) + 1}")
             try:
@@ -1453,7 +1536,7 @@ def run_extract(
     # Nothing is written before the share bundle has passed every check (a failed build leaves no
     # local copy of the participant's text behind). The two files `discard` recognises extract
     # output by go first.
-    with SafeDir.open(out, create=True) as d, d.child("share", create=True) as share:
+    with SafeDir.open(out, create=True) as d, d.child(SHARE_DIR, create=True) as share:
         d.write("summary.json", json.dumps(summary, indent=2).encode())
         share.write("manifest.json", files["manifest.json"])
         for name in BUNDLE_FILES:

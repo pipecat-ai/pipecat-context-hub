@@ -22,8 +22,8 @@ Two modes:
 
 Transcripts contain prompts, code, paths and sometimes API keys. Confirm participants consented
 to their sessions being analysed, keep everything local, and never paste raw transcript text into
-issues. The CLI redacts home paths and common key formats, but that is best-effort: skim before
-sharing. Restrict input to the event's project directories and `--since YYYY-MM-DD` so unrelated
+issues. The CLI redacts home paths, common key formats and labelled credentials, but that is
+best-effort: a form outside the documented grammar is not detected, so skim before sharing. Restrict input to the event's project directories and `--since YYYY-MM-DD` so unrelated
 work is never read. The CLI has no default input: pass each directory with `-i`. Agents usually
 keep transcripts in: Claude Code `~/.claude/projects/<project-dir>`, Codex `~/.codex/sessions`,
 pi `~/.pi/agent/sessions/<project-dir>`.
@@ -55,8 +55,12 @@ Context Hub calls are detected by MCP tool name (`via: mcp`), inside a Codex JS 
 
 `share/` keeps: tool, query or CLI invocation, result shape (hit count, confidence, top hit ids),
 flags, latency. Ids are opaque (HMAC with a per-run random key). Dropped: transcript text, shell
-commands, JS batches (only the one call expression survives), file paths, other tools' output
-(only an error class name survives). Queries are the participant's own words.
+commands (a Context Hub CLI call is kept only as the hub command it ran, rebuilt from its parsed
+argv: `hub_invocation`, `via: cli`), JS batches (only the literal arguments of a hub call that surely
+runs survive; otherwise the call is counted with no text), file paths, other tools' output (only an
+error class name survives). Queries are the participant's own words. Redaction is best-effort over
+free text: labelled credentials in the forms `docs/cli.md` lists are replaced, a form outside that
+grammar is not detected, so read `report.md` before sharing.
 
 0. **Nothing to share?** If the `extract` message says there is nothing to share (no Context Hub calls
    and no Pipecat work without it), offer only keep-local or discard: `audit gist` refuses such a
@@ -83,7 +87,8 @@ again with `--yes`. It is always secret, never `--public`. Say plainly that secr
 anyone with the link can read it. A gist holds text only, so it carries the share/ files, not the
 tarball. If `gh` is missing or fails, say so and offer the tarball.
 
-**Tarball:** print its absolute path and sha256; who to send it to is their call. Don't send it.
+**Tarball:** print its absolute path and the full sha256 from `share.tar.gz.sha256` (the `extract`
+message shows only a prefix); who to send it to is their call. Don't send it.
 
 **Discard:** `pipecat-context-hub audit discard <out-dir>` lists exactly what it would delete (only
 files `extract` wrote, never transcripts); after a yes, run with `--yes`.

@@ -65,8 +65,33 @@ inside brackets opened before the label), and there is no minimum length. Plural
 (`API_TOKENS`, `SSH_KEYS`); `max_tokens`, `token_count`, `password_hint`, `password_file` do not. A
 placeholder is kept only in a fixed shape (`$TOKEN`, `${API_KEY}`, `<token>`, `YOUR_API_KEY`,
 `...`, `xxx`) that holds no token shape, so `${AKIA...}` is redacted. A number
-of 32+ digits is replaced too. Redaction is best-effort and queries are your own words, so read
-`report.md` first.
+of 32+ digits is replaced too.
+
+The label grammar, one form per row of `egress.LABEL_FORMS` (the tests are generated from it): a
+separator (`password: v`, `password = v`, `password => v`, with NBSP or curly quotes normalised);
+a two-word label (`API key: v`); a quoted value, single, double, triple or escaped (`"password":
+"v"`, `password = """v"""`, `\"token\": \"v\"`); a credential flag (`--api-key v`,
+`--password=v`, `--token "v"`); a markdown label (`**password**: v`, `` `password`: v ``,
+`[password]: v`); subscript or attribute assignment (`os.environ["DAILY_API_KEY"] = "v"`,
+`config.password = v`); a value on the next line (`password:` then an indented `v`, or a YAML `|`
+/ `>` block); a URL query (`?a=b&password=v`, the value running to the next `&`); an
+`Authorization` scheme (`Basic v`, `Bearer v`); a `Cookie` / `Set-Cookie` header (the whole
+value); netrc (`machine h login bob password v`); a user flag (`curl -u alice:v`, `--user
+alice:v`); a glued MySQL password (`mysql -pv`); and URL userinfo (`postgres://admin:v@db`, the
+password running to the last `@`). A segment counts as a credential label when it names one
+(`secret`, `token`, `apikey`, `password`, `passwd`, `pwd`, `credential`, `cookie`, ... and the whole
+words `pass`, `pw`, `auth`, so `SMTP_PASS` and `DB_AUTH` count), also run together with other
+words (`tokenizerkey`); a whole non-credential word (`tokenizer`, `secretary`, `bypass`, `author`)
+does not.
+
+The cost is over-redaction, accepted on purpose: `password reset` alone on a line reads as netrc,
+a 1-5 digit URL password followed by `/` reads as a port and is kept, `auth: yes` and `pass: 3` are
+replaced, and a cookie header loses its pair names too.
+
+**Limit.** Redaction is best-effort over free text: forms outside the grammar above are not
+detected (an unlabelled secret, a label in another language, a value split across fields), and a
+`\uXXXX`-escaped JSON string nested inside another string is not decoded. Queries are your own
+words, so read `report.md` before sharing.
 
 Before anything is kept or posted, `extract`, `repack` and `gist` run a leak check over the
 finished files: JSON is checked decoded (every string, key and repeated key, so a `\u0073k-...`

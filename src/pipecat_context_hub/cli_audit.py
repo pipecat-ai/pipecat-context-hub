@@ -174,21 +174,31 @@ def gist_cmd(out_dir: Path, yes: bool, allow_empty: bool) -> None:
 
 
 def _resolve_gh() -> str:
-    """The absolute path of the GitHub CLI, refusing one that resolves inside the current directory.
+    """The absolute path of the GitHub CLI, refusing one an untrusted checkout could have planted.
 
     On Windows ``shutil.which`` searches the current directory before ``PATH`` (even when given a
     path list), so a ``gh.exe`` / ``gh.bat`` planted in an untrusted checkout would run with the
-    bundle; a ``.`` or empty ``PATH`` entry does the same on POSIX. The result is made absolute and
-    refused when it lies in the current directory.
+    bundle; a relative ``PATH`` entry (``.``, an empty entry, ``node_modules/.bin``) does the same
+    on POSIX, resolved against whatever directory the command runs in. So the ``gh`` found is
+    refused when it lies in the current directory, or when it was reached through a relative
+    ``PATH`` entry (``shutil.which`` then returns a relative path, or one inside the directory a
+    relative entry names).
     """
     gh = shutil.which("gh")
     if gh is None:
         _fail("`gh` not found; send share.tar.gz yourself instead")
     found = os.path.abspath(gh)
-    if Path(found).resolve().parent == Path.cwd().resolve():
+    parent = Path(found).resolve().parent
+    if parent == Path.cwd().resolve():
         _fail(
             "`gh` resolves to the current directory, which may be an untrusted checkout: run "
             "`audit gist` from another directory, or send share.tar.gz yourself"
+        )
+    relative = [e for e in os.environ.get("PATH", "").split(os.pathsep) if not os.path.isabs(e)]
+    if not os.path.isabs(gh) or any(Path(e or ".").resolve() == parent for e in relative):
+        _fail(
+            "`gh` was found through a relative PATH entry, which an untrusted checkout can fill: "
+            "put gh on an absolute PATH entry, or send share.tar.gz yourself"
         )
     return found
 

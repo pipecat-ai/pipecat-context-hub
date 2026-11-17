@@ -7,8 +7,8 @@ arrives (a known flat filename, not seen before, a regular file, within the size
 data is read; the first violation stops the read. The work done to reject a hostile archive is
 bounded by constants, never by what the archive claims: the compressed file size
 (``MAX_ARCHIVE_BYTES``), the member count (one per bundle file), the per-member size
-(``MAX_MEMBER_BYTES``) and the total decompressed bytes (``MAX_DECOMPRESSED_BYTES``, which also
-bounds the tar metadata blocks the reader parses between members). Nothing is extracted to disk.
+(``bundle.MAX_FILE_BYTES``) and the total decompressed bytes (``bundle.MAX_BUNDLE_BYTES``, which
+also bounds the tar metadata blocks the reader parses between members). Nothing is extracted to disk.
 A directory (a share/ or a cloned gist) is read by the one share reader (``sharedir.read_share``),
 the same one ``gist`` and ``repack`` use. The bytes are then validated by the bundle contract
 (``bundle.load_files``): the same validator ``repack`` and ``gist`` use, so a bundle they accept is
@@ -37,11 +37,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from pipecat_context_hub.audit import bundle as _bundle
 from pipecat_context_hub.audit.analysis import triage_order
 from pipecat_context_hub.audit.bundle import (
     BUNDLE_FILES,
-    MAX_BUNDLE_BYTES,
-    MAX_FILE_BYTES,
     BundleError,
     content_digest,
     has_content,
@@ -50,9 +49,10 @@ from pipecat_context_hub.audit.bundle import (
 from pipecat_context_hub.audit.sharedir import SafeDir, read_share
 
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024  # a tarball's own (compressed) size
-MAX_MEMBER_BYTES = MAX_FILE_BYTES  # one member (a directory file: the same, in sharedir)
-MAX_DECOMPRESSED_BYTES = MAX_BUNDLE_BYTES  # everything read from a tarball's stream
 MAX_MEMBERS = len(BUNDLE_FILES)
+# One member and the whole stream are bounded by the bundle contract's own limits
+# (``bundle.MAX_FILE_BYTES``, ``bundle.MAX_BUNDLE_BYTES``), read at call time as the directory reader
+# (``sharedir``) reads them: one limit per thing, never a copy frozen at import.
 
 
 class _CappedReader(io.RawIOBase):
@@ -78,8 +78,9 @@ class _CappedReader(io.RawIOBase):
 def read_tar(path: Path) -> dict[str, bytes]:
     """The bundle files in the tarball at ``path``; raises at the first member that breaks a rule."""
     out: dict[str, bytes] = {}
+    member_limit = _bundle.MAX_FILE_BYTES
     with path.open("rb") as raw, gzip.GzipFile(fileobj=raw, mode="rb") as gz:
-        capped = _CappedReader(gz, MAX_DECOMPRESSED_BYTES)  # type: ignore[arg-type]
+        capped = _CappedReader(gz, _bundle.MAX_BUNDLE_BYTES)  # type: ignore[arg-type]
         with tarfile.open(fileobj=capped, mode="r|") as tf:
             for count, m in enumerate(tf, 1):  # one header at a time: never getmembers()
                 if count > MAX_MEMBERS:
@@ -90,7 +91,7 @@ def read_tar(path: Path) -> dict[str, bytes]:
                     raise BundleError(f"member {m.name!r} appears twice")
                 if not m.isreg() or m.issparse():
                     raise BundleError(f"member {m.name!r} is not a regular file")
-                if m.size > MAX_MEMBER_BYTES:
+                if m.size > member_limit:
                     raise BundleError(f"member {m.name!r} too large ({m.size} bytes)")
                 fh = tf.extractfile(m)
                 if fh is None:

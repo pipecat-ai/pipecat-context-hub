@@ -1,4 +1,13 @@
-"""The share/ directory on disk: one reader, one writer that never follows a link, one verdict.
+"""The share/ directory on disk: what extract, repack, gist, ingest and discard do to it.
+
+Roles, each in one place: the reader (:func:`read_share`), the no-follow writer (:class:`SafeDir`),
+the send-side verdict (:func:`check_share`, with :func:`expected_report`, the one recipe for the
+report a bundle's rows render to), the output directory's lifecycle (what ``extract`` may write
+into, :func:`refuse_extract_target` and :func:`refuse_unsafe_outputs`; what ``discard`` deletes,
+:func:`generated_paths` and :func:`discard`), the tarball (:func:`tar_bytes`,
+:func:`write_tarball`), the gist plan (:func:`gist_plan`) and the private staging copy ``gh`` posts
+from (:func:`staged`). Every path inside an output directory is spelled through
+:data:`SHARE_DIR` and :data:`LOCAL_OUTPUTS`.
 
 Reader. :func:`read_share` is the only code that reads a share/ directory (or a cloned gist) into a
 bundle's bytes map; ``gist``, ``repack`` and ``ingest`` all call it, so one rule set decides what a
@@ -45,12 +54,15 @@ from pipecat_context_hub.audit.bundle import (
     BUNDLE_FILES,
     Bundle,
     BundleError,
+    decode_manifest,
     has_content,
+    jsonl_rows,
     load_files,
     omitted_when_posting,
 )
 from pipecat_context_hub.audit.egress import ShareLeakError, verify_files
 from pipecat_context_hub.audit.report import render_report
+from pipecat_context_hub.shared.paths import is_inside
 
 # Descriptor-relative, no-follow I/O. Off on a platform without it (Windows): see the docstring.
 FD_SAFE = (
@@ -242,6 +254,16 @@ STALE_REPORT = (
 )
 
 
+def expected_report(files: Mapping[str, bytes]) -> bytes:
+    """``report.md`` as a function of the bundle's own ``manifest.json`` and ``calls.jsonl`` bytes:
+    the one recipe, used by ``extract`` and ``repack`` to write the report and by
+    :func:`check_share` to check it, so the two cannot drift. Raises ``BundleError`` on a manifest
+    or row the bundle contract rejects."""
+    return render_report(
+        decode_manifest(files.get("manifest.json")), jsonl_rows(files, "calls.jsonl")
+    ).encode()
+
+
 def check_share(files: Mapping[str, bytes]) -> Bundle:
     """The one send-side gate on a bundle's bytes: the leak check (``ShareLeakError`` naming each
     file and rule, never the text), the whole-bundle validator ``ingest`` runs, then ``report.md``
@@ -257,7 +279,7 @@ def check_share(files: Mapping[str, bytes]) -> Bundle:
         raise ShareLeakError("; ".join(leaks))
     bundle = load_files(files)
     try:
-        expected = render_report(bundle.manifest, bundle.calls).encode()
+        expected = expected_report(files)
     except (ValueError, TypeError, ArithmeticError, RecursionError):
         raise BundleError("report.md cannot be rendered from calls.jsonl") from None
     if files["report.md"] != expected:
@@ -317,22 +339,24 @@ def refuse_unsafe_outputs(out: Path) -> None:
         raise UnsafePathError(f"refusing to write: {bad} already exist as a symlink or non-file")
 
 
-def _inside(child: Path, parent: Path) -> bool:
-    return child == parent or parent in child.parents
-
-
 def refuse_extract_target(out: Path, inputs: Sequence[Path]) -> None:
     """Refuse an ``extract --out`` that could overwrite or delete something that is not ours.
 
     The invariant: ``extract`` writes only into a directory that is missing, empty or holds only
     what a previous ``extract`` wrote (:data:`LOCAL_OUTPUTS` and share/ with the bundle files), and
-    that is neither an input directory nor inside or around one (symlinks resolved): a transcript
-    named ``sessions.jsonl`` in the input would otherwise be replaced by the output's.
+    that is neither an input directory nor inside or around one: a transcript named
+    ``sessions.jsonl`` in the input would otherwise be replaced by the output's.
+
+    "Is, inside or around" is decided by the project's one filesystem-identity predicate
+    (``shared.paths.is_inside``: resolved paths compared lexically, then the device and inode of the
+    path and each existing ancestor), never by spelling alone, so a case-flipped ``--out`` on a
+    case-insensitive volume (the macOS default), a symlinked alias and ``..`` all name the
+    directory they reach.
     """
     target = out.resolve()
     for root in inputs:
         src = root.resolve()
-        if _inside(target, src) or _inside(src, target):
+        if is_inside(target, src) or is_inside(src, target):
             raise ValueError(
                 f"refusing to write: --out {out.name or out} is, contains or is inside the input "
                 f"directory {root.name or root}; use a separate, empty directory"
@@ -438,7 +462,7 @@ def gist_plan(out_dir: Path, *, allow_empty: bool) -> GistPlan:
     Read once (:func:`read_share`), gated once (:func:`check_share`); the plan carries the bytes
     that were checked, so what is posted is what was checked.
     """
-    share = out_dir / "share"
+    share = out_dir / SHARE_DIR
     try:
         files = read_share(share)
     except BundleError as exc:

@@ -71,7 +71,21 @@ This changelog retains repository and Context Hub package history.
   empty for omission, the bundle digest and validation alike, so its tarball and gist ingest as one
   bundle. Text-scanned sessions are identified by their file's place under the input root, so two
   `chat.txt` files are two sessions. `gist` posts the bytes it checked and refuses a `gh` found in
-  the current directory (Windows searches it first). The per-call latency p90 is now the
+  the current directory (Windows searches it first) or reached through a relative `PATH` entry
+  (`node_modules/.bin`). The credential-label model is one grammar of syntactic forms
+  (`egress.LABEL_FORMS`, which the tests are generated from): besides separators and flags it covers
+  markdown-wrapped labels (`**password**:`), subscript and attribute assignment
+  (`os.environ["X_API_KEY"] = ...`), a value on the next line or in a YAML block, TOML triple
+  quotes, URL query values running to the next `&`, cookie headers, netrc, `curl -u user:pass`,
+  `mysql -pPASS`, URL passwords containing `/` or `@`, curly quotes, NBSP and zero-width characters,
+  and the whole words `pass`, `pw` and `auth` (`SMTP_PASS`, `DB_AUTH`). The cost is over-redaction,
+  listed in `docs/cli.md` (`password reset` alone on a line, `auth: yes`, cookie pair names), and
+  redaction stays best-effort: a form outside the grammar is not detected. A JS batch's `/` is read
+  as regex or division from the previous token, and an undecidable one (after `}` or an `if (...)`
+  header) makes the batch share nothing; a call inside parentheses, a loop body or a labelled
+  statement does not count as surely running. `extract --out` is compared with the inputs by
+  filesystem identity, so a case-flipped spelling on macOS is refused, and Codex's
+  `sessions/YYYY/MM/DD/` layout is one participant, not one per year. The per-call latency p90 is now the
   nearest-rank 90th percentile (it reported the maximum for up to 10 calls). Flag thresholds and
   outcome classes are declared once, so `SCHEMA.md` quotes the values the extractor uses.
   One credential-label model replaces the per-shape label patterns: a key, flag or text label
