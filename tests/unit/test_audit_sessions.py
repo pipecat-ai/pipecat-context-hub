@@ -2310,6 +2310,7 @@ _FUZZ_ALPHABET = (
     + "：=:_-\\\"'"
     + "&?&?"
     + "*_\\`[]\n|#?/@\u00a0\u200b\u2018\u201c"  # round 4 fixer (K1): markdown, unicode
+    + "\\ \n|·→#?/@<>\"'=:↦⇒\t"  # round 5 fixer (K1): breaks, cells, arrows, tags, quotes
 )  # round 3 (K1): the label model's separators, quotes and escapes weigh more; round 4: `&` `?`
 _FUZZ_FRAGMENTS = [
     *(t for t, _ in SECRET_SHAPES), *BENIGN, "password", "TOKEN=", "MONKEY=", "api_key",
@@ -2328,6 +2329,11 @@ _FUZZ_FRAGMENTS = [
     # round 4 fixer (K1): the keyword forms, the whole credential words and markdown wrappers
     *egress.CREDENTIAL_WORDS, "mysql ", "-p", "login ", "password ", "-u ", "machine ", "--user ",
     "Cookie: ", "**", "`", "|\n  ", ': """', "os.environ[", "].", "#frag", "\u00a0",
+    # round 5 fixer (K1): escaped breaks, the new forms' keywords, scheme words and blank runs
+    "\\n", "\\n  ", "\n  ", ": |\n  ", ": \\n", " | ", " ↦ ", "IDENTIFIED BY ", "<password>",
+    "</password>", '{"name": "API_KEY", ', '"value": ', "name: ", "value: ", "- name: TOKEN\n  ",
+    "sshpass -p ", "sshpass ", "Bearer  ", "Basic\t\t", "Authorization: ", " is ", "export ",
+    "set ", "setenv ", "PASSWORD '", "→", "⇒", "your-dog-rex", "YOUR_API_KEY", "  ",
 ]  # fmt: skip
 
 
@@ -2472,7 +2478,7 @@ class TestRenderClosure:
         assert "| voice options: · TTS |" in report and "['" not in report
         assert _verify_share(out / "share", tuple(BUNDLE)) == []
         # headers render dicts the same way, never as a Python dict repr
-        assert "Calls by tool: search_docs → 1" in report
+        assert "Calls by tool: search_docs ↦ 1" in report
 
     def test_the_number_rule_is_the_same_on_both_sides(self, tmp_path: Path) -> None:
         """Q2: numbers were scanned by neither side, so a 32+ digit integer passed both."""
@@ -3493,6 +3499,7 @@ _R4_NOT_PLACEHOLDERS = [
     "${AKIAABCDEFGHIJKL}", "$AKIAABCDEFGHIJKL", "<ghp_abcdefghijkl>", "<API_KEY>", "$token",
     "${A_VARIABLE_NAME_LONGER_THAN_32_CH}", "$AB12CD34EF56GH78", "YOUR_abcd1234efgh5678",
     "<sk-proj-abcdefgh>", "${ABCDEF0123456789ABCDEF}", "Your_Key",
+    "your-dog-rex", "YOUR_PROJECT_ID",  # round 5 (K1 f): YOUR_ words must name a credential
 ]  # fmt: skip
 # `{0}` is the label, `{1}` the value; the expected output keeps everything around the value.
 _R4_CONTEXTS = [
@@ -4172,6 +4179,27 @@ class TestLabelFormsK1:
                 dumped = json.dumps(out, ensure_ascii=False)
                 assert value not in dumped, (form.name, row, out)
                 assert _json_clean(out), (row, out)
+            # round 5 (K1, F2): the report rendered from the clean row passes the tripwire too
+            row = egress.sanitize(_r5_flagged_row(text))
+            assert _report_clean(render_report({}, [row])), (form.name, text)
+
+    @pytest.mark.parametrize(
+        "form", [f for f in egress.LABEL_FORMS if f.structured], ids=lambda f: f.name
+    )
+    def test_the_structured_space_of_a_form(self, form: egress.LabelForm) -> None:
+        """Round 5 (K1, F13): a form that also has a parsed-object shape is redacted by sanitize's
+        structured walk and refused by the tripwire's decoded walk, nested in a row too."""
+        for template in form.structured:
+            for label in _r4f_labels():
+                for shape in form.values:
+                    value = _R4F_VALUES[shape]
+                    obj = json.loads(template.format(label=label, value=value))
+                    for row in (obj, {"input": {"q": obj}}, [obj]):
+                        clean = egress.sanitize(row)
+                        assert value not in json.dumps(clean, ensure_ascii=False), (row, clean)
+                        assert _json_clean(clean) and egress.sanitize(clean) == clean, clean
+                        assert not _json_clean(row), row  # the tripwire refuses the hand edit
+                        assert _report_clean(render_report({}, [_r5_flagged_row(clean)]))
 
     def test_benign_fixtures_are_unchanged_by_the_new_forms(self) -> None:
         kept = [
@@ -4184,6 +4212,12 @@ class TestLabelFormsK1:
             assert egress.sanitize(text) == text, text
             assert egress.leaks_in(text) == [], text
             assert egress.labelled_value_leaks(text) is False and egress._label_spans(text) == []
+
+
+def _r5_flagged_row(query: Any) -> dict[str, Any]:
+    """A share row that the report lists (flagged), carrying ``query``."""
+    return {"ref": "r", "tool": "search_docs", "flags": ["zero_hits"], "result": {"n_hits": 0},
+            "input": {"query": query}}  # fmt: skip
 
 
 def _r4_gone(text: str, *secrets: str) -> None:
@@ -4467,3 +4501,280 @@ class TestRound4FixerHygiene:
         trusted.chmod(0o755)
         monkeypatch.setenv("PATH", os.pathsep.join([str(trusted.parent), "/usr/bin"]))
         assert cli_audit._resolve_gh() == str(trusted)
+
+
+# ---- Round 5 fixer: one regression per finding (K1 grammar and closure, K2 lexer and labels) -----
+
+
+def _r5_extract(tmp_path: Path, query: str) -> Path:
+    src = tmp_path / "in"
+    _hub_session(src / "alice" / "s.jsonl", query=query, confident=False)
+    out = tmp_path / "out"
+    result = _extract(src, out)
+    assert result.exit_code == 0, result.output
+    return out
+
+
+def _r5_shared(out: Path) -> bytes:
+    return (
+        b"".join((out / "share" / n).read_bytes() for n in BUNDLE)
+        + (out / "share.tar.gz").read_bytes()
+    )
+
+
+_R5_JS_CALL = 'tools.mcp__pipecat_context_hub__search_docs({query: "secret q"})'
+
+
+class TestRound5Fixer:
+    @pytest.mark.parametrize(
+        "query", ["how to set password: \\n", '{"api_key": \\n', "token=\\n", "secret: \\n  "]
+    )
+    def test_f2_an_empty_next_line_value_never_crosses_a_cell(
+        self, tmp_path: Path, query: str
+    ) -> None:
+        """F2: the escaped-newline value ran past ` | ` into the next cell: a clean row, a report
+        the tripwire refused, and the whole extract aborted."""
+        row = _r5_flagged_row(query)
+        assert _json_clean(row)
+        assert _report_clean(render_report({}, [row]))
+        assert _verify_share(_r5_extract(tmp_path, query) / "share", tuple(BUNDLE)) == []
+
+    def test_f2_closure_over_labels_breaks_and_separators(self) -> None:
+        """Invariant: for every text sanitize accepts, the report rendered from it passes the
+        tripwire; label x separator x break x tail."""
+        import itertools
+
+        labels = ["password", "api_key", "token", '"secret"', "**pw**", "Authorization", "Cookie"]
+        seps = [": ", "=", " => ", " → ", "\uff1a", ": |", ": >-"]
+        breaks = ["", "\\n", "\\r", "\\n  ", "\\n\\n", "\n", "\n  ", "\r\n", " ", "  "]
+        tails = ["", " | x", " · y", " ↦ z", " |", "|", " …", "\\n | w"]
+        for lab, sep, br, tail in itertools.product(labels, seps, breaks, tails):
+            text = f"{lab}{sep}{br}{tail}"
+            for q in (text, egress.sanitize(text)):
+                row = _r5_flagged_row(q)
+                if _json_clean(row):
+                    report = render_report({}, [row])
+                    assert _report_clean(report), (text, egress._file_leaks("report.md", report))
+
+    @pytest.mark.parametrize(
+        ("text", "secret"),
+        [
+            ("Proxy-Authorization: Basic  dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+            ("Authorization: Bearer  abcSECRET123", "abcSECRET123"),
+            ("Cookie: theme=dark;  sessionid=abcSECRET123", "abcSECRET123"),
+        ],
+    )
+    def test_f3_blank_runs_after_a_scheme_or_inside_a_cookie(self, text: str, secret: str) -> None:
+        _r4_gone(text, secret)
+        assert not _json_clean({"input": {"query": text}})
+
+    def test_f3_the_whole_space_of_blank_runs(self) -> None:
+        import itertools
+
+        runs = [c * k for c in (" ", "\t", "\u00a0") for k in range(1, 6)]
+        schemes = ("Basic", "Bearer", "Token", "ApiKey", "Digest", "NTLM")
+        for label, scheme, run in itertools.product(
+            ("Authorization", "Proxy-Authorization", "X-Auth"), schemes, runs
+        ):
+            _r4_gone(f"{label}: {scheme}{run}zq7Canary", "zq7Canary")
+        for run in runs:
+            _r4_gone(f"Cookie: a=b;{run}sid=zq7Canary", "zq7Canary")
+            _r4_gone(f"Set-Cookie: sid=zq7Canary;{run}Path=/", "zq7Canary")
+
+    def test_f4_one_user_flag_list_drives_both_locators(self) -> None:
+        source = Path(egress.__file__).read_text()
+        for flag in egress.USER_FLAGS:
+            assert source.count(f'"{flag}"') == 1, flag  # spelled once: in USER_FLAGS
+            texts = [f"curl {flag} alice:zq7Canary h"]
+            texts += [f"curl {flag}alice:zq7Canary h"] if len(flag) == 2 else []
+            texts += [f"curl {flag}=alice:zq7Canary"] if len(flag) > 2 else []
+            for text in texts:
+                assert egress._label_spans(text), text  # locator A
+                assert egress.labelled_value_leaks(text), text  # locator B
+                assert "zq7Canary" not in egress.sanitize(text)
+
+    def test_f5_no_unreachable_separator_and_fullwidth_still_redacted(self, tmp_path: Path) -> None:
+        import unicodedata
+
+        for ch in egress._SEP_CHARS:  # both locators read the NFKC view: a folded char is dead
+            assert unicodedata.normalize("NFKC", ch) == ch, ch
+        names = {f.name: f for f in egress.LABEL_FORMS}
+        assert not any("\uff1a" in str(e) for e in names["separator"].examples)
+        assert any("\uff1a" in str(e) for e in names["unicode spelling"].examples)
+        for query in ("password\uff1ahunter2xyz", "api_key\uff1dhunter2xyz", "pw\ufe55hunter2xyz"):
+            assert b"hunter2xyz" not in _r5_shared(_r5_extract(tmp_path / query[:3], query))
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ['throw new Error("x");\n', "return;\n", "break;\n", "continue;\n", "process.exit(0);\n",
+         "await f(); return 1; "],
+    )  # fmt: skip
+    def test_f9_an_earlier_top_level_terminator_ends_surely_runs(self, prefix: str) -> None:
+        js = f"{prefix}await {_R5_JS_CALL};"
+        assert audit_extract.detect_hub("exec", js) == ("search_docs", "mcp_js", 1)
+        assert audit_extract.hub_invocation(js, "mcp_js") == "", js
+        # a terminator inside a function body is not top level
+        ok = f"const f = async () => {{ {prefix} }};\nawait {_R5_JS_CALL};"
+        assert "secret q" in audit_extract.hub_invocation(ok, "mcp_js"), ok
+
+    @pytest.mark.parametrize(
+        ("root", "rel"),
+        [("sessions/2026", "10/03/a.jsonl"), ("sessions/2026", "11/16/b.jsonl"),
+         ("sessions/2026/11", "03/a.jsonl"), ("sessions/2026/11/17", "a.jsonl"),
+         ("sessions", "2026/11/17/a.jsonl")],
+    )  # fmt: skip
+    def test_f10_a_codex_date_input_is_one_participant(self, root: str, rel: str) -> None:
+        label = audit_extract.participant_label(Path("/x/.codex") / root, Path(rel))
+        assert label == "sessions", (root, rel, label)
+
+    def test_f10_relative_date_input_and_other_layouts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "sessions" / "2026").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path / "sessions")
+        assert audit_extract.participant_label(Path("2026"), Path("11/17/a.jsonl")) == "sessions"
+        assert audit_extract.participant_label(Path("/x/2026"), Path("bob/s.jsonl")) == "bob"
+        assert audit_extract.participant_label(Path("/x/in"), Path("alice/s.jsonl")) == "alice"
+        codex = tmp_path / "sessions" / "2026"
+        call = {
+            "type": "function_call",
+            "name": "exec_command",
+            "arguments": json.dumps({"cmd": 'pipecat-context-hub search-docs "TTS"'}),
+        }
+        for day in ("10/03", "11/16"):
+            _jl(codex / day / "rollout-a.jsonl", TestOtherHarnesses._codex(call, '{"hits": []}'))
+        out = tmp_path / "out"
+        assert _extract(codex, out).exit_code == 0
+        assert json.loads((out / "summary.json").read_text())["participants"] == 1
+
+    @pytest.mark.parametrize(
+        ("text", "secret"),
+        [
+            ('{"name":"API_KEY","value":"s3cr3tVALUE"}', "s3cr3tVALUE"),
+            ("- name: API_KEY\n  value: hunter2xyz", "hunter2xyz"),
+            ("<password>hunter2xyz</password>", "hunter2xyz"),
+            ("CREATE USER bob IDENTIFIED BY 'hunter2xyz'", "hunter2xyz"),
+            ("export PGPASSWORD hunter2xyz", "hunter2xyz"),
+            ("password is hunter2xyz", "hunter2xyz"),
+            ("sshpass -p hunter2xyz", "hunter2xyz"),
+            ('<add key="ApiKey" value="hunter2xyz"/>', "hunter2xyz"),
+            ("api_key → hunter2xyz", "hunter2xyz"),
+            ("password→hunter2xyz", "hunter2xyz"),
+            ("set password hunter2xyz", "hunter2xyz"),
+            ("api_key: your-dog-rex", "your-dog-rex"),
+        ],
+    )
+    def test_f11_structured_and_prose_forms(self, text: str, secret: str) -> None:
+        _r4_gone(text, secret)
+        assert egress.sanitize("api_key: YOUR_API_KEY") == "api_key: YOUR_API_KEY"
+
+    def test_f12_every_line_of_a_yaml_block_is_redacted(self, tmp_path: Path) -> None:
+        query = "api_key: |\n  CedarMoon884!\n  LakeStone992!"
+        assert egress.sanitize(query) == "api_key: |\n  <redacted>"
+        shared = _r5_shared(_r5_extract(tmp_path, query))
+        assert b"CedarMoon884" not in shared and b"LakeStone992" not in shared
+
+    def test_f13_a_name_value_pair_is_redacted_as_an_object(self, tmp_path: Path) -> None:
+        assert egress.sanitize({"name": "API_KEY", "value": "CedarMoon884!"}) == {
+            "name": "API_KEY", "value": egress.REDACTED,
+        }  # fmt: skip
+        assert not _json_clean({"name": "API_KEY", "value": "CedarMoon884!"})
+        assert egress.sanitize({"name": "voice", "value": "alloy"}) == {
+            "name": "voice", "value": "alloy",
+        }  # fmt: skip
+        query = '{"env":[{"name":"API_KEY","value":"CedarMoon884!"}]}'
+        assert b"CedarMoon884" not in _r5_shared(_r5_extract(tmp_path, query))
+
+    def test_f14_schema_md_is_checked_whole(self, audited: Path) -> None:
+        from pipecat_context_hub.audit import sharedir
+
+        files = {n: (audited / "share" / n).read_bytes() for n in BUNDLE}
+        assert egress.verify_files(files) == []
+        files["SCHEMA.md"] += b"\napi_key:\n  CedarMoon884!\n"
+        assert egress.verify_files(files) == ["SCHEMA.md: credential label"]
+        with pytest.raises(Exception, match="SCHEMA.md"):
+            sharedir.check_share(files)
+
+    @pytest.mark.parametrize(
+        "js",
+        [
+            'let n = 1; n /*\n*/ ++ /tools.mcp__pipecat_context_hub__search_docs({query:"PrivateProject"})/.lastIndex;',
+            'let n = 1; n /*\r\n*/ ++ /tools.mcp__pipecat_context_hub__search_docs({query:"PrivateProject"})/.lastIndex;',
+            'let n = 1; n /*\u2028*/ ++ /tools.mcp__pipecat_context_hub__search_docs({query:"PrivateProject"})/.lastIndex;',
+            'let n = 1; n /*\u2029*/ ++ /tools.mcp__pipecat_context_hub__search_docs({query:"PrivateProject"})/.lastIndex;',
+            'n // c\r++ /tools.mcp__pipecat_context_hub__search_docs({query:"PrivateProject"})/;',
+            'n // c\u2028++ /tools.mcp__pipecat_context_hub__search_docs({query:"PrivateProject"})/;',
+        ],
+    )  # fmt: skip
+    def test_f15_a_line_break_inside_a_comment_is_a_line_break(self, js: str) -> None:
+        assert "PrivateProject" not in audit_extract.hub_invocation(js, "mcp_js"), js
+
+    @pytest.mark.parametrize(
+        ("js", "shared"),
+        [
+            # a comment holding `/`, then a call on the next line
+            (f"// see a/b/c\nawait {_R5_JS_CALL};", True),
+            (f"/* a/b */ await {_R5_JS_CALL};", True),
+            # a regex after a comment
+            (f"/* c */ x = /re/.test(y);\nawait {_R5_JS_CALL};", True),
+            (f"// c\r\nawait {_R5_JS_CALL};", True),
+            (f"// c\u2028await {_R5_JS_CALL};", True),
+            # a regex literal cannot span a line terminator: unlexable, nothing shared
+            (f"x = /a\nb/; await {_R5_JS_CALL};", False),
+            (f"x = /a\u2028b/; await {_R5_JS_CALL};", False),
+        ],
+    )
+    def test_f15_comment_and_regex_line_ends(self, js: str, shared: bool) -> None:
+        assert audit_extract.detect_hub("exec", js)[0] == "search_docs", js
+        assert ("secret q" in audit_extract.hub_invocation(js, "mcp_js")) is shared, js
+
+    def test_fuzz_found_a_cell_boundary_is_not_a_yaml_block_indicator(self) -> None:
+        """Round 5 fuzz: a tool cell ending `key: ` before a query cell starting with `\\n  x`
+        read as `key: | \\n  x` (a YAML block across the cell boundary)."""
+        row = {**_r5_flagged_row("\\n  (@.-x"), "tool": "a1·key: "}
+        assert _json_clean(row) and _report_clean(render_report({}, [row]))
+        assert egress.report_units("| a | b\\|c |\n- d") == ["", " a ", " b|c ", "", "- d"]
+
+    def test_fuzz_found_a_pair_never_spans_two_rendered_values(self) -> None:
+        """Round 5 fuzz: an open-quoted `value` in one list item closed by a quote in the next
+        item, whose text then held `name: API_KEY`, made a name/value pair the row lacked."""
+        items = ['value: "abc', '" name: API_KEY']
+        assert all(_json_clean(i) for i in items)
+        assert egress.leaks_in(egress.value_text(items)) == []
+        manifest = {"analysis": {}, "harnesses": {"x": items}}
+        assert _report_clean(render_report(manifest, []))
+        assert egress.leaks_in('value: "abc" name: API_KEY')  # one value: a pair
+
+    def test_fuzz_found_a_line_end_pipe_ends_a_segment_in_the_row_too(self) -> None:
+        """Round 5 fuzz: `password X |` then a line break rendered as `password X | · `, a
+        separator the row text did not end a segment at, so netrc fired only in the report."""
+        key = "password OPENAI_API_KEY_2C:<redacted> |\n  "
+        assert egress.leaks_in(key) == ["credential label"]  # the row sees the report's segment
+        assert egress.leaks_in(egress.sanitize(key)) == []
+        manifest = egress.sanitize({"harnesses": {"<path>": {key: "x"}}})
+        assert _report_clean(render_report(manifest, []))
+
+
+class TestRound5FixerHygiene:
+    ROOT = Path(audit_extract.__file__).parents[3]
+
+    def _doc(self, rel: str) -> str:
+        return " ".join((self.ROOT / rel).read_text().split())
+
+    def test_f1_the_participant_label_rule_is_documented(self) -> None:
+        doc = " ".join((audit_extract.__doc__ or "").split())
+        assert "first path component under an input root is the participant" not in doc
+        for text in (doc, self._doc("docs/cli.md"), self._doc(
+            ".claude/skills/context-hub-session-audit/SKILL.md"
+        )):  # fmt: skip
+            assert "YYYY/MM/DD" in text and "subagents" in text, text[:80]
+            assert "not a date component" in text
+
+    def test_f6_f7_f8_cli_doc_states_the_full_rules(self) -> None:
+        cli = self._doc("docs/cli.md")
+        assert "relative `PATH` entry" in cli  # F6
+        assert "not inside a block, branch or function)" not in cli  # F7
+        for part in ("parentheses", "labelled", "top-level `throw`", "Promise.all"):
+            assert part in cli, part
+        assert "the password running to the last `@`" not in cli  # F8
+        assert "scheme and user are not kept" in cli and "zero-width" in cli

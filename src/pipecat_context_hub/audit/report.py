@@ -6,7 +6,9 @@ edited in place. It is a function of rows the tripwire already accepted: every v
 through the egress's canonical text form (``value_text``, never ``str()``/``repr``), inline with
 :func:`_line` and in a table cell with :func:`_cell`. In running text a value is preceded by
 ``label: `` and followed only by the item separator `` · `` or the end of the line, so no rule can
-match across a value and the text around it, and a report rendered from clean values is clean.
+match across a value and the text around it, and a report rendered from clean values is clean. A
+table cell holds exactly one value and the tripwire checks each cell alone
+(``egress.report_units``), so two cells never join into a match.
 
 A participant who deletes a call from ``calls.jsonl`` and runs ``repack`` therefore loses
 everything derived from it, by construction: there is no second copy of a query to find, and no
@@ -66,8 +68,8 @@ def _cell(v: Any) -> str:
     """A table cell for a row value: its canonical text, one line, ``|`` escaped. No redaction.
 
     Every value rendered here already came through the egress (``extract``) or is checked in its own
-    file (``repack``), and ``verify_files`` scans ``report.md`` with the ``|`` escape undone, so the
-    escape can never make a match the value did not have. Substituting a character (``|`` to ``/``)
+    file (``repack``), and ``verify_files`` scans ``report.md`` one cell at a time with the ``|``
+    escape undone, so the escape can never make a match the value did not have. Substituting a character (``|`` to ``/``)
     could fabricate a path the row never held.
     """
     return md_cell(value_text(v))

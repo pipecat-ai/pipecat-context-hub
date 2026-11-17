@@ -106,7 +106,19 @@ This changelog retains repository and Context Hub package history.
   error and `ingest` rejects that bundle instead of stopping. A Codex JS batch call counts only in
   code (not in a string, comment or regex) and shares arguments only when it surely runs; shell
   text is never read as JavaScript. `command -v` runs nothing, and `env -u`, `sudo -u`,
-  `timeout -s` and other launcher options are parsed (an unknown one fails closed).
+  `timeout -s` and other launcher options are parsed (an unknown one fails closed). The label grammar
+  adds name/value pairs (`{"name": "API_KEY", "value": ...}`, Kubernetes `env` entries, `<add
+  key=".." value=".."/>`, as text and as parsed objects), XML elements (`<password>v</password>`),
+  SQL (`IDENTIFIED BY`, `PASSWORD 'v'`), `password is v`, `set` / `export` / `setenv LABEL v`,
+  `sshpass -p v` and arrow separators (`api_key → v`); a YAML block loses every line indented under
+  its label, not only the first; an `Authorization` scheme or cookie value is redacted through a run
+  of blanks; a `YOUR_` placeholder must name a credential (`your-dog-rex` is a value). The report
+  joins an object's key and value with ` ↦ ` (so `→` can be a label separator), checks `report.md`
+  one table cell at a time and `SCHEMA.md` whole, and an empty value before a cell boundary no
+  longer makes a clean row's report fail the leak check (which aborted the whole `extract`). A
+  comment holding a line break is a line break to the JS lexer, a call after a top-level `throw`,
+  `return`, `break`, `continue` or `process.exit` does not surely run, and a Codex year, month or
+  day directory given as `-i` is one participant (the sessions directory's name).
 
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and

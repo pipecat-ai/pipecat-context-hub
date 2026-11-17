@@ -40,6 +40,13 @@ shared), and `share/` plus `share.tar.gz` and `share.tar.gz.sha256`, a scrubbed,
 bundle (`manifest.json`, `SCHEMA.md`, `report.md`, `calls.jsonl`, `sessions.jsonl`). **Nothing is
 sent by `extract`.**
 
+Participant labels: with one sub-directory per person under `-i` (`collected/<person>/...`), each
+sub-directory is a participant; a file directly under the input (a flat root) gets the input's own
+name. A Claude Code project's `<session-id>/subagents/` files belong to the input's participant, and
+so does Codex's `YYYY/MM/DD/` layout, whether `-i` is `~/.codex/sessions` or a year, month or day
+under it: the label is the name of the input's first ancestor that is not a date component
+(`sessions`). Collect one directory per person when auditing several people's Codex sessions.
+
 | Harness | Fidelity | Verified against |
 |---|---|---|
 | Claude Code | full | real transcripts (MCP + CLI calls) |

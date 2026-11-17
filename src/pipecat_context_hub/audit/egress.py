@@ -12,16 +12,18 @@ sinks*, not over secrets: the participant still reads the report before sending 
 Representation parity: ``sanitize`` cleans parsed values, so ``verify_files`` checks parsed values
 too. A JSON file is decoded (every row, every pair, duplicates included) and each decoded string
 and key is scanned, and every number through its canonical text (the number rule); the markdown
-files (``SCHEMA.md``, ``report.md``) are scanned as the text a reader sees, one line at a time, with the
-one table-cell escape undone. A scan of serialised JSON sees escapes, not text: ``options:\\nvoice`` there looks
-like a Windows path (a false failure) and ``\\u0073k-...`` hides a token (a miss).
+files are scanned as the text a reader sees, with the one table-cell escape undone: ``report.md``
+one table cell (or other line) at a time, the unit one rendered value occupies (:func:`report_units`),
+``SCHEMA.md`` whole. A scan of serialised JSON sees escapes, not text: ``options:\\nvoice`` there
+looks like a Windows path (a false failure) and ``\\u0073k-...`` hides a token (a miss).
 
 Closure. Three properties hold, and ``tests/unit/test_audit_sessions.py`` checks each over
 generated values: whatever ``sanitize`` emits passes the tripwire; ``report.md`` rendered from
-rows that pass the tripwire passes it too (the renderer only joins row values with whitespace-
-bounded separators, :func:`value_text` and :func:`md_cell`); and a labelled credential
-in any form of the label grammar (:data:`LABEL_FORMS`: ``password: ...``, ``--api-key ...``,
-``Authorization: Basic ...``, ``.netrc``, ``curl -u``, URL userinfo, ...) is removed by
+rows that pass the tripwire passes it too (a value is one table cell, checked alone, and inside
+a cell or line the renderer only joins row values with whitespace-bounded separators that end every
+value and segment: :func:`value_text`, :func:`md_cell`); and a labelled credential in any form of
+the label grammar (:data:`LABEL_FORMS`: ``password: ...``, ``--api-key ...``, ``Authorization:
+Basic ...``, ``.netrc``, ``curl -u``, URL userinfo, a name/value pair, ...) is removed by
 ``sanitize`` and refused by the tripwire in a hand edit.
 """
 
@@ -33,12 +35,16 @@ import re
 import shlex
 import string
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-# The item separator of every text a text sink renders (lists, line breaks; see `value_text`).
+# The item separator of every text a text sink renders (lists, line breaks; see `value_text`), and
+# the pair separator (an object's key and value). Neither is a label separator: `Flags: password ↦ 1`
+# (the report counting a flag string) is a count, not a labelled value. `→` IS a label separator
+# (`api_key → v`), so the renderer must never join a key and its value with it.
 _ITEM_SEP = " · "
+_PAIR_SEP = " ↦ "
 
 # Secrets must never reach the output files. Over-redact rather than under-redact.
 # `\b` treats `_` as a word character, so `key_sk-...`, `mcp__sk-...` and `API_KEY_<hex>` have no
@@ -105,14 +111,20 @@ REDACTED = "<redacted>"
 #   * A flag's unquoted value is one word.
 #   * No value on the label's line (only blanks, or a YAML block indicator `|` `>` with chomping and
 #     indent marks): the value is the next non-blank line, to its end (`password:\n  v`,
-#     `password: |\n  v`). After a block indicator the next line must be indented. A line break is a
-#     real one or an escaped `\n` / `\r` (a stringified JSON document); the value ends at the line's
-#     end or a rendered separator (` | `, ` · `, ` → `), and after an escaped break also at the next
-#     escape or `"`. (So a value starting with `\n` or `\r` keeps those two characters.)
+#     `password: |\n  v`). After a block indicator the next line must be indented. When that line is
+#     indented deeper than the label's line, every following line indented deeper is part of the
+#     value too, blank lines between included (a YAML block or plain multi-line scalar; it ends at a
+#     dedent). A line break is a real one or an escaped `\n` / `\r` (a stringified JSON document);
+#     a line ends at its break or a rendered separator, and after an escaped break also at the next
+#     escape or `"`. The end of the text, and a rendered separator right after the break, mean no
+#     value (`password: \n | x`): a report cell ends a value exactly where its row's text ended.
+#     (So a value starting with `\n` or `\r` keeps those two characters.)
 #   * Any other unquoted value runs to the end of its segment: a line break, a sentence end (`.`
-#     then whitespace), two blanks, or a separator the report renders between values (` | `,
-#     ` · `, ` → `), so a passphrase with spaces loses its tail too; a value with no blank in it goes
-#     whole, whatever punctuation it holds. Context before the label adds terminators:
+#     then whitespace), two blanks, or a separator the report renders between values (a rendered
+#     symbol ` | ` ` · ` ` ↦ ` with a blank before it and whitespace or the end after it: the one
+#     definition of a segment boundary, :func:`_render_sep_at`), so a passphrase with spaces loses
+#     its tail too; a value with no blank in it goes whole, whatever punctuation it holds. Context
+#     before the label adds terminators:
 #       - a URL-query key (the label right after `?` or `&`, separated by `=`): `&` ends the value,
 #         and `#` too when the blank-free token holding the label is a real `scheme://` URL; a
 #         blank does not (`a&password=correct horse battery` loses all three words);
@@ -127,10 +139,11 @@ REDACTED = "<redacted>"
 #         the segment's end when that comes first;
 #       - a cookie label (`Cookie`, `Set-Cookie`): `;` and `,` never end the value (cookie pairs,
 #         and a `Set-Cookie` date, are the value: the whole header value is redacted, pair names
-#         included; inside brackets it runs to the closing bracket).
+#         included; inside brackets it runs to the closing bracket), and neither do two blanks.
 #   * An authorization label (`Authorization`, `Proxy-Authorization`, an `auth` segment): a leading
 #     scheme word (`Basic`, `Bearer`, `Token`, `ApiKey`, `Digest`, `Negotiate`, `NTLM`, `OAuth`)
-#     and its blanks are not the value; a scheme with nothing after it is no value.
+#     and its run of blanks (any length) are not the value; a scheme with nothing after it is no
+#     value, and two blanks do not end the value (`Bearer  x` keeps nothing of `x`).
 #   * No minimum length: any non-empty value is redacted except the redaction marker, a placeholder
 #     (:func:`is_placeholder`) and a bare YAML block indicator.
 #
@@ -141,6 +154,14 @@ REDACTED = "<redacted>"
 # `git@github.com:org/repo` are kept, and so is `host:PORT/path@x`: a `:` followed by 1-5 digits
 # and then `/`, `?` or `#` is a port, not a password (a password that is 1-5 digits before a `/`
 # is therefore missed).
+#
+# Rule 4, the keyword forms (one helper each, both locators): netrc, SQL (`IDENTIFIED BY v`,
+# `PASSWORD 'v'`), prose (`LABEL is v`), `set` / `export` / `setenv LABEL v`, a glued MySQL `-pv`,
+# `sshpass -p v`, `curl -u user:v`, an XML element (`<LABEL>v</LABEL>`, closing tag in the same
+# segment) and a name/value pair (a `value` member whose sibling `name` / `key` / `variable` /
+# `env` member, with only blanks, breaks, quotes, `,` `;` between and no rendered separator, names
+# a credential; in a parsed object, :func:`names_credential_pair`). Their costs: `token is invalid`
+# loses `invalid`, `set token mode` loses `mode`, an object `{"key": ..., "value": ...}` loses both.
 _FOLD = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 CREDENTIAL_STEMS = (
     "password", "passwd", "passphrase", "pwd", "secret", "token", "apikey", "accesskey",
@@ -269,7 +290,9 @@ def _is_cookie_label(name: str) -> bool:
 #   * an ellipsis or mask: `..`, `…`, `xxx`, `***` (any length);
 #   * `$VAR` or `${VAR}` with VAR upper-case letters, digits and `_`, under 33 characters;
 #   * `<name>` with name lower-case words (`a-z`, digits after the first letter) joined by `_` `-`;
-#   * `YOUR_...` / `your-...`: `YOUR` or `your`, then words each all upper- or all lower-case;
+#   * `YOUR_...` / `your-...`: `YOUR` or `your`, then words each all upper- or all lower-case,
+#     which together name a credential (rule 1): `YOUR_API_KEY`, `your-api-key`,
+#     `your_password_here` stand for one, `your-dog-rex` and `YOUR_PROJECT_ID` are values;
 # and in every form the name holds no secret shape (``SECRET_RES``), does not start with a token
 # prefix followed by 8 more characters (`AKIA...`, `ghp_...`, `sk-...`), and has no run of 12+
 # letters and digits mixing both. Anything else after a credential label is a value.
@@ -297,6 +320,8 @@ def is_placeholder(value: str) -> bool:
     if m is None:
         return False
     name = next(g for g in m.groups() if g is not None)
+    if m.group("your") is not None and not is_credential_name(name[len("your") + 1 :]):
+        return False
     return not (
         _TOKEN_PREFIX_RE.match(name)
         or _MIXED_RUN_RE.search(name)
@@ -310,12 +335,15 @@ class LabelForm:
     credential label (a form without it names its own), ``{value}`` the value, which is exactly
     what sanitize removes (``expected``, when given, is the output with ``{redacted}`` for the
     marker, for a form that removes more than the value). ``values`` names the value shapes the
-    form carries: ``ONE_TOKEN`` (no blank) or ``ANY_VALUE`` (blanks too)."""
+    form carries: ``ONE_TOKEN`` (no blank) or ``ANY_VALUE`` (blanks too). ``structured`` are JSON
+    templates of the form as a parsed value (a share row's dict), whose ``{value}`` sanitize must
+    replace with the marker and the tripwire's decoded walk must refuse."""
 
     name: str
     rule: str
     examples: tuple[str | tuple[str, str], ...]
     values: tuple[str, ...]
+    structured: tuple[str, ...] = ()
 
 
 # The value shapes the forms carry (``tests/unit/test_audit_sessions.py`` gives each a concrete
@@ -327,9 +355,10 @@ ANY_VALUE = (*ONE_TOKEN, "spaced")
 LABEL_FORMS: tuple[LabelForm, ...] = (
     LabelForm(
         "separator",
-        "a label word (letters, digits, `_ . -`), blanks, one of `: = => -> ：`, blanks, the value",
+        "a label word (letters, digits, `_ . -`), blanks, one of `: = => -> → ⇒`, blanks, the "
+        "value (a fullwidth `：` `＝` is `:` `=` by rule 0: see `unicode spelling`)",
         ("{label}: {value}", "{label}={value}", "{label} = {value}", "{label} => {value}",
-         "{label}->{value}", "{label}：{value}"),
+         "{label}->{value}", "{label} → {value}", "{label}→{value}", "{label} ⇒ {value}"),
         ANY_VALUE,
     ),
     LabelForm(
@@ -376,16 +405,26 @@ LABEL_FORMS: tuple[LabelForm, ...] = (
     ),
     LabelForm(
         "unicode spelling",
-        "curly quotes, NBSP and zero-width characters around the label (rule 0)",
+        "curly quotes, NBSP, zero-width characters and fullwidth forms around the label and as "
+        "the separator (rule 0)",
         ("\u201c{label}\u201d: {value}", "\u2018{label}\u2019 = {value}",
-         "{label}\u00a0=\u00a0{value}", "{label}\u200b: {value}", "ｐａｓｓｗｏｒｄ: {value}"),
+         "{label}\u00a0=\u00a0{value}", "{label}\u200b: {value}", "ｐａｓｓｗｏｒｄ: {value}",
+         "{label}\uff1a{value}", "{label}\uff1d{value}", "{label}\ufe55{value}"),
         ANY_VALUE,
     ),
     LabelForm(
         "value on the next line",
-        "nothing (or a YAML block indicator) after the separator: the next non-blank line",
+        "nothing (or a YAML block indicator) after the separator: the next non-blank line, and "
+        "when that line is indented deeper than the label's, every following line indented "
+        "deeper too (a block ends at a dedent)",
         ("{label}:\n  {value}", "{label}: |\n  {value}", "{label}: >-\n  {value}",
-         "{label}:\n\n{value}"),
+         "{label}:\n\n{value}", "**{label}**:\n  {value}",
+         ("{label}: |\n  {value}\n  {value}", "{label}: |\n  {redacted}"),
+         ("{label}: >2\n   {value}\n\n   {value}\nnext: 1", "{label}: >2\n   {redacted}\nnext: 1"),
+         ("  {label}: |-\n    {value}\n    {value}\n  other: x",
+          "  {label}: |-\n    {redacted}\n  other: x"),
+         ("{label}: |\\n  {value}\\n  {value}", "{label}: |\\n  {redacted}"),
+         ("{label}:\n  {value}\n  {value}", "{label}:\n  {redacted}")),
         ANY_VALUE,
     ),
     LabelForm(
@@ -439,13 +478,67 @@ LABEL_FORMS: tuple[LabelForm, ...] = (
          ("https://u@x.com:{value}@h/p", "{redacted}h/p")),
         ONE_TOKEN,
     ),
+    LabelForm(
+        "name/value pair",
+        "a `value` member whose sibling `name`, `key`, `variable` or `env` member (before or after "
+        "it, with only blanks, line breaks, quotes, `,` and `;` between) names a credential or "
+        "holds the marker: in text, and as a parsed object",
+        ('{{"name": "{label}", "value": "{value}"}}', '{{"value": "{value}", "name": "{label}"}}',
+         "- name: {label}\n  value: {value}", '{{\\"env\\": \\"{label}\\", \\"value\\": \\"{value}\\"}}',
+         ('<add key="{label}" value="{value}"/>', '<add key="{redacted}" value="{redacted}"/>')),
+        ANY_VALUE,
+        ('{{"name": "{label}", "value": "{value}"}}', '[{{"Name": "{label}", "Value": "{value}"}}]',
+         '{{"env": [{{"variable": "{label}", "value": "{value}"}}]}}'),
+    ),
+    LabelForm(
+        "XML element",
+        "`<label>`, the text, and the matching `</label>` in the same segment (an attribute "
+        "`label=\"v\"` is the quoted-value form)",
+        ("<{label}>{value}</{label}>", "<config><{label}> {value} </{label}></config>",
+         '<user {label}="{value}"/>'),
+        ANY_VALUE,
+    ),
+    LabelForm(
+        "SQL password",
+        "`IDENTIFIED BY` or the word `PASSWORD`, blanks, a quoted value (`WITH PASSWORD = 'v'` is "
+        "the separator form)",
+        ("CREATE USER bob IDENTIFIED BY '{value}'", "ALTER ROLE r PASSWORD '{value}'",
+         "create role r with login password '{value}'", "ALTER ROLE r WITH PASSWORD = '{value}'"),
+        ANY_VALUE,
+    ),
+    LabelForm(
+        "SQL identified by",
+        "`IDENTIFIED BY`, blanks, one unquoted word",
+        ("CREATE USER bob IDENTIFIED BY {value}", "alter user bob identified  by {value}"),
+        ONE_TOKEN,
+    ),
+    LabelForm(
+        "prose is",
+        "a credential label word, blanks, `is`, blanks, one word",
+        ("{label} is {value}", "my {label} IS {value}"),
+        ONE_TOKEN,
+    ),
+    LabelForm(
+        "set or export",
+        "`set`, `export` or `setenv`, blanks, a credential label word, blanks, one word "
+        "(`export X=v` is the separator form)",
+        ("set {label} {value}", "export {label} {value}", "setenv {label} {value}"),
+        ONE_TOKEN,
+    ),
+    LabelForm(
+        "sshpass",
+        "`-p` after an `sshpass` command in the same segment, glued or followed by blanks",
+        ("sshpass -p {value} ssh h", "sshpass -p{value} ssh h"),
+        ONE_TOKEN,
+    ),
 )  # fmt: skip
 
 Span = tuple[int, int, str]
 
 _QUOTE_TOKEN_RE = re.compile(r"\\*[\"']")
-_RENDER_SEPS = frozenset("|·→")
-_RENDER_SEP_TEXTS = (" | ", " · ", " → ")
+# What the report renders between values: a table cell boundary, the item and the pair separator.
+_RENDER_SEP_TEXTS = (" | ", _ITEM_SEP, _PAIR_SEP)
+_RENDER_SEPS = frozenset(s.strip() for s in _RENDER_SEP_TEXTS)
 _SPACE_RE = re.compile(r"\s")
 _CLOSERS = {")": "(", "]": "[", "}": "{"}
 _BLOCK_INDICATOR_RE = re.compile(r"[|>][+\-]?[1-9]?[+\-]?")
@@ -463,20 +556,41 @@ def _skip_blanks(text: str, i: int) -> int:
     return i
 
 
+def _render_sep_at(text: str, i: int) -> bool:
+    """A separator the report renders between values (` | ` ` · ` ` ↦ `) has its symbol at ``i``:
+    a blank before it, whitespace or the end of the text after it."""
+    return (
+        i < len(text)
+        and text[i] in _RENDER_SEPS
+        and i > 0
+        and text[i - 1] in " \t"
+        and (i + 1 == len(text) or text[i + 1].isspace())
+    )
+
+
+# A rendered separator as `_render_sep_at` sees it, located by its leading blank: one definition
+# for where a value ends and where a segment starts or ends, so a separator the report creates
+# (`x |` then a line break joined with ` · `) ends a segment in the row text too.
+_SEGMENT_END_RE = re.compile(r"[\r\n]|[ \t](?=[" + "".join(sorted(_RENDER_SEPS)) + r"](?:\s|\Z))")
+
+
 def _segment_start(text: str, i: int) -> int:
-    """Where the segment holding ``i`` starts: after the last line break or rendered separator."""
+    """Where the segment holding ``i`` starts: after the last line break or rendered separator
+    (and the one blank after it) before ``i``."""
     cut = max(text.rfind("\n", 0, i), text.rfind("\r", 0, i)) + 1
-    for sep in _RENDER_SEP_TEXTS:
-        k = text.rfind(sep, 0, i)
-        if k >= 0:
-            cut = max(cut, k + len(sep))
-    return cut
+    for m in _SEGMENT_END_RE.finditer(text, cut):  # no endpos: the lookahead reads past ``i``
+        s = m.start() + 1  # the separator's symbol
+        if s >= i:
+            break
+        cut = s + 2 if s + 1 < len(text) and text[s + 1] in " \t" else s + 1
+    return min(cut, i)
 
 
 def _segment_end(text: str, i: int) -> int:
-    ends = [k for k in (text.find("\n", i), text.find("\r", i)) if k >= 0]
-    ends += [k for sep in _RENDER_SEP_TEXTS if (k := text.find(sep, i)) >= 0]
-    return min(ends, default=len(text))
+    """Where the segment holding ``i`` ends: the next line break, or the blank before the next
+    rendered separator, at or after ``i``."""
+    m = _SEGMENT_END_RE.search(text, i)
+    return m.start() if m else len(text)
 
 
 def _attached_quote_start(text: str, label_start: int) -> int:
@@ -530,9 +644,17 @@ def _in_url(text: str, label_start: int) -> bool:
 
 
 def _bare_end(
-    text: str, pos: int, opened: list[str], *, query: bool, url: bool, cookie: bool
+    text: str,
+    pos: int,
+    opened: list[str],
+    *,
+    query: bool,
+    url: bool,
+    cookie: bool,
+    blanks: bool = True,
 ) -> int:
-    """Where an unquoted, non-flag value starting at ``pos`` ends (rule 2), trailing blanks off."""
+    """Where an unquoted, non-flag value starting at ``pos`` ends (rule 2), trailing blanks off.
+    ``blanks``: whether two blanks end it (not for an authorization or cookie value)."""
     n, i, inner = len(text), pos, []
     while i < n:
         ch = text[i]
@@ -540,10 +662,10 @@ def _bare_end(
             break
         end_follows = i + 1 == n or text[i + 1].isspace()
         if ch in " \t":
-            if i + 1 < n and text[i + 1] in " \t":  # two blanks
+            if blanks and i + 1 < n and text[i + 1] in " \t":  # two blanks
                 break
-        elif ch in _RENDER_SEPS and i > 0 and text[i - 1] in " \t" and end_follows:
-            break  # a separator the report renders between values: ` | ` ` · ` ` → `
+        elif _render_sep_at(text, i):
+            break  # a separator the report renders between values: ` | ` ` · ` ` ↦ `
         elif (ch == "." and end_follows) or (query and (ch == "&" or (url and ch == "#"))):
             break
         elif ch in "([{":
@@ -576,9 +698,43 @@ def _closing_quote(text: str, start: int, token: str) -> int | None:
     return None
 
 
-def _next_line(text: str, pos: int) -> tuple[bool, Span | None]:
-    """Rule 2's next-line value: (whether the label's line holds no value of its own, the value on
-    the next non-blank line or None)."""
+def _next_content(text: str, j: int) -> tuple[int, int]:
+    """From just past a line break at ``j``: (the start of the next non-blank line, where its text
+    starts); blank lines and their breaks are skipped."""
+    line = j
+    while (j := _skip_blanks(text, j)) < len(text) and (more := _LINE_BREAK_RE.match(text, j)):
+        j = line = more.end()
+    return line, j
+
+
+def _line_end(text: str, j: int, escaped: bool) -> tuple[int, int | None]:
+    """Where the value line starting at ``j`` ends (a line break or a rendered separator, and after
+    an escaped break also the next escape or `"`), and, when a line break ends it (so a deeper
+    indented line may continue the value), where the next line starts."""
+    end = _segment_end(text, j)
+    if escaped and (m := _ESCAPED_VALUE_END_RE.search(text, j, end)):
+        end = m.start()
+    br = _LINE_BREAK_RE.match(text, end)
+    return end, (br.end() if br else None)
+
+
+def _label_indent(text: str, label_start: int) -> int:
+    """The blanks before the first character of the label's line: the line starts after the last
+    line break (real or escaped) or rendered separator before the label."""
+    start = _segment_start(text, label_start)
+    for br in ("\\n", "\\r"):
+        k = text.rfind(br, start, label_start)
+        if k >= 0:
+            start = max(start, k + 2)
+    return _skip_blanks(text, start) - start
+
+
+def _next_line(text: str, pos: int, label_start: int) -> tuple[bool, Span | None]:
+    """Rule 2's next-line value: (whether the label's line holds no value of its own, the value or
+    None). The value is the next non-blank line; when that line is indented deeper than the label's
+    line, every following line indented deeper is part of it too (a YAML block, a plain multi-line
+    scalar), blank lines between included. The end of the text and a rendered separator end the
+    value wherever they occur, so a report cell ends it exactly where the end of its row value did."""
     n, i = len(text), pos
     block = _BLOCK_INDICATOR_RE.match(text, i)
     if block:
@@ -589,17 +745,20 @@ def _next_line(text: str, pos: int) -> tuple[bool, Span | None]:
     if br is None:
         return False, None
     escaped = text[br.start()] == "\\"
-    j = line = br.end()
-    while (j := _skip_blanks(text, j)) < n and (more := _LINE_BREAK_RE.match(text, j)):
-        j = line = more.end()
-    if j >= n or (block and j == line):  # a block scalar's content is indented
+    line, j = _next_content(text, br.end())
+    if j >= n or _render_sep_at(text, j) or (block and j == line):  # a block's content is indented
         return True, None
-    end = _segment_end(text, j)  # a line break or a rendered separator
-    if escaped and (m := _ESCAPED_VALUE_END_RE.search(text, j, end)):
-        end = m.start()
-    while end > j and text[end - 1] in " \t":
-        end -= 1
-    return True, ((j, end, "bare") if end > j else None)
+    indent = _label_indent(text, label_start)
+    start, deeper = j, j - line > indent
+    last, more = _line_end(text, j, escaped)
+    while deeper and more is not None:
+        line, j = _next_content(text, more)
+        if j >= n or _render_sep_at(text, j) or j - line <= indent:
+            break  # the end of the text or a cell, or a dedent: the block is over
+        last, more = _line_end(text, j, escaped)
+    while last > start and text[last - 1] in " \t":
+        last -= 1
+    return True, ((start, last, "bare") if last > start else None)
 
 
 def _value_span(
@@ -640,15 +799,17 @@ def _value_span(
             end = pos
         span = (pos, end, "bare")
     else:
-        empty_line, span = _next_line(text, pos)
+        empty_line, span = _next_line(text, pos, label_start)
         if not empty_line:
+            cookie = _is_cookie_label(name)
             end = _bare_end(
                 text,
                 pos,
                 _open_brackets(text, label_start, pos),
                 query=(query := _is_query_key(text, label_start, sep)),
                 url=query and _in_url(text, label_start),
-                cookie=_is_cookie_label(name),
+                cookie=cookie,
+                blanks=not (cookie or _is_auth_label(name)),
             )
             j = _attached_quote_start(text, label_start)
             if j < label_start and text[label_start - 1] == '"' and '"' not in text[label_end:pos]:
@@ -683,16 +844,34 @@ def _secret(text: str, span: Span | None) -> Span | None:
     return span if span is not None and _is_secret_value(text, span) else None
 
 
-# ---- Keyword forms (netrc, user flag, glued password flag): one helper each, called by both
-# locators with the keyword's position.
+# ---- Keyword forms (netrc, user flag, glued password flag, SQL, prose `is`, `set`/`export`,
+# sshpass, XML element, name/value pair): one helper each, called by both locators with the
+# keyword's position.
 _NETRC_CONTEXT_RE = re.compile(r"(?ai)(?<![\w.\-])(?:machine|login|account)[ \t]+\S")
 _NETRC_WORDS = ("password", "passwd")
 _MYSQL_RE = re.compile(
     r"(?<![\w.\-])(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlcheck|mysqlpump|mysqlsh|mariadb"
     r"|mariadb-dump|mariadb-admin)(?![\w.\-])"
 )
+_SSHPASS_RE = re.compile(r"(?<![\w.\-])sshpass(?![\w.\-])")
+# The user-flag form's flags: the one list both locators are built from.
 USER_FLAGS = ("-u", "-U", "--user", "--proxy-user")
-_LONG_USER_FLAGS = ("--user", "--proxy-user")
+_SHORT_USER_FLAGS = tuple(f for f in USER_FLAGS if len(f) == 2)
+_LONG_USER_FLAGS = tuple(f for f in USER_FLAGS if len(f) > 2)
+_IDENTIFIED, _BY = "identified", "by"
+_IS = "is"
+_ASSIGN_WORDS = ("set", "export", "setenv")
+# A name/value pair: the members that name the pair, and the member holding its value.
+PAIR_NAME_KEYS = ("name", "key", "variable", "env")
+PAIR_VALUE_KEY = "value"
+_PAIR_WINDOW = 256  # how far before a `value` label its sibling name is looked for
+
+
+def _word_value_span(text: str, v: int) -> Span | None:
+    """A keyword form's value at ``v``: a quoted value or one word, not a separator."""
+    if v >= len(text) or _sep_at(text, v):
+        return None
+    return _secret(text, _value_span(text, v, flag=True))
 
 
 def _netrc_span(text: str, kw_start: int, kw_end: int) -> Span | None:
@@ -713,6 +892,20 @@ def _netrc_span(text: str, kw_start: int, kw_end: int) -> Span | None:
     return _secret(text, span) if not before.strip(" \t") and not rest.strip(" \t") else None
 
 
+def _quoted_password_span(text: str, kw_end: int) -> Span | None:
+    """The SQL form's `PASSWORD 'v'`: the keyword (followed by a blank), blanks, a quoted value."""
+    v = _skip_blanks(text, kw_end)
+    if v == kw_end or not _QUOTE_TOKEN_RE.match(text, v):
+        return None
+    return _word_value_span(text, v)
+
+
+def _identified_by_span(text: str, by_end: int) -> Span | None:
+    """The SQL form's `IDENTIFIED BY v` (``by_end`` just past `BY`, a blank after it)."""
+    v = _skip_blanks(text, by_end)
+    return _word_value_span(text, v) if v > by_end else None
+
+
 def _user_flag_span(text: str, v: int) -> Span | None:
     """The user-flag form's password: the part after the first `:` of the value at ``v``."""
     span = _value_span(text, v, flag=True)
@@ -728,16 +921,110 @@ def _user_flag_span(text: str, v: int) -> Span | None:
 def _glued_password_span(text: str, flag_start: int) -> Span | None:
     """The glued password flag's value (`-p<value>` at ``flag_start``) after a MySQL-family command
     in the same segment."""
+    v = flag_start + 2
+    if v >= len(text) or text[v].isspace():
+        return None
     if not _MYSQL_RE.search(text, _segment_start(text, flag_start), flag_start):
         return None
-    return _secret(text, _value_span(text, flag_start + 2, flag=True))
+    return _secret(text, _value_span(text, v, flag=True))
+
+
+def _sshpass_span(text: str, flag_start: int) -> Span | None:
+    """The sshpass form's value (`-p v` or `-pv` at ``flag_start``) after `sshpass` in the same
+    segment."""
+    if not _SSHPASS_RE.search(text, _segment_start(text, flag_start), flag_start):
+        return None
+    v = flag_start + 2
+    if v < len(text) and text[v] in " \t":
+        return _word_value_span(text, _skip_blanks(text, v))
+    if v >= len(text) or text[v].isspace():
+        return None
+    return _secret(text, _value_span(text, v, flag=True))
+
+
+def _element_span(text: str, start: int, tag: str) -> Span | None:
+    """The XML element form's value: the text from ``start`` (just past `<tag>`) to the matching
+    `</tag>` in the same segment, blanks around it off."""
+    close = text.find(f"</{tag}>", start, _segment_end(text, start))
+    if close < 0:
+        return None
+    s, e = _skip_blanks(text, start), close
+    while e > s and text[e - 1] in " \t":
+        e -= 1
+    return _secret(text, (s, e, "bare")) if e > s else None
+
+
+def _is_pair_key(name: str, keys: tuple[str, ...]) -> bool:
+    """``name`` (a dict key or a label word) is exactly one of ``keys``, in any spelling."""
+    segs = label_segments(name)
+    return len(segs) == 1 and segs[0] in keys
+
+
+def _pair_name_is_credential(value: object) -> bool:
+    """A pair's name member names a credential (rule 1), or holds the marker."""
+    return isinstance(value, str) and (value == REDACTED or is_credential_name(value))
+
+
+def names_credential_pair(pairs: Iterable[tuple[Any, Any]]) -> bool:
+    """An object (its key/value pairs) whose name member (``PAIR_NAME_KEYS``) names a credential:
+    its ``value`` member is then a credential too. The one rule ``sanitize`` and the tripwire's
+    decoded walk both apply."""
+    return any(
+        isinstance(k, str) and _is_pair_key(k, PAIR_NAME_KEYS) and _pair_name_is_credential(x)
+        for k, x in pairs
+    )
+
+
+_PAIR_Q = r"(?:\\*[\"'])?"
+_PAIR_JOIN = r"(?:\\+[nr]|[\s,;\"'\\])*"
+_PAIR_MEMBER = (
+    r"(?<![\w.\-])(?P<k>[\w.\-]+)" + _PAIR_Q + r"[ \t]*[:=][ \t]*" + _PAIR_Q
+    + r"(?P<n><redacted>|[\w.\-]+)(?![\w.\-])"
+)  # fmt: skip
+_PAIR_BEFORE_RE = re.compile(_PAIR_Q + _PAIR_MEMBER + _PAIR_Q + _PAIR_JOIN + r"\Z")
+_PAIR_AFTER_RE = re.compile(_PAIR_JOIN + _PAIR_Q + _PAIR_MEMBER)
+
+
+def _pair_value_span(text: str, span: Span | None, label_start: int) -> Span | None:
+    """The name/value pair form: the value ``span`` of a `value` label at ``label_start`` when a
+    sibling name member, just before the label or just after the value with only joiners between,
+    names a credential."""
+    if span is None:
+        return None
+    q = _attached_quote_start(text, label_start)
+    before = _PAIR_BEFORE_RE.search(text, max(0, q - _PAIR_WINDOW), q)
+    after_at = span[1]
+    if span[2] == "quoted" and (tok := _QUOTE_TOKEN_RE.match(text, after_at)):
+        after_at = tok.end()
+    after = _PAIR_AFTER_RE.match(text, after_at)
+    for m, a, b in (
+        (before, before.start() if before else 0, label_start),
+        (after, label_start, after.end() if after else 0),
+    ):
+        if m and _pair_names_credential(m) and not _crosses_render_sep(text, a, b):
+            return _secret(text, span)
+    return None
+
+
+def _pair_names_credential(m: re.Match[str]) -> bool:
+    return _is_pair_key(m.group("k"), PAIR_NAME_KEYS) and _pair_name_is_credential(m.group("n"))
+
+
+def _crosses_render_sep(text: str, a: int, b: int) -> bool:
+    """A rendered separator lies in ``text[a:b]``: a pair never spans two rendered values."""
+    m = _SEGMENT_END_RE.search(text, a)
+    while m is not None and m.start() < b:
+        if text[m.start()] not in "\r\n":
+            return True
+        m = _SEGMENT_END_RE.search(text, m.end())
+    return False
 
 
 # Locator A (the sanitizer's): the grammar as patterns.
 # A label word: letters, digits, `_`, `.` and `-`, except the `-` of a `->` separator.
 _WC = r"(?:[\w.]|-(?!>))"
 _W = _WC + r"+(?!" + _WC + r")"
-_SEP = r"(?:=>|->|[:=：﹕＝])"
+_SEP = r"(?:=>|->|[:=→⇒])"  # `：` `＝` `﹕` are `:` `=` in the normal view (rule 0)
 _CLOSE_RUN = r"(?:\\*[\"']|[*`\]~])*"  # quotes, markdown and a subscript between label and sep
 _SEP_LABEL_RE = re.compile(
     r"(?<![\w.\-])(?:(?P<w0>" + _W + r")[ \t])?(?P<w1>" + _W + r")" + _CLOSE_RUN
@@ -754,9 +1041,18 @@ _FLAG_LABEL_RE = re.compile(
 )
 _NETRC_RE = re.compile(r"(?<![\w.\-])[Pp][Aa][Ss][Ss][Ww](?:[Oo][Rr])?[Dd](?=[ \t])")
 _USER_FLAG_RE = re.compile(
-    r"(?<![\w.\-])(?:(?:--user|--proxy-user)(?:=|[ \t]+)|-[uU][ \t]+|-[uU](?=[\w.\-]))"
+    r"(?<![\w.\-])(?:(?:" + "|".join(map(re.escape, _LONG_USER_FLAGS)) + r")(?:=|[ \t]+)"
+    + r"|(?:" + "|".join(map(re.escape, _SHORT_USER_FLAGS)) + r")(?:[ \t]+|(?=[\w.\-])))"
+)  # fmt: skip
+_P_FLAG_RE = re.compile(r"(?<![\w.\-])-p")
+_IDENTIFIED_BY_RE = re.compile(
+    r"(?<![\w.\-])(?ai:" + _IDENTIFIED + r")[ \t]+(?ai:" + _BY + r")(?=[ \t])"
+)  # ASCII case-insensitive keywords; the boundary is Unicode, as `_is_word_char`'s
+_IS_RE = re.compile(r"(?<![\w.\-])(?P<w>" + _W + r")[ \t]+(?ai:" + _IS + r")(?=[ \t])")
+_ASSIGN_RE = re.compile(
+    r"(?<![\w.\-])(?ai:" + "|".join(_ASSIGN_WORDS) + r")(?=[ \t]+(?P<w>" + _W + r")[ \t])"
 )
-_GLUED_P_RE = re.compile(r"(?<![\w.\-])-p(?=\S)")
+_ELEMENT_RE = re.compile(r"<(?P<tag>" + _WC + r"+)>")
 
 
 def _spans_a(text: str) -> list[Span]:
@@ -766,28 +1062,34 @@ def _spans_a(text: str) -> list[Span]:
     while (m := _SEP_LABEL_RE.search(text, pos)) is not None:
         w1 = m.group("w1")
         names = [w1] + ([text[m.start() : m.end("w1")]] if m.group("w0") else [])
-        if any(is_credential_name(w) for w in names):
+        credential = any(is_credential_name(w) for w in names)
+        if credential or _is_pair_key(w1, (PAIR_VALUE_KEY,)):
+            span = _value_span(
+                text, m.end(), flag=w1.startswith("-"), label_start=m.start("w1"),
+                label_end=m.end("w1"), sep=m.group("sep"), name=names[-1],
+            )  # fmt: skip
             spans.append(
-                _secret(
-                    text,
-                    _value_span(
-                        text,
-                        m.end(),
-                        flag=w1.startswith("-"),
-                        label_start=m.start("w1"),
-                        label_end=m.end("w1"),
-                        sep=m.group("sep"),
-                        name=names[-1],
-                    ),  # fmt: skip
-                )
+                _secret(text, span) if credential else _pair_value_span(text, span, m.start("w1"))
             )
         pos = m.end()
     for m in _FLAG_LABEL_RE.finditer(text):
         if is_credential_name(m.group("flag")):
             spans.append(_secret(text, _value_span(text, m.end(), flag=True)))
-    spans += [_netrc_span(text, m.start(), m.end()) for m in _NETRC_RE.finditer(text)]
+    for m in _NETRC_RE.finditer(text):
+        spans += [_netrc_span(text, m.start(), m.end()), _quoted_password_span(text, m.end())]
     spans += [_user_flag_span(text, m.end()) for m in _USER_FLAG_RE.finditer(text)]
-    spans += [_glued_password_span(text, m.start()) for m in _GLUED_P_RE.finditer(text)]
+    for m in _P_FLAG_RE.finditer(text):
+        spans += [_glued_password_span(text, m.start()), _sshpass_span(text, m.start())]
+    spans += [_identified_by_span(text, m.end()) for m in _IDENTIFIED_BY_RE.finditer(text)]
+    for m in _IS_RE.finditer(text):
+        if is_credential_name(m.group("w")):
+            spans.append(_word_value_span(text, _skip_blanks(text, m.end())))
+    for m in _ASSIGN_RE.finditer(text):
+        if is_credential_name(m.group("w")):
+            spans.append(_word_value_span(text, _skip_blanks(text, m.end("w"))))
+    for m in _ELEMENT_RE.finditer(text):
+        if is_credential_name(m.group("tag")):
+            spans.append(_element_span(text, m.end(), m.group("tag")))
     return [s for s in spans if s is not None]
 
 
@@ -824,7 +1126,7 @@ def redact_labelled(text: str) -> str:
 # each `-` and each keyword, sharing only the recogniser, the value model and the per-form helpers
 # with locator A.
 _WORD_CHAR_RE = re.compile(r"[\w.\-]")
-_SEP_CHARS = ":=：﹕＝"
+_SEP_CHARS = ":=→⇒"  # as `_SEP`: the fullwidth forms are folded by rule 0
 
 
 def _is_word_char(text: str, i: int) -> bool:
@@ -839,6 +1141,25 @@ def _word_start(text: str, end: int) -> int:
     while _is_word_char(text, start - 1):
         start -= 1
     return start
+
+
+def _word_end(text: str, start: int) -> int:
+    end = start
+    while _is_word_char(text, end):
+        end += 1
+    return end
+
+
+def _keyword_at(text: str, i: int, words: tuple[str, ...]) -> int:
+    """The end of whichever of ``words`` (ASCII case-insensitive) starts at ``i`` with no label
+    character before it and a blank after it, or -1."""
+    if _is_word_char(text, i - 1):
+        return -1
+    for w in words:
+        end = i + len(w)
+        if text[i:end].translate(_FOLD) == w and end < len(text) and text[end] in " \t":
+            return end
+    return -1
 
 
 def _sep_at(text: str, i: int) -> int:
@@ -872,34 +1193,34 @@ def _sep_label_leaks(text: str, i: int, sep: int) -> bool:
     names = [text[start:j]]
     if start >= 2 and text[start - 1] in " \t" and _is_word_char(text, start - 2):
         names.append(text[_word_start(text, start - 1) : j])
-    if not any(is_credential_name(w) for w in names):
+    credential = any(is_credential_name(w) for w in names)
+    if not credential and not _is_pair_key(names[0], (PAIR_VALUE_KEY,)):
         return False
     span = _value_span(
         text, _skip_blanks(text, i + sep), flag=names[0].startswith("-"), label_start=start,
         label_end=j, sep=text[i : i + sep], name=names[-1],
     )  # fmt: skip
-    return _secret(text, span) is not None
+    if credential:
+        return _secret(text, span) is not None
+    return _pair_value_span(text, span, start) is not None
 
 
 def _flag_leaks(text: str, i: int) -> bool:
     """The forms that start at a `-` with no label character before it."""
     n = len(text)
-    end = i
-    while _is_word_char(text, end):
-        end += 1
+    end = _word_end(text, i)
     word = text[i:end]
     if word in _LONG_USER_FLAGS and end < n and (text[end] == "=" or text[end] in " \t"):
         v = end + 1 if text[end] == "=" else _skip_blanks(text, end)
         if _user_flag_span(text, v):
             return True
-    if word in ("-u", "-U") and end < n and text[end] in " \t":
+    if word in _SHORT_USER_FLAGS and end < n and text[end] in " \t":
         if _user_flag_span(text, _skip_blanks(text, end)):
             return True
-    if len(word) > 2 and word[1] in "uU" and _user_flag_span(text, i + 2):
+    if len(word) > 2 and word[:2] in _SHORT_USER_FLAGS and _user_flag_span(text, i + 2):
         return True
-    if i + 2 < n and text[i + 1] == "p" and not text[i + 2].isspace():
-        if _glued_password_span(text, i):
-            return True
+    if text.startswith("-p", i) and (_glued_password_span(text, i) or _sshpass_span(text, i)):
+        return True
     k = end
     while k < n and text[k] == "\\":
         k += 1
@@ -910,14 +1231,40 @@ def _flag_leaks(text: str, i: int) -> bool:
     return _secret(text, _value_span(text, v, flag=True)) is not None
 
 
-def _netrc_leaks(text: str, i: int) -> bool:
-    if _is_word_char(text, i - 1):
-        return False
-    for w in _NETRC_WORDS:
-        end = i + len(w)
-        if text[i:end].translate(_FOLD) == w and end < len(text) and text[end] in " \t":
-            return _netrc_span(text, i, end) is not None
+def _keyword_leaks(text: str, i: int) -> bool:
+    """The forms that start at a keyword: netrc and SQL `PASSWORD`, `IDENTIFIED BY`, `set` /
+    `export` / `setenv`, and the prose `is` (whose label is the word before it)."""
+    if (end := _keyword_at(text, i, _NETRC_WORDS)) >= 0:
+        if _netrc_span(text, i, end) or _quoted_password_span(text, end):
+            return True
+    if (end := _keyword_at(text, i, (_IDENTIFIED,))) >= 0:
+        by = _skip_blanks(text, end)
+        if (by_end := _keyword_at(text, by, (_BY,))) >= 0 and _identified_by_span(text, by_end):
+            return True
+    if (end := _keyword_at(text, i, _ASSIGN_WORDS)) >= 0:
+        v = _skip_blanks(text, end)
+        e = _word_end(text, v)
+        if e > v and e < len(text) and text[e] in " \t" and is_credential_name(text[v:e]):
+            if _word_value_span(text, _skip_blanks(text, e)):
+                return True
+    if i > 0 and text[i - 1] in " \t" and (end := _keyword_at(text, i, (_IS,))) >= 0:
+        j = i
+        while j > 0 and text[j - 1] in " \t":
+            j -= 1
+        start = _word_start(text, j)
+        if start < j and is_credential_name(text[start:j]):
+            if _word_value_span(text, _skip_blanks(text, end)):
+                return True
     return False
+
+
+def _element_leaks(text: str, i: int) -> bool:
+    """The XML element form at a `<`."""
+    end = _word_end(text, i + 1)
+    if end == i + 1 or end >= len(text) or text[end] != ">":
+        return False
+    tag = text[i + 1 : end]
+    return is_credential_name(tag) and _element_span(text, end + 1, tag) is not None
 
 
 def labelled_value_leaks(text: str) -> bool:
@@ -929,7 +1276,9 @@ def labelled_value_leaks(text: str) -> bool:
         ch = text[i]
         if ch == "-" and not _is_word_char(text, i - 1) and _flag_leaks(text, i):
             return True
-        if ch in "pP" and _netrc_leaks(text, i):
+        if ch in "pPiIsSeE" and _keyword_leaks(text, i):
+            return True
+        if ch == "<" and _element_leaks(text, i):
             return True
     return False
 
@@ -1011,7 +1360,7 @@ def one_line(text: str) -> str:
     ``--password`` and a value on the next line are not a match (a flag's value is on its line),
     and joining them with a space would make one the row never had. A separator no rule matches
     across keeps every match inside one of the original lines. (A label with no value on its line
-    does take the next line's, but only in the row: report.md is checked one line at a time.)
+    does take the next line's, but only in the row: the separator ends a value and a segment.)
     """
     return _ITEM_SEP.join(text.splitlines())
 
@@ -1097,8 +1446,10 @@ def sanitize(v: Any) -> Any:
 
     The value of a credential-named key is replaced by ``REDACTED`` whole (``None`` stays ``None``),
     judged on the key as written and as cleaned, so ``verify_files`` (which sees the cleaned key)
-    agrees. A number whose canonical text (:func:`value_text`) would trip a rule becomes
-    ``REDACTED``; every other number is kept as it is.
+    agrees; so is the ``value`` member of a name/value pair whose name member names a credential
+    (:func:`names_credential_pair`, judged on the object as written and as cleaned). A number whose
+    canonical text (:func:`value_text`) would trip a rule becomes ``REDACTED``; every other number
+    is kept as it is.
     """
     if isinstance(v, str):
         return clean_text(v)
@@ -1115,6 +1466,10 @@ def sanitize(v: Any) -> Any:
             ck = clean_text(k)
             credential = is_credential_name(k) or is_credential_name(ck)
             out[ck] = REDACTED if credential and x is not None else sanitize(x)
+        if names_credential_pair(v.items()) or names_credential_pair(out.items()):
+            for ck, x in out.items():
+                if isinstance(ck, str) and _is_pair_key(ck, (PAIR_VALUE_KEY,)) and x is not None:
+                    out[ck] = REDACTED
         return out
     return v
 
@@ -1126,7 +1481,6 @@ def sanitize(v: Any) -> Any:
 # rule takes as a label, value or path character, whitespace). So a rule match in the text of a
 # value lies inside one of its strings, keys or numbers: if those pass the tripwire, so does the
 # text. Python's ``str()`` / ``repr`` is never used: its ``\n`` escapes read as paths (``s:\n``).
-_PAIR_SEP = " → "
 
 
 def value_text(v: Any) -> str:
@@ -1228,7 +1582,8 @@ def _decoded_leaks(value: Any) -> list[str]:
     (the number rule ``sanitize`` applies), and every credential-named key.
 
     The credential check is structural and independent of the patterns: a value under a
-    credential-named key must be ``REDACTED`` or null, whatever it looks like.
+    credential-named key, or under the ``value`` member of a name/value pair naming a credential
+    (:func:`names_credential_pair`), must be ``REDACTED`` or null, whatever it looks like.
     """
     rules: list[str] = []
     stack = [value]
@@ -1240,10 +1595,12 @@ def _decoded_leaks(value: Any) -> list[str]:
             text = _number_text(v)
             rules.extend(leaks_in(text) if text is not None else ["number without a text form"])
         elif isinstance(v, _Pairs):
+            pair = names_credential_pair(v)
             for k, x in v:
                 if isinstance(k, str):
                     rules.extend(leaks_in(k))
-                    if is_credential_name(k) and x is not None and x != REDACTED:
+                    named = is_credential_name(k) or (pair and _is_pair_key(k, (PAIR_VALUE_KEY,)))
+                    if named and x is not None and x != REDACTED:
                         rules.append("credential field")
                 stack.append(x)
         elif isinstance(v, list):
@@ -1251,13 +1608,32 @@ def _decoded_leaks(value: Any) -> list[str]:
     return rules
 
 
+# The markdown file rendered from rows: checked one table cell (or one other line) at a time.
+_RENDERED_MD = "report.md"
+_CELL_SEP_RE = re.compile(r"(?<!\\)\|")  # a cell boundary: the one `|` `md_cell` leaves unescaped
+
+
+def report_units(text: str) -> list[str]:
+    """The texts ``report.md`` is checked as: each table line split at its cell boundaries, every
+    other line whole, each with the cell escape undone (:func:`md_decoded`). A cell is exactly one
+    rendered value (``md_decoded(md_cell(t)) == one_line(t)``), so no match can join text from two
+    values: a cell ending in `password:` and the next cell, or the next line."""
+    units: list[str] = []
+    for line in text.splitlines():
+        cells = _CELL_SEP_RE.split(line) if line.startswith("|") else [line]
+        units += [md_decoded(c) for c in cells]
+    return units
+
+
 def _file_leaks(name: str, text: str) -> list[str]:
+    if name == _RENDERED_MD:
+        # Its content is pinned to the rows (`sharedir.check_share` re-renders it byte for byte),
+        # and the rows are checked whole; here every value is checked in the unit it renders as.
+        return [r for unit in report_units(text) for r in leaks_in(unit)]
     if name.endswith(".md"):
-        # One line at a time, the unit a reader of the rendered file sees: every value is rendered
-        # on one line (`md_cell`, `one_line`), so a match across lines would join text the renderer
-        # put on different lines (a cell ending in `password:` and the next table row), never text
-        # one row value held.
-        return [r for line in md_decoded(text).splitlines() for r in leaks_in(line)]
+        # Any other markdown (SCHEMA.md: text the extractor writes, kept as it is) is checked whole,
+        # as sanitize reads a text: a value on the line after its label is a value.
+        return leaks_in(md_decoded(text))
     if not name.endswith((".json", ".jsonl")):
         return leaks_in(text)
     jsonl = name.endswith(".jsonl")

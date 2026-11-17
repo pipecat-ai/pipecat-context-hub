@@ -6,8 +6,14 @@ and builds the scrubbed ``share/`` bundle plus its tarball.
 
 Adapters: Claude Code, Codex, pi (auto-detected per file). Anything else (Cursor exports, chat
 dumps) falls back to a text scan: Context Hub use is detected but not analysed, and the session
-is flagged ``needs_manual_read``. The first path component under an input root is the participant
-label.
+is flagged ``needs_manual_read``.
+
+The participant label (:func:`participant_label`): with one sub-directory per participant under an
+input root (``collected/<person>/...``), the first directory below the root; a file directly under
+the root (a flat root) gets the root's name. Two layouts are one participant, labelled by the root:
+a Claude Code project's ``<session-id>/subagents/`` files (the root's name), and Codex's
+``YYYY/MM/DD/`` date directories, whether the input is the sessions directory or a year, month or
+day under it (the name of the input's first ancestor that is not a date component, ``sessions``).
 """
 
 from __future__ import annotations
@@ -381,7 +387,8 @@ def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
 # bracket, and its statement (since the last `;` at brace depth 0 outside parentheses: a `for`
 # header's `;` is not a statement end) holds no control-flow token (`if`, `else`, a loop, `switch`,
 # `case`, `try`/`catch`/`finally`, `function`, `return`, `yield`, `=>`, `?`, `&&`, `||`, `??`) and
-# no label (`name:`). The one bracket allowed is an element of `Promise.all([...])` /
+# no label (`name:`), and no earlier top-level statement ends the batch (`throw`, `return`, `break`,
+# `continue`, `process.exit`). The one bracket allowed is an element of `Promise.all([...])` /
 # `Promise.allSettled([...])`, whose elements all run. Only such a call's literal arguments are
 # shared; any other code-position call is counted with no text. A batch the lexer cannot read (an
 # unterminated string, comment, template or regex, or an undecidable `/`) is counted by the regex
@@ -397,6 +404,15 @@ _JS_HEADER_KEYWORDS = {"if", "while", "for", "with"}
 _JS_PROMISE_ALL_RE = re.compile(r"(?<![\w$.])Promise\s*\.\s*(?:all|allSettled)\s*$")
 # What the previous significant token says a `/` is (see above).
 _REGEX, _DIVISION, _UNDECIDED = "regex", "division", "undecided"
+# JavaScript's line terminators. A `//` comment ends at one; a `/* */` comment holding one is a line
+# break between the tokens around it (so a `++` after it is a prefix); a string or regex literal
+# cannot hold one (the batch is unlexable: nothing shared).
+_JS_LINE_TERMINATORS = "\n\r\u2028\u2029"
+_JS_LINE_END_RE = re.compile("[" + _JS_LINE_TERMINATORS + "]")
+# A top-level statement after which no later statement surely runs.
+_JS_TERMINATOR_RE = re.compile(
+    r"(?<![\w$.])(?:throw|return|break|continue)(?![\w$])|(?<![\w$.])process\s*\.\s*exit(?![\w$])"
+)
 
 
 class _JsLexError(ValueError):
@@ -448,7 +464,7 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
         if ch in "'\"":
             j = i + 1
             while j < n and text[j] != ch:
-                if text[j] in "\n\r":
+                if text[j] in _JS_LINE_TERMINATORS:
                     raise _JsLexError("line break in string")
                 j += 2 if text[j] == "\\" else 1
             if j >= n:
@@ -470,14 +486,15 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
                 i = j
                 token(_DIVISION, True)
         elif text.startswith("//", i):
-            j = text.find("\n", i)
-            j = n if j < 0 else j
+            m = _JS_LINE_END_RE.search(text, i)
+            j = n if m is None else m.start()
             blank(i, j)
-            i = j
+            i = j  # the terminator itself is whitespace: it sets `newline`
         elif text.startswith("/*", i):
             j = text.find("*/", i + 2)
             if j < 0:
                 raise _JsLexError("unterminated comment")
+            newline = newline or _JS_LINE_END_RE.search(text, i, j) is not None
             blank(i, j + 2)
             i = j + 2
         elif ch == "/" and slash == _UNDECIDED:
@@ -485,7 +502,7 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
         elif ch == "/" and slash == _REGEX:
             j, in_class = i + 1, False
             while j < n and (in_class or text[j] != "/"):
-                if text[j] in "\n\r":
+                if text[j] in _JS_LINE_TERMINATORS:
                     raise _JsLexError("line break in regex")
                 if text[j] == "\\":
                     j += 1
@@ -503,7 +520,7 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
             i = j
             token(_DIVISION, True)
         elif ch.isspace():
-            newline = newline or ch in "\n\r"
+            newline = newline or ch in _JS_LINE_TERMINATORS
             i += 1
         elif ch.isalnum() or ch in "_$":
             j = i
@@ -553,7 +570,8 @@ def _js_mask(text: str) -> tuple[str, list[int]]:
 
 def _js_surely_runs(masked: str, start: int) -> bool:
     """Whether the code-position call at ``start`` of a masked batch surely runs (see above)."""
-    stmt, level, groups, label = 0, 0, [], False
+    stmt, level, groups, label, ended = 0, 0, [], False, False
+    terminators = {m.start() for m in _JS_TERMINATOR_RE.finditer(masked, 0, start)}
     for k, ch in enumerate(masked[:start]):
         if ch == "{":
             level += 1
@@ -570,7 +588,9 @@ def _js_surely_runs(masked: str, start: int) -> bool:
             stmt, label = k + 1, False
         elif ch == ":" and not groups:
             label = True
-    if level != 0 or label or _JS_CONTROL_RE.search(masked, stmt, start):
+        elif k in terminators and not groups:
+            ended = True  # a top-level throw/return/break/continue/process.exit before the call
+    if ended or level != 0 or label or _JS_CONTROL_RE.search(masked, stmt, start):
         return False
     if not groups:
         return True
@@ -1244,8 +1264,8 @@ FIELDS_MD = f"""\
 | `participant`, `session` | hashed ids |
 | `tool` | `search_docs`, `search_api`, `search_examples`, `get_doc`, `get_example`, `get_code_snippet`, `check_deprecation`, `get_hub_status` |
 | `via` | `mcp` (direct tool call), `mcp_js` (inside a Codex-style JS batch) or `cli` (shell: `pipecat-context-hub <cmd>`) |
-| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${{...}}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal, the call does not surely run (inside a block, a branch, a function, parentheses, a loop body or a labelled statement), or a `/` in the batch cannot be read as regex or division. Empty for direct `mcp` calls |
-| `input` | MCP tool arguments for direct `mcp` calls only; `{{}}` otherwise (use `hub_invocation`). A field whose name contains a credential word (`api_key`, `token`, `password1`, `OPENAI_API_KEY_2`...) appears as `<redacted>`, and so does a value written after such a label in free text (the forms `docs/cli.md` lists: separators, flags, quoted and markdown labels, next-line and YAML block values, URL query and userinfo, authorization headers, cookies, netrc, curl user flags, MySQL glued password flags). Best-effort: a form outside that grammar is not detected |
+| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${{...}}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal, the call does not surely run (inside a block, a branch, a function, parentheses, a loop body or a labelled statement, or after an earlier top-level `throw`, `return`, `break`, `continue` or `process.exit`), or a `/` in the batch cannot be read as regex or division. Empty for direct `mcp` calls |
+| `input` | MCP tool arguments for direct `mcp` calls only; `{{}}` otherwise (use `hub_invocation`). A field whose name contains a credential word (`api_key`, `token`, `password1`, `OPENAI_API_KEY_2`...) appears as `<redacted>`, and so does the `value` of a name/value pair naming one (`{{"name": "API_KEY", "value": ...}}`) and a value written after such a label in free text (the forms `docs/cli.md` lists: separators and arrows, flags, quoted and markdown labels, next-line values and every line of a YAML block, URL query and userinfo, authorization headers, cookies, netrc, curl user flags, MySQL glued password flags, name/value pairs, XML elements, SQL `IDENTIFIED BY` / `PASSWORD`, `LABEL is v`, `set` / `export LABEL v`, the `-p` of sshpass). Best-effort: a form outside that grammar is not detected |
 | `ts`, `latency_s` | start time; seconds to result (includes harness overhead), a non-negative number, or null when it cannot be measured (a timestamp missing, or the result stamped before the call) |
 | `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = a hub-shaped JSON response found; `cli_unparsed` = shell output and `js_unparsed` = JS batch output with no hub-shaped JSON, including JSON without the tool's response shape: the agent's program printed it, not a defect; `non_json` = a direct `mcp` result that was not JSON, the only parse value that raises a flag) |
 | `flags` | heuristic flags, glossary below |
@@ -1456,16 +1476,26 @@ def participant_label(root: Path, rel: Path) -> str:
     """The participant a transcript at ``root / rel`` belongs to.
 
     One sub-directory per participant when collecting (``collected/<person>/...``): the first
-    directory between the input root and the file. Two layouts nest without naming a person, and
-    their files belong to the input root's own participant, labelled by the root's name (the label
-    a file directly under the root gets): a Claude Code project directory holds
-    ``<session-id>/subagents/...`` (that first component is a session), and Codex stores sessions
-    under ``YYYY/MM/DD/`` (``-i ~/.codex/sessions``: that first component is a year).
+    directory between the input root and the file, and a file directly under the root gets the
+    root's name. Two layouts nest without naming a person, and their files belong to the input
+    root's own participant:
+
+    * a Claude Code project directory holds ``<session-id>/subagents/...`` (that first component is
+      a session): labelled by the root's name;
+    * Codex stores sessions under ``YYYY/MM/DD/``, and the input may be the sessions directory or
+      any of its year, month or day directories (``-i ~/.codex/sessions/2026/11``): when the root's
+      trailing date components and the file's leading ones together spell ``YYYY/MM/DD``, the label
+      is the name of the first ancestor of the root that is not a date component (``sessions``).
     """
     dirs = rel.parts[:-1]
+    names = root.absolute().parts  # `-i 2026` from inside `sessions` has `sessions` above it
+    for k in range(len(_DATE_DIRS) + 1):  # k date components at the end of the root itself
+        tail = names[len(names) - k :] if k else ()
+        date = (*tail, *dirs[: len(_DATE_DIRS) - k])
+        if len(names) > k and len(date) == len(_DATE_DIRS):
+            if all(rx.fullmatch(d) for rx, d in zip(_DATE_DIRS, date)):
+                return names[len(names) - k - 1] if k else root.name
     if not dirs or (len(dirs) > 1 and dirs[1] == "subagents"):
-        return root.name
-    if len(dirs) >= 3 and all(rx.fullmatch(d) for rx, d in zip(_DATE_DIRS, dirs)):
         return root.name
     return dirs[0]
 
