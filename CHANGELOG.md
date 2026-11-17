@@ -12,6 +12,121 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-17
+
+### Added
+- **`pipecat-context-hub audit` command group** (`extract`, `repack`, `gist`, `discard`, `ingest`)
+  for reviewing how coding agents used Context Hub in real sessions. Reads Claude Code, Codex and
+  pi transcripts (MCP and shell CLI calls), flags inefficiency heuristically, and writes a
+  scrubbed, self-describing `share/` bundle plus a deterministic `share.tar.gz` with opaque
+  (per-run HMAC) ids. Sends nothing unless `gist --yes` (always a secret gist, never public);
+  `ingest` validates and merges bundles from other people as untrusted input. Also reachable as
+  `pipecat context-hub audit`. When no Context Hub call is found, `extract` says there is nothing
+  to share and `gist` refuses unless `--allow-empty`. A zero-call bundle that did Pipecat work
+  without Context Hub is still shareable: it carries the coded reasons for non-use.
+- **One egress for everything shared.** Every string and dict key of every `share/` file goes
+  through `sanitize`, the finished files must pass a leak check or none is kept, and `gist` and
+  `repack` run the same check on hand-edited bundles. `repack` regenerates `report.md` from
+  `calls.jsonl` instead of patching it. Names of the participant's other tools are not shared (only
+  Context Hub tools, standard harness tools, or `other`). Key patterns no longer miss a secret glued
+  to an identifier with `_` (`key_sk-...`).
+- **`audit extract` answers the four audit questions itself** (used it? inefficient? correct? what to
+  improve), so a bundle is analysable without raw transcripts: a computed section at the top of
+  `report.md` and under `manifest.json` `analysis`, plus per-call `outcome` / `suspect_target`. For
+  sessions that did Pipecat work without Context Hub it records coded `no_use_signals` (tools listed as
+  deferred but never loaded with `ToolSearch`, prompt silent about it, parent session also unused,
+  source or web read instead). Subagents are linked to their parent (`parent_session`) and a Claude
+  Code session tree counts as one participant, not one per session directory. All heuristic: signals,
+  not verdicts.
+- **`context-hub-session-audit` skill** (`.claude/skills/`): agent front end for `audit` with
+  the share-or-discard flow and the organizer's judgment rubric.
+- **Audit bundle hardening (pre-release review).** The leak check reads JSON decoded, so an
+  escaped (`\u0073k-...`) token or a repeated key cannot slip past it; a field named like a
+  credential (`api_key`, `X-Api-Key`, `client_secret`...) is redacted whole; whole PEM private keys,
+  GitHub `ghs_`/`ghu_`/`ghr_`, GitLab `glpat-`, PyPI tokens and URL credentials are new token shapes.
+  Only a hub-shaped JSON response becomes a call's result (another command's JSON is not), and a
+  shell call is shared as the hub command it executed, rebuilt from its parsed argv (comments,
+  quoted mentions and other commands dropped). One bundle contract (`audit/bundle.py`) now defines
+  the schema version, files, row and manifest rules and the "nothing to share" decision for
+  `extract`, `repack`, `gist` and `ingest`, so a bundle `repack` accepts is one `ingest` accepts;
+  manifest counts are re-derived from the rows on `repack`. `ingest` reads tarballs as a stream with
+  constant limits (archive size, members, member size, decompressed bytes), and merged rows are
+  namespaced by their source bundle, so a tampered copy cannot shadow another participant's rows.
+  `gist` passes absolute paths after `--`, so an out dir named like a flag cannot make gh post a
+  public gist. The shell parser fails closed: a line using a construct it does not model (`$'...'`,
+  `${...}`, `$((...))`, a pipe or here-string into a shell, an expanding here-document) is counted
+  but shares no command text, an escaped `\$(...)` is not a call, and `<(...)` and a here-document
+  fed to a shell are parsed as the commands they run. A JS batch call shares only its literal
+  arguments as JSON. Labelled credentials in free text (`password: ...`, `--api-key ...`,
+  `Authorization: Basic ...`, a URL password containing `@`) and 32+ digit numbers are redacted and
+  refused by the leak check, and `report.md` renders every value as text (never a Python repr),
+  so a clean row can no longer fail the leak check once rendered. The audit skill and `SCHEMA.md`
+  tell organizers to rebuild a call by hand, never to run `hub_invocation`.
+  share/ has one reader (`audit/sharedir.py`) for `gist`, `repack` and `ingest`, so a symlinked or
+  oversized file gets the same verdict everywhere, and every output is written without following a
+  link (a new file renamed over the target in a directory opened with `O_NOFOLLOW`; path checks on
+  Windows). `extract` and `repack` validate the whole bundle before writing anything, so a refused
+  run leaves no unscrubbed local copy and no half-rewritten share/; a malformed `analysis` block or
+  a non-numeric `latency_s` is a one-line error, not a traceback. A whitespace-only JSONL file is
+  empty for omission, the bundle digest and validation alike, so its tarball and gist ingest as one
+  bundle. Text-scanned sessions are identified by their file's place under the input root, so two
+  `chat.txt` files are two sessions. `gist` posts the bytes it checked and refuses a `gh` found in
+  the current directory (Windows searches it first) or reached through a relative `PATH` entry
+  (`node_modules/.bin`). The credential-label model is one grammar of syntactic forms
+  (`egress.LABEL_FORMS`, which the tests are generated from): besides separators and flags it covers
+  markdown-wrapped labels (`**password**:`), subscript and attribute assignment
+  (`os.environ["X_API_KEY"] = ...`), a value on the next line or in a YAML block, TOML triple
+  quotes, URL query values running to the next `&`, cookie headers, netrc, `curl -u user:pass`,
+  `mysql -pPASS`, URL passwords containing `/` or `@`, curly quotes, NBSP and zero-width characters,
+  and the whole words `pass`, `pw` and `auth` (`SMTP_PASS`, `DB_AUTH`). The cost is over-redaction,
+  listed in `docs/cli.md` (`password reset` alone on a line, `auth: yes`, cookie pair names), and
+  redaction stays best-effort: a form outside the grammar is not detected. A JS batch's `/` is read
+  as regex or division from the previous token, and an undecidable one (after `}` or an `if (...)`
+  header) makes the batch share nothing; a call inside parentheses, a loop body or a labelled
+  statement does not count as surely running. `extract --out` is compared with the inputs by
+  filesystem identity, so a case-flipped spelling on macOS is refused, and Codex's
+  `sessions/YYYY/MM/DD/` layout is one participant, not one per year. The per-call latency p90 is now the
+  nearest-rank 90th percentile (it reported the maximum for up to 10 calls). Flag thresholds and
+  outcome classes are declared once, so `SCHEMA.md` quotes the values the extractor uses.
+  One credential-label model replaces the per-shape label patterns: a key, flag or text label
+  that contains a credential word (`password1`, `api_key_prod`, `OPENAI_API_KEY_2`, `API key`)
+  loses its value, with `:` `=` `：` `=>` `->` separators, backslash-escaped quotes (stringified
+  JSON), a quoted value taken whole and no minimum length; `redis://:password@host` is redacted;
+  the leak check locates labels with separate code over the same rules. Labels are read by word
+  segment, so a plural (`API_TOKENS`, `SSH_KEYS`) is a credential and only a trailing count, hint
+  or file phrase (`max_tokens`, `token_count`, `password_hint`) is not; an unquoted value with no
+  space is redacted whole (`abc&def`, `ab,cd`), with `&` ending it only in a URL query and `,` `;`
+  `)` `]` `}` only inside brackets opened before the label; a placeholder is kept only in a fixed
+  shape with no token in it (`$TOKEN`, `${API_KEY}`, `<token>`, `YOUR_API_KEY`), so
+  `${AKIA...}` is redacted. `extract` refuses an
+  `--out` that is, contains or sits inside an input directory, or that holds files it did not
+  write; an unmeasurable latency (a result stamped before its call) is null instead of failing the
+  run; a non-string transcript timestamp no longer aborts `--since`. `gist` refuses a `report.md`
+  that no longer matches the rows (`repack` first). An integer too large for a float is a row
+  error and `ingest` rejects that bundle instead of stopping. A Codex JS batch call counts only in
+  code (not in a string, comment or regex) and shares arguments only when it surely runs; shell
+  text is never read as JavaScript. `command -v` runs nothing, and `env -u`, `sudo -u`,
+  `timeout -s` and other launcher options are parsed (an unknown one fails closed). The label grammar
+  adds name/value pairs (`{"name": "API_KEY", "value": ...}`, Kubernetes `env` entries, `<add
+  key=".." value=".."/>`, as text and as parsed objects), XML elements (`<password>v</password>`),
+  SQL (`IDENTIFIED BY`, `PASSWORD 'v'`), `password is v`, `set` / `export` / `setenv LABEL v`,
+  `sshpass -p v` and arrow separators (`api_key → v`); a YAML block loses every line indented under
+  its label, not only the first; an `Authorization` scheme or cookie value is redacted through a run
+  of blanks; a `YOUR_` placeholder must name a credential (`your-dog-rex` is a value). The report
+  joins an object's key and value with ` ↦ ` (so `→` can be a label separator), checks `report.md`
+  one table cell at a time and `SCHEMA.md` whole, and an empty value before a cell boundary no
+  longer makes a clean row's report fail the leak check (which aborted the whole `extract`). A
+  comment holding a line break is a line break to the JS lexer, a call after a top-level `throw`,
+  `return`, `break`, `continue` or `process.exit` does not surely run, and a Codex year, month or
+  day directory given as `-i` is one participant (the sessions directory's name).
+- **Audit detection and robustness (xhigh review).** `uvx pipecat-ai-context-hub <cmd>`, the form
+  `docs/cli.md` documents, is a hub CLI call (it read as non-use); `--since 2026-11-5` is
+  `2026-11-05` (it was compared as text and dropped later sessions); a transcript line is a record
+  up to `\n` only (U+2028, U+2029 and U+0085 inside a tool result lost the record); a lone
+  surrogate in a transcript string no longer aborts `extract` or drops the session; a hub call
+  given a docs URL is not a web-docs bypass; and `extract` creates its output directories `0700`
+  and files `0600`.
+
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and
   maintainer reference material into linked documentation guides.

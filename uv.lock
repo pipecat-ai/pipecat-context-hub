@@ -1858,7 +1858,7 @@ wheels = [
 
 [[package]]
 name = "pipecat-ai-context-hub"
-version = "0.9.3"
+version = "0.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
