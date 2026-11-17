@@ -40,20 +40,36 @@ framework checkout. Deprecation checks do not require GitHub CLI authentication.
 unless you run `gist --yes`**.
 
 ```bash
-pipecat-context-hub audit extract -i ~/.claude/projects/<project> --out ./hub-audit --since 2026-11-18
+pipecat-context-hub audit extract -i ~/.claude/projects/<project> --out ./hub-audit --since 2026-11-18   # --anonymize: participant-N labels
 # read ./hub-audit/share/report.md (what would be shared), then choose one:
-pipecat-context-hub audit gist ./hub-audit --yes      # secret gist: unlisted, NOT private (refuses a bundle with no calls and no Pipecat work without Context Hub)
+pipecat-context-hub audit gist ./hub-audit --yes      # secret gist: unlisted, NOT private (refuses a bundle with nothing to share unless --allow-empty)
 #   ...or send ./hub-audit/share.tar.gz yourself (email, chat), or:
 pipecat-context-hub audit discard ./hub-audit --yes   # deletes only files `extract` wrote
-pipecat-context-hub audit repack ./hub-audit          # after editing calls.jsonl by hand: regenerates report.md, re-checks for leaks
+pipecat-context-hub audit repack ./hub-audit          # after editing share/ by hand: re-validates rows, re-counts, regenerates report.md, re-checks for leaks
 pipecat-context-hub audit ingest a.tar.gz b.tar.gz --out ./merged   # organizers
 ```
 
 The `share/` bundle carries tool names, queries, result shapes (hit counts, confidence), flags and
-latency, with opaque ids; transcript text, shell commands and paths are dropped or replaced. Redaction
-is best-effort and queries are your own words, so read `report.md` first. `ingest` treats bundles as
-untrusted (in-memory reads, five known filenames, schema-version and row validation). The
-`context-hub-session-audit` skill (`.claude/skills/`) adds the organizer's judgment rubric.
+latency, with opaque ids; transcript text, shell commands and paths are dropped or replaced. A shell
+call is shared only as the hub command it ran, rebuilt from its parsed argv; a field named like a
+credential (`api_key`, `token`...) is replaced whole. Redaction is best-effort and queries are your
+own words, so read `report.md` first.
+
+Before anything is kept or posted, `extract`, `repack` and `gist` run a leak check over the
+finished files: JSON is checked decoded (every string, key and repeated key, so a `\u0073k-...`
+escape cannot hide a token), and a hit refuses the whole bundle, naming the file and rule but never
+the matched text. "Nothing to share" means no call rows, no session that used Context Hub and no
+session that did Pipecat work without it; `gist` refuses such a bundle unless `--allow-empty`, and
+leaves out a `calls.jsonl` or `sessions.jsonl` with no rows (a gist cannot hold an empty file).
+`extract`, `repack`, `gist` and `ingest` validate a bundle with the same rules, so a bundle `repack`
+accepts is one `ingest` accepts; after a hand edit, run `repack` before `gist`.
+
+`ingest` treats bundles as untrusted: tarballs are read in memory as a stream with fixed limits
+(archive size, member count, member size, total bytes), only the five known filenames are accepted
+once each, and rows are validated. Merged rows are namespaced by their source bundle, so one bundle
+cannot shadow another's; the same bundle given twice merges once, and two bundles carrying the same
+ref or session are both kept and reported in `ingest.json`. The `context-hub-session-audit` skill
+(`.claude/skills/`) adds the organizer's judgment rubric.
 
 ## Exit codes
 

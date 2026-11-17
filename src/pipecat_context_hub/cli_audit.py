@@ -36,23 +36,6 @@ def _fail(message: str) -> NoReturn:
     raise SystemExit(EXIT_INVALID_INPUT)
 
 
-def _nothing_to_share(share: Path) -> bool:
-    """True when the manifest says no Context Hub calls AND no session did Pipecat work without it.
-
-    A zero-call bundle is still worth sending when it explains non-use (``analysis.usage``):
-    that is the adoption data an organizer most needs. An unreadable manifest is not "empty".
-    """
-    try:
-        manifest = json.loads((share / "manifest.json").read_text())
-        calls = int(manifest["counts"]["hub_calls"])
-        missed = int(
-            ((manifest.get("analysis") or {}).get("usage") or {}).get("missed_opportunity", 0)
-        )
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
-    return calls == 0 and missed == 0
-
-
 def _since(_ctx: click.Context, _param: click.Parameter, value: str | None) -> str | None:
     if value is None:
         return None
@@ -104,20 +87,28 @@ def extract_cmd(inputs: tuple[Path, ...], out: Path, anonymize: bool, since: str
         _fail(str(exc))
     for warning in result.warnings:
         echo(f"warning: {warning}", err=True)
-    summary = result.summary
-    if summary["hub_calls"] == 0 and summary["missed_opportunity"] == 0:
+    from pipecat_context_hub.audit.bundle import has_content
+
+    counts = result.counts
+    if not has_content(counts):
         echo(
-            f"No Context Hub calls found in {summary['sessions']} sessions, so there is nothing to "
+            f"No Context Hub calls found in {counts['sessions']} sessions, so there is nothing to "
             f"share: no Context Hub calls and no Pipecat work without it. Local detail is in "
             f"{out}; `audit discard {out} --yes` removes it. Nothing has been sent.",
             err=True,
         )
     else:
-        if summary["hub_calls"] == 0:
+        if counts["call_rows"] == 0 and counts["missed_opportunity"]:
             echo(
-                f"No Context Hub calls, but {summary['missed_opportunity']} session(s) did Pipecat "
+                f"No Context Hub calls, but {counts['missed_opportunity']} session(s) did Pipecat "
                 "work without it: the bundle explains why (see 'Answers to the four questions' in "
                 "share/report.md), and that is worth sending.",
+                err=True,
+            )
+        elif counts["call_rows"] == 0:
+            echo(
+                f"Context Hub use was found in {counts['hub_used']} session(s) only by a text scan "
+                "(a harness without an adapter): the bundle records it without per-call rows.",
                 err=True,
             )
         echo(
@@ -157,43 +148,56 @@ def gist_cmd(out_dir: Path, yes: bool, allow_empty: bool) -> None:
     Anyone with the link can read it. A gist holds text only, so it carries the five share/
     files, not the tarball. Without --yes this only lists what would be posted.
     """
-    from pipecat_context_hub.audit.extract import BUNDLE_FILES
+    from pipecat_context_hub.audit.bundle import (
+        BUNDLE_FILES,
+        BundleError,
+        has_content,
+        load_files,
+        omitted_when_posting,
+    )
+    from pipecat_context_hub.audit.egress import verify_share
 
     share = out_dir / "share"
     files = [share / n for n in BUNDLE_FILES]
     missing = [f.name for f in files if not f.is_file() or f.is_symlink()]
     if missing:
         _fail(f"{share.name}/ is missing {missing}; run `audit extract` first")
-    from pipecat_context_hub.audit.egress import verify_share
-
     leaks = verify_share(share, BUNDLE_FILES)
     if leaks:
         _fail(
             f"share/ failed the leak check ({'; '.join(leaks)}): remove what it names, then run "
             "`audit repack`"
         )
-    if not allow_empty and _nothing_to_share(share):
+    data = {f.name: f.read_bytes() for f in files}
+    try:
+        bundle = load_files(data)  # the validator `ingest` runs: what is posted, ingests
+    except BundleError as exc:
+        _fail(f"share/ is not a valid bundle ({exc}); fix it, then run `audit repack`")
+    if not allow_empty and not has_content(bundle.manifest["counts"]):
         _fail(
             "this bundle has no Context Hub calls and no Pipecat work without it, so a gist would "
             "carry nothing useful (only session counters and timestamps); pass --allow-empty to "
             "post it anyway"
         )
-    # A gist cannot hold an empty file (calls.jsonl is empty when no Context Hub call was found);
-    # `audit ingest` accepts a bundle without it when the manifest says zero calls.
-    empty = [f for f in files if f.stat().st_size == 0]
-    files = [f for f in files if f.stat().st_size > 0]
+    # A gist cannot hold an empty file: a JSONL file with zero rows is left out, and `audit ingest`
+    # accepts the bundle without it because the manifest says that file has zero rows.
+    empty = [f for f in files if omitted_when_posting(f.name, data[f.name])]
+    files = [f for f in files if f not in empty]
     echo("Would post as a SECRET gist (unlisted, not private: anyone with the link can read it):")
     for f in files:
-        echo(f"  {f.name}  {f.stat().st_size} bytes")
+        echo(f"  {f.name}  {len(data[f.name])} bytes")
     for f in empty:
-        echo(f"  ({f.name} is empty and is left out: a gist cannot hold an empty file)")
+        echo(f"  ({f.name} has no rows and is left out: a gist cannot hold an empty file)")
     if not yes:
         echo("Preview only. Re-run with --yes to create the gist.", err=True)
         return
     gh = shutil.which("gh")
     if gh is None:
         _fail("`gh` not found; send share.tar.gz yourself instead")
-    argv = [gh, "gist", "create", *map(str, files), "--desc", "Context Hub session bundle"]
+    # Absolute paths after `--`: an out dir named like a flag (`./-pd`, which pathlib shortens to
+    # `-pd/...`) must never be read by gh as `-p` (--public) plus `-d`.
+    paths = [str(f.resolve()) for f in files]
+    argv = [gh, "gist", "create", "--desc", "Context Hub session bundle", "--", *paths]
     try:
         proc = subprocess.run(  # nosec B603 - fixed argv, no shell, secret gist (no --public)
             argv, capture_output=True, text=True, timeout=_GIST_TIMEOUT_S, check=False
@@ -242,8 +246,10 @@ def discard_cmd(out_dir: Path, yes: bool) -> None:
 def ingest_cmd(bundles: tuple[Path, ...], out: Path) -> None:
     """Validate and merge bundles (share.tar.gz, share/ dirs or cloned gists) into OUT.
 
-    Bundles are untrusted input: tarballs are read in memory, only the five known filenames are
-    accepted, and bundles with a wrong schema version or malformed rows are rejected.
+    Bundles are untrusted input: tarballs are read in memory as a stream with fixed size and member
+    limits, only the five known filenames are accepted, and bundles with a wrong schema version,
+    malformed rows or counts that disagree with the rows are rejected. Rows are namespaced by their
+    source bundle, so one bundle cannot shadow another's.
     """
     from pipecat_context_hub.audit.ingest import merge_bundles
 
@@ -254,6 +260,13 @@ def ingest_cmd(bundles: tuple[Path, ...], out: Path) -> None:
     for row in result["report"]:
         if row["status"] != "ok":
             echo(f"REJECTED {row['source']}: {row['reason']}", err=True)
+        elif row.get("ref_collisions") or row.get("session_collisions"):
+            echo(
+                f"WARNING {row['source']}: {row['ref_collisions']} call ref(s) and "
+                f"{row['session_collisions']} session(s) also appear in another bundle; both are "
+                "kept, each row names its `source_bundle` (see ingest.json)",
+                err=True,
+            )
     summary = {k: v for k, v in result.items() if k != "report"}
     echo_json(json.dumps(summary))
     if result["bundles_ok"] == 0:

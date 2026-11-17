@@ -13,6 +13,7 @@ import statistics
 from collections import Counter
 from typing import Any
 
+from pipecat_context_hub.audit.analysis import latency_stats, triage_order
 from pipecat_context_hub.audit.analysis import render as render_analysis
 from pipecat_context_hub.audit.egress import one_line
 
@@ -25,16 +26,15 @@ def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
     rows = []
     for tool in sorted({c["tool"] for c in calls}):
         cs = [c for c in calls if c["tool"] == tool]
-        lat = sorted(c["latency_s"] for c in cs if c.get("latency_s") is not None)
+        median, p90 = latency_stats(c["latency_s"] for c in cs if c.get("latency_s") is not None)
         conf = [
             c["result"]["confidence"]
             for c in cs
             if isinstance(c["result"].get("confidence"), (int, float))
         ]
-        p90 = lat[min(len(lat) - 1, int(0.9 * len(lat)))] if lat else ""
         rows.append(
             f"| {tool} | {len(cs)} | {sum(bool(c['flags']) for c in cs)} "
-            f"| {round(statistics.median(lat), 1) if lat else ''} | {p90} "
+            f"| {'' if median is None else median} | {'' if p90 is None else p90} "
             f"| {sum('zero_hits' in c['flags'] for c in cs)} "
             f"| {round(statistics.mean(conf), 2) if conf else ''} |"
         )
@@ -75,8 +75,8 @@ def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     """The report for ``rows`` (share-form call rows) under ``manifest``'s counts and analysis."""
     counts = manifest.get("counts") or {}
     analysis = manifest.get("analysis") or {}
-    missed = (analysis.get("usage") or {}).get("missed_opportunity", 0)
-    flagged = sorted((c for c in rows if c["flags"]), key=lambda c: -c.get("severity", 0))
+    missed = counts.get("missed_opportunity", 0)  # a row count, re-counted by repack
+    flagged = triage_order(c for c in rows if c["flags"])
     look = []
     for c in flagged[:LOOK_FIRST_LIMIT]:
         r = c["result"]

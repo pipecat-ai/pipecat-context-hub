@@ -61,11 +61,6 @@ SHARE_PATH_RE = re.compile(
 )
 
 
-def scrub_paths(v: Any) -> Any:
-    """Replace local absolute paths in every string of a share row (doc paths like /guides/x stay)."""
-    return map_strings(v, lambda text: SHARE_PATH_RE.sub("<path>", text))
-
-
 def redact(text: str) -> str:
     text = HOME_RE.sub(r"/\1/<user>", text)
     text = WIN_HOME_RE.sub(r"\1<user>", text)

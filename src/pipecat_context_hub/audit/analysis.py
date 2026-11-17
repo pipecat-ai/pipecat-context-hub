@@ -13,43 +13,19 @@ from __future__ import annotations
 
 import statistics
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
+
+from pipecat_context_hub.audit.flags import FLAGS, OUTCOME_ORDER, severity, spec
 
 SEARCH_TOOLS = {"search_docs", "search_examples", "search_api", "get_code_snippet"}
 VERSIONED_TOOLS = {"search_examples", "search_api", "get_code_snippet"}
 
-# Priority order: the first matching class wins. Each maps a flag to a likely owner.
+# Priority order: the first matching class wins. Each maps a flag to a likely owner. Derived from
+# the one flag table (audit/flags.py), never written out here.
 _CLASSES: list[tuple[str, dict[str, str]]] = [
-    (
-        "failed",
-        {
-            "error": "hub-tools",
-            "result_exceeds_harness_limit": "hub-tools",
-            "input_validation_error": "hub-tools",
-            "non_json_result": "hub-tools",
-        },
-    ),
-    (
-        "miss",
-        {
-            "corpus_hint": "hub-corpus",
-            "zero_hits": "hub-retrieval",
-            "low_confidence": "hub-retrieval",
-        },
-    ),
-    ("suspect", {"downstream_error": "needs-judgment"}),
-    ("bypassed", {"agent_bypassed_after_result": "needs-judgment"}),
-    (
-        "inefficient",
-        {
-            "reformulation_after_bad_result": "hub-retrieval",
-            "exact_repeat": "agent-misuse",
-            "multi_concept_without_delimiter": "agent-misuse",
-            "large_result": "hub-tools",
-            "slow": "hub-tools",
-        },
-    ),
+    (outcome, {name: s.target for name, s in FLAGS.items() if s.outcome == outcome})
+    for outcome in OUTCOME_ORDER
 ]
 
 OUTCOME_GLOSSARY = {
@@ -63,8 +39,14 @@ OUTCOME_GLOSSARY = {
 
 
 def classify_call(call: dict[str, Any]) -> tuple[str, str | None]:
-    """(outcome, suspected target) for one call; first matching class wins."""
+    """(outcome, suspected target) for one call; first matching class wins.
+
+    A flag not declared in ``audit/flags.py`` raises ``UnknownFlagError``: classing it as
+    ``no_negative_signal`` ("no flag fired") would be false.
+    """
     flags = set(call.get("flags") or [])
+    for f in flags:
+        spec(f)
     for outcome, mapping in _CLASSES:
         for flag, target in mapping.items():
             if flag in flags:
@@ -75,6 +57,27 @@ def classify_call(call: dict[str, Any]) -> tuple[str, str | None]:
 def annotate_calls(calls: list[dict[str, Any]]) -> None:
     for c in calls:
         c["outcome"], c["suspect_target"] = classify_call(c)
+        c["severity"] = severity(c["flags"])
+
+
+def triage_order(calls: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Calls most worth reading first: highest ``severity`` first, ties in their original order.
+
+    The one ordering for the report's "Look first" table, the answers' "Read first" list and the
+    organizer's merged ``calls.jsonl``.
+    """
+    return sorted(calls, key=lambda c: -(c.get("severity") or 0))
+
+
+def latency_stats(latencies: Iterable[float]) -> tuple[float | None, float | None]:
+    """(median rounded to 0.1 s, p90) of ``latencies``; (None, None) when there are none.
+
+    The one formula for the answers' per-tool efficiency and the report's per-tool table.
+    """
+    lat = sorted(latencies)
+    if not lat:
+        return None, None
+    return round(statistics.median(lat), 1), lat[min(len(lat) - 1, int(0.9 * len(lat)))]
 
 
 def no_use_signals(session: dict[str, Any]) -> list[str]:
@@ -142,12 +145,12 @@ def analyze(
         by_tool[c["tool"]].append(c)
     tool_stats = {}
     for tool, cs in sorted(by_tool.items()):
-        lat = sorted(c["latency_s"] for c in cs if c.get("latency_s") is not None)
+        median, p90 = latency_stats(c["latency_s"] for c in cs if c.get("latency_s") is not None)
         tool_stats[tool] = {
             "calls": len(cs),
             "not_clean": sum(c["outcome"] != "no_negative_signal" for c in cs),
-            "median_s": round(statistics.median(lat), 1) if lat else None,
-            "p90_s": lat[min(len(lat) - 1, int(0.9 * len(lat)))] if lat else None,
+            "median_s": median,
+            "p90_s": p90,
         }
     per_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for c in calls:
@@ -193,9 +196,8 @@ def analyze(
         "glossary": OUTCOME_GLOSSARY,
         "read_these_first": [
             ref(c)
-            for c in sorted(
-                (c for c in calls if c["outcome"] in {"failed", "suspect", "bypassed"}),
-                key=lambda c: (c["outcome"] != "failed", -len(c["flags"])),
+            for c in triage_order(
+                c for c in calls if c["outcome"] in {"failed", "suspect", "bypassed"}
             )[:10]
         ],
     }

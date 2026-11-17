@@ -40,6 +40,20 @@ This changelog retains repository and Context Hub package history.
   not verdicts.
 - **`context-hub-session-audit` skill** (`.claude/skills/`): agent front end for `audit` with
   the share-or-discard flow and the organizer's judgment rubric.
+- **Audit bundle hardening (pre-release review).** The leak check reads JSON decoded, so an
+  escaped (`\u0073k-...`) token or a repeated key cannot slip past it; a field named like a
+  credential (`api_key`, `X-Api-Key`, `client_secret`...) is redacted whole; whole PEM private keys,
+  GitHub `ghs_`/`ghu_`/`ghr_`, GitLab `glpat-`, PyPI tokens and URL credentials are new token shapes.
+  Only a hub-shaped JSON response becomes a call's result (another command's JSON is not), and a
+  shell call is shared as the hub command it executed, rebuilt from its parsed argv (comments,
+  quoted mentions and other commands dropped). One bundle contract (`audit/bundle.py`) now defines
+  the schema version, files, row and manifest rules and the "nothing to share" decision for
+  `extract`, `repack`, `gist` and `ingest`, so a bundle `repack` accepts is one `ingest` accepts;
+  manifest counts are re-derived from the rows on `repack`. `ingest` reads tarballs as a stream with
+  constant limits (archive size, members, member size, decompressed bytes), and merged rows are
+  namespaced by their source bundle, so a tampered copy cannot shadow another participant's rows.
+  `gist` passes absolute paths after `--`, so an out dir named like a flag cannot make gh post a
+  public gist.
 
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and

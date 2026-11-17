@@ -27,23 +27,29 @@ from typing import Any
 
 from pipecat_context_hub.audit.analysis import SEARCH_TOOLS, analyze, annotate_calls, link_parents
 from pipecat_context_hub.audit.analysis import prune_refs
-from pipecat_context_hub.audit.report import render_report
-from pipecat_context_hub.audit.egress import (  # noqa: F401  (re-exported: tests call extract.redact)
-    HOME_RE,
-    SECRET_RES,
-    SHARE_PATH_RE,
-    WIN_HOME_RE,
+from pipecat_context_hub.audit.bundle import (
+    BUNDLE_FILES,
+    SCHEMA_VERSION,
+    ROW_COUNT_KEYS,
+    BundleError,
+    decode_json,
+    load_files,
+    manifest_error,
+    parse_rows,
+    row_counts,
+)
+from pipecat_context_hub.audit.egress import (
     ShareLeakError,
-    public_tool_name,
-    clean_text,
     clip,
     map_strings,
-    one_line,
+    public_tool_name,
     redact,
     sanitize,
-    scrub_paths,
     verify_share,
 )
+from pipecat_context_hub.audit.flags import FLAGS
+from pipecat_context_hub.audit.report import render_report
+from pipecat_context_hub.audit.shell import ShellSyntaxError, shell_hub_calls, shell_source
 
 HUB_MENTION_RE = re.compile(r"context[- ]hub|pipecat[-_]context[-_]hub|\bPCH\b", re.IGNORECASE)
 HUB_TOOLSEARCH_RE = re.compile(
@@ -278,268 +284,6 @@ def categorize(name: str, inp: Any) -> str | None:
     ):
         return "web_pipecat"
     return None
-
-
-# ---- shell: which commands a shell line actually runs
-#
-# A hub CLI call is a command whose argv starts with the hub binary, after any NAME=value
-# assignments and launcher words (`uv run`, `uvx --from pkg`, `env`, `timeout 30`). The line is
-# tokenised shell-style first: quotes and escapes are honoured, comments dropped, control operators
-# (`; & | && || ( )` and newlines) separate commands, redirections and their targets are skipped,
-# and `$(...)`, backticks, `bash -c "..."` and `eval` scripts are parsed as the commands they run.
-# So `printf '%s' 'pipecat-context-hub search-docs x'` is not a call (the hub is an argument), and
-# `search-docs "TTS & STT"` keeps its whole query. A line that cannot be tokenised (an unterminated
-# quote) fails closed: the call is still counted by the regex, but no command text is shared.
-
-CLI_SUBCOMMANDS = frozenset(
-    {"search-api", "search-docs", "search-examples", "get-doc", "get-example",
-     "get-code-snippet", "check-deprecation", "status"}
-)  # fmt: skip
-_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
-# Words that may precede the hub binary in the command that runs it.
-_LAUNCHERS = frozenset(
-    {"uv", "uvx", "run", "tool", "pipx", "env", "time", "timeout", "nice", "nohup", "command",
-     "exec", "sudo", "xargs", "{", "!", "if", "then", "else", "elif", "do", "while", "until"}
-)  # fmt: skip
-_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
-_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?")
-_SHELL_C_RE = re.compile(r"-[A-Za-z]*c[A-Za-z]*")
-_REDIRECT_RE = re.compile(r"\d*(?:>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)|&>>|&>")
-_CONTROL_RE = re.compile(r"\|\||&&|;;|\|&|[|&;()\n]")
-_DQ_SUBST_RE = re.compile(r"\$\(|`")
-_MAX_SHELL_DEPTH = 4
-
-
-class ShellSyntaxError(ValueError):
-    """A shell line that cannot be tokenised (unterminated quote or substitution)."""
-
-
-def _read_balanced(text: str, i: int, close: str) -> int:
-    """Index just past the ``close`` that ends a substitution body starting at ``i`` (quote-aware)."""
-    depth = 1
-    while i < len(text):
-        ch = text[i]
-        if ch == "\\":
-            i += 2
-            continue
-        if ch in "'\"":
-            end = text.find(ch, i + 1) if ch == "'" else _dquote_end(text, i + 1)
-            if end < 0:
-                raise ShellSyntaxError("unterminated quote")
-            i = end + 1
-            continue
-        if close == ")" and ch == "(":
-            depth += 1
-        elif ch == close:
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    raise ShellSyntaxError("unterminated substitution")
-
-
-def _dquote_end(text: str, i: int) -> int:
-    """Index of the ``"`` closing a double-quoted string whose body starts at ``i``, or -1."""
-    while i < len(text):
-        if text[i] == "\\":
-            i += 2
-        elif text[i] == '"':
-            return i
-        else:
-            i += 1
-    return -1
-
-
-def _shell_segments(text: str) -> tuple[list[list[str]], list[str]]:
-    """(simple commands as argv lists, scripts nested in substitutions) of one shell line."""
-    segments: list[list[str]] = []
-    nested: list[str] = []
-    argv: list[str] = []
-    word: list[str] | None = None
-    skip_target = False  # the next word is a redirection target
-    heredocs: list[tuple[str, bool]] = []  # (delimiter, strip leading tabs)
-    want_delim: bool | None = None  # the next word is a here-document delimiter
-
-    def add(part: str) -> None:
-        nonlocal word
-        if word is None:
-            word = []
-        word.append(part)
-
-    def end_word() -> None:
-        nonlocal word, skip_target, want_delim
-        if word is None:
-            return
-        w = "".join(word)
-        word = None
-        if want_delim is not None:
-            heredocs.append((w, want_delim))
-            want_delim = None
-        elif skip_target:
-            skip_target = False
-        else:
-            argv.append(w)
-
-    def end_segment() -> None:
-        nonlocal argv
-        end_word()
-        if argv:
-            segments.append(argv)
-        argv = []
-
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if ch in " \t\r":
-            end_word()
-            i += 1
-        elif ch == "#" and word is None:  # a comment runs to the end of the line
-            nl = text.find("\n", i)
-            i = n if nl < 0 else nl
-        elif ch == "\\":
-            if text[i + 1 : i + 2] == "\n":  # line continuation
-                i += 2
-                continue
-            add(text[i + 1 : i + 2])
-            i += 2
-        elif ch == "'":
-            end = text.find("'", i + 1)
-            if end < 0:
-                raise ShellSyntaxError("unterminated quote")
-            add(text[i + 1 : end])
-            i = end + 1
-        elif ch == '"':
-            end = _dquote_end(text, i + 1)
-            if end < 0:
-                raise ShellSyntaxError("unterminated quote")
-            body = text[i + 1 : end]
-            j = 0
-            while (m := _DQ_SUBST_RE.search(body, j)) is not None:  # substitutions run in "..." too
-                close = ")" if m.group(0) == "$(" else "`"
-                k = _read_balanced(body, m.end(), close)
-                nested.append(body[m.end() : k - 1])
-                j = k
-            add(re.sub(r'\\([$`"\\\n])', r"\1", body))
-            i = end + 1
-        elif ch == "$" and text[i + 1 : i + 2] == "(":
-            end = _read_balanced(text, i + 2, ")")
-            nested.append(text[i + 2 : end - 1])
-            add(text[i:end])
-            i = end
-        elif ch == "`":
-            end = _read_balanced(text, i + 1, "`")
-            nested.append(text[i + 1 : end - 1])
-            add(text[i:end])
-            i = end
-        elif (m := _REDIRECT_RE.match(text, i)) and (word is None or not m.group(0)[0].isdigit()):
-            end_word()
-            op = m.group(0)
-            if op.endswith(("<<", "<<-")) and not op.endswith("<<<"):
-                want_delim = op.endswith("-")
-            else:  # the target (a file, an fd, a here-string) is never an argument
-                skip_target = True
-            i = m.end()
-        elif m := _CONTROL_RE.match(text, i):
-            end_segment()
-            i = m.end()
-            if m.group(0) == "\n" and heredocs:  # here-document bodies are data, not commands
-                for delim, tabs in heredocs:
-                    while i < n:
-                        nl = text.find("\n", i)
-                        line = text[i : n if nl < 0 else nl]
-                        i = n if nl < 0 else nl + 1
-                        if (line.lstrip("\t") if tabs else line) == delim:
-                            break
-                heredocs = []
-        else:
-            add(ch)
-            i += 1
-    end_segment()
-    return segments, nested
-
-
-def _basename(word: str) -> str:
-    return word.rsplit("/", 1)[-1]
-
-
-def _hub_head(argv: list[str], i: int) -> int:
-    """How many words of ``argv`` from ``i`` name the hub binary followed by a subcommand, else 0."""
-    if _basename(argv[i]) == "pipecat-context-hub":
-        return 1 if argv[i + 1 : i + 2] and argv[i + 1] in CLI_SUBCOMMANDS else 0
-    if _basename(argv[i]) == "pipecat" and argv[i + 1 : i + 2] == ["context-hub"]:
-        return 2 if argv[i + 2 : i + 3] and argv[i + 2] in CLI_SUBCOMMANDS else 0
-    return 0
-
-
-def _command_start(argv: list[str]) -> int:
-    """Index of the command word: past NAME=value assignments and launcher words, or len(argv)."""
-    i = 0
-    while i < len(argv):
-        w = argv[i]
-        if _hub_head(argv, i):
-            return i
-        launcher_arg = i > 0 and (
-            w.startswith("-")
-            or _DURATION_RE.fullmatch(w) is not None
-            or (argv[i - 1].startswith("--") and "=" not in argv[i - 1])  # `uvx --from pkg`
-        )
-        if _ASSIGN_RE.fullmatch(w) or _basename(w) in _LAUNCHERS or launcher_arg:
-            i += 1
-            continue
-        return i
-    return i
-
-
-def _hub_argv(argv: list[str]) -> list[str] | None:
-    """The hub CLI call ``argv`` runs, canonicalised (no path, no launcher), or None."""
-    i = _command_start(argv)
-    if i >= len(argv) or not (k := _hub_head(argv, i)):
-        return None
-    head = ["pipecat-context-hub"] if k == 1 else ["pipecat", "context-hub"]
-    return head + argv[i + k :]
-
-
-def _nested_script(argv: list[str]) -> str | None:
-    """The script a `bash -c SCRIPT` or `eval ...` command runs, else None."""
-    i = _command_start(argv)
-    if i >= len(argv):
-        return None
-    if _basename(argv[i]) == "eval":
-        return " ".join(argv[i + 1 :])
-    if _basename(argv[i]) in _SHELLS:
-        for j in range(i + 1, len(argv) - 1):
-            if _SHELL_C_RE.fullmatch(argv[j]):
-                return argv[j + 1]
-    return None
-
-
-def shell_hub_calls(script: str, depth: int = 0) -> list[list[str]]:
-    """Every hub CLI call ``script`` runs, as canonical argv. Raises ShellSyntaxError."""
-    if depth > _MAX_SHELL_DEPTH:
-        return []
-    segments, nested = _shell_segments(script)
-    calls: list[list[str]] = []
-    for argv in segments:
-        hub = _hub_argv(argv)
-        if hub is not None:
-            calls.append(hub)
-            continue
-        inner = _nested_script(argv)
-        if inner is not None:
-            calls.extend(shell_hub_calls(inner, depth + 1))
-    for inner in nested:
-        calls.extend(shell_hub_calls(inner, depth + 1))
-    return calls
-
-
-def shell_source(inp: Any) -> str | None:
-    """A shell call's script (an argv list is re-quoted, so its words stay words), else None."""
-    if isinstance(inp, dict):
-        cmd = inp.get("command") or inp.get("cmd")
-        if isinstance(cmd, list) and all(isinstance(part, str) for part in cmd):
-            return shlex.join(cmd)
-        return cmd if isinstance(cmd, str) else None
-    return inp if isinstance(inp, str) else None
 
 
 def _cli_calls(inp: Any) -> list[list[str]] | None:
@@ -1083,36 +827,12 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
     return session, calls
 
 
-SCHEMA_VERSION = 1
 EXTRACTOR_VERSION = "0.1.0"
-
-FLAG_GLOSSARY = {
-    "error": "Context Hub returned a tool error.",
-    "input_validation_error": "The harness rejected the call as schema-invalid: the agent misread the tool schema.",
-    "result_exceeds_harness_limit": "Result too large for the harness to show the agent (it was truncated or saved to a file).",
-    "large_result": "Result over 30 KB, even if the harness accepted it.",
-    "non_json_result": "MCP result was not JSON (unexpected for Context Hub).",
-    "zero_hits": "A search returned no hits.",
-    "low_confidence": "evidence.low_confidence was true (confidence < 0.3).",
-    "corpus_hint": "Response said the query names a vendor/topic whose repos are not indexed.",
-    "slow": "Latency over 8 s (tool result timestamp minus call timestamp; includes harness overhead).",
-    "exact_repeat": "Same tool and identical input already called earlier in the session.",
-    "reformulation_after_bad_result": "Same search tool called again within 3 events after a zero-hit or low-confidence result.",
-    "multi_concept_without_delimiter": "Long query joined concepts with and/commas instead of ' + '.",
-    "agent_bypassed_after_result": "Within 8 events the agent read pipecat source in site-packages/.venv or fetched pipecat web docs.",
-    "downstream_error": "A Python error (ImportError, AttributeError, unexpected keyword...) appeared in a non-Context-Hub tool result within 25 events. CORRELATION ONLY: needs judgment to say it came from what Context Hub returned.",
-}
-SEVERITY = {
-    "downstream_error": 3, "input_validation_error": 3, "result_exceeds_harness_limit": 3, "error": 3,
-    "zero_hits": 2, "low_confidence": 2, "reformulation_after_bad_result": 2, "agent_bypassed_after_result": 2,
-    "corpus_hint": 1, "slow": 1, "exact_repeat": 1, "large_result": 1, "multi_concept_without_delimiter": 1,
-    "non_json_result": 1,
-}  # fmt: skip
 
 FIELDS_MD = """\
 ## Files
 
-- `manifest.json`: schema_version, extractor_version, counts, scope, what was removed. Read first.
+- `manifest.json`: schema_version, extractor_version, counts, scope, what was removed. Read first. `counts.call_rows`, `sessions`, `participants`, `hub_used` and `missed_opportunity` are counted from the rows in this bundle (`audit repack` re-counts them after an edit); `counts.hub_calls` is the extraction-time total and also counts calls seen only by a text scan (no rows), so it can exceed `call_rows`.
 - `report.md`: starts with computed answers to four questions (used it? inefficient? correct? what to improve), then a "look first" list. **Unjudged**: all of it is heuristic. The same answers are in `manifest.json` under `analysis`.
 - `calls.jsonl`: one row per Context Hub call (the raw dataset).
 - `sessions.jsonl`: one row per session.
@@ -1125,10 +845,10 @@ FIELDS_MD = """\
 | `participant`, `session` | hashed ids |
 | `tool` | `search_docs`, `search_api`, `search_examples`, `get_doc`, `get_example`, `get_code_snippet`, `check_deprecation`, `get_hub_status` |
 | `via` | `mcp` (direct tool call), `mcp_js` (inside a Codex-style JS batch) or `cli` (shell: `pipecat-context-hub <cmd>`) |
-| `hub_invocation` | the Context Hub part of the call only (CLI segment / MCP call text) |
-| `input` | MCP tool arguments for direct `mcp` calls only; `{}` otherwise (use `hub_invocation`) |
+| `hub_invocation` | `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line cannot be tokenised. `mcp_js`: the one call expression. Empty for direct `mcp` calls |
+| `input` | MCP tool arguments for direct `mcp` calls only; `{}` otherwise (use `hub_invocation`). A field whose name says it holds a credential (`api_key`, `token`, `password`...) appears as `<redacted>` |
 | `ts`, `latency_s` | start time; seconds to result (includes harness overhead) |
-| `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = JSON found; `cli_unparsed` = shell text, not a defect) |
+| `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = a hub-shaped JSON response found; `cli_unparsed` = shell output and `js_unparsed` = JS batch output with no hub-shaped JSON, including JSON without the tool's response shape: the agent's program printed it, not a defect; `non_json` = a direct `mcp` result that was not JSON, the only parse value that raises a flag) |
 | `flags` | heuristic flags, glossary below |
 | `severity` | sum of flag weights; sort by it to triage |
 | `followups` | next 8 tool calls: `tool` (a Context Hub tool, a standard harness tool such as `Bash`/`Read`, or `other`: names of the participant's other tools are not shared), `category` (`read_pipecat_source`/`web_pipecat`/null), `hub` (another Context Hub call) |
@@ -1152,9 +872,6 @@ FIELDS_MD = """\
 """
 
 ERR_NAME_RE = re.compile(r"[A-Za-z]*(?:Error|Exception)\b|Traceback")
-
-
-BUNDLE_FILES = ("manifest.json", "SCHEMA.md", "report.md", "calls.jsonl", "sessions.jsonl")
 
 
 def refuse_unsafe_outputs(out: Path) -> None:
@@ -1231,6 +948,7 @@ def build_share_bundle(
     def sid(x: str) -> str:
         return hmac.new(key, x.encode(), hashlib.sha256).hexdigest()[:12]
 
+    share_sessions: list[dict[str, Any]] = []
     with (share / "sessions.jsonl").open("w") as fh:
         for r in sessions:
             keep = {
@@ -1244,7 +962,9 @@ def build_share_bundle(
                 )  # links to the parent's `session`
             keep["session"] = sid(r["session_id"])
             keep["participant"] = sid(r["participant"])
-            fh.write(json.dumps(sanitize(keep)) + "\n")
+            srow = sanitize(keep)
+            share_sessions.append(srow)
+            fh.write(json.dumps(srow) + "\n")
     share_calls: list[dict[str, Any]] = []
     with (share / "calls.jsonl").open("w") as fh:
         for c in calls:
@@ -1254,7 +974,6 @@ def build_share_bundle(
             keep["session"] = sid(keep.pop("session_id"))
             keep["participant"] = sid(keep["participant"])
             keep["ref"] = f"{keep['participant']}/{keep['session']}#{keep['call_idx']}"
-            keep["severity"] = sum(SEVERITY.get(f, 1) for f in c["flags"])
             keep["followups"] = [
                 {
                     "tool": public_tool_name(w["tool"], _hub_name(w["tool"], w["hub"])),
@@ -1284,11 +1003,9 @@ def build_share_bundle(
             "extractor_version": EXTRACTOR_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "scope": scope,
-            "counts": {
-                **{k: summary[k] for k in ("sessions", "participants", "hub_used", "hub_calls")},
-                # rows in calls.jsonl: `hub_calls` also counts mentions in text-scanned sessions
-                "call_rows": len(calls),
-            },
+            # Row counts come from the rows written (bundle.row_counts); `hub_calls` is the
+            # extraction total and also counts mentions in text-scanned sessions (no rows).
+            "counts": {"hub_calls": summary["hub_calls"], **row_counts(share_calls, share_sessions)},
             "harnesses": summary["by_harness"],
             "needs_manual_read": summary["needs_manual_read"],
             "files": list(BUNDLE_FILES),
@@ -1310,7 +1027,7 @@ def build_share_bundle(
     (share / "SCHEMA.md").write_text(
         "# Context Hub session bundle: schema v" + str(SCHEMA_VERSION) + "\n\n" + FIELDS_MD
         + "\n## Flag glossary (severity weight)\n\n"
-        + "\n".join(f"- `{k}` ({SEVERITY.get(k, 1)}): {v}" for k, v in FLAG_GLOSSARY.items())
+        + "\n".join(f"- `{k}` ({f.weight}): {f.glossary}" for k, f in FLAGS.items())
         + "\n"
     )  # fmt: skip
     (share / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -1321,7 +1038,8 @@ def build_share_bundle(
         raise ShareLeakError(
             f"share bundle failed the leak check and was not kept: {'; '.join(leaks)}"
         )
-    return share, manifest["analysis"]
+    load_files(_read_share(share))  # what extract writes is what ingest accepts, or the build fails
+    return share, manifest
 
 
 @dataclasses.dataclass
@@ -1331,6 +1049,7 @@ class ExtractResult:
     tarball: Path
     sha256: str
     warnings: list[str]
+    counts: dict[str, Any]  # the bundle manifest's counts (``bundle.has_content`` reads them)
 
 
 _LOCAL_OUTPUTS = (
@@ -1364,44 +1083,31 @@ def generated_paths(out_dir: Path) -> list[Path]:
     return found
 
 
+def _read_share(share: Path, names: tuple[str, ...] = BUNDLE_FILES) -> dict[str, bytes]:
+    return {n: (share / n).read_bytes() for n in names}
+
+
 def repack(out_dir: Path) -> tuple[Path, str]:
     """Rebuild ``share.tar.gz`` from an (edited) ``out_dir/share/``.
 
-    ``report.md`` is regenerated from ``calls.jsonl`` and ``manifest.json`` rather than patched, so
-    a call deleted from ``calls.jsonl`` disappears from everything derived from it (the "Look first"
-    table repeats each flagged call's query). The finished files must pass the leak check.
+    Every row must pass the bundle contract's row validator (``bundle.parse_rows``), the manifest's
+    row counts are re-derived from the rows that remain, and ``report.md`` is regenerated from
+    ``calls.jsonl`` and ``manifest.json`` rather than patched, so a call deleted from
+    ``calls.jsonl`` disappears from everything derived from it. The finished files must pass the
+    leak check and the whole-bundle validator ``ingest`` runs (``bundle.load_files``): a bundle
+    repack accepts is one ingest accepts.
     """
     share = out_dir / "share"
     missing = [n for n in BUNDLE_FILES if not (share / n).is_file() or (share / n).is_symlink()]
     if missing:
         raise ValueError(f"cannot repack: {share.name}/ is missing {missing}")
-    rows: list[dict[str, Any]] = []
-    for i, line in enumerate((share / "calls.jsonl").read_text().splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            raise ValueError(f"cannot repack: calls.jsonl line {i} is not valid JSON") from None
-        ok = (
-            isinstance(row, dict)
-            and isinstance(row.get("ref"), str)
-            and isinstance(row.get("tool"), str)
-            and isinstance(row.get("result"), dict)
-            and isinstance(row.get("flags"), list)
-            and all(isinstance(f, str) for f in row["flags"])
-        )
-        if not ok:
-            raise ValueError(f"cannot repack: calls.jsonl line {i} is not a call row")
-        rows.append(row)
     try:
-        manifest = json.loads((share / "manifest.json").read_text())
-        counts = manifest["counts"]
-        if not isinstance(counts, dict):
-            raise TypeError
-    except (ValueError, KeyError, TypeError):
-        raise ValueError("cannot repack: manifest.json is unreadable or has no counts") from None
-    counts["call_rows"] = len(rows)  # `audit gist` / `ingest` rely on it
+        rows = parse_rows((share / "calls.jsonl").read_text(), "calls.jsonl")
+        sessions = parse_rows((share / "sessions.jsonl").read_text(), "sessions.jsonl")
+        manifest = decode_manifest((share / "manifest.json").read_text())
+    except (BundleError, UnicodeDecodeError) as exc:
+        raise ValueError(f"cannot repack: {exc}") from None
+    manifest["counts"].update(row_counts(rows, sessions))  # gist and ingest decide with these
     if isinstance(manifest.get("analysis"), dict):
         prune_refs(manifest["analysis"], {r["ref"] for r in rows})
     (share / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -1412,7 +1118,23 @@ def repack(out_dir: Path) -> tuple[Path, str]:
             f"cannot repack: the bundle still holds a secret or local path ({'; '.join(leaks)}); "
             "remove it from the file named and run repack again"
         )
+    try:
+        load_files(_read_share(share))
+    except BundleError as exc:
+        raise ValueError(f"cannot repack: {exc}") from None
     return pack_share(share)
+
+
+def decode_manifest(text: str) -> dict[str, Any]:
+    """A hand-edited manifest whose row counts are about to be re-derived: version and counts object
+    are checked here, the counts themselves after ``repack`` rewrites them."""
+    manifest = decode_json(text, "manifest.json")
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("counts"), dict):
+        raise BundleError("manifest.json is not an object with a counts object")
+    err = manifest_error({**manifest, "counts": dict.fromkeys(ROW_COUNT_KEYS, 0)})
+    if err:
+        raise BundleError(err)
+    return manifest
 
 
 def run_extract(
@@ -1489,10 +1211,10 @@ def run_extract(
         "needs_manual_read": sum(bool(s.get("needs_manual_read")) for s in sessions),
         "sessions_with_issues": sum(bool(s["issues"]) for s in sessions),
     }
-    share, analysis = build_share_bundle(
+    share, manifest = build_share_bundle(
         out, summary, sessions, all_calls, {"since": since, "anonymized": anonymize}
     )
-    summary["analysis"] = analysis
+    summary["analysis"] = manifest["analysis"]
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     tar_path, digest = pack_share(share)
-    return ExtractResult(summary, share, tar_path, digest, warnings)
+    return ExtractResult(summary, share, tar_path, digest, warnings, manifest["counts"])

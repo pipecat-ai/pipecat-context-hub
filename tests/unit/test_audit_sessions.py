@@ -1156,10 +1156,15 @@ class TestEgress:
         monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/gh")
         monkeypatch.setattr(subprocess, "run", boom)
         sessions = audited / "share" / "sessions.jsonl"
-        sessions.write_text(sessions.read_text() + json.dumps({"note": SECRET}) + "\n")
+        # a valid session row (so only the leak check can refuse it) carrying a secret
+        (row,) = _rows(sessions)
+        sessions.write_text(sessions.read_text() + json.dumps({**row, "note": SECRET}) + "\n")
         args = ("gist", str(audited), "--yes") if cmd == "gist" else ("repack", str(audited))
         refused = _invoke(*args)
-        assert refused.exit_code == 1 and "sessions.jsonl" in refused.output
+        # refused by the leak check itself (a raising fake `gh` would also exit 1), naming the file
+        assert isinstance(refused.exception, SystemExit) and refused.exit_code == 1, refused.output
+        reason = "leak check" if cmd == "gist" else "secret or local path"
+        assert reason in refused.output and "sessions.jsonl: " in refused.output, refused.output
         assert SECRET not in refused.output
 
     def test_sanitize_removes_every_known_secret_shape_however_it_is_glued(self) -> None:
@@ -1343,7 +1348,7 @@ class TestEgressParity:
         assert [r["input"] for r in shared] == [{"query": q, "max_tokens": 5} for q in BENIGN]
         report = (out / "share" / "report.md").read_text()
         assert "a\\|tmp\\|b" in report and "a/tmp/b" not in report
-        assert egress.verify_share(out / "share", audit_extract.BUNDLE_FILES) == []
+        assert egress.verify_share(out / "share", tuple(BUNDLE)) == []
 
     def test_a_long_query_is_cut_at_whitespace_never_inside_a_token(self, tmp_path: Path) -> None:
         """Cutting a 78-char hex run followed by `g` at 80 chars made a bare hex key appear."""
@@ -1722,3 +1727,524 @@ class TestResultShapeAndErrors:
         (audited / "share.tar.gz").symlink_to(victim)
         assert _invoke("repack", str(audited)).exit_code == 1
         assert victim.read_text() == "keep me"
+
+
+# ---- C1: the bundle contract has one definition -------------------------------------------------
+
+
+def _merge(paths: list[Path], out: Path) -> dict[str, Any]:
+    from pipecat_context_hub.audit.ingest import merge_bundles
+
+    return merge_bundles(paths, out)
+
+
+def _fake_gh(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_k: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "https://gist.github.com/x/abc\n", "")
+
+    monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/gh")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return seen
+
+
+def _posted_dir(share: Path, argv: list[str], dest: Path) -> Path:
+    """What a clone of the gist holds: exactly the files `gh gist create` was given."""
+    dest.mkdir()
+    for a in argv[argv.index("--") + 1 :]:
+        (dest / Path(a).name).write_bytes((share / Path(a).name).read_bytes())
+    return dest
+
+
+def _source(kind: str, root: Path) -> Path:
+    """A transcript directory for one kind of fresh extract."""
+    src = root / "in"
+    if kind == "calls":
+        _claude_session(src / "alice" / "s1.jsonl")
+    elif kind == "missed":
+        _jl(src / "zed" / "s.jsonl", _pipecat_work("s1"))
+    elif kind == "nothing":
+        _jl(src / "zed" / "s.jsonl", [_use(1, "2026-11-18T10:00:00Z", "Bash", {"command": "ls"})])
+    elif kind == "text_scan":
+        chat = src / "alice" / "chat.md"
+        chat.parent.mkdir(parents=True)
+        chat.write_text("ran mcp__pipecat-context-hub__search_docs\nfrom pipecat.pipeline import X")
+    return src
+
+
+def _keep_lines(path: Path, n: int) -> None:
+    path.write_text("".join(line + "\n" for line in path.read_text().splitlines()[:n]))
+
+
+# (fresh extract kind, hand edit, bundle has content after the edit)
+VALID_CELLS = {
+    "fresh-calls": ("calls", None, True),
+    "rows-hand-deleted": ("calls", ("calls.jsonl", 1), True),
+    "all-rows-deleted": ("calls", ("calls.jsonl", 0), True),  # the session still used the hub
+    "all-rows-and-sessions-deleted": ("calls", ("both", 0), False),
+    "zero-sessions-with-calls": ("calls", ("sessions.jsonl", 0), True),
+    "zero-calls-pipecat-work": ("missed", None, True),
+    "nothing-found": ("nothing", None, False),
+    "text-scan-hub-calls-no-rows": ("text_scan", None, True),
+}
+
+
+def _required_key_cells() -> dict[str, tuple[str, Any]]:
+    from pipecat_context_hub.audit.bundle import CALL_KEYS, SESSION_KEYS
+
+    cells: dict[str, tuple[str, Any]] = {}
+    for k in sorted(CALL_KEYS):
+        cells[f"call-missing-{k}"] = (
+            "calls.jsonl",
+            lambda r, k=k: {x: v for x, v in r.items() if x != k},
+        )
+    for k in sorted(SESSION_KEYS):
+        cells[f"session-missing-{k}"] = (
+            "sessions.jsonl",
+            lambda r, k=k: {x: v for x, v in r.items() if x != k},
+        )
+    return cells
+
+
+INVALID_CELLS: dict[str, tuple[str, Any]] = {
+    **_required_key_cells(),
+    "severity-string": ("calls.jsonl", lambda r: {**r, "severity": "hi"}),
+    "severity-bool": ("calls.jsonl", lambda r: {**r, "severity": True}),
+    "ref-list": ("calls.jsonl", lambda r: {**r, "ref": ["x"]}),
+    "via-null": ("calls.jsonl", lambda r: {**r, "via": None}),
+    "flags-not-strings": ("calls.jsonl", lambda r: {**r, "flags": [1]}),
+    "result-list": ("calls.jsonl", lambda r: {**r, "result": []}),
+    "followups-object": ("calls.jsonl", lambda r: {**r, "followups": {}}),
+    "row-not-object": ("calls.jsonl", lambda r: [r]),
+    "hub-used-string": ("sessions.jsonl", lambda r: {**r, "hub_used": "yes"}),
+    "participant-null": ("sessions.jsonl", lambda r: {**r, "participant": None}),
+    "duplicate-key": ("calls.jsonl", "dup"),
+    "bad-json": ("calls.jsonl", "bad"),
+}  # fmt: skip
+
+
+class TestBundleContract:
+    """Contract C1: one definition of the bundle, so producer and consumer cannot disagree.
+
+    Invariant: a bundle `repack` accepts is one `ingest` accepts; a bundle `gist` posts (with the
+    empty JSONL files it leaves out) is one `ingest` accepts; and "nothing to share" is the same
+    decision (`bundle.has_content` on the manifest's row counts) in `extract`, `gist` and `ingest`.
+    State space: VALID_CELLS x {repack, gist, ingest of the tarball, ingest of the gist} and
+    INVALID_CELLS x {repack, gist, ingest}.
+    """
+
+    def test_one_definition_of_the_contract(self) -> None:
+        """F2: ingest redefined the file list, the schema version and the required call keys."""
+        from pipecat_context_hub import cli_audit
+        from pipecat_context_hub.audit import bundle, ingest
+
+        for mod in (ingest, audit_extract, cli_audit):
+            for name in ("SUPPORTED_SCHEMA", "FILES", "CALL_KEYS", "SESSION_KEYS", "SEVERITY"):
+                assert not hasattr(mod, name), (mod.__name__, name)
+        assert vars(audit_extract)["BUNDLE_FILES"] is bundle.BUNDLE_FILES
+        assert vars(audit_extract)["SCHEMA_VERSION"] is bundle.SCHEMA_VERSION
+        assert not hasattr(cli_audit, "_nothing_to_share")  # one predicate: bundle.has_content
+        bundle_src = Path(bundle.__file__).read_text()
+        assert "from pipecat_context_hub" not in bundle_src  # a leaf: nothing to drift from
+
+    @pytest.mark.parametrize("cell", list(VALID_CELLS))
+    def test_every_valid_bundle_round_trips_and_decides_empty_the_same_way(
+        self, tmp_path: Path, cell: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F2/F12/F13: repack, gist and ingest each had their own rules for rows, counts and the
+        files a gist may leave out; deleting every row or every session made them disagree."""
+        kind, edit, content = VALID_CELLS[cell]
+        out = tmp_path / "out"
+        extracted = _extract(_source(kind, tmp_path), out)
+        assert extracted.exit_code == 0, extracted.output
+        if edit is None:  # the extract message uses the same rule
+            assert ("nothing to share" in extracted.output) is (not content), extracted.output
+        else:
+            name, n = edit
+            for f in ("calls.jsonl", "sessions.jsonl") if name == "both" else (name,):
+                _keep_lines(out / "share" / f, n)
+        repacked = _invoke("repack", str(out))
+        assert repacked.exit_code == 0, repacked.output  # repack accepts...
+        share = out / "share"
+        counts = json.loads((share / "manifest.json").read_text())["counts"]
+        assert counts["call_rows"] == len(_rows(share / "calls.jsonl"))
+        assert counts["sessions"] == len(_rows(share / "sessions.jsonl"))
+
+        seen = _fake_gh(monkeypatch)
+        strict = _invoke("gist", str(out), "--yes")
+        assert (strict.exit_code == 0) is content, strict.output  # gist's empty decision
+        assert ("no Context Hub calls and no Pipecat work" in strict.output) is (not content)
+        posted = _invoke("gist", str(out), "--yes", "--allow-empty")
+        assert posted.exit_code == 0, posted.output
+        names = {Path(a).name for a in seen[-1][seen[-1].index("--") + 1 :]}
+        empty = {
+            n for n in ("calls.jsonl", "sessions.jsonl") if not (share / n).read_text().strip()
+        }
+        assert names == set(BUNDLE) - empty
+        gist = _posted_dir(share, seen[-1], tmp_path / "gist")
+
+        merged = _merge([out / "share.tar.gz", gist], tmp_path / "merged")
+        report = merged["report"]
+        assert [r["status"] for r in report] == ["ok", "ok"], report  # ...so ingest accepts
+        assert [r["has_content"] for r in report] == [content, content]  # same empty decision
+        assert report[1]["duplicate_of"] == "share.tar.gz"  # the gist is the same bundle
+
+    @pytest.mark.parametrize("cell", list(INVALID_CELLS))
+    def test_a_row_ingest_rejects_is_refused_by_repack_and_gist_too(
+        self, audited: Path, tmp_path: Path, cell: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F2: delete `severity` or `via` from a row: repack succeeded, the organizer's ingest
+        rejected the bundle. Every row validator is now the shared one."""
+        name, change = INVALID_CELLS[cell]
+        f = audited / "share" / name
+        first, *rest = f.read_text().splitlines()
+        if change == "dup":
+            bad = first.replace("{", '{"tool": "x", ', 1)
+        elif change == "bad":
+            bad = first[:-1]
+        else:
+            bad = json.dumps(change(json.loads(first)))
+        f.write_text("".join(line + "\n" for line in [bad, *rest]))
+        repacked = _invoke("repack", str(audited))
+        assert repacked.exit_code == 1 and isinstance(repacked.exception, SystemExit)
+        assert f"{name} line 1" in repacked.output, repacked.output
+        seen = _fake_gh(monkeypatch)
+        gisted = _invoke("gist", str(audited), "--yes", "--allow-empty")
+        assert gisted.exit_code == 1 and not seen, gisted.output
+        tar = _tar(
+            tmp_path / "bad.tar.gz",
+            [(n, (audited / "share" / n).read_bytes(), "f") for n in BUNDLE],
+        )
+        merged = _merge([audited / "share", tar], tmp_path / "m")
+        assert [r["status"] for r in merged["report"]] == ["rejected", "rejected"]
+        assert all(f"{name} line 1" in r["reason"] for r in merged["report"]), merged["report"]
+
+    def test_a_hand_edit_without_repack_is_refused_until_repacked(
+        self, audited: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F12: after deleting every row, gist read `hub_calls` (still 3) and ingest read
+        `call_rows`; now both read the row counts, and stale counts are refused by both."""
+        (audited / "share" / "calls.jsonl").write_text("")
+        seen = _fake_gh(monkeypatch)
+        stale = _invoke("gist", str(audited), "--yes")
+        assert stale.exit_code == 1 and "run `audit repack`" in stale.output and not seen
+        (rejected,) = _merge([audited / "share"], tmp_path / "m1")["report"]
+        assert (
+            rejected["status"] == "rejected"
+            and "call_rows says 3, rows say 0" in rejected["reason"]
+        )
+        assert _invoke("repack", str(audited)).exit_code == 0
+        assert _invoke("gist", str(audited), "--yes").exit_code == 0  # a session still used it
+        (ok,) = _merge([audited / "share"], tmp_path / "m2")["report"]
+        assert ok["status"] == "ok" and ok["calls"] == 0
+
+    def test_a_manifest_without_call_rows_is_rejected_with_its_reason(self, tmp_path: Path) -> None:
+        """F9: schema v1 accepted a `hub_calls` fallback "for older bundles"; none was ever
+        distributed, so v1 has one manifest shape."""
+        bundle = tmp_path / "b"
+        bundle.mkdir()
+        (bundle / "manifest.json").write_text(
+            json.dumps({"schema_version": 1, "counts": {"hub_calls": 0}})
+        )
+        for n in ("SCHEMA.md", "report.md"):
+            (bundle / n).write_text("x\n")
+        (rejected,) = _merge([bundle], tmp_path / "m")["report"]
+        assert rejected["status"] == "rejected" and "call_rows" in rejected["reason"]
+
+    def test_a_duplicate_key_is_refused_everywhere_even_without_a_secret(
+        self, audited: Path, tmp_path: Path
+    ) -> None:
+        """verify_share scans both values of a repeated key; the contract refuses the repeat itself,
+        because json.loads (ingest) keeps the last value while a reader of the gist sees both."""
+        f = audited / "share" / "calls.jsonl"
+        first, *rest = f.read_text().splitlines()
+        f.write_text("".join(x + "\n" for x in [first.replace("{", '{"tool": "x", ', 1), *rest]))
+        assert egress.verify_share(audited / "share", ("calls.jsonl",)) == []  # nothing to leak
+        for args in (("repack", str(audited)), ("gist", str(audited))):
+            refused = _invoke(*args)
+            assert refused.exit_code == 1 and "repeats a key" in refused.output, refused.output
+        (rejected,) = _merge([audited / "share"], tmp_path / "m")["report"]
+        assert "repeats a key" in rejected["reason"]
+
+
+# ---- C2: ingest reads an untrusted archive lazily and namespaces what it merges -----------------
+
+
+def _count_tar_headers(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """How many member headers tarfile parsed (TarFile.next calls), for a bounded-work check."""
+    calls = [0]
+    real = tarfile.TarFile.next
+
+    def counting(self: tarfile.TarFile) -> tarfile.TarInfo | None:
+        calls[0] += 1
+        return real(self)
+
+    monkeypatch.setattr(tarfile.TarFile, "next", counting)
+    return calls
+
+
+class TestIngestLimits:
+    """Contract C2: rejecting a hostile archive costs at most constant work, and one bundle's rows
+    can never shadow another's.
+
+    State space: {many members, duplicate names, unknown names, nested name, directory member,
+    oversized member, oversized archive, decompression past the cap, truncated gzip} x rejected
+    within bounded headers/bytes; {same bundle as tar/dir/gist, two bundles sharing refs and
+    sessions} x merged as decided (deduped by content digest / both kept and reported).
+    """
+
+    @pytest.mark.parametrize("name", ["SCHEMA.md", "payload.sh"])
+    def test_a_flood_of_members_is_rejected_after_a_bounded_number_of_headers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        """F6: 1,000,000 empty members named SCHEMA.md took 662 MB and 10 s, because getmembers()
+        parsed every header before any check (scaled down here; the bound is structural)."""
+        bad = tmp_path / "flood.tar.gz"
+        with tarfile.open(bad, "w:gz") as tf:
+            for _ in range(2000):
+                tf.addfile(tarfile.TarInfo(name), io.BytesIO(b""))
+        headers = _count_tar_headers(monkeypatch)
+        (rejected,) = _merge([bad], tmp_path / "m")["report"]
+        assert rejected["status"] == "rejected"
+        assert ("appears twice" if name == "SCHEMA.md" else "unexpected member") in rejected[
+            "reason"
+        ]
+        assert headers[0] <= len(BUNDLE) + 1, headers[0]
+
+    def test_an_oversized_member_is_rejected_from_its_header_not_its_data(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F27: a 52 KB gzip holding one 51 MiB calls.jsonl was inflated to ~53 MB before the
+        50 MiB limit fired."""
+        from pipecat_context_hub.audit import ingest
+
+        bad = tmp_path / "big.tar.gz"
+        size = 51 * 1024 * 1024
+        with tarfile.open(bad, "w:gz", compresslevel=1) as tf:
+            info = tarfile.TarInfo("calls.jsonl")
+            info.size = size
+            tf.addfile(info, io.BytesIO(bytes(size)))
+        readers: list[Any] = []
+
+        class Recording(ingest._CappedReader):
+            def __init__(self, *a: Any) -> None:
+                super().__init__(*a)
+                readers.append(self)
+
+        monkeypatch.setattr(ingest, "_CappedReader", Recording)
+        (rejected,) = _merge([bad], tmp_path / "m")["report"]
+        assert rejected["status"] == "rejected" and "too large" in rejected["reason"]
+        assert readers[0].count < 1024 * 1024, readers[0].count  # the header, not 51 MiB
+
+    def test_decompression_past_the_archive_cap_stops_the_read(
+        self, audited: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pipecat_context_hub.audit import ingest
+
+        monkeypatch.setattr(ingest, "MAX_DECOMPRESSED_BYTES", 2048)
+        (rejected,) = _merge([audited / "share.tar.gz"], tmp_path / "m")["report"]
+        assert rejected["status"] == "rejected" and "decompresses past 2048" in rejected["reason"]
+
+    def test_an_oversized_archive_is_rejected_before_it_is_read(
+        self, audited: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pipecat_context_hub.audit import ingest
+
+        def boom(_p: Path) -> dict[str, bytes]:
+            raise AssertionError("must not read an archive over the size limit")
+
+        monkeypatch.setattr(ingest, "MAX_ARCHIVE_BYTES", 100)
+        monkeypatch.setattr(ingest, "read_tar", boom)
+        (rejected,) = _merge([audited / "share.tar.gz"], tmp_path / "m")["report"]
+        assert rejected["status"] == "rejected" and "limit 100" in rejected["reason"]
+
+    @pytest.mark.parametrize(
+        ("members", "reason"),
+        [
+            ([("share/calls.jsonl", b"", "f")], "unexpected member"),
+            ([("calls.jsonl", b"", "dir")], "not a regular file"),
+            ([("calls.jsonl", b"", "f"), ("calls.jsonl", b"", "f")], "appears twice"),
+        ],
+        ids=["nested-name", "directory-member", "duplicate-name"],
+    )
+    def test_a_member_that_breaks_a_rule_is_rejected(
+        self, tmp_path: Path, members: list[tuple[str, bytes, str]], reason: str
+    ) -> None:
+        bad = tmp_path / "bad.tar.gz"
+        with tarfile.open(bad, "w:gz") as tf:
+            for name, data, kind in members:
+                ti = tarfile.TarInfo(name)
+                ti.type = tarfile.DIRTYPE if kind == "dir" else tarfile.REGTYPE
+                ti.size = len(data)
+                tf.addfile(ti, io.BytesIO(data))
+        (rejected,) = _merge([bad], tmp_path / "m")["report"]
+        assert rejected["status"] == "rejected" and reason in rejected["reason"]
+
+    def test_the_same_bundle_as_tarball_directory_and_gist_merges_once(
+        self, audited: Path, tmp_path: Path
+    ) -> None:
+        gist = tmp_path / "gist"
+        gist.mkdir()
+        for n in BUNDLE:
+            (gist / n).write_bytes((audited / "share" / n).read_bytes())
+        merged = _merge([audited / "share.tar.gz", audited / "share", gist], tmp_path / "m")
+        assert merged["calls"] == 3 and merged["ref_collisions"] == 0
+        report = merged["report"]
+        assert [r["new_calls"] for r in report] == [3, 0, 0]
+        assert len({r["bundle"] for r in report}) == 1
+        assert [r.get("duplicate_of") for r in report] == [None, "share.tar.gz", "share.tar.gz"]
+
+    def test_a_tampered_copy_listed_first_cannot_shadow_the_genuine_rows(
+        self, audited: Path, tmp_path: Path
+    ) -> None:
+        """F21: merge was first-wins on attacker-chosen `ref` and `participant/session`, so a
+        tampered copy of another participant's bundle listed first silently dropped their rows."""
+        genuine_rows = _rows(audited / "share" / "calls.jsonl")
+        fake = tmp_path / "fake"
+        (fake / "share").mkdir(parents=True)
+        for n in BUNDLE:
+            (fake / "share" / n).write_bytes((audited / "share" / n).read_bytes())
+        calls = fake / "share" / "calls.jsonl"
+        calls.write_text(calls.read_text().replace('"search_docs"', '"get_hub_status"'))
+        assert _invoke("repack", str(fake)).exit_code == 0
+        result = _invoke(
+            "ingest", str(fake / "share.tar.gz"), str(audited / "share.tar.gz"),
+            "--out", str(tmp_path / "m"),
+        )  # fmt: skip
+        assert result.exit_code == 0 and "WARNING share.tar.gz: 3 call ref(s)" in result.output
+        merged = _rows(tmp_path / "m" / "calls.jsonl")
+        report = json.loads((tmp_path / "m" / "ingest.json").read_text())
+        genuine = report[1]["bundle"]
+        assert len(merged) == 6 and report[1]["new_calls"] == 3
+        assert (report[1]["ref_collisions"], report[1]["session_collisions"]) == (3, 1)
+        kept = [
+            {k: v for k, v in r.items() if k != "source_bundle"}
+            for r in merged
+            if r["source_bundle"] == genuine
+        ]
+        assert sorted(kept, key=lambda r: r["ref"]) == sorted(genuine_rows, key=lambda r: r["ref"])
+        assert len(_rows(tmp_path / "m" / "sessions.jsonl")) == 2  # both sessions kept
+
+
+# ---- C3: one flag vocabulary, one triage order, hygiene ---------------------------------------
+
+
+class TestFlagVocabulary:
+    """Contract C3: every flag the extractor can emit is declared once (audit/flags.py), and the
+    glossary, the severity weight and the outcome class are views of that one row; an undeclared
+    flag fails loudly instead of being classed as clean."""
+
+    def test_the_flag_table_is_exactly_what_the_extractor_emits(self, audited: Path) -> None:
+        """F1: three tables owned the vocabulary with no parity guard."""
+        import re
+
+        from pipecat_context_hub.audit import analysis, flags
+
+        src = Path(audit_extract.__file__).read_text()
+        emitted = set(re.findall(r'call_flags\.append\(\s*"(\w+)"', src))
+        assert emitted == set(flags.FLAGS), emitted ^ set(flags.FLAGS)
+        assert set(flags.FLAG_GLOSSARY) == set(flags.SEVERITY) == set(flags.FLAGS)
+        assert {f for _, m in analysis._CLASSES for f in m} == set(flags.FLAGS)
+        schema = (audited / "share" / "SCHEMA.md").read_text()
+        for name, spec in flags.FLAGS.items():
+            assert spec.outcome in flags.OUTCOME_ORDER, name
+            assert analysis.classify_call({"flags": [name]}) == (spec.outcome, spec.target), name
+            assert flags.severity([name]) == spec.weight, name
+            assert f"- `{name}` ({spec.weight}): {spec.glossary}" in schema, name
+
+    def test_an_undeclared_flag_fails_loudly(self) -> None:
+        """F1: an unmapped flag was classed no_negative_signal ("no flag fired") and weighed 1."""
+        from pipecat_context_hub.audit import analysis, flags
+
+        with pytest.raises(flags.UnknownFlagError):
+            analysis.classify_call({"flags": ["zero_hits", "made_up_flag"]})
+        with pytest.raises(flags.UnknownFlagError):
+            flags.severity(["made_up_flag"])
+
+    def test_an_unparsed_shell_result_raises_no_flag(self, tmp_path: Path) -> None:
+        """cli_unparsed / js_unparsed are parse values, not flags (the agent's program printed it)."""
+        cmd = {"command": "pipecat-context-hub search-docs TTS | head -3"}
+        _jl(
+            tmp_path / "in" / "zed" / "s.jsonl",
+            [
+                _use(1, "2026-11-18T10:00:00Z", "Bash", cmd),
+                _result(1, "2026-11-18T10:00:01Z", "TTS doc"),
+            ],
+        )
+        assert _extract(tmp_path / "in", tmp_path / "out").exit_code == 0
+        (c,) = _rows(tmp_path / "out" / "share" / "calls.jsonl")
+        assert (c["result"]["parse"], c["flags"], c["outcome"]) == (
+            "cli_unparsed",
+            [],
+            "no_negative_signal",
+        )
+
+    def test_one_triage_order_and_one_latency_formula(self) -> None:
+        """F10: "Read first" ranked failed-then-flag-count while "Look first" ranked by severity,
+        and median/p90 were computed twice."""
+        from pipecat_context_hub.audit import analysis, report
+
+        def call(i: int, flags: list[str], latency: float) -> dict[str, Any]:
+            c = {"participant": "p", "session_id": "s", "call_idx": i, "tool": "search_docs",
+                 "via": "mcp", "input": {}, "latency_s": latency, "flags": flags,
+                 "result": {}, "ref": f"r{i}"}  # fmt: skip
+            return c
+
+        calls = [call(0, ["non_json_result"], 1.0), call(1, ["downstream_error", "slow"], 9.0)]
+        analysis.annotate_calls(calls)
+        a = analysis.analyze([], calls, lambda c: c["ref"])
+        md = report.render_report({"analysis": a}, calls)
+        look = [
+            line.split("|")[1].strip()
+            for line in md.splitlines()
+            if line.startswith(("| r0 ", "| r1 "))
+        ]
+        assert a["correctness"]["read_these_first"] == look == ["r1", "r0"]  # severity 4 before 1
+        stats = a["efficiency"]["per_tool"]["search_docs"]
+        (row,) = report.tool_rows(calls)
+        assert row.split("|")[4:6] == [f" {stats['median_s']} ", f" {stats['p90_s']} "]
+        assert vars(report)["latency_stats"] is analysis.latency_stats
+
+
+class TestHygiene:
+    def test_extract_does_not_re_export_the_egress(self) -> None:
+        """F7: a shim re-exported 14 egress names "because tests call extract.redact"; they did not."""
+        for name in ("HOME_RE", "SECRET_RES", "SHARE_PATH_RE", "WIN_HOME_RE", "clean_text",
+                     "one_line", "scrub_paths"):  # fmt: skip
+            assert not hasattr(audit_extract, name), name
+        assert not hasattr(egress, "scrub_paths")  # dead second path-scrub entry point
+
+    def test_the_shell_tokenizer_is_its_own_leaf_module(self) -> None:
+        """F8 (limited): the shell tokenizer moved out of extract.py unchanged."""
+        from pipecat_context_hub.audit import shell
+
+        assert "from pipecat_context_hub" not in Path(shell.__file__).read_text()
+        assert vars(audit_extract)["shell_hub_calls"] is shell.shell_hub_calls
+        assert shell.shell_hub_calls('x; uv run pipecat-context-hub search-docs "TTS & STT"') == [
+            ["pipecat-context-hub", "search-docs", "TTS & STT"]
+        ]
+
+    def test_gist_passes_absolute_paths_after_a_separator(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F22: `audit gist ./-pd --yes` built the token `-pd/share/manifest.json`, which gh reads as
+        -p (--public) plus -d: a PUBLIC gist."""
+        _claude_session(tmp_path / "in" / "alice" / "s1.jsonl")
+        assert _extract(tmp_path / "in", tmp_path / "-pd").exit_code == 0
+        monkeypatch.chdir(tmp_path)
+        seen = _fake_gh(monkeypatch)
+        assert _invoke("gist", "./-pd", "--yes").exit_code == 0
+        (argv,) = seen
+        sep = argv.index("--")
+        assert argv[:sep] == [
+            "/usr/bin/gh",
+            "gist",
+            "create",
+            "--desc",
+            "Context Hub session bundle",
+        ]
+        paths = argv[sep + 1 :]
+        assert paths and all(Path(p).is_absolute() for p in paths)
+        assert {Path(p).name for p in paths} == set(BUNDLE)
