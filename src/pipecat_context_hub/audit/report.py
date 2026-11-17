@@ -8,14 +8,17 @@ no line-oriented parser whose idea of a row can differ from the builder's.
 
 from __future__ import annotations
 
+import re
 import statistics
 from collections import Counter
 from typing import Any
 
 from pipecat_context_hub.audit.analysis import render as render_analysis
-from pipecat_context_hub.audit.egress import clean_text, clip, one_line
+from pipecat_context_hub.audit.egress import one_line
 
 LOOK_FIRST_LIMIT = 60
+QUERY_CELL_CHARS = 80
+_LAST_SPACE_RE = re.compile(r"\s(?!.*\s)", re.DOTALL)
 
 
 def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
@@ -38,11 +41,34 @@ def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
     return rows
 
 
+def _cell(text: str) -> str:
+    """A table cell from share-form text: one line, ``|`` escaped. Meaning-preserving, no redaction.
+
+    Every value rendered here already came through the egress (``extract``) or is checked in its own
+    file (``repack``), and ``verify_share`` scans ``report.md`` itself. Substituting a character
+    (``|`` to ``/``) can fabricate a path the row never held; escaping cannot.
+    """
+    return one_line(text).replace("|", "\\|")
+
+
+def _prefix(text: str, n: int) -> str:
+    """At most ``n`` characters of ``text``, cut only at whitespace.
+
+    A cut inside a token could create a match the full text does not have (a hex run that was
+    followed by a letter now ends the string); a cut at whitespace leaves every token whole, so the
+    prefix trips no rule the text did not.
+    """
+    if len(text) <= n:
+        return text
+    m = _LAST_SPACE_RE.search(text[: n + 1])
+    return (text[: m.start()] if m else "") + " …"
+
+
 def _query(c: dict[str, Any]) -> str:
     raw = c.get("input")
     inp: dict[str, Any] = raw if isinstance(raw, dict) else {}
     q = inp.get("query") or inp.get("path") or inp.get("doc_id") or c.get("hub_invocation") or ""
-    return one_line(clean_text(clip(str(q), 80))).replace("|", "/")
+    return _cell(_prefix(str(q), QUERY_CELL_CHARS))
 
 
 def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
@@ -56,7 +82,8 @@ def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         r = c["result"]
         conf = r.get("confidence")
         look.append(
-            f"| {c['ref']} | {c['tool']} | {_query(c)} | {', '.join(c['flags'])} "
+            f"| {_cell(str(c['ref']))} | {_cell(str(c['tool']))} | {_query(c)} "
+            f"| {_cell(', '.join(c['flags']))} "
             f"| {r.get('n_hits', '')} | {round(conf, 2) if isinstance(conf, float) else ''} |"
         )
     flag_totals = Counter(f for c in rows for f in c["flags"])

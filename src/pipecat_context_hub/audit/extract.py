@@ -18,6 +18,7 @@ import hmac
 import json
 import re
 import secrets
+import shlex
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
@@ -57,7 +58,53 @@ ERROR_RE = re.compile(
     r"Traceback \(most recent call last\)|ImportError|ModuleNotFoundError|AttributeError|"
     r"unexpected keyword argument|TypeError:|ValidationError|NameError",
 )
+_TRACEBACK_HEAD = "Traceback (most recent call last)"
+_CHAIN_MARKERS = ("During handling of the above exception", "The above exception was the direct")
+# The line a Python traceback ends with: `ImportError: msg`, `pkg.mod.Error: msg`, `KeyboardInterrupt`.
+_EXC_LINE_RE = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?::|[ \t]*(?:\r|\n|$))"
+)
 HIT_ID_KEYS = ("doc_id", "example_id", "path", "file_path", "title", "class_name", "name", "id")
+
+
+def error_start(text: str, m: re.Match[str]) -> int:
+    """Where the error that ``m`` (an ``ERROR_RE`` match) found is named in ``text``.
+
+    For a traceback that is its final exception line, which follows the frames and can sit far past
+    any fixed head; for a chained traceback, the last one's. Otherwise the match itself.
+    """
+    if not m.group(0).startswith("Traceback"):
+        return m.start()
+    found, in_traceback = -1, True
+    pos = text.find("\n", m.start())
+    while 0 <= pos < len(text):
+        start = pos + 1
+        pos = text.find("\n", start)
+        line = text[start : len(text) if pos < 0 else pos]
+        if not line.strip() or line[0] in " \t":
+            continue  # frames and code lines are indented
+        if line.startswith(_TRACEBACK_HEAD):
+            in_traceback = True
+        elif line.startswith(_CHAIN_MARKERS):
+            continue
+        elif in_traceback and _EXC_LINE_RE.match(line):
+            found, in_traceback = start, False
+        else:
+            break  # the traceback is over: later output is not its exception
+        if pos < 0:
+            break
+    return found if found >= 0 else m.start()
+
+
+def error_class(head: str) -> str:
+    """The error class an ``err_head`` names: an identifier only, never message text."""
+    m = _EXC_LINE_RE.match(head)
+    if m:
+        name = m.group(1).rsplit(".", 1)[-1]
+        if ERR_NAME_RE.fullmatch(name) or name.endswith(("Interrupt", "Exit", "Warning")):
+            return name
+    found = ERR_NAME_RE.search(head)
+    return found.group(0) if found else ""
 
 
 def parse_ts(s: str | None) -> float | None:
@@ -69,31 +116,90 @@ def parse_ts(s: str | None) -> float | None:
         return None
 
 
-def summarize_hub_result(text: str, extras: list[str], via: str | None = None) -> dict[str, Any]:
+# The top-level key every serialised response of each hub tool carries (the tool output models in
+# shared/types.py; a test pins this table to them). A search's key holds its result list.
+HUB_RESULT_KEY = {
+    "search_docs": "hits",
+    "search_examples": "hits",
+    "search_api": "hits",
+    "get_code_snippet": "snippets",
+    "get_doc": "doc_id",
+    "get_example": "example_id",
+    "check_deprecation": "deprecated",
+    "get_hub_status": "server_version",
+}
+RESULT_LIST_KEYS = frozenset({"hits", "snippets"})
+_EMBEDDED_ATTEMPTS = 100
+# Neutral parse classes: the text came from the agent's own program (a shell line, a JS batch), not
+# from Context Hub, so not finding a hub response in it is not a Context Hub fault.
+_UNPARSED = {"cli": "cli_unparsed", "mcp_js": "js_unparsed"}
+
+
+def _is_hub_response(data: Any, tool: str | None) -> bool:
+    key = HUB_RESULT_KEY.get(tool or "")
+    return isinstance(data, dict) and key is not None and key in data
+
+
+def _embedded_hub_response(text: str, tool: str | None) -> dict[str, Any] | None:
+    """The first JSON object in ``text`` that has ``tool``'s response shape, else None.
+
+    Another command's JSON (a log line with a ``message``) is skipped: only the hub's own response
+    shape may become a result, so nothing else that command printed reaches the bundle.
+    """
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    for _ in range(_EMBEDDED_ATTEMPTS):
+        if start < 0:
+            return None
+        try:
+            data, end = decoder.raw_decode(text, start)
+        except ValueError:
+            start = text.find("{", start + 1)
+            continue
+        if _is_hub_response(data, tool):
+            return data  # type: ignore[no-any-return]
+        start = text.find("{", end)
+    return None
+
+
+def summarize_hub_result(
+    text: str, extras: list[str], via: str | None = None, tool: str | None = None
+) -> dict[str, Any]:
+    """The shape of one hub call's result.
+
+    A direct ``mcp`` result is the hub's own response. A ``cli`` or ``mcp_js`` result is the
+    output of the agent's own program, which may print anything: there a JSON object counts only
+    when it has ``tool``'s response shape (``HUB_RESULT_KEY``), bare or embedded, and otherwise the
+    result is unparsed (``cli_unparsed`` / ``js_unparsed``, not flagged) and nothing is derived
+    from the text.
+    """
     out: dict[str, Any] = {"bytes": len(text.encode()) + sum(len(e.encode()) for e in extras)}
-    data = None
+    data: Any = None
     try:
         data = json.loads(text)
     except (ValueError, TypeError):
-        if via == "cli":
-            # Shell output is wrapped (pipes, `head -c`, echoes): take the first decodable JSON object.
-            start = text.find("{")
-            if start >= 0:
-                try:
-                    data, _ = json.JSONDecoder().raw_decode(text[start:])
-                    out["parse"] = "embedded"
-                except ValueError:
-                    pass
+        data = None
+    if via in _UNPARSED:
+        if not _is_hub_response(data, tool):
+            data = _embedded_hub_response(text, tool)
+            if data is not None:
+                out["parse"] = "embedded"
         if data is None:
-            # CLI text that is not JSON is the harness's shell, not a Context Hub fault: not flagged.
-            out["parse"] = "cli_unparsed" if via == "cli" else "non_json"
+            out["parse"] = _UNPARSED[via]
             out["text_head"] = clip(text, 300)
             return out
+    elif data is None:
+        out["parse"] = "non_json"
+        out["text_head"] = clip(text, 300)
+        return out
     if not isinstance(data, dict):
         out["parse"] = "non_object"
         return out
     out.setdefault("parse", "ok")
-    hits = data.get("hits")
+    list_key = HUB_RESULT_KEY.get(tool or "")
+    if list_key not in RESULT_LIST_KEYS:
+        list_key = "hits"  # an unknown tool: read the common search shape
+    hits = data.get(list_key)
     if isinstance(hits, list):
         out["n_hits"] = len(hits)
         top = []
@@ -112,11 +218,14 @@ def summarize_hub_result(text: str, extras: list[str], via: str | None = None) -
         ]
     if data.get("corpus_hint"):
         out["corpus_hint"] = clip(json.dumps(data["corpus_hint"]), 300)
-    if any("stale" in e.lower() or "index" in e.lower() for e in extras):
-        out["staleness_footer"] = clip(" ".join(extras), 200)
-    for k in ("error", "message"):
-        if isinstance(data.get(k), str) and not hits:
-            out["error_text"] = clip(data[k], 200)
+    if via == "mcp":
+        # Only a direct call's extra blocks are the hub's (or its harness's); a shell's or a JS
+        # batch's are the agent program's output.
+        if any("stale" in e.lower() or "index" in e.lower() for e in extras):
+            out["staleness_footer"] = clip(" ".join(extras), 200)
+        for k in ("error", "message"):
+            if isinstance(data.get(k), str) and not hits:
+                out["error_text"] = clip(data[k], 200)
     return out
 
 
@@ -171,6 +280,283 @@ def categorize(name: str, inp: Any) -> str | None:
     return None
 
 
+# ---- shell: which commands a shell line actually runs
+#
+# A hub CLI call is a command whose argv starts with the hub binary, after any NAME=value
+# assignments and launcher words (`uv run`, `uvx --from pkg`, `env`, `timeout 30`). The line is
+# tokenised shell-style first: quotes and escapes are honoured, comments dropped, control operators
+# (`; & | && || ( )` and newlines) separate commands, redirections and their targets are skipped,
+# and `$(...)`, backticks, `bash -c "..."` and `eval` scripts are parsed as the commands they run.
+# So `printf '%s' 'pipecat-context-hub search-docs x'` is not a call (the hub is an argument), and
+# `search-docs "TTS & STT"` keeps its whole query. A line that cannot be tokenised (an unterminated
+# quote) fails closed: the call is still counted by the regex, but no command text is shared.
+
+CLI_SUBCOMMANDS = frozenset(
+    {"search-api", "search-docs", "search-examples", "get-doc", "get-example",
+     "get-code-snippet", "check-deprecation", "status"}
+)  # fmt: skip
+_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# Words that may precede the hub binary in the command that runs it.
+_LAUNCHERS = frozenset(
+    {"uv", "uvx", "run", "tool", "pipx", "env", "time", "timeout", "nice", "nohup", "command",
+     "exec", "sudo", "xargs", "{", "!", "if", "then", "else", "elif", "do", "while", "until"}
+)  # fmt: skip
+_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?")
+_SHELL_C_RE = re.compile(r"-[A-Za-z]*c[A-Za-z]*")
+_REDIRECT_RE = re.compile(r"\d*(?:>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)|&>>|&>")
+_CONTROL_RE = re.compile(r"\|\||&&|;;|\|&|[|&;()\n]")
+_DQ_SUBST_RE = re.compile(r"\$\(|`")
+_MAX_SHELL_DEPTH = 4
+
+
+class ShellSyntaxError(ValueError):
+    """A shell line that cannot be tokenised (unterminated quote or substitution)."""
+
+
+def _read_balanced(text: str, i: int, close: str) -> int:
+    """Index just past the ``close`` that ends a substitution body starting at ``i`` (quote-aware)."""
+    depth = 1
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch in "'\"":
+            end = text.find(ch, i + 1) if ch == "'" else _dquote_end(text, i + 1)
+            if end < 0:
+                raise ShellSyntaxError("unterminated quote")
+            i = end + 1
+            continue
+        if close == ")" and ch == "(":
+            depth += 1
+        elif ch == close:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise ShellSyntaxError("unterminated substitution")
+
+
+def _dquote_end(text: str, i: int) -> int:
+    """Index of the ``"`` closing a double-quoted string whose body starts at ``i``, or -1."""
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+        elif text[i] == '"':
+            return i
+        else:
+            i += 1
+    return -1
+
+
+def _shell_segments(text: str) -> tuple[list[list[str]], list[str]]:
+    """(simple commands as argv lists, scripts nested in substitutions) of one shell line."""
+    segments: list[list[str]] = []
+    nested: list[str] = []
+    argv: list[str] = []
+    word: list[str] | None = None
+    skip_target = False  # the next word is a redirection target
+    heredocs: list[tuple[str, bool]] = []  # (delimiter, strip leading tabs)
+    want_delim: bool | None = None  # the next word is a here-document delimiter
+
+    def add(part: str) -> None:
+        nonlocal word
+        if word is None:
+            word = []
+        word.append(part)
+
+    def end_word() -> None:
+        nonlocal word, skip_target, want_delim
+        if word is None:
+            return
+        w = "".join(word)
+        word = None
+        if want_delim is not None:
+            heredocs.append((w, want_delim))
+            want_delim = None
+        elif skip_target:
+            skip_target = False
+        else:
+            argv.append(w)
+
+    def end_segment() -> None:
+        nonlocal argv
+        end_word()
+        if argv:
+            segments.append(argv)
+        argv = []
+
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in " \t\r":
+            end_word()
+            i += 1
+        elif ch == "#" and word is None:  # a comment runs to the end of the line
+            nl = text.find("\n", i)
+            i = n if nl < 0 else nl
+        elif ch == "\\":
+            if text[i + 1 : i + 2] == "\n":  # line continuation
+                i += 2
+                continue
+            add(text[i + 1 : i + 2])
+            i += 2
+        elif ch == "'":
+            end = text.find("'", i + 1)
+            if end < 0:
+                raise ShellSyntaxError("unterminated quote")
+            add(text[i + 1 : end])
+            i = end + 1
+        elif ch == '"':
+            end = _dquote_end(text, i + 1)
+            if end < 0:
+                raise ShellSyntaxError("unterminated quote")
+            body = text[i + 1 : end]
+            j = 0
+            while (m := _DQ_SUBST_RE.search(body, j)) is not None:  # substitutions run in "..." too
+                close = ")" if m.group(0) == "$(" else "`"
+                k = _read_balanced(body, m.end(), close)
+                nested.append(body[m.end() : k - 1])
+                j = k
+            add(re.sub(r'\\([$`"\\\n])', r"\1", body))
+            i = end + 1
+        elif ch == "$" and text[i + 1 : i + 2] == "(":
+            end = _read_balanced(text, i + 2, ")")
+            nested.append(text[i + 2 : end - 1])
+            add(text[i:end])
+            i = end
+        elif ch == "`":
+            end = _read_balanced(text, i + 1, "`")
+            nested.append(text[i + 1 : end - 1])
+            add(text[i:end])
+            i = end
+        elif (m := _REDIRECT_RE.match(text, i)) and (word is None or not m.group(0)[0].isdigit()):
+            end_word()
+            op = m.group(0)
+            if op.endswith(("<<", "<<-")) and not op.endswith("<<<"):
+                want_delim = op.endswith("-")
+            else:  # the target (a file, an fd, a here-string) is never an argument
+                skip_target = True
+            i = m.end()
+        elif m := _CONTROL_RE.match(text, i):
+            end_segment()
+            i = m.end()
+            if m.group(0) == "\n" and heredocs:  # here-document bodies are data, not commands
+                for delim, tabs in heredocs:
+                    while i < n:
+                        nl = text.find("\n", i)
+                        line = text[i : n if nl < 0 else nl]
+                        i = n if nl < 0 else nl + 1
+                        if (line.lstrip("\t") if tabs else line) == delim:
+                            break
+                heredocs = []
+        else:
+            add(ch)
+            i += 1
+    end_segment()
+    return segments, nested
+
+
+def _basename(word: str) -> str:
+    return word.rsplit("/", 1)[-1]
+
+
+def _hub_head(argv: list[str], i: int) -> int:
+    """How many words of ``argv`` from ``i`` name the hub binary followed by a subcommand, else 0."""
+    if _basename(argv[i]) == "pipecat-context-hub":
+        return 1 if argv[i + 1 : i + 2] and argv[i + 1] in CLI_SUBCOMMANDS else 0
+    if _basename(argv[i]) == "pipecat" and argv[i + 1 : i + 2] == ["context-hub"]:
+        return 2 if argv[i + 2 : i + 3] and argv[i + 2] in CLI_SUBCOMMANDS else 0
+    return 0
+
+
+def _command_start(argv: list[str]) -> int:
+    """Index of the command word: past NAME=value assignments and launcher words, or len(argv)."""
+    i = 0
+    while i < len(argv):
+        w = argv[i]
+        if _hub_head(argv, i):
+            return i
+        launcher_arg = i > 0 and (
+            w.startswith("-")
+            or _DURATION_RE.fullmatch(w) is not None
+            or (argv[i - 1].startswith("--") and "=" not in argv[i - 1])  # `uvx --from pkg`
+        )
+        if _ASSIGN_RE.fullmatch(w) or _basename(w) in _LAUNCHERS or launcher_arg:
+            i += 1
+            continue
+        return i
+    return i
+
+
+def _hub_argv(argv: list[str]) -> list[str] | None:
+    """The hub CLI call ``argv`` runs, canonicalised (no path, no launcher), or None."""
+    i = _command_start(argv)
+    if i >= len(argv) or not (k := _hub_head(argv, i)):
+        return None
+    head = ["pipecat-context-hub"] if k == 1 else ["pipecat", "context-hub"]
+    return head + argv[i + k :]
+
+
+def _nested_script(argv: list[str]) -> str | None:
+    """The script a `bash -c SCRIPT` or `eval ...` command runs, else None."""
+    i = _command_start(argv)
+    if i >= len(argv):
+        return None
+    if _basename(argv[i]) == "eval":
+        return " ".join(argv[i + 1 :])
+    if _basename(argv[i]) in _SHELLS:
+        for j in range(i + 1, len(argv) - 1):
+            if _SHELL_C_RE.fullmatch(argv[j]):
+                return argv[j + 1]
+    return None
+
+
+def shell_hub_calls(script: str, depth: int = 0) -> list[list[str]]:
+    """Every hub CLI call ``script`` runs, as canonical argv. Raises ShellSyntaxError."""
+    if depth > _MAX_SHELL_DEPTH:
+        return []
+    segments, nested = _shell_segments(script)
+    calls: list[list[str]] = []
+    for argv in segments:
+        hub = _hub_argv(argv)
+        if hub is not None:
+            calls.append(hub)
+            continue
+        inner = _nested_script(argv)
+        if inner is not None:
+            calls.extend(shell_hub_calls(inner, depth + 1))
+    for inner in nested:
+        calls.extend(shell_hub_calls(inner, depth + 1))
+    return calls
+
+
+def shell_source(inp: Any) -> str | None:
+    """A shell call's script (an argv list is re-quoted, so its words stay words), else None."""
+    if isinstance(inp, dict):
+        cmd = inp.get("command") or inp.get("cmd")
+        if isinstance(cmd, list) and all(isinstance(part, str) for part in cmd):
+            return shlex.join(cmd)
+        return cmd if isinstance(cmd, str) else None
+    return inp if isinstance(inp, str) else None
+
+
+def _cli_calls(inp: Any) -> list[list[str]] | None:
+    """The hub CLI calls a shell input runs; None when it has no script or cannot be tokenised."""
+    src = shell_source(inp)
+    if src is None:
+        return None
+    try:
+        return shell_hub_calls(src)
+    except ShellSyntaxError:
+        return None
+
+
+def _cli_tool(subcommand: str) -> str:
+    return CLI_TO_TOOL.get(subcommand, subcommand.replace("-", "_"))
+
+
 def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
     """Return (hub_tool, via, n_calls_in_event); via is 'mcp' (a direct tool call), 'mcp_js' (inside a
     JS ``exec`` batch) or 'cli' (shell)."""
@@ -185,9 +571,14 @@ def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
     if mm:
         return mm[0], "mcp_js", len(mm)
     if n in SHELLISH:
-        cm = CLI_RE.findall(blob)
-        if cm:
-            return CLI_TO_TOOL.get(cm[0], cm[0].replace("-", "_")), "cli", len(cm)
+        calls = _cli_calls(inp)
+        if calls:
+            sub = calls[0][2] if calls[0][0] == "pipecat" else calls[0][1]
+            return _cli_tool(sub), "cli", len(calls)
+        if calls is None:  # no script, or not tokenisable: count what the regex sees (fail closed
+            cm = CLI_RE.findall(blob)  # on text: hub_invocation shares nothing for these)
+            if cm:
+                return _cli_tool(cm[0]), "cli", len(cm)
     return None, None, 0
 
 
@@ -230,18 +621,25 @@ def command_text(inp: Any) -> str:
     return inp if isinstance(inp, str) else ""
 
 
-def hub_invocation(inp: Any) -> str:
-    """Just the Context Hub part of a call: the CLI segment or the MCP call, never the whole shell line."""
-    text = command_text(inp)
-    m = CLI_RE.search(text)
-    if m:
-        seg = re.split(r"\s*(?:\|\||&&|[|;&>\n])", text[m.start() :], maxsplit=1)[0]
-        return clip(seg, 300)
-    m = MCP_JS_CALL_RE.search(text)
-    if m:
-        return clip(_call_expression(text, m.start()), 300)
-    m = MCP_RE.search(text)
-    return m.group(0) if m else ""  # name only: the arguments of a direct call live in `input`
+def hub_invocation(inp: Any, via: str | None = None) -> str:
+    """Just the Context Hub part of a call, never the whole shell line or batch.
+
+    ``cli``: the hub command rebuilt from its parsed argv (re-quoted, launcher and path dropped), or
+    ``""`` when the line cannot be tokenised. ``mcp_js``: the one call expression. ``mcp``: ``""``
+    (a direct call's arguments live in ``input``). ``via=None`` tries each in turn.
+    """
+    if via in ("cli", None):
+        calls = _cli_calls(inp)
+        if calls:
+            return clip(shlex.join(calls[0]), 300)
+        if via == "cli":
+            return ""
+    if via in ("mcp_js", None):
+        text = command_text(inp)
+        m = MCP_JS_CALL_RE.search(text)
+        if m:
+            return clip(_call_expression(text, m.start()), 300)
+    return ""
 
 
 def _text_blocks(c: Any) -> tuple[str, list[str]]:
@@ -527,11 +925,12 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
             t0, t1 = parse_ts(ev["ts"]), parse_ts(ts)
             ev["latency_s"] = round(t1 - t0, 2) if t0 and t1 else None
             if ev["is_hub"]:
-                ev["result"] = summarize_hub_result(text, extras, ev["via"])
+                ev["result"] = summarize_hub_result(text, extras, ev["via"], ev["hub_tool"])
             err = ERROR_RE.search(text[:20_000])
             ev["has_py_error"] = bool(err)
-            # Start at the match: an error after 200 characters of output must keep its class name.
-            ev["err_head"] = clip(text[err.start() :], 200) if err else ""
+            # Start where the error is named: an error after 200 characters of output, or at the end
+            # of a long traceback, must keep its class name.
+            ev["err_head"] = clip(text[error_start(text, err) :], 200) if err else ""
     meta["sessionId"] = meta.get("id")
     meta["version"] = meta.get("version")
 
@@ -623,7 +1022,7 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
                 "ts": e["ts"],
                 "tool": tool,
                 "via": e["via"],
-                "hub_invocation": hub_invocation(e["input"]),
+                "hub_invocation": hub_invocation(e["input"], e["via"]),
                 "input": map_strings(e["input"], redact),
                 "latency_s": e.get("latency_s"),
                 "result": res,
@@ -758,16 +1157,38 @@ ERR_NAME_RE = re.compile(r"[A-Za-z]*(?:Error|Exception)\b|Traceback")
 BUNDLE_FILES = ("manifest.json", "SCHEMA.md", "report.md", "calls.jsonl", "sessions.jsonl")
 
 
+def refuse_unsafe_outputs(out: Path) -> None:
+    """Refuse an output directory whose share/ or any file this tool writes is not a plain one.
+
+    A pre-planted symlink (``share/SCHEMA.md -> ~/.zshrc``, ``--out`` under a shared ``/tmp``) would
+    be written through, and packed as a link whose target path no check ever sees. Checked before
+    anything is written, by ``extract`` and (through ``pack_share``) ``repack``.
+    """
+    share = out / "share"
+    if share.is_symlink() or (share.exists() and not share.is_dir()):
+        raise ValueError(f"refusing to write: {share.name}/ is a symlink or not a directory")
+    targets = [out / n for n in _LOCAL_OUTPUTS] + [share / n for n in BUNDLE_FILES]
+    bad = [p.name for p in targets if p.is_symlink() or (p.exists() and not p.is_file())]
+    if bad:
+        raise ValueError(f"refusing to write: {bad} already exist as a symlink or non-file")
+
+
 def pack_share(share: Path) -> tuple[Path, str]:
-    """Deterministic share.tar.gz next to share/ (flat names, no owners, fixed mtime) + its sha256."""
+    """Deterministic share.tar.gz next to share/ (flat names, no owners, fixed mtime) + its sha256.
+
+    Packs regular files only: anything else in the bundle refuses the pack.
+    """
     import gzip
     import tarfile
 
+    refuse_unsafe_outputs(share.parent)
     tar_path = share.parent / "share.tar.gz"
     with tar_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
         with tarfile.open(fileobj=gz, mode="w") as tf:
             for name in BUNDLE_FILES:
                 info = tf.gettarinfo(str(share / name), arcname=name)
+                if not info.isreg():
+                    raise ValueError(f"refusing to pack: {name} is not a regular file")
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
                 info.mtime = 0
@@ -845,7 +1266,7 @@ def build_share_bundle(
             keep["downstream_errors"] = [
                 {
                     "tool": public_tool_name(d["tool"], None),
-                    "error": (ERR_NAME_RE.search(d["err"]) or [""])[0],
+                    "error": error_class(d["err"]),
                 }
                 for d in c["downstream_errors"]
             ]
@@ -1001,6 +1422,7 @@ def run_extract(
     for root in inputs:
         if not root.is_dir():
             raise ValueError(f"not a directory: {root.name or root}")
+    refuse_unsafe_outputs(out)
     out.mkdir(parents=True, exist_ok=True)
     sessions: list[dict[str, Any]] = []
     all_calls: list[dict[str, Any]] = []
