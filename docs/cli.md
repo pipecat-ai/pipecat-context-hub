@@ -54,10 +54,13 @@ latency, with opaque ids; transcript text, shell commands and paths are dropped 
 call is shared only as the hub command it ran, rebuilt from its parsed argv and re-quoted (inert data:
 organizers rebuild a call from it by hand and never execute it); a line using a construct the parser
 does not model (`$'...'`, `${...}`, `$((...))`, a pipe or here-string into a shell, ...) is still
-counted but shares no command text. A Codex JS batch call shares only its literal arguments. A field
-named like a credential (`api_key`, `token`...) is replaced whole, and so is a labelled value in
-free text (`password: ...`, `--api-key ...`, `Authorization: Basic ...`, URL userinfo); a number of
-32+ digits is replaced too. Redaction is best-effort and queries are your own words, so read
+counted but shares no command text. A Codex JS batch call counts only in code (not in a string,
+comment or regex) and shares only its literal arguments, and only when it surely runs (not inside
+a block, branch or function). A field whose name contains a credential word (`api_key`,
+`password1`, `OPENAI_API_KEY_2`...) is replaced whole, and so is a labelled value in free text
+(`password: ...`, `API key = ...`, `--api-key ...`, `Authorization: Basic ...`, URL userinfo, an
+escaped `\"token\": \"...\"`); a quoted value goes whole and there is no minimum length. A number
+of 32+ digits is replaced too. Redaction is best-effort and queries are your own words, so read
 `report.md` first.
 
 Before anything is kept or posted, `extract`, `repack` and `gist` run a leak check over the
@@ -70,7 +73,9 @@ as empty; a gist cannot hold an empty file). `gist`, `repack` and `ingest` read 
 the same way (no symlinked directory or file, size limits) and `extract`, `repack`, `gist` and
 `ingest` validate a bundle with the same rules, including the shape of `manifest.json`'s `analysis`
 and each call's `latency_s` and `input`, so a bundle `repack` accepts is one `ingest` accepts; after
-a hand edit, run `repack` before `gist`. A refused `extract` or `repack` writes nothing: no file is
+a hand edit, run `repack` before `gist` (`gist` refuses a `report.md` the rows no longer render).
+`extract` refuses an `--out` that is, contains or sits inside an input directory, or that holds
+files it did not write. A refused `extract` or `repack` writes nothing: no file is
 kept or rewritten until the whole bundle has passed, and no output is ever written through a
 symlink. `gist` posts the bytes it checked, and refuses a `gh` found in the current directory.
 

@@ -35,6 +35,9 @@ ERROR_WINDOW_EVENTS = 25  # how far after a call a Python error counts as downst
 REFORMULATION_EVENTS = 3  # same search tool again within this many events after a bad result
 MULTI_CONCEPT_WORDS = 6  # a query longer than this that joins concepts is "multi-concept"
 MULTI_CONCEPT_DELIMITERS = (" + ", " & ")  # the hub's multi-concept query syntax
+# Session-level efficiency signals (analysis.analyze; the report's answers quote them).
+SEARCH_ONLY_SEARCHES = 3  # a session that searched this often and never fetched a doc or example
+STATUS_REPEAT_CALLS = 3  # a session that called get_hub_status this often
 
 CLEAN_OUTCOME = "no_negative_signal"
 # Every outcome class, in priority order (the first matching class wins), with what it means.
@@ -52,6 +55,9 @@ OUTCOMES: dict[str, str] = {
     CLEAN_OUTCOME: "no flag fired; NOT proof the answer was right",
 }
 OUTCOME_ORDER = tuple(o for o in OUTCOMES if o != CLEAN_OUTCOME)
+# The outcomes the answers' "Read first" list draws from: a call that failed, preceded a Python
+# error or was bypassed (a miss or an inefficiency is visible from its own row).
+READ_FIRST_OUTCOMES = ("failed", "suspect", "bypassed")
 
 FLAGS: dict[str, FlagSpec] = {
     # failed

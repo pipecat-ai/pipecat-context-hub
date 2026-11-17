@@ -29,6 +29,8 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import string
+import unicodedata
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
@@ -42,82 +44,280 @@ _B = r"(?<![A-Za-z0-9])"
 _E = r"(?![A-Za-z0-9])"
 REDACTED = "<redacted>"
 
-# A field whose NAME says it holds a credential has its value replaced whole, whatever the value
-# looks like: no value pattern can recognise an arbitrary password, and a hub call's arguments are
-# agent-chosen (``{"api_key": "..."}``). The rule: drop every character that is not an ASCII letter
-# or digit, then the name must END in one of these words, any case. So `api_key`, `apiKey`,
-# `X-Api-Key`, `OPENAI_API_KEY`, `client_secret`, `access_token`, `db.password` are credentials;
-# `max_tokens`, `token_count`, `secret_santa`, `keys` are not. Over-redacting a pagination
-# `next_token` is the accepted cost.
-_CREDENTIAL_WORDS = (
-    "apikey", "token", "secret", "password", "passwd", "pwd", "passphrase", "authorization",
-    "bearer", "accesskey", "privatekey", "secretkey", "credential", "credentials", "cookie",
+# ---- The label model: a credential is recognised by the LABEL in front of it, never by a list of
+# label shapes. No value pattern can recognise an arbitrary password, and a hub call's arguments are
+# agent-chosen (``{"api_key": "..."}``), so the label decides. One recogniser (:func:`is_credential_
+# name`) serves a dict key, a command-line flag and a label in free text; one value model
+# (:func:`_value_span`) decides what a label's value is; ``sanitize`` and the tripwire each locate
+# labels with their own code over the same grammar (below), so a weakened locator on one side is
+# caught by the other.
+#
+# Rule 1, the recogniser. A label is normalised (NFKC, so fullwidth letters fold; ASCII letters
+# lowered by a translation table; every character that is not a letter a-z dropped, so `_ - . `,
+# spaces and digit suffixes vanish). It names a credential when, after each benign word below is
+# blanked out, it still CONTAINS a credential stem: `password1`, `api_key_prod`, `OPENAI_API_KEY_2`,
+# `secret_key_base`, `X-Api-Key`, `db.password` and `API key` are credentials; `max_tokens`,
+# `token_count`, `tokens_used`, `password_hint`, `password_file`, `secret_santa`, `keys` are not.
+# A single-word label whose last segment (split at `_ - .` and camel-case) is `key` also names one
+# (`STRIPE_KEY`, `ssh_key`): an env-style key the stems do not cover. `MONKEY` and `keys` do not.
+# Known cost: a value under a label that merely contains a stem (`next_token`, `authorization_url`,
+# `primary_key`, `cookie_policy`) is redacted too; over-redacting is the safe direction.
+#
+# Rule 2, the separator. In text a label is one word (a maximal run of word characters, `.` and
+# `-`, except the `-` of `->`), optionally preceded by one more word and a single space or tab (`API key`), optionally
+# followed by a quote (`"`, `'`, each possibly backslash-escaped: stringified JSON), then spaces
+# and one of `:` `=` `=>` `->` and their fullwidth forms. A flag (a word starting with `-`) may
+# also be followed by spaces alone (`--password x`).
+#
+# Rule 3, the value (:func:`_value_span`). A quoted value runs to the matching closing quote: the
+# same quote character after exactly as many backslashes, so `\"` inside `"..."` and `\\\"` inside
+# `\"...\"` are not the end. An unterminated quote is a value to the end of the text. A flag's
+# unquoted value is one word. Any other unquoted value runs to the end of its segment: a line break,
+# `,` `;` `&` `)` `]` `}`, a sentence end (`.` then whitespace), two spaces, or a separator the
+# report renders between values (` | `, ` · `, ` → `), so a passphrase with spaces loses its tail
+# too. There is no minimum length: any non-empty value is redacted except the redaction marker and
+# a placeholder (`<token>`, `$TOKEN`, `${TOKEN}`, `YOUR_API_KEY`, `...`, `…`, `xxx`, `***`).
+#
+# Rule 4, URL userinfo: `scheme://user:pass@host` and `scheme://:pass@host` are credentials;
+# `scheme://user@host` is kept (a value-shape rule in ``SECRET_RES``).
+_FOLD = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+CREDENTIAL_STEMS = (
+    "password", "passwd", "passphrase", "pwd", "secret", "token", "apikey", "accesskey",
+    "privatekey", "secretkey", "credential", "authorization", "bearer", "cookie",
 )  # fmt: skip
-_CREDENTIAL_NAME_RE = re.compile(r"(?i)[a-z0-9]*(?:" + "|".join(_CREDENTIAL_WORDS) + r")")
-_NOT_ALNUM_RE = re.compile(r"[^A-Za-z0-9]+")
+# Words that contain a stem but name something else: LLM token counts, a hint or file that points
+# at a credential, a gift exchange. Blanked out before the stems are looked for.
+BENIGN_LABEL_WORDS = (
+    "tokens", "tokeniz", "tokencount", "tokenlimit", "tokenbudget", "passwordhint",
+    "passwordfile", "passwordpolicy", "secretsanta", "secretary",
+)  # fmt: skip
+_SEGMENT_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
+
+
+def label_key(name: str) -> str:
+    """``name`` normalised for recognition (rule 1): NFKC, ASCII-lowered, letters a-z only."""
+    folded = unicodedata.normalize("NFKC", name).translate(_FOLD)
+    return "".join(ch for ch in folded if "a" <= ch <= "z")
+
+
+def _ends_in_key(name: str) -> bool:
+    if any(ch.isspace() for ch in name):
+        return False
+    words = [w for w in _SEGMENT_RE.findall(unicodedata.normalize("NFKC", name)) if w.isalpha()]
+    return len(words) >= 2 and words[-1].translate(_FOLD) == "key"
 
 
 def is_credential_name(name: str) -> bool:
-    """True when ``name`` (a dict key) names a credential under the rule above."""
-    return bool(_CREDENTIAL_NAME_RE.fullmatch(_NOT_ALNUM_RE.sub("", name)))
+    """True when ``name`` (a dict key, a flag or a label in text) names a credential (rule 1)."""
+    key = label_key(name)
+    for word in BENIGN_LABEL_WORDS:
+        key = key.replace(word, "|")
+    return any(stem in key for stem in CREDENTIAL_STEMS) or _ends_in_key(name)
+
+
+_QUOTE_TOKEN_RE = re.compile(r"\\*[\"']")
+_VALUE_END_RE = re.compile(
+    r"[ \t]*(?:[\r\n,;&)\]}]|(?<=[ \t])[|·→](?=\s|\Z)|\.(?=\s|\Z)|\Z)|[ \t]{2}"
+)
+_PLACEHOLDER_RE = re.compile(
+    r"<[A-Za-z_][\w\-]{0,40}>|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\.{2,}|…+|[xX*]{3,}"
+    r"|(?i:your)[_\-][A-Za-z0-9_\-]+"
+)
+_RENDER_SEPS = frozenset("|·→")
+_SPACE_RE = re.compile(r"\s")
+
+
+def _closing_quote(text: str, start: int, token: str) -> int | None:
+    """Index of the quote closing a value opened by ``token`` (``k`` backslashes and a quote) whose
+    content starts at ``start``: the same quote character after exactly ``k`` backslashes."""
+    quote, k = token[-1], len(token) - 1
+    pos = start
+    while (pos := text.find(quote, pos)) >= 0:
+        run = 0
+        while pos - run - 1 >= start and text[pos - run - 1] == "\\":
+            run += 1
+        if run == k:
+            return pos - k
+        pos += 1
+    return None
+
+
+def _value_span(text: str, pos: int, word: bool) -> tuple[int, int, str] | None:
+    """The value of a label whose separator ends at ``pos`` (rule 3): ``(start, end, kind)`` or
+    None when there is none. ``kind`` is ``quoted`` (the span is the content between the quotes),
+    ``open`` (an unterminated quote: the span starts at the quote) or ``bare``."""
+    if m := _QUOTE_TOKEN_RE.match(text, pos):
+        close = _closing_quote(text, m.end(), m.group(0))
+        if close is None:
+            return pos, len(text), "open"
+        return m.end(), close, "quoted"
+    if word:
+        m = _SPACE_RE.search(text, pos)
+        end = m.start() if m else len(text)
+        if text[pos:end] in _RENDER_SEPS:
+            end = pos
+    else:
+        m = _VALUE_END_RE.search(text, pos)
+        end = m.start() if m else len(text)
+    return (pos, end, "bare") if end > pos else None
+
+
+def _is_secret_value(text: str, span: tuple[int, int, str]) -> bool:
+    """False for the marker, a placeholder and an empty value; an unterminated quote is always a
+    value (closed in a later cell of the report it could take in another value's text)."""
+    start, end, kind = span
+    if kind == "open":
+        return True
+    value = text[start:end]
+    if kind == "bare":  # quotes, backslashes and a cut mark (`…`) around a bare value are not it
+        value = value.strip(" \t\"'\\…")
+    return not (value in ("", REDACTED) or _PLACEHOLDER_RE.fullmatch(value))
+
+
+# Locator A (the sanitizer's): the grammar of rule 2 as two patterns.
+# A label word: letters, digits, `_`, `.` and `-`, except the `-` of a `->` separator.
+_WC = r"(?:[\w.]|-(?!>))"
+_W = _WC + r"+(?!" + _WC + r")"
+_SEP = r"(?:=>|->|[:=：﹕＝])"
+_SEP_LABEL_RE = re.compile(
+    r"(?<![\w.\-])(?:(?P<w0>" + _W + r")[ \t])?(?P<w1>" + _W + r")(?:\\*[\"'])?[ \t]*" + _SEP
+    + r"[ \t]*"
+)  # fmt: skip
+_FLAG_LABEL_RE = re.compile(
+    r"(?<![\w.\-])(?P<flag>-"
+    + _WC
+    + r"*(?!"
+    + _WC
+    + r"))(?:\\*[\"'])?[ \t]+(?![ \t]|"
+    + _SEP
+    + r")"
+)
+
+
+def _label_spans(text: str) -> list[tuple[int, int, str]]:
+    """Every labelled value in ``text`` (locator A, rules 1-3), as value spans."""
+    spans: list[tuple[int, int, str]] = []
+    pos = 0
+    while (m := _SEP_LABEL_RE.search(text, pos)) is not None:
+        names = [m.group("w1")] + ([m.group(0)[: m.end("w1") - m.start()]] if m.group("w0") else [])
+        if any(is_credential_name(n) for n in names):
+            span = _value_span(text, m.end(), m.group("w1").startswith("-"))
+            if span is not None and _is_secret_value(text, span):
+                spans.append(span)
+        pos = m.end()
+    for m in _FLAG_LABEL_RE.finditer(text):
+        if is_credential_name(m.group("flag")):
+            span = _value_span(text, m.end(), True)
+            if span is not None and _is_secret_value(text, span):
+                spans.append(span)
+    return spans
+
+
+def redact_labelled(text: str) -> str:
+    """``text`` with every labelled credential value replaced by ``REDACTED`` (the label and any
+    quotes around a closed value are kept; an unterminated quote goes with its value)."""
+    spans = sorted(_label_spans(text))
+    if not spans:
+        return text
+    merged: list[list[int]] = []
+    for start, end, _ in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    out, last = [], 0
+    for start, end in merged:
+        out += [text[last:start], REDACTED]
+        last = end
+    return "".join(out) + text[last:]
+
+
+# Locator B (the tripwire's): the same grammar walked character by character from each separator
+# and each flag, sharing only the recogniser and the value model with locator A.
+_WORD_CHAR_RE = re.compile(r"[\w.\-]")
+_SEP_CHARS = ":=：﹕＝"
+
+
+def _is_word_char(text: str, i: int) -> bool:
+    """A label character (``_WC``): the `-` of a `->` separator is not one."""
+    if not (0 <= i < len(text) and _WORD_CHAR_RE.match(text[i])):
+        return False
+    return not text.startswith("->", i)
+
+
+def _word_start(text: str, end: int) -> int:
+    start = end
+    while _is_word_char(text, start - 1):
+        start -= 1
+    return start
+
+
+def _sep_at(text: str, i: int) -> int:
+    """Length of the separator at ``i``, or 0."""
+    if text.startswith(("=>", "->"), i):
+        return 2
+    return 1 if i < len(text) and text[i] in _SEP_CHARS else 0
+
+
+def _skip_blanks(text: str, i: int) -> int:
+    while i < len(text) and text[i] in " \t":
+        i += 1
+    return i
+
+
+def labelled_value_leaks(text: str) -> bool:
+    """True when ``text`` holds a credential label followed by a value (locator B, rules 1-3)."""
+    n = len(text)
+    for i in range(n):
+        if sep := _sep_at(text, i):
+            j = i
+            while j > 0 and text[j - 1] in " \t":
+                j -= 1
+            if j > 0 and text[j - 1] in "\"'":
+                j -= 1
+                while j > 0 and text[j - 1] == "\\":
+                    j -= 1
+            if _is_word_char(text, j) or (start := _word_start(text, j)) == j:
+                continue
+            names = [text[start:j]]
+            if start >= 2 and text[start - 1] in " \t" and _is_word_char(text, start - 2):
+                names.append(text[_word_start(text, start - 1) : j])
+            if any(is_credential_name(w) for w in names):
+                span = _value_span(text, _skip_blanks(text, i + sep), names[0].startswith("-"))
+                if span is not None and _is_secret_value(text, span):
+                    return True
+        if text[i] == "-" and not _is_word_char(text, i - 1):
+            end = i
+            while _is_word_char(text, end):
+                end += 1
+            k = end
+            while k < n and text[k] == "\\":
+                k += 1
+            k = k + 1 if k < n and text[k] in "\"'" else end
+            v = _skip_blanks(text, k)
+            if v == k or _sep_at(text, v):
+                continue
+            if is_credential_name(text[i:end]):
+                span = _value_span(text, v, True)
+                if span is not None and _is_secret_value(text, span):
+                    return True
+    return False
 
 
 class _Rule(Protocol):
-    """A redaction rule: a compiled pattern, or one that also checks what it matched."""
+    """A leak rule: a compiled pattern, or anything with a ``search`` that finds a hit."""
 
     def search(self, string: str, /) -> object: ...
 
-    def sub(self, repl: str, string: str, /) -> str: ...
 
-
-class _LabelledCredential:
-    """A value written after a label that names a credential, in free text.
-
-    The label must pass :func:`is_credential_name`, the same rule a dict key does, so
-    ``"password": "..."``, ``--api-key ...``, ``X-Api-Key=...`` and ``Authorization: Basic ...`` are
-    caught while ``password_hint: ...``, ``--password-file ...`` and ``max_tokens: ...`` are not.
-    The whole match (label and value) is replaced. A value is a quoted string, or 4+ non-space
-    characters (an optional auth scheme first); an already redacted value is not a value, so the
-    result is stable.
-    """
-
-    def __init__(self, rx: re.Pattern[str]) -> None:
-        self._rx = rx
-
-    def _hits(self, text: str) -> list[re.Match[str]]:
-        found: list[re.Match[str]] = []
-        pos = 0
-        while (m := self._rx.search(text, pos)) is not None:
-            if is_credential_name(m.group("name")):
-                found.append(m)
-                pos = m.end()
-            else:  # a rejected label must not hide a credential label inside its value
-                pos = m.start() + 1
-        return found
+class _LabelRule:
+    """The tripwire's label check (locator B) as a leak rule."""
 
     def search(self, string: str, /) -> object:
-        hits = self._hits(string)
-        return hits[0] if hits else None
-
-    def sub(self, repl: str, string: str, /) -> str:
-        out, last = [], 0
-        for m in self._hits(string):
-            out += [string[last : m.start()], repl]
-            last = m.end()
-        return "".join(out) + string[last:]
+        return True if labelled_value_leaks(string) else None
 
 
-# One line only (`[ \t]`, never `\s`), and a quoted value never runs across ` | `, ` · ` or ` → `:
-# those are the separators the report renders between values, so no match can span two values.
-_LABEL_QUOTED = r"""(?:"(?:(?! [|·→] )[^"\n])+"|'(?:(?! [|·→] )[^'\n])+')"""
-_LABEL_VALUE = (
-    r"""(?!["']?<redacted>)(?:(?:basic|bearer|digest|token)[ \t]+(?!["']?<redacted>))?"""
-    r"(?:" + _LABEL_QUOTED + r"|\S{4,})"
-)
-_LABEL_START = r"(?<![A-Za-z0-9_.\-])"
-_LABEL_NAME = r"(?P<name>[A-Za-z][A-Za-z0-9_.\-]*)"
-
-SECRET_RES: list[_Rule] = [
+SECRET_RES: list[re.Pattern[str]] = [
     # A whole PEM private key, header to footer, or to the end of the text when the footer was cut
     # off. First, because a later rule that eats only the header would leave the key body behind.
     re.compile(
@@ -128,32 +328,18 @@ SECRET_RES: list[_Rule] = [
         r"[-_][A-Za-z0-9_\-]{16,}"
     ),
     re.compile(_B + r"pypi-AgE[A-Za-z0-9_\-]{16,}"),  # PyPI API token (a macaroon: always AgE...)
-    # Credentials in a URL: scheme://user:password@host (a user without a password is kept). The
-    # password runs to the LAST `@` before the host, so an `@` inside it is not left behind.
-    re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s/:@\"'<>]+:[^\s/\"'<>]+@"),
+    # Credentials in a URL (rule 4): scheme://user:password@host, scheme://:password@host (an
+    # empty user: the Redis shape); a user without a password is kept. The password runs to the
+    # LAST `@` before the host, so an `@` inside it is not left behind.
+    re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s/:@\"'<>]*:[^\s/\"'<>]+@"),
     re.compile(r"(?i)" + _B + r"(bearer|token)\s+[A-Za-z0-9._\-]{20,}"),
-    re.compile(r"(?i)\b([A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*[=:]\s*\S{8,}"),
     # Bare hex keys (Deepgram 40, Twilio/AssemblyAI 32, Daily 64) and git SHAs alike: a commit
     # SHA in a query is worth nothing, a key that escapes is worth a lot.
     re.compile(_B + r"[0-9a-fA-F]{32,}" + _E),
     re.compile(_B + r"AKIA[0-9A-Z]{16}" + _E),  # AWS access key id
     re.compile(_B + r"AIza[0-9A-Za-z_\-]{30,}"),  # Google API key
     re.compile(_B + r"eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),  # JWT
-    # Labelled credentials in free text: `name: value`, `"name": "value"`, `name=value`
-    _LabelledCredential(
-        re.compile(
-            r"(?i)"
-            + _LABEL_START
-            + r"""(?P<q>["']?)"""
-            + _LABEL_NAME
-            + r"(?P=q)[ \t]*[=:][ \t]*"
-            + _LABEL_VALUE
-        )
-    ),
-    # ... and as a command-line flag: `--name value`, `--name=value`
-    _LabelledCredential(
-        re.compile(r"(?i)" + _LABEL_START + r"--?" + _LABEL_NAME + r"(?:=|[ \t]+)" + _LABEL_VALUE)
-    ),
+    # Labelled credentials are not a pattern here: the label model above (`redact_labelled`).
 ]
 HOME_RE = re.compile(r"/(Users|home)/[^/\s\"']+")
 WIN_HOME_RE = re.compile(r"([A-Za-z]:\\{1,2}Users\\{1,2})[^\\/\s\"']+")
@@ -169,7 +355,7 @@ def redact(text: str) -> str:
     text = WIN_HOME_RE.sub(r"\1<user>", text)
     for rx in SECRET_RES:
         text = rx.sub(REDACTED, text)
-    return text
+    return redact_labelled(text)
 
 
 def map_strings(v: Any, fn: Callable[[str], str]) -> Any:
@@ -207,17 +393,25 @@ def clip(text: str, n: int) -> str:
 
 
 # Names of the participant's other tools can identify their setup (an internal MCP server) and are
-# text no pattern should be trusted to cover, so the bundle carries an allowlist, not the name.
-STANDARD_TOOLS = frozenset(
-    {
-        # Claude Code
-        "Bash", "Read", "Grep", "Glob", "LS", "Edit", "MultiEdit", "Write", "NotebookEdit",
-        "WebFetch", "WebSearch", "ToolSearch", "Task", "Agent", "TodoWrite",
-        # pi, Codex and others (exact spellings: no case folding)
-        "bash", "shell", "exec", "exec_command", "run_shell_command", "local_shell", "terminal",
-        "read", "grep", "glob", "ls", "find", "edit", "write", "apply_patch", "update_plan",
-        "view_image", "write_stdin",
-    }
+# text no pattern should be trusted to cover, so the bundle carries an allowlist, not the name. The
+# allowlist is the one harness tool vocabulary: the shell and read-only groups the extractor's
+# heuristics use are named here (lower-case, the way `extract` compares them) and are part of it.
+SHELL_TOOLS = frozenset(
+    {"bash", "shell", "exec", "exec_command", "run_shell_command", "local_shell", "terminal"}
+)
+READONLY_TOOLS = frozenset({"read", "grep", "glob", "ls", "find"})
+STANDARD_TOOLS = (
+    frozenset(
+        {
+            # Claude Code
+            "Bash", "Read", "Grep", "Glob", "LS", "Edit", "MultiEdit", "Write", "NotebookEdit",
+            "WebFetch", "WebSearch", "ToolSearch", "Task", "Agent", "TodoWrite",
+            # pi, Codex and others (exact spellings: no case folding)
+            "edit", "write", "apply_patch", "update_plan", "view_image", "write_stdin",
+        }
+    )
+    | SHELL_TOOLS
+    | READONLY_TOOLS
 )  # fmt: skip
 
 
@@ -375,6 +569,7 @@ def argv_text(argv: list[str]) -> str:
 # has already been rewritten to `<user>` is clean.
 _LEAK_RES: dict[str, _Rule] = {
     **{f"secret pattern {i}": rx for i, rx in enumerate(SECRET_RES, 1)},
+    "credential label": _LabelRule(),
     "home path": re.compile(r"/(?:Users|home)/(?!<user>)[^/\s\"']+"),
     "windows home path": re.compile(r"[A-Za-z]:\\{1,2}Users\\{1,2}(?!<user>)[^\\/\s\"']+"),
     "local absolute path": SHARE_PATH_RE,

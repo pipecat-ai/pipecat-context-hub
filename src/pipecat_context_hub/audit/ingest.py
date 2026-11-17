@@ -139,7 +139,15 @@ def merge_bundles(bundles: Sequence[Path], out: Path) -> dict[str, Any]:
     for b in bundles:
         try:
             manifest, c, s, sha, digest = load(b)
-        except (ValueError, OSError, tarfile.TarError, EOFError, zlib.error, RecursionError) as exc:
+        except (
+            ValueError,
+            OSError,
+            ArithmeticError,
+            tarfile.TarError,
+            EOFError,
+            zlib.error,
+            RecursionError,
+        ) as exc:  # ArithmeticError: a hostile number no validator should ever let through
             report.append({"source": b.name, "status": "rejected", "reason": str(exc)})
             continue
         entry: dict[str, Any] = {

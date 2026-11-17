@@ -16,11 +16,23 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from pipecat_context_hub.audit.flags import CLEAN_OUTCOME, FLAGS, OUTCOME_ORDER, OUTCOMES, severity
-from pipecat_context_hub.audit.flags import spec
+from pipecat_context_hub.audit.flags import (
+    CLEAN_OUTCOME,
+    FLAGS,
+    OUTCOME_ORDER,
+    OUTCOMES,
+    READ_FIRST_OUTCOMES,
+    SEARCH_ONLY_SEARCHES,
+    STATUS_REPEAT_CALLS,
+    severity,
+    spec,
+)
+from pipecat_context_hub.audit.shell import FETCH_TOOLS, SEARCH_TOOLS, STATUS_TOOL, VERSIONED_TOOLS
 
-SEARCH_TOOLS = {"search_docs", "search_examples", "search_api", "get_code_snippet"}
-VERSIONED_TOOLS = {"search_examples", "search_api", "get_code_snippet"}
+# The efficiency keys name their threshold; the bundle contract (a leaf) spells them out and a test
+# pins the two together.
+SEARCH_ONLY_KEY = f"sessions_searching_{SEARCH_ONLY_SEARCHES}plus_times_never_fetching"
+STATUS_REPEAT_KEY = f"sessions_with_{STATUS_REPEAT_CALLS}plus_status_calls"
 
 # Priority order: the first matching class wins. Each maps a flag to a likely owner. Derived from
 # the one flag table (audit/flags.py), never written out here.
@@ -154,11 +166,13 @@ def analyze(
     search_only = sum(
         1
         for cs in per_session.values()
-        if sum(c["tool"] in SEARCH_TOOLS for c in cs) >= 3
-        and not any(c["tool"] in {"get_doc", "get_example"} for c in cs)
+        if sum(c["tool"] in SEARCH_TOOLS for c in cs) >= SEARCH_ONLY_SEARCHES
+        and not any(c["tool"] in FETCH_TOOLS for c in cs)
     )
     status_spam = sum(
-        1 for cs in per_session.values() if sum(c["tool"] == "get_hub_status" for c in cs) >= 3
+        1
+        for cs in per_session.values()
+        if sum(c["tool"] == STATUS_TOOL for c in cs) >= STATUS_REPEAT_CALLS
     )
     versioned = [c for c in calls if c["tool"] in VERSIONED_TOOLS and c["via"] == "mcp"]
     no_version = sum(
@@ -170,8 +184,8 @@ def analyze(
         "clean_pct": _pct(outcomes[CLEAN_OUTCOME], len(calls)),
         "median_latency_s": median_all,
         "per_tool": tool_stats,
-        "sessions_searching_3plus_times_never_fetching": search_only,
-        "sessions_with_3plus_status_calls": status_spam,
+        SEARCH_ONLY_KEY: search_only,
+        STATUS_REPEAT_KEY: status_spam,
         "versioned_search_calls_without_pipecat_version": {
             "of": len(versioned),
             "without": no_version,
@@ -184,9 +198,7 @@ def analyze(
         "glossary": dict(OUTCOMES),
         "read_these_first": [
             ref(c)
-            for c in triage_order(
-                c for c in calls if c["outcome"] in {"failed", "suspect", "bypassed"}
-            )[:10]
+            for c in triage_order(c for c in calls if c["outcome"] in READ_FIRST_OUTCOMES)[:10]
         ],
     }
 

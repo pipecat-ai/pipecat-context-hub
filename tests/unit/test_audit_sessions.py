@@ -634,7 +634,9 @@ class TestSharing:
 
     def test_generated_paths_lists_only_known_names(self, audited: Path) -> None:
         (audited / "extra.txt").write_text("x")
-        names = {p.name for p in audit_extract.generated_paths(audited)}
+        from pipecat_context_hub.audit.sharedir import generated_paths
+
+        names = {p.name for p in generated_paths(audited)}
         assert "extra.txt" not in names and "share.tar.gz" in names
 
 
@@ -802,12 +804,14 @@ class TestReviewRegressions:
         assert (summary["sessions"], summary["participants"]) == (1, 1)
         assert summary["missed_opportunity"] == 0
 
-    def test_output_inside_the_input_is_not_read_back(self, tmp_path: Path) -> None:
+    def test_output_inside_the_input_is_refused(self, tmp_path: Path) -> None:
+        """Round 3 F19 changed this: an --out inside an input directory used to be skipped while
+        scanning; it is now refused before anything is read or written (K2)."""
         src = tmp_path / "in"
         _hub_session(src / "alice" / "s1.jsonl")
-        first = json.loads(_extract(src, src / "audit").stdout)
-        second = json.loads(_extract(src, src / "audit").stdout)
-        assert first["sessions"] == second["sessions"] == 1
+        result = _extract(src, src / "audit")
+        assert result.exit_code == 1 and "input directory" in result.output, result.output
+        assert not (src / "audit").exists()
 
     def test_text_scan_only_gist_ingests(self, tmp_path: Path) -> None:
         """A text-scanned session counts mentions in `hub_calls` but writes no calls.jsonl rows; the
@@ -1198,7 +1202,10 @@ class TestEgress:
             blob = json.dumps(once)
             assert payload not in blob, text
             assert sanitize(once) == once  # idempotent
-            assert leaks_in(blob) == [], text
+            # the tripwire's own representation: decoded values (round 3: a scan of the serialised
+            # blob reads `TOKEN=<redacted>": "` as a value, which no share file is checked as)
+            assert egress._file_leaks("calls.jsonl", blob) == [], text
+            assert leaks_in(text) or text in (HOME_PATH,), text
         benign = sanitize("see /guides/x and plain words and /home/<user>/y")
         assert "/guides/x" in benign and "plain words" in benign
 
@@ -1265,7 +1272,7 @@ BENIGN = [
     "--password-file ./pw.txt",
     "max_tokens: 4096",
     "token_count=12",
-    "a token: is",
+    # (round 3: "a token: is" moved out: a value has no minimum length after a credential label)
     "Authorization header docs",
 ]
 
@@ -1345,7 +1352,11 @@ class TestEgressParity:
         clean = egress.sanitize(row)
         _write_sink(share, sink, json.dumps(clean))
         assert _verify_share(share, (sink,)) == []
-        if rep != "credential-key":
+        if rep == "dict-key" and egress.is_credential_name(text):
+            # the label model's stated cost: a KEY containing a stem (`Authorization ...`) names a
+            # credential, so its value goes; the key text itself is kept
+            assert clean == {text: egress.REDACTED}
+        elif rep != "credential-key":
             assert clean == row  # nothing benign is rewritten
 
     def test_benign_look_alikes_survive_extract_and_the_report(self, tmp_path: Path) -> None:
@@ -1643,7 +1654,7 @@ class TestResultShapeAndErrors:
         """F4: get_code_snippet answers with `snippets`, not `hits`. Table-driven over all tools."""
         from typing import get_origin
 
-        from pipecat_context_hub.audit.analysis import SEARCH_TOOLS
+        from pipecat_context_hub.audit.shell import SEARCH_TOOLS
         from pydantic import BaseModel
 
         from pipecat_context_hub.shared import types as T
@@ -2290,13 +2301,19 @@ class TestHygiene:
 # checked over generated values below, built from printable text, the characters the rules key on
 # and the secret-shape corpus.
 
-_FUZZ_ALPHABET = "abcXYZ019 .,_-/" + "|\\\n:@=\"'$()" + "\t\r·→…<>`;{}[]#~%"
+_FUZZ_ALPHABET = (
+    "abcXYZ0123456789 .,_-/" + "|\\\n:@=\"'$()" + "\t\r·→…<>`;{}[]#~%" + "：=:_-\\\"'"
+)  # round 3 (K1): the label model's separators, quotes and escapes weigh more
 _FUZZ_FRAGMENTS = [
     *(t for t, _ in SECRET_SHAPES), *BENIGN, "password", "TOKEN=", "MONKEY=", "api_key",
     "--api-key ", "--password=", "--password", "Authorization: Basic ", "Bearer ", "C:\\",
     "/tmp/", "/Users/", "Users", "sk-", "0123456789abcdef", "<redacted>", "<user>", "<path>",
     "\\|", " · ", " → ", " | ", "MONKEY=a|b|c|d", "s:\n", "eyJ", "AKIA", "@", "://", "u:p@h",
     '"', "'", "abcdefgh", "-----BEGIN RSA PRIVATE KEY-----",
+    # round 3 (K1): every stem, the separators and the escaped-quote forms
+    *egress.CREDENTIAL_STEMS, *egress.BENIGN_LABEL_WORDS, "API key", "STRIPE_KEY", "password1",
+    "：", "=>", "->", ": ", " = ", '\\"', '\\\\"', '{\\"password\\": \\"', "redis://:",
+    "OPENAI_API_KEY_2", "my secret phrase",
 ]  # fmt: skip
 
 
@@ -2364,7 +2381,7 @@ def _report_clean(text: str) -> bool:
 
 
 class TestRenderClosure:
-    @pytest.mark.parametrize("seed", range(4))
+    @pytest.mark.parametrize("seed", range(8))
     def test_sanitize_and_render_are_closed_over_generated_values(self, seed: int) -> None:
         """Property: sanitize-closure, render-closure (the answers section from a hand-editable
         manifest `analysis` included), value_text-closure and the cell identity."""
@@ -2382,7 +2399,10 @@ class TestRenderClosure:
                 "ref": _fuzz_text(rng),
                 "tool": _fuzz_text(rng),
                 "via": "mcp",
-                "flags": rng.sample(names, rng.randint(1, 3)),
+                # round 3 (F13): a hand-edited row's flags are any strings, joined in one cell
+                "flags": rng.choice(
+                    [rng.sample(names, rng.randint(1, 3)), [_fuzz_text(rng) for _ in range(3)]]
+                ),
                 "severity": 1,
                 "result": {"n_hits": n_hits, "confidence": _fuzz_value(rng)},
                 "followups": [],
@@ -2449,7 +2469,8 @@ class TestRenderClosure:
         _write_sink(share, "calls.jsonl", json.dumps(out))
         assert _verify_share(share, ("calls.jsonl",)) == []
         _write_sink(share, "calls.jsonl", json.dumps({"input": {"n": big}}))  # a hand edit
-        assert _verify_share(share, ("calls.jsonl",)) == ["calls.jsonl: secret pattern 7"]
+        hex_rule = next(n for n, rx in egress._LEAK_RES.items() if rx.search(str(big)))
+        assert _verify_share(share, ("calls.jsonl",)) == [f"calls.jsonl: {hex_rule}"]
         assert egress.value_text(big) == str(big) and egress.value_text(1e40) == "1e+40"
 
     # (representation, how the shape reaches a share row). `argv` goes through a real shell line.
@@ -2770,11 +2791,11 @@ class TestShellFailClosed:
     def test_one_vocabulary_for_tools_and_subcommands(self) -> None:
         """F6 / F7: the tool and subcommand names were written four times; command_text
         duplicated shell_source with a different list rule."""
-        from pipecat_context_hub.audit import analysis, shell
+        from pipecat_context_hub.audit import shell
 
         assert audit_extract.HUB_TOOLS == tuple(shell.HUB_TOOL_SUBCOMMANDS)
         assert set(audit_extract.HUB_RESULT_KEY) == set(shell.HUB_TOOL_SUBCOMMANDS)
-        assert analysis.SEARCH_TOOLS <= set(shell.HUB_TOOL_SUBCOMMANDS)
+        assert shell.SEARCH_TOOLS <= set(shell.HUB_TOOL_SUBCOMMANDS)
         assert set(shell.CLI_TO_TOOL.values()) == set(shell.HUB_TOOL_SUBCOMMANDS)
         for sub, tool in shell.CLI_TO_TOOL.items():
             m = audit_extract.CLI_RE.search(f"pipecat-context-hub {sub} x")
@@ -3377,3 +3398,512 @@ class TestOneDescriptionPerConcept:
         for mod, name in ((flags, "FLAG_GLOSSARY"), (flags, "SEVERITY"),
                           (bundle, "CALL_KEYS"), (bundle, "SESSION_KEYS")):  # fmt: skip
             assert not hasattr(mod, name), name
+
+
+# ---- Round 3, contract K1: one credential-label model, two independent locators -----------------
+#
+# Invariant. A value written after a credential LABEL is redacted, and the tripwire refuses any
+# text that still holds one. The label model is defined once (egress): the recogniser
+# (`is_credential_name`: NFKC, letters only, contains a CREDENTIAL_STEM once BENIGN_LABEL_WORDS are
+# blanked, or a single word ending in `key`), the separators (`:` `=` `：` `=>` `->`, or a flag
+# followed by blanks), the quote token (optionally backslash-escaped, any depth) and the value
+# extent (`_value_span`: quoted runs to its matching close, an open quote to the end; unquoted runs
+# to the end of the segment; no minimum length; placeholders exempt). Sanitize finds labels with a
+# regex (locator A, `redact_labelled`); the tripwire with a character walk from each separator
+# (locator B, `labelled_value_leaks`). Both share the recogniser and the value rules, so a mutation
+# of either locator shows up as a disagreement over the generated space below.
+
+_K1_CANARY = "zq7Canary"
+_K1_SEPARATORS = [":", "=", "：", "=>", "->"]
+_K1_SPACING = [("", ""), ("", " "), (" ", " ")]
+_K1_QUOTES = ["", '"', "'", '\\"', '\\\\"']
+_K1_VALUES = {
+    "word": _K1_CANARY,
+    "short": "zQ",
+    "phrase": f"my {_K1_CANARY} phrase",
+    "piped": f"north | {_K1_CANARY}",  # quoted only: an unquoted value ends at a segment separator
+}
+
+
+def _k1_labels(stem: str) -> list[str]:
+    return [stem, stem.upper(), f"my_{stem}_2", f"{stem.capitalize()}Prod", f"x-{stem}"]
+
+
+def _k1_cases(stem: str) -> list[str]:
+    import itertools
+
+    out = []
+    for lab, sep, (a, b), q, (kind, v) in itertools.product(
+        _k1_labels(stem), _K1_SEPARATORS, _K1_SPACING, _K1_QUOTES, _K1_VALUES.items()
+    ):
+        if kind != "piped" or q:
+            out.append(f"{q}{lab}{q}{a}{sep}{b}{q}{v}{q}")
+    for v in (_K1_CANARY, "zQ"):
+        out += [f"--{stem} {v}", f"--{stem}={v}"]
+    for q in ('"', "'", '\\"'):
+        out += [f"--{stem} {q}my {_K1_CANARY} phrase{q}", f"--{stem}={q}north | {_K1_CANARY}{q}"]
+    return out
+
+
+_K1_BENIGN = [
+    "max_tokens: 1000", "max_tokens=1000", "tokenizer: bpe", "password_hint: pet name",
+    "PASSWORD_FILE=/run/secrets/db", "secretary: Jane", "token_count=12", "MONKEY=banana",
+    "keys: 3", "password: <your-password>", "API_KEY=${API_KEY}", "token: ...", "password: xxxx",
+    "api_key: YOUR_API_KEY", 'secret: ""', "x->y: z", "a -> b", "tokens -> 5", "TTS -> STT",
+]  # fmt: skip
+
+
+class TestLabelModelK1:
+    @pytest.mark.parametrize("stem", egress.CREDENTIAL_STEMS)
+    def test_every_label_shape_is_redacted_and_refused(self, stem: str) -> None:
+        """The whole space: stem x label form x separator x spacing x quote token x value shape,
+        each alone, inside prose and inside a serialised share row."""
+        for text in _k1_cases(stem):
+            secret = "zQ" if "zQ" in text else _K1_CANARY
+            clean = egress.sanitize(text)
+            assert secret not in clean, (text, clean)
+            assert egress.leaks_in(clean) == [], (text, clean)
+            assert egress.sanitize(clean) == clean
+            assert "credential label" in egress.leaks_in(text), text  # the tripwire is not blind
+            assert egress._file_leaks("calls.jsonl", json.dumps({"q": text})), text
+            assert secret not in egress.sanitize(f"note {text}"), text
+            # the two locators agree (neither borrows the other's matches)
+            assert egress.labelled_value_leaks(text) == bool(egress._label_spans(text)), text
+
+    @pytest.mark.parametrize("text", _K1_BENIGN)
+    def test_benign_labels_and_placeholders_are_kept(self, text: str) -> None:
+        assert egress.sanitize(text) == text
+        assert egress.leaks_in(text) == []
+        assert egress.labelled_value_leaks(text) is False and egress._label_spans(text) == []
+
+    def test_the_locators_agree_on_generated_text(self) -> None:
+        import random
+
+        rng = random.Random(3)
+        for _ in range(3000):
+            text = _fuzz_text(rng)
+            assert egress.labelled_value_leaks(text) == bool(egress._label_spans(text)), text
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("password1", "hunter22"), ("api_key_prod", "zzzz1234"), ("OPENAI_API_KEY_2", "abcd"),
+         ("secret_key_base", "abcd"), ("STRIPE_KEY", "abcd")],
+    )  # fmt: skip
+    def test_f4_a_key_containing_a_stem_is_a_credential(
+        self, key: str, value: str, tmp_path: Path
+    ) -> None:
+        """F4: the name rule was suffix-only, so `password1` and `api_key_prod` kept their values."""
+        assert egress.sanitize({key: value}) == {key: egress.REDACTED}
+        share = tmp_path / "share"
+        share.mkdir()
+        (share / "calls.jsonl").write_text(json.dumps({"input": {key: value}}) + "\n")
+        assert _verify_share(share, ("calls.jsonl",)) != []
+
+    @pytest.mark.parametrize(
+        "text", ['{\\"password\\": \\"hunter2xyz\\"}', '{\\"api_key\\":\\"abcd1234efgh\\"}',
+                 '{\\\\\\"token\\\\\\": \\\\\\"abcd1234efgh\\\\\\"}'],
+    )  # fmt: skip
+    def test_f5_escaped_quotes_do_not_hide_a_labelled_value(self, text: str) -> None:
+        """F5: a backslash before the closing quote broke the label pattern."""
+        clean = egress.sanitize(text)
+        assert "hunter2xyz" not in clean and "abcd1234efgh" not in clean, clean
+        assert egress.leaks_in(text) and egress._file_leaks("calls.jsonl", json.dumps({"q": text}))
+
+    def test_f16_a_short_first_word_is_still_a_value(self) -> None:
+        """F16: the value needed a first word of 4+ chars."""
+        assert egress.sanitize("password: my secret phrase") == f"password: {egress.REDACTED}"
+        assert egress.leaks_in("password: my secret phrase")
+
+    @pytest.mark.parametrize(
+        ("text", "secret"),
+        [("API key: abc12xy", "abc12xy"), ("password：hunter2xyz", "hunter2xyz")],
+    )
+    def test_f17_spaced_labels_and_the_fullwidth_colon(self, text: str, secret: str) -> None:
+        """F17: label names excluded spaces, separators excluded U+FF1A."""
+        assert secret not in egress.sanitize(text) and egress.leaks_in(text)
+
+    def test_f18_url_userinfo_with_an_empty_user(self, tmp_path: Path) -> None:
+        """F18: the userinfo rule needed a non-empty user (the standard Redis URL shape)."""
+        text = "redis://:hunter2pass@localhost:6379"
+        assert "hunter2pass" not in egress.sanitize(text)
+        share = tmp_path / "share"
+        share.mkdir()
+        (share / "calls.jsonl").write_text(json.dumps({"q": text}) + "\n")
+        assert _verify_share(share, ("calls.jsonl",)) != []
+
+    @pytest.mark.parametrize(
+        ("query", "words"),
+        [('password: "correct horse battery staple"', ("horse", "battery", "staple")),
+         ('passphrase: "north | lantern-private-passphrase"', ("lantern-private",))],
+    )  # fmt: skip
+    def test_f20_a_quoted_value_goes_whole(
+        self, query: str, words: tuple[str, ...], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F20: the label rule ate the label before the quoted value was consumed, and a ` | `
+        inside quotes ended the value; the suffix reached the bundle and passed every check."""
+        clean = egress.sanitize({"query": query})["query"]
+        assert not any(w in clean for w in words), clean
+        assert egress.leaks_in(query)
+        _hub_session(tmp_path / "in" / "zed" / "s.jsonl", query, confident=False)
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        assert _invoke("repack", str(out)).exit_code == 0
+        shared = "".join((out / "share" / n).read_text() for n in BUNDLE)
+        assert not any(w in shared for w in words)
+        seen = _fake_gh(monkeypatch)
+        assert _invoke("gist", str(out), "--yes", "--allow-empty").exit_code == 0, seen
+
+    def test_f13_flags_render_with_the_whitespace_bounded_separator(self, audited: Path) -> None:
+        """F13: flags joined with ', ' made `password:xyz, a` a labelled value in report.md although
+        no single flag string was; repack then refused the report it had just written."""
+        row = egress.sanitize(
+            {"ref": "r", "tool": "search_docs", "flags": ["password:xyz", "a", "zero_hits"],
+             "result": {}, "input": {"query": "q"}}
+        )  # fmt: skip
+        report = render_report({}, [row])
+        assert "| password:<redacted> · a · zero_hits |" in report, report
+        assert _report_clean(report)
+        # the finding's path end to end: repack regenerates report.md and accepts its own output
+        f = audited / "share" / "calls.jsonl"
+        first, *rest = f.read_text().splitlines()
+        edited = {**json.loads(first), "flags": row["flags"]}
+        f.write_text("".join(line + "\n" for line in [json.dumps(edited), *rest]))
+        assert _invoke("repack", str(audited)).exit_code == 0
+
+
+# ---- Round 3, contract K2: what extract, repack, gist and ingest accept is total ---------------
+#
+# Invariant. (1) extract never writes where it reads: --out may not be, contain or sit inside an
+# input directory (symlinks resolved), and may hold only files a previous extract wrote. (2) A value
+# the producer cannot measure is null, never a value the contract rejects (latency). (3) Every
+# validator is total: a hostile number (an integer too big for a float) is a row error, and ingest
+# rejects that bundle and goes on. (4) The send-side verdict (`check_share`) re-renders report.md
+# from the rows and manifest and refuses a stale one byte for byte. (5) A transcript field of the
+# wrong JSON type never aborts extract.
+
+
+def _transcript(path: Path, rows: list[dict[str, Any]]) -> Path:
+    _jl(path, rows)
+    return path
+
+
+class TestExtractTargetK2:
+    def _src(self, tmp_path: Path) -> Path:
+        src = tmp_path / "transcripts"
+        _hub_session(src / "sessions.jsonl")
+        return src
+
+    @pytest.mark.parametrize("where", ["same", "inside", "around", "symlink"])
+    def test_f19_out_is_never_an_input(self, tmp_path: Path, where: str) -> None:
+        """F19: `-i transcripts --out transcripts` skipped every input as output and then wrote an
+        empty sessions.jsonl over the transcript of the same name."""
+        src = self._src(tmp_path)
+        before = (src / "sessions.jsonl").read_bytes()
+        if where == "same":
+            out = src
+        elif where == "inside":
+            out = src / "audit"
+        elif where == "around":
+            out = tmp_path
+        else:
+            out = tmp_path / "link"
+            out.symlink_to(src, target_is_directory=True)
+        result = _extract(src, out)
+        assert result.exit_code == 1 and "input directory" in result.output, result.output
+        assert (src / "sessions.jsonl").read_bytes() == before
+        assert not (src / "share").exists() and not (src / "summary.json").exists()
+
+    @pytest.mark.parametrize("where", ["out", "share"])
+    def test_f19_out_holding_foreign_files_is_refused(self, tmp_path: Path, where: str) -> None:
+        src = self._src(tmp_path)
+        out = tmp_path / "out"
+        (out / "share").mkdir(parents=True)
+        foreign = (out if where == "out" else out / "share") / "notes.txt"
+        foreign.write_text("mine")
+        result = _extract(src, out)
+        assert result.exit_code == 1 and "did not write" in result.output, result.output
+        assert foreign.read_text() == "mine" and not (out / "summary.json").exists()
+
+    def test_f19_a_previous_extract_may_be_overwritten(self, tmp_path: Path) -> None:
+        src = self._src(tmp_path)
+        out = tmp_path / "out"
+        assert _extract(src, out).exit_code == 0
+        assert _extract(src, out).exit_code == 0
+
+
+class TestTotalValidatorsK2:
+    @pytest.mark.parametrize(
+        ("call_ts", "result_ts", "latency"),
+        [("2026-11-18T10:00:05Z", "2026-11-18T10:00:01Z", None),
+         ("2026-11-18T10:00:05Z", "2026-11-18T10:00:05Z", 0.0),
+         ("2026-11-18T10:00:05Z", "2026-11-18T10:00:06.5Z", 1.5),
+         ("2026-11-18T10:00:05Z", "", None), ("", "2026-11-18T10:00:05Z", None)],
+    )  # fmt: skip
+    def test_f2_latency_is_null_when_unmeasurable(
+        self, tmp_path: Path, call_ts: str, result_ts: str, latency: float | None
+    ) -> None:
+        """F2: a result stamped before its call gave latency_s -4.0, which the contract rejects,
+        so the whole extract failed with nothing written."""
+        body = json.dumps({"hits": [], "evidence": {"confidence": 0.1}})
+        _transcript(
+            tmp_path / "in" / "a" / "s.jsonl",
+            [_use(1, call_ts, "mcp__pipecat-context-hub__search_docs", {"query": "q"}),
+             _result(1, result_ts, body)],
+        )  # fmt: skip
+        out = tmp_path / "out"
+        result = _extract(tmp_path / "in", out)
+        assert result.exit_code == 0, result.output
+        (row,) = _rows(out / "share" / "calls.jsonl")
+        assert row["latency_s"] == latency
+
+    def test_f2_the_producer_owns_latency(self) -> None:
+        assert audit_extract.latency("2026-11-18T10:00:05Z", "2026-11-18T10:00:01Z") is None
+        assert audit_extract.latency(None, "2026-11-18T10:00:01Z") is None
+        assert audit_extract.latency("2026-11-18T10:00:01Z", "2026-11-18T10:00:03Z") == 2.0
+
+    @pytest.mark.parametrize("field", ["latency_s", "severity", "confidence", "n_hits"])
+    def test_f22_a_huge_integer_is_a_row_error_never_a_crash(
+        self, audited: Path, tmp_path: Path, field: str
+    ) -> None:
+        """F22: latency_s = 10**400 decoded fine, then math.isfinite raised OverflowError, which
+        merge_bundles did not catch, so one hostile bundle aborted the whole ingest."""
+        from pipecat_context_hub.audit import bundle
+
+        f = audited / "share" / "calls.jsonl"
+        first, *rest = f.read_text().splitlines()
+        row = json.loads(first)
+        if field in ("confidence", "n_hits"):
+            row["result"][field] = 10**400
+        else:
+            row[field] = 10**400
+        f.write_text("".join(line + "\n" for line in [json.dumps(row), *rest]))
+        files = {n: (audited / "share" / n).read_bytes() for n in BUNDLE}
+        try:
+            bundle.load_files(files)
+        except bundle.BundleError:
+            pass  # a row error: the contract names it
+        render_report(json.loads(files["manifest.json"]), [row])  # the renderer is total too
+        tar = _tar(tmp_path / "bad.tar.gz", [(n, files[n], "f") for n in BUNDLE])
+        good = tmp_path / "good"
+        _hub_session(good / "in" / "s.jsonl")
+        assert _extract(good / "in", good / "out").exit_code == 0
+        merged = _merge([tar, good / "out" / "share.tar.gz"], tmp_path / "m")
+        assert merged["report"][1]["status"] == "ok", merged["report"]
+        if field == "latency_s":
+            assert merged["report"][0]["status"] == "rejected"
+            assert "latency_s" in merged["report"][0]["reason"]
+
+    @pytest.mark.parametrize("ts", [1700000000, ["2026"], None, {"t": 1}, 1.5])
+    def test_f12_a_non_string_timestamp_never_aborts_extract(self, tmp_path: Path, ts: Any) -> None:
+        """F12: `--since` sliced the session start as a string; an int timestamp raised TypeError
+        outside the per-file guard and the CLI printed a traceback."""
+        use = _use(1, "x", "mcp__pipecat-context-hub__search_docs", {"query": "q"})
+        use["timestamp"] = ts
+        _transcript(tmp_path / "in" / "a" / "s.jsonl", [use])
+        result = _extract(tmp_path / "in", tmp_path / "out", "--since", "2026-01-01")
+        assert result.exit_code == 0, result.output
+        assert audit_extract.parse_ts(ts) is None
+
+
+class TestStaleReportK2:
+    def _edit(self, out: Path, change: str) -> None:
+        share = out / "share"
+        if change == "query":
+            f = share / "calls.jsonl"
+            f.write_text(f.read_text().replace("projectbluebird", "XXXXXXXXXXXXXXX"))
+        elif change == "flag":
+            f = share / "calls.jsonl"
+            first, *rest = f.read_text().splitlines()
+            row = json.loads(first)
+            row["flags"] = [*row["flags"], "zero_hits"] if "zero_hits" not in row["flags"] else []
+            f.write_text("".join(line + "\n" for line in [json.dumps(row), *rest]))
+        elif change == "report":
+            f = share / "report.md"
+            f.write_text(f.read_text() + "\nedited\n")
+
+    @pytest.mark.parametrize("change", ["query", "flag", "report"])
+    def test_f3_gist_refuses_a_report_the_rows_no_longer_render(
+        self, tmp_path: Path, change: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F3: an edited row text without repack posted a report.md that still held the original
+        text; only a row count change was noticed."""
+        from pipecat_context_hub.audit.sharedir import STALE_REPORT
+
+        _hub_session(tmp_path / "in" / "a" / "s.jsonl", "projectbluebird tts", confident=False)
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        self._edit(out, change)
+        seen = _fake_gh(monkeypatch)
+        refused = _invoke("gist", str(out), "--yes", "--allow-empty")
+        assert refused.exit_code == 1 and not seen, refused.output
+        assert "audit repack" in refused.output and STALE_REPORT[:20] in refused.output
+        if change != "report":
+            assert _invoke("repack", str(out)).exit_code == 0
+            assert _invoke("gist", str(out), "--yes", "--allow-empty").exit_code == 0
+            assert "projectbluebird" not in (out / "share" / "report.md").read_text() or (
+                change == "flag"
+            )
+
+
+class TestJsExecutablePosition:
+    C = 'tools.mcp__pipecat_context_hub__search_docs({query: "Acme"})'
+    CASES = [  # (batch, counted, shared)
+        (f"const r = await {C};", 1, 'search_docs({"query": "Acme"})'),
+        (f"// {C}\nconst a = 1;", 0, ""),
+        (f"/* {C} */ const a = 1;", 0, ""),
+        ("console.log('tools.mcp__pipecat_context_hub__search_docs(x)');", 0, ""),
+        ('console.log("tools.mcp__pipecat_context_hub__search_docs(x)");', 0, ""),
+        (f"const s = `{C}`;", 0, ""),
+        ("const re = /tools.mcp__pipecat_context_hub__search_docs[(]/;", 0, ""),
+        (f"const s = `${{await {C}}}`;", 1, ""),
+        (f"if (false) {{ await {C}; }}", 1, ""),
+        (f"if (false) await {C};", 1, ""),
+        (f"const r = x ? await {C} : null;", 1, ""),
+        (f"const f = () => {C};", 1, ""),
+        (f"x && {C};", 1, ""),
+        (f"if (x) y();\nconst r = await {C};", 1, 'search_docs({"query": "Acme"})'),
+        (f"const a = 4 / 2; const r = await {C};", 1, 'search_docs({"query": "Acme"})'),
+        (f"const s = 'abc;\n{C}", 1, ""),  # unlexable: counted by the regex, nothing shared
+    ]
+
+    @pytest.mark.parametrize(("js", "count", "shared"), CASES)
+    def test_f21_only_code_counts_and_only_a_sure_call_shares(
+        self, js: str, count: int, shared: str
+    ) -> None:
+        found = audit_extract.detect_hub("exec", js)
+        assert found == (("search_docs", "mcp_js", count) if count else (None, None, 0)), js
+        assert audit_extract.hub_invocation(js, "mcp_js") == shared
+
+    def test_f21_shell_text_is_never_read_as_javascript(self, tmp_path: Path) -> None:
+        """F21: a Bash `printf` of JS text was labelled mcp_js and its quoted query shared."""
+        cmd = (
+            "printf '%s' 'tools.mcp__pipecat_context_hub__search_docs"
+            '({query: "Acquisition-Acme-17m"})\''
+        )
+        for name in ("Bash", "exec", "shell"):
+            assert audit_extract.detect_hub(name, {"command": cmd}) == (None, None, 0)
+        rows = [_use(1, "2026-11-18T10:00:00Z", "Bash", {"command": cmd}),
+                _result(1, "2026-11-18T10:00:01Z", "tools...")]  # fmt: skip
+        _jl(tmp_path / "in" / "a" / "s.jsonl", rows)
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        shared = "".join((out / "share" / n).read_text() for n in BUNDLE)
+        assert "Acquisition" not in shared and "Acme" not in shared
+
+
+LAUNCHER_CASES = [  # (line, the hub argv it runs, or None for fail closed)
+    ("command -v pipecat-context-hub status", []),
+    ("command -V pipecat-context-hub status", []),
+    ("command pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("command -p pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("env -u FOO pipecat-context-hub search-docs q",
+     [["pipecat-context-hub", "search-docs", "q"]]),
+    ("env -uFOO -i pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("env --unset=FOO pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("sudo -u bob pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("sudo -l pipecat-context-hub status", []),
+    ("timeout -s TERM 5 pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("timeout 5s pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("nice -n 5 pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("nice -10 pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("time -p pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("uv run --with x pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("uv tool run pipecat-context-hub status", [["pipecat-context-hub", "status"]]),
+    ("uvx --from pipecat-ai-context-hub pipecat-context-hub status",
+     [["pipecat-context-hub", "status"]]),
+    ("uv pip install pipecat-context-hub", []),
+    ("env -S 'pipecat-context-hub status'", None),
+    ("env --weird pipecat-context-hub status", None),
+    ("sudo --weird pipecat-context-hub status", None),
+    ("timeout -z 5 pipecat-context-hub status", None),
+    ("uv --quiet run pipecat-context-hub status", None),
+]  # fmt: skip
+
+
+class TestLauncherGrammar:
+    @pytest.mark.parametrize(("line", "runs"), LAUNCHER_CASES)
+    def test_f14_f15_each_launcher_consumes_its_own_options(
+        self, line: str, runs: list[list[str]] | None
+    ) -> None:
+        """F14: `command -v` was read as running its argument. F15: `env -u NAME` stopped the
+        launcher walk and the hub call was dropped."""
+        from pipecat_context_hub.audit.shell import ShellSyntaxError, shell_hub_calls
+
+        if runs is None:
+            with pytest.raises(ShellSyntaxError):
+                shell_hub_calls(line)
+            assert audit_extract.hub_invocation({"command": line}, "cli") == ""
+            assert audit_extract.detect_hub("Bash", {"command": line})[0] is not None
+        else:
+            assert shell_hub_calls(line) == runs
+            found = audit_extract.detect_hub("Bash", {"command": line})
+            assert (found[0] is not None) == bool(runs)
+
+    @pytest.mark.skipif(
+        __import__("shutil").which("bash") is None or __import__("os").name == "nt",
+        reason="needs a POSIX bash",
+    )
+    @pytest.mark.parametrize(
+        "line",
+        ["command -v pipecat-context-hub status", "command pipecat-context-hub status",
+         "env -u FOO pipecat-context-hub search-docs q", "nice -n 5 pipecat-context-hub status",
+         "env -i pipecat-context-hub status"],
+    )  # fmt: skip
+    def test_launcher_lines_agree_with_bash(self, tmp_path: Path, line: str) -> None:
+        from pipecat_context_hub.audit.shell import shell_hub_calls
+
+        ran = _bash_runs(line.replace("env -i ", "env -i PATH=$PATH HUB_LOG=$HUB_LOG "), tmp_path)
+        assert shell_hub_calls(line) == [r for r in ran], (line, ran)
+
+
+class TestRound3Hygiene:
+    def test_f6_thresholds_and_outcomes_have_one_home(self) -> None:
+        from pipecat_context_hub.audit import analysis, bundle, flags
+
+        eff = bundle.ANALYSIS_SHAPE["efficiency"]
+        assert analysis.SEARCH_ONLY_KEY in eff and analysis.STATUS_REPEAT_KEY in eff
+        assert set(flags.READ_FIRST_OUTCOMES) <= set(flags.OUTCOMES)
+        src = Path(analysis.__file__).read_text()
+        assert ">= 3" not in src and '"failed", "suspect", "bypassed"' not in src
+
+    def test_f7_tool_vocabularies_derive_from_one_place(self) -> None:
+        from pipecat_context_hub.audit import shell
+
+        assert audit_extract.SHELLISH <= {n.lower() for n in egress.STANDARD_TOOLS}
+        assert audit_extract.READONLY <= {n.lower() for n in egress.STANDARD_TOOLS}
+        tools = set(shell.HUB_TOOL_SUBCOMMANDS)
+        assert shell.SEARCH_TOOLS | shell.FETCH_TOOLS | shell.VERSIONED_TOOLS <= tools
+        assert shell.STATUS_TOOL in tools and shell.VERSIONED_TOOLS <= shell.SEARCH_TOOLS
+        assert all(audit_extract.HUB_TOOLSEARCH_RE.search(t) for t in shell.SEARCH_TOOLS)
+
+    def test_f8_the_output_lifecycle_lives_with_share_on_disk(self, tmp_path: Path) -> None:
+        from pipecat_context_hub.audit import sharedir
+
+        for name in ("refuse_unsafe_outputs", "generated_paths", "discard"):
+            assert hasattr(sharedir, name) and not hasattr(audit_extract, f"_{name}")
+        assert "is_symlink" not in Path(audit_extract.__file__).read_text()
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "summary.json").write_text("{}")
+        repacked = _invoke("repack", str(out))
+        gisted = _invoke("gist", str(out))
+        assert repacked.exit_code == gisted.exit_code == 1
+        assert "share/ does not exist" in repacked.output and "share/ does not exist" in (
+            gisted.output
+        )
+
+    def test_f1_f9_f10_f11_the_skill_says_what_the_code_does(self) -> None:
+        root = Path(audit_extract.__file__).parents[3]
+        skill = " ".join(
+            (root / ".claude/skills/context-hub-session-audit/SKILL.md").read_text().split()
+        )
+        fields = " ".join(audit_extract.FIELDS_MD.split())
+        for text in (skill, fields):  # F1: the rebuild never runs bundle text
+            assert (
+                "never text you read" in text and "arguments shown in `hub_invocation`" not in text
+            )
+        assert "Default transcript locations" not in skill and "no default input" in skill  # F9
+        assert "first decodable JSON object" not in skill  # F10
+        assert "response shape" in skill
+        assert "Re-run the CLI rather than hand-editing" not in skill  # F11
+        assert "run `audit repack` before sending" in skill

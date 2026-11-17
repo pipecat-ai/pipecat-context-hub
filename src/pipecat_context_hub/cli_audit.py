@@ -84,7 +84,7 @@ def extract_cmd(inputs: tuple[Path, ...], out: Path, anonymize: bool, since: str
 
     try:
         result = run_extract(list(inputs), out, anonymize=anonymize, since=since)
-    except (ValueError, OSError) as exc:
+    except (ValueError, TypeError, OSError) as exc:
         _fail(str(exc))
     for warning in result.warnings:
         echo(f"warning: {warning}", err=True)
@@ -215,7 +215,7 @@ def _post_gist(argv: list[str]) -> None:
 @click.option("--yes", is_flag=True, help="Actually delete (default: list what would go).")
 def discard_cmd(out_dir: Path, yes: bool) -> None:
     """Delete exactly the files `audit extract` wrote into OUT_DIR (never your transcripts)."""
-    from pipecat_context_hub.audit.extract import discard, generated_paths
+    from pipecat_context_hub.audit.sharedir import discard, generated_paths
 
     try:
         paths = generated_paths(out_dir)

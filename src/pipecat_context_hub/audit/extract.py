@@ -16,6 +16,7 @@ import dataclasses
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 from collections import Counter
@@ -24,8 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pipecat_context_hub.audit.analysis import SEARCH_TOOLS, analyze, annotate_calls, link_parents
-from pipecat_context_hub.audit.analysis import prune_refs
+from pipecat_context_hub.audit.analysis import analyze, annotate_calls, link_parents, prune_refs
 from pipecat_context_hub.audit.bundle import (
     BUNDLE_FILES,
     SCHEMA_VERSION,
@@ -35,6 +35,8 @@ from pipecat_context_hub.audit.bundle import (
     row_counts,
 )
 from pipecat_context_hub.audit.egress import (
+    READONLY_TOOLS,
+    SHELL_TOOLS,
     ShareLeakError,
     argv_text,
     clip,
@@ -54,11 +56,20 @@ from pipecat_context_hub.audit.flags import (
     SLOW_SECONDS,
 )
 from pipecat_context_hub.audit.report import render_report
-from pipecat_context_hub.audit.sharedir import SafeDir, check_share, write_tarball
+from pipecat_context_hub.audit.sharedir import (
+    SHARE_DIR,
+    SafeDir,
+    check_share,
+    read_share,
+    refuse_extract_target,
+    refuse_unsafe_outputs,
+    write_tarball,
+)
 from pipecat_context_hub.audit.shell import (
     CLI_SUBCOMMANDS,
     CLI_TO_TOOL,
     HUB_TOOL_SUBCOMMANDS,
+    SEARCH_TOOLS,
     ShellSyntaxError,
     literal_argv,
     shell_hub_calls,
@@ -67,7 +78,7 @@ from pipecat_context_hub.audit.shell import (
 
 HUB_MENTION_RE = re.compile(r"context[- ]hub|pipecat[-_]context[-_]hub|\bPCH\b", re.IGNORECASE)
 HUB_TOOLSEARCH_RE = re.compile(
-    r"pipecat|context[-_ ]hub|search_docs|search_api|search_examples", re.IGNORECASE
+    r"pipecat|context[-_ ]hub|" + "|".join(sorted(SEARCH_TOOLS)), re.IGNORECASE
 )
 ERROR_RE = re.compile(
     r"Traceback \(most recent call last\)|ImportError|ModuleNotFoundError|AttributeError|"
@@ -122,13 +133,24 @@ def error_class(head: str) -> str:
     return found.group(0) if found else ""
 
 
-def parse_ts(s: str | None) -> float | None:
-    if not s:
+def parse_ts(s: Any) -> float | None:
+    """Seconds since the epoch of an ISO timestamp string, else None (any other value too)."""
+    if not isinstance(s, str) or not s:
         return None
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
-    except ValueError:
+    except (ValueError, OverflowError, OSError):
         return None
+
+
+def latency(call_ts: Any, result_ts: Any) -> float | None:
+    """Seconds from a call to its result, or None when that cannot be measured: a timestamp is
+    missing or unparseable, or the result is stamped before the call (a clock that went back). The
+    bundle contract accepts only a finite non-negative number or null; this is its one producer."""
+    t0, t1 = parse_ts(call_ts), parse_ts(result_ts)
+    if t0 is None or t1 is None or not math.isfinite(t1 - t0) or t1 < t0:
+        return None
+    return round(t1 - t0, 2)
 
 
 # The top-level key every serialised response of each hub tool carries (the tool output models in
@@ -257,8 +279,11 @@ CLI_RE = re.compile(
     + r")\b"
 )
 MCP_JS_CALL_RE = re.compile(r"tools\.[\w$]*pipecat[-_]context[-_]hub__(" + _TOOL_ALT + r")\s*\(")
-SHELLISH = {"bash", "shell", "exec", "exec_command", "run_shell_command", "local_shell", "terminal"}
-READONLY = {"read", "grep", "glob", "ls", "find"}
+# Harness tool groups, from the one harness vocabulary (egress.STANDARD_TOOLS); compared lower-case.
+SHELLISH = SHELL_TOOLS
+READONLY = READONLY_TOOLS
+# Codex's code-mode tool: its input is a JavaScript batch that calls MCP tools as `tools.<name>(...)`.
+JS_BATCH_TOOLS = frozenset({"exec"})
 # Real Pipecat development, not merely a path like /pipecat-ai/... in the cwd.
 PIPECAT_WORK_RE = re.compile(
     r"(from|import)\s+pipecat\b|pipecat-ai\s*(\[|[<>=~])|uv add[^\"]*pipecat|"
@@ -302,29 +327,202 @@ def _cli_tool(subcommand: str) -> str:
     return CLI_TO_TOOL[subcommand]
 
 
+def _is_shell_input(inp: Any) -> bool:
+    return isinstance(inp, dict) and ("command" in inp or "cmd" in inp)
+
+
 def detect_hub(name: str, inp: Any) -> tuple[str | None, str | None, int]:
     """Return (hub_tool, via, n_calls_in_event); via is 'mcp' (a direct tool call), 'mcp_js' (inside a
-    JS ``exec`` batch) or 'cli' (shell)."""
+    JS ``exec`` batch) or 'cli' (shell).
+
+    The language decides: only a JS batch (``JS_BATCH_TOOLS`` with a script, not a shell command)
+    is read as JavaScript, and in it only a call in code position counts (``_js_hub_calls``); a
+    shell call is read by the shell tokenizer. So hub-call text that a shell only prints, or that
+    sits in a JS string or comment, is not a call.
+    """
     m = MCP_RE.search(name)
     if m:
         return m.group(1), "mcp", 1
     n = name.lower()
-    blob = inp if isinstance(inp, str) else json.dumps(inp)
-    mm = (
-        MCP_JS_CALL_RE.findall(blob) if n in SHELLISH else []
-    )  # codex wraps MCP calls in a JS `exec`
-    if mm:
-        return mm[0], "mcp_js", len(mm)
+    if n in JS_BATCH_TOOLS and not _is_shell_input(inp):
+        src = _js_source(inp)
+        if src is not None:
+            found = _js_hub_calls(src)
+            if found is None:  # not lexable: count what the regex sees, share no text (fail closed)
+                mm = MCP_JS_CALL_RE.findall(src)
+                if mm:
+                    return mm[0], "mcp_js", len(mm)
+            elif found:
+                return found[0][0].group(1), "mcp_js", len(found)
     if n in SHELLISH:
         calls = _cli_calls(inp)
         if calls:
             sub = calls[0][2] if calls[0][0] == "pipecat" else calls[0][1]
             return _cli_tool(sub), "cli", len(calls)
         if calls is None:  # no script, or not tokenisable: count what the regex sees (fail closed
+            blob = inp if isinstance(inp, str) else json.dumps(inp)
             cm = CLI_RE.findall(blob)  # on text: hub_invocation shares nothing for these)
             if cm:
                 return _cli_tool(cm[0]), "cli", len(cm)
     return None, None, 0
+
+
+# ---- JavaScript batches: which hub calls are code, and which surely run.
+#
+# A JS batch is masked first: string, template-literal text, comments and regex literals become
+# spaces, so a hub call found in the masked text is a call expression in code position. A
+# template's `${...}` is code, but nested (never "surely runs"). A call surely runs when it sits at
+# brace depth 0 and no control-flow token (`if`, `else`, a loop, `switch`, `try`/`catch`,
+# `function`, `return`, `=>`, `?`, `&&`, `||`, `??`) precedes it in its statement (since the last
+# `;` at depth 0). Only such a call's literal arguments are shared; any other code-position call is
+# counted with no text. A batch the lexer cannot read (an unterminated string, comment, template or
+# regex) is counted by the regex alone and shares nothing.
+_JS_CONTROL_RE = re.compile(
+    r"(?<![\w$.])(?:if|else|while|for|do|switch|case|default|try|catch|finally|function|return"
+    r"|yield)(?![\w$])|=>|\?|&&|\|\|"
+)
+_JS_REGEX_AFTER = set("(,=:[!&|?{};+-*%<>~^") | {""}
+_JS_REGEX_KEYWORDS = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
+                      "throw", "case", "do", "else", "yield", "await"}  # fmt: skip
+
+
+class _JsLexError(ValueError):
+    """A JS batch the masker cannot read."""
+
+
+def _js_mask(text: str) -> tuple[str, list[int]]:
+    """``text`` with every non-code character (string, template text, comment, regex literal)
+    replaced by a space, and the nesting depth each character adds (a template expression's code
+    is one level deeper). Raises ``_JsLexError``."""
+    out = list(text)
+    extra = [0] * len(text)
+    n = len(text)
+    i = 0
+    stack: list[int] = []  # open template expressions: the brace depth inside each
+    brace = 0
+    prev = ""  # the last code character that is not whitespace
+    word = ""  # the last identifier in code
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def template(i: int) -> int:
+        """Mask template text from just past a backtick; returns the index past its end, or the
+        index of a `${` (left as code)."""
+        while i < n:
+            ch = text[i]
+            if ch == "\\":
+                i += 2
+            elif ch == "`":
+                return i + 1
+            elif text.startswith("${", i):
+                return i
+            else:
+                i += 1
+        raise _JsLexError("unterminated template")
+
+    while i < n:
+        ch = text[i]
+        if ch in "'\"":
+            j = i + 1
+            while j < n and text[j] != ch:
+                if text[j] in "\n\r":
+                    raise _JsLexError("line break in string")
+                j += 2 if text[j] == "\\" else 1
+            if j >= n:
+                raise _JsLexError("unterminated string")
+            blank(i, j + 1)
+            i, prev, word = j + 1, ch, ""
+        elif ch == "`" or (ch == "}" and stack and brace == stack[-1]):
+            if ch == "}":
+                stack.pop()
+            j = template(i + 1)
+            if j < n and text.startswith("${", j):
+                blank(i, j + 2)
+                stack.append(brace)
+                i = j + 2
+                prev = "{"
+            else:
+                blank(i, j)
+                i, prev, word = j, "`", ""
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            blank(i, j)
+            i = j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                raise _JsLexError("unterminated comment")
+            blank(i, j + 2)
+            i = j + 2
+        elif ch == "/" and (prev in _JS_REGEX_AFTER or word in _JS_REGEX_KEYWORDS):
+            j, in_class = i + 1, False
+            while j < n and (in_class or text[j] != "/"):
+                if text[j] in "\n\r":
+                    raise _JsLexError("line break in regex")
+                if text[j] == "\\":
+                    j += 1
+                elif text[j] == "[":
+                    in_class = True
+                elif text[j] == "]":
+                    in_class = False
+                j += 1
+            if j >= n:
+                raise _JsLexError("unterminated regex")
+            j += 1
+            while j < n and (text[j].isalnum() or text[j] in "_$"):
+                j += 1
+            blank(i, j)
+            i, prev, word = j, "/", ""
+        else:
+            if ch == "{":
+                brace += 1
+            elif ch == "}":
+                brace -= 1
+            if not ch.isspace():
+                if ch.isalnum() or ch in "_$":
+                    j = i
+                    while j < n and (text[j].isalnum() or text[j] in "_$"):
+                        j += 1
+                    word, prev = text[i:j], text[j - 1]
+                    for k in range(i, j):
+                        extra[k] = len(stack)
+                    i = j
+                    continue
+                prev, word = ch, ""
+            extra[i] = len(stack)
+            i += 1
+    if stack:
+        raise _JsLexError("unterminated template expression")
+    return "".join(out), extra
+
+
+def _js_hub_calls(text: str) -> list[tuple[re.Match[str], bool]] | None:
+    """Every hub call in code position of the JS batch ``text``, each with whether it surely runs
+    (see above); None when the batch cannot be lexed."""
+    try:
+        masked, extra = _js_mask(text)
+    except _JsLexError:
+        return None
+    found: list[tuple[re.Match[str], bool]] = []
+    for m in MCP_JS_CALL_RE.finditer(masked):
+        before = masked[: m.start()]
+        depth = before.count("{") - before.count("}") + extra[m.start()]
+        stmt = 0
+        level = 0
+        for k, ch in enumerate(before):  # the last `;` at brace depth 0 starts the statement
+            if ch == "{":
+                level += 1
+            elif ch == "}":
+                level -= 1
+            elif ch == ";" and level == 0:
+                stmt = k + 1
+        sure = depth == 0 and not _JS_CONTROL_RE.search(masked, stmt, m.start())
+        found.append((m, sure))
+    return found
 
 
 class _NotLiteral(ValueError):
@@ -458,14 +656,16 @@ def _js_source(inp: Any) -> str | None:
 def js_invocation(inp: Any) -> str:
     """The first hub call of a JS batch as ``tool(<JSON args>)``, or ``""``.
 
-    Only the parsed, literal arguments are shared, cleaned like any row value (a credential-named
-    key's value is redacted by structure), never the call expression as written: it can carry
-    comments, identifiers, template strings and concatenations, which are other code's text.
+    Only a call that surely runs (``_js_hub_calls``) shares anything, and only its parsed, literal
+    arguments, cleaned like any row value (a credential-named key's value is redacted by
+    structure), never the call expression as written: it can carry comments, identifiers, template
+    strings and concatenations, which are other code's text.
     """
     text = _js_source(inp)
-    m = MCP_JS_CALL_RE.search(text) if text is not None else None
-    if text is None or m is None:
+    found = _js_hub_calls(text) if text is not None else None
+    if text is None or not found or not found[0][1]:
         return ""
+    m = found[0][0]
     try:
         args = _JsLiterals(text, m.end() - 1).args()
     except (_NotLiteral, ValueError, RecursionError):
@@ -794,8 +994,7 @@ def process_session(
             if not ev:
                 continue
             ev["is_error"] = is_err
-            t0, t1 = parse_ts(ev["ts"]), parse_ts(ts)
-            ev["latency_s"] = round(t1 - t0, 2) if t0 and t1 else None
+            ev["latency_s"] = latency(ev["ts"], ts)
             if ev["is_hub"]:
                 ev["result"] = summarize_hub_result(text, extras, ev["via"], ev["hub_tool"])
             err = ERROR_RE.search(text[:20_000])
@@ -972,9 +1171,9 @@ FIELDS_MD = f"""\
 | `participant`, `session` | hashed ids |
 | `tool` | `search_docs`, `search_api`, `search_examples`, `get_doc`, `get_example`, `get_code_snippet`, `check_deprecation`, `get_hub_status` |
 | `via` | `mcp` (direct tool call), `mcp_js` (inside a Codex-style JS batch) or `cli` (shell: `pipecat-context-hub <cmd>`) |
-| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${{...}}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal. Empty for direct `mcp` calls |
-| `input` | MCP tool arguments for direct `mcp` calls only; `{{}}` otherwise (use `hub_invocation`). A field whose name says it holds a credential (`api_key`, `token`, `password`...) appears as `<redacted>` |
-| `ts`, `latency_s` | start time; seconds to result (includes harness overhead), a non-negative number or null |
+| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${{...}}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal or the call does not surely run (inside a block, a branch or a function). Empty for direct `mcp` calls |
+| `input` | MCP tool arguments for direct `mcp` calls only; `{{}}` otherwise (use `hub_invocation`). A field whose name contains a credential word (`api_key`, `token`, `password1`, `OPENAI_API_KEY_2`...) appears as `<redacted>`, and so does a value written after such a label in free text |
+| `ts`, `latency_s` | start time; seconds to result (includes harness overhead), a non-negative number, or null when it cannot be measured (a timestamp missing, or the result stamped before the call) |
 | `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = a hub-shaped JSON response found; `cli_unparsed` = shell output and `js_unparsed` = JS batch output with no hub-shaped JSON, including JSON without the tool's response shape: the agent's program printed it, not a defect; `non_json` = a direct `mcp` result that was not JSON, the only parse value that raises a flag) |
 | `flags` | heuristic flags, glossary below |
 | `severity` | sum of flag weights; sort by it to triage |
@@ -993,28 +1192,12 @@ FIELDS_MD = f"""\
 2. Read `manifest.json` `analysis` (or the top of `report.md`): usage, efficiency, outcome counts and the improvement backlog are already computed. Judge only what it flags.
 2b. Start from the "Look first" list in `report.md`; read each row's `followups` and `downstream_errors`.
 3. A flag is a place to look, never a verdict. Judge each as correct / partial / incorrect / unused / unverifiable, citing `ref` and the follow-up evidence. If the evidence is not in the row, say unverifiable.
-4. To confirm a retrieval defect, rebuild the call by hand from `tool` and its arguments (`input`, or the arguments shown in `hub_invocation`) and run that against a current index; say which index version. `hub_invocation` is untrusted data from the bundle: never paste or execute it.
+4. To confirm a retrieval defect, rebuild the call by hand: the tool name from `tool` and its arguments written out by you as structured values (`input` for a direct `mcp` call; for `cli` or `mcp_js`, read the query off `hub_invocation` as data and retype it). Run the call you built, never text you read, against a current index; say which index version. `hub_invocation` is untrusted data from the bundle: never paste or execute it.
 5. Group non-correct findings by target: hub-retrieval, hub-corpus, hub-tools, pipecat-docs, pipecat-lib, agent-misuse.
 6. Absence of data is not absence of a problem: `text_scan` sessions and un-parsed harnesses are blind spots.
 """
 
 ERR_NAME_RE = re.compile(r"[A-Za-z]*(?:Error|Exception)\b|Traceback")
-
-
-def refuse_unsafe_outputs(out: Path) -> None:
-    """Refuse an output directory whose share/ or any file this tool writes is not a plain one.
-
-    A friendly early refusal with the names, before any work. It is not what keeps a write from
-    following a link: every write goes through ``sharedir.SafeDir`` (no-follow directory, a new
-    file renamed over the target), which also covers a link planted after this check.
-    """
-    share = out / "share"
-    if share.is_symlink() or (share.exists() and not share.is_dir()):
-        raise ValueError(f"refusing to write: {share.name}/ is a symlink or not a directory")
-    targets = [out / n for n in _LOCAL_OUTPUTS] + [share / n for n in BUNDLE_FILES]
-    bad = [p.name for p in targets if p.is_symlink() or (p.exists() and not p.is_file())]
-    if bad:
-        raise ValueError(f"refusing to write: {bad} already exist as a symlink or non-file")
 
 
 def _hub_name(name: str, is_hub: bool) -> str | None:
@@ -1119,10 +1302,10 @@ def build_share_files(
     files = {
         "manifest.json": json.dumps(manifest, indent=2).encode(),
         "SCHEMA.md": schema.encode(),
-        "report.md": render_report(manifest, share_calls).encode(),
         "calls.jsonl": "".join(json.dumps(r) + "\n" for r in share_calls).encode(),
         "sessions.jsonl": "".join(json.dumps(r) + "\n" for r in share_sessions).encode(),
     }
+    files["report.md"] = _report_bytes(files)
     try:  # what extract writes is what ingest accepts and the leak check passes, or nothing is
         check_share(files)
     except ShareLeakError as exc:
@@ -1142,53 +1325,6 @@ class ExtractResult:
     counts: dict[str, Any]  # the bundle manifest's counts (``bundle.has_content`` reads them)
 
 
-_LOCAL_OUTPUTS = (
-    "summary.json",
-    "sessions.jsonl",
-    "calls.jsonl",
-    "share.tar.gz",
-    "share.tar.gz.sha256",
-)
-
-
-def generated_paths(out_dir: Path) -> list[Path]:
-    """Exactly the files ``run_extract`` writes into ``out_dir`` (nothing else is ever listed).
-
-    Refuses a directory that does not look like extract output, and symlinks, so a typo'd path
-    cannot delete someone's files. ``extract`` writes nothing until its share bundle has passed
-    every check, so a failed extract leaves nothing behind for this to miss.
-    """
-    if (
-        not (out_dir / "summary.json").is_file()
-        or not (out_dir / "share" / "manifest.json").is_file()
-    ):
-        raise ValueError(f"{out_dir.name or out_dir} does not look like `audit extract` output")
-    if (out_dir / "share").is_symlink():  # its files would be deleted in the link's target
-        raise ValueError("refusing to delete: share/ is a symlink")
-    candidates = [out_dir / n for n in _LOCAL_OUTPUTS] + [
-        out_dir / "share" / n for n in BUNDLE_FILES
-    ]
-    found = [p for p in candidates if p.exists() or p.is_symlink()]
-    if any(p.is_symlink() or not p.is_file() for p in found):
-        raise ValueError("refusing to delete: output contains a symlink or non-file")
-    return found
-
-
-def discard(out_dir: Path) -> int:
-    """Delete what :func:`generated_paths` lists, through no-follow directory handles (a link
-    swapped in after the listing is refused, never followed); returns how many files went."""
-    listed = generated_paths(out_dir)
-    with SafeDir.open(out_dir) as out, out.child("share") as share:
-        for p in listed:
-            (share if p.parent == out_dir / "share" else out).unlink(p.name)
-    for d in (out_dir / "share", out_dir):
-        try:
-            d.rmdir()  # only if now empty: anything else of yours stays
-        except OSError:
-            pass
-    return len(listed)
-
-
 def _repacked(files: dict[str, bytes]) -> dict[str, bytes]:
     """The bundle ``files`` with row counts re-derived, dead refs pruned and ``report.md``
     regenerated. Pure: raises ``BundleError`` on a malformed manifest or row, writes nothing."""
@@ -1197,18 +1333,24 @@ def _repacked(files: dict[str, bytes]) -> dict[str, bytes]:
     sessions = jsonl_rows(files, "sessions.jsonl")
     manifest["counts"] = {**manifest["counts"], **row_counts(rows, sessions)}
     prune_refs(manifest["analysis"], {r["ref"] for r in rows})
-    return {
-        **files,
-        "manifest.json": json.dumps(manifest, indent=2).encode(),
-        "report.md": render_report(manifest, rows).encode(),
-    }
+    new = {**files, "manifest.json": json.dumps(manifest, indent=2).encode()}
+    new["report.md"] = _report_bytes(new)
+    return new
+
+
+def _report_bytes(files: dict[str, bytes]) -> bytes:
+    """``report.md`` rendered from the bundle's own ``manifest.json`` and ``calls.jsonl`` bytes,
+    decoded the way ``check_share`` decodes them, so the two renderings are equal by construction."""
+    return render_report(
+        decode_manifest(files["manifest.json"]), jsonl_rows(files, "calls.jsonl")
+    ).encode()
 
 
 def repack(out_dir: Path) -> tuple[Path, str]:
     """Rebuild ``share.tar.gz`` from an (edited) ``out_dir/share/``.
 
-    share/ is read once through the one reader (``SafeDir.read_bundle``: a symlinked share/ or
-    bundle file is refused before anything else happens). Every row must pass the bundle
+    share/ is read once through the one reader (``sharedir.read_share``, as ``gist`` and ``ingest``
+    read it: a missing or symlinked share/ or bundle file is refused before anything else happens). Every row must pass the bundle
     contract's row validator, the manifest's row counts are re-derived from the rows that remain,
     and ``report.md`` is regenerated from ``calls.jsonl`` and ``manifest.json`` rather than
     patched, so a call deleted from ``calls.jsonl`` disappears from everything derived from it.
@@ -1216,21 +1358,30 @@ def repack(out_dir: Path) -> tuple[Path, str]:
     anything is written: a refused repack leaves share/ and the tarball as they were.
     """
     refuse_unsafe_outputs(out_dir)
-    with SafeDir.open(out_dir) as out, out.child("share") as share:
-        files = share.read_bundle()
-        try:
-            new = _repacked(files)
-            check_share(new)
-        except ShareLeakError as exc:
-            raise ValueError(
-                f"cannot repack: the bundle still holds a secret or local path ({exc}); "
-                "remove it from the file named and run repack again"
-            ) from None
-        except BundleError as exc:
-            raise ValueError(f"cannot repack: {exc}") from None
+    try:
+        files = read_share(out_dir / SHARE_DIR)
+        new = _repacked(files)
+        check_share(new)
+    except ShareLeakError as exc:
+        raise ValueError(
+            f"cannot repack: the bundle still holds a secret or local path ({exc}); "
+            "remove it from the file named and run repack again"
+        ) from None
+    except BundleError as exc:
+        raise ValueError(f"cannot repack: {exc}") from None
+    with SafeDir.open(out_dir) as out, out.child(SHARE_DIR) as share:
         share.write("manifest.json", new["manifest.json"])
         share.write("report.md", new["report.md"])
         return write_tarball(out, new)
+
+
+def session_date(start: Any, path: Path) -> str:
+    """The ``YYYY-MM-DD`` a session started, for ``--since``: the first ten characters of its start
+    timestamp when that is a string that parses as one, otherwise (missing, not a string, not a
+    timestamp) the transcript file's modification date in UTC."""
+    if isinstance(start, str) and parse_ts(start) is not None:
+        return start[:10]
+    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d")
 
 
 def run_extract(
@@ -1240,21 +1391,18 @@ def run_extract(
     for root in inputs:
         if not root.is_dir():
             raise ValueError(f"not a directory: {root.name or root}")
+    refuse_extract_target(out, inputs)
     refuse_unsafe_outputs(out)
     sessions: list[dict[str, Any]] = []
     all_calls: list[dict[str, Any]] = []
     warnings: list[str] = []
     aliases: dict[str, str] = {}
-    out_resolved = out.resolve()
     for root_no, root in enumerate(inputs):
         found = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in TEXT_SUFFIXES)
         for file_no, f in enumerate(found):
             rel = f.relative_to(root)
-            if (
-                NOT_SESSION_DIRS.intersection(rel.parts[:-1])
-                or f.name.endswith(NOT_SESSION_SUFFIXES)
-                or out_resolved
-                in f.resolve().parents  # a previous run's output, when out is inside -i
+            if NOT_SESSION_DIRS.intersection(rel.parts[:-1]) or f.name.endswith(
+                NOT_SESSION_SUFFIXES
             ):
                 continue
             # One sub-directory per participant when collecting. A Claude Code project directory
@@ -1271,12 +1419,8 @@ def run_extract(
                 continue
             if s["tool_calls_total"] == 0 and s.get("fidelity") != "text_scan":
                 continue
-            if since:
-                started = (s.get("start") or "")[:10] or datetime.fromtimestamp(
-                    f.stat().st_mtime, timezone.utc
-                ).strftime("%Y-%m-%d")
-                if started < since:
-                    continue
+            if since and session_date(s.get("start"), f) < since:
+                continue
             sessions.append(s)
             all_calls.extend(c)
 

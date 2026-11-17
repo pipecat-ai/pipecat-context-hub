@@ -74,6 +74,19 @@ This changelog retains repository and Context Hub package history.
   the current directory (Windows searches it first). The per-call latency p90 is now the
   nearest-rank 90th percentile (it reported the maximum for up to 10 calls). Flag thresholds and
   outcome classes are declared once, so `SCHEMA.md` quotes the values the extractor uses.
+  One credential-label model replaces the per-shape label patterns: a key, flag or text label
+  that contains a credential word (`password1`, `api_key_prod`, `OPENAI_API_KEY_2`, `API key`)
+  loses its value, with `:` `=` `：` `=>` `->` separators, backslash-escaped quotes (stringified
+  JSON), a quoted value taken whole and no minimum length; `redis://:password@host` is redacted;
+  the leak check locates labels with separate code over the same rules. `extract` refuses an
+  `--out` that is, contains or sits inside an input directory, or that holds files it did not
+  write; an unmeasurable latency (a result stamped before its call) is null instead of failing the
+  run; a non-string transcript timestamp no longer aborts `--since`. `gist` refuses a `report.md`
+  that no longer matches the rows (`repack` first). An integer too large for a float is a row
+  error and `ingest` rejects that bundle instead of stopping. A Codex JS batch call counts only in
+  code (not in a string, comment or regex) and shares arguments only when it surely runs; shell
+  text is never read as JavaScript. `command -v` runs nothing, and `env -u`, `sudo -u`,
+  `timeout -s` and other launcher options are parsed (an unknown one fails closed).
 
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and

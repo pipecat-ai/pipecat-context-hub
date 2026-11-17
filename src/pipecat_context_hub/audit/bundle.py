@@ -67,9 +67,20 @@ def _is_str_list(v: Any) -> bool:
     return isinstance(v, list) and all(isinstance(x, str) for x in v)
 
 
+def _is_finite_number(v: Any) -> bool:
+    """A number that is a finite float: an integer too large for a float (``10**400``) is not,
+    and the check never raises (``math.isfinite`` would, with ``OverflowError``)."""
+    if not _is_number(v):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
+
+
 def _is_latency(v: Any) -> bool:
-    """Seconds to a result: a finite, non-negative number, or null (no result timestamp)."""
-    return v is None or (_is_number(v) and math.isfinite(v) and v >= 0)
+    """Seconds to a result: a finite, non-negative number, or null (not measurable)."""
+    return v is None or (_is_finite_number(v) and v >= 0)
 
 
 _Check = Callable[[Any], bool]

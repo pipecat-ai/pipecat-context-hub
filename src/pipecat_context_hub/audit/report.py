@@ -15,12 +15,19 @@ line-oriented parser whose idea of a row can differ from the builder's.
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from collections import Counter
 from typing import Any
 
-from pipecat_context_hub.audit.analysis import latency_stats, triage_order
+from pipecat_context_hub.audit.analysis import (
+    SEARCH_ONLY_KEY,
+    STATUS_REPEAT_KEY,
+    latency_stats,
+    triage_order,
+)
+from pipecat_context_hub.audit.flags import SEARCH_ONLY_SEARCHES, STATUS_REPEAT_CALLS
 from pipecat_context_hub.audit.egress import md_cell, one_line, value_text
 
 LOOK_FIRST_LIMIT = 60
@@ -33,11 +40,7 @@ def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
     for tool in sorted({c["tool"] for c in calls}):
         cs = [c for c in calls if c["tool"] == tool]
         median, p90 = latency_stats(c["latency_s"] for c in cs if c.get("latency_s") is not None)
-        conf = [
-            c["result"]["confidence"]
-            for c in cs
-            if isinstance(c["result"].get("confidence"), (int, float))
-        ]
+        conf = [f for c in cs if (f := _finite(c["result"].get("confidence"))) is not None]
         rows.append(
             f"| {_cell(tool)} | {len(cs)} | {sum(bool(c['flags']) for c in cs)} "
             f"| {'' if median is None else median} | {'' if p90 is None else p90} "
@@ -45,6 +48,18 @@ def tool_rows(calls: list[dict[str, Any]]) -> list[str]:
             f"| {round(statistics.mean(conf), 2) if conf else ''} |"
         )
     return rows
+
+
+def _finite(v: Any) -> float | None:
+    """``v`` as a finite float, or None (not a number, NaN, infinite, or an integer too large for a
+    float: a hand-edited row must not make the renderer raise)."""
+    if not isinstance(v, int | float) or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except OverflowError:
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _cell(v: Any) -> str:
@@ -112,9 +127,9 @@ def _answers(a: dict[str, Any]) -> list[str]:
         md += [
             f"- Calls: {_line(e['calls'])} · percent with no flag: {_line(e['clean_pct'])} · "
             f"median latency in seconds: {_line(e['median_latency_s'])}",
-            "- Sessions that searched 3+ times and never fetched a doc or example: "
-            f"{_line(e['sessions_searching_3plus_times_never_fetching'])} · sessions with 3+ "
-            f"`get_hub_status` calls: {_line(e['sessions_with_3plus_status_calls'])}",
+            f"- Sessions that searched {SEARCH_ONLY_SEARCHES}+ times and never fetched a doc or "
+            f"example: {_line(e[SEARCH_ONLY_KEY])} · sessions with {STATUS_REPEAT_CALLS}+ "
+            f"`get_hub_status` calls: {_line(e[STATUS_REPEAT_KEY])}",
             f"- Versioned searches without `pipecat_version`: {_line(v['without'])} · "
             f"versioned searches: {_line(v['of'])}",
         ]
@@ -155,7 +170,7 @@ def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         conf = r.get("confidence")
         look.append(
             f"| {_cell(c['ref'])} | {_cell(c['tool'])} | {_query(c)} "
-            f"| {_cell(', '.join(c['flags']))} "
+            f"| {_cell(c['flags'])} "
             f"| {_cell(r.get('n_hits'))} | {_cell(round(conf, 2) if isinstance(conf, float) else None)} |"
         )
     flag_totals = Counter(f for c in rows for f in c["flags"])

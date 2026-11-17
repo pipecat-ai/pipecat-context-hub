@@ -35,7 +35,7 @@ import secrets
 import stat
 import tarfile
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -50,6 +50,7 @@ from pipecat_context_hub.audit.bundle import (
     omitted_when_posting,
 )
 from pipecat_context_hub.audit.egress import ShareLeakError, verify_files
+from pipecat_context_hub.audit.report import render_report
 
 # Descriptor-relative, no-follow I/O. Off on a platform without it (Windows): see the docstring.
 FD_SAFE = (
@@ -135,6 +136,10 @@ class SafeDir:
             return os.stat(name, dir_fd=self._fd, follow_symlinks=False).st_mode
         except FileNotFoundError:
             return None
+
+    def names(self) -> list[str]:
+        """The names in this directory (none is followed or opened)."""
+        return sorted(os.listdir(self.path if self._fd is None else self._fd))
 
     def read(self, name: str) -> bytes | None:
         """The bytes of the regular file ``name`` (at most ``MAX_FILE_BYTES``), or None when it is
@@ -231,13 +236,168 @@ def read_share(path: Path) -> dict[str, bytes]:
         raise BundleError(f"{path.name or path}/ does not exist") from None
 
 
+STALE_REPORT = (
+    "report.md does not match calls.jsonl and manifest.json (share/ was edited without "
+    "`audit repack`); run `audit repack`"
+)
+
+
 def check_share(files: Mapping[str, bytes]) -> Bundle:
     """The one send-side gate on a bundle's bytes: the leak check (``ShareLeakError`` naming each
-    file and rule, never the text), then the whole-bundle validator ``ingest`` runs."""
+    file and rule, never the text), the whole-bundle validator ``ingest`` runs, then ``report.md``
+    against the report its rows and manifest render to, byte for byte (``BundleError`` when they
+    differ): ``report.md`` is a function of ``calls.jsonl`` and ``manifest.json``, so a row edited
+    without ``repack`` can never be posted beside a report that still shows the old text.
+
+    ``ingest`` does not run this last step: it merges rows and never ``report.md``, and a bundle
+    from an older renderer is still a valid bundle.
+    """
     leaks = verify_files(files)
     if leaks:
         raise ShareLeakError("; ".join(leaks))
-    return load_files(files)
+    bundle = load_files(files)
+    try:
+        expected = render_report(bundle.manifest, bundle.calls).encode()
+    except (ValueError, TypeError, ArithmeticError, RecursionError):
+        raise BundleError("report.md cannot be rendered from calls.jsonl") from None
+    if files["report.md"] != expected:
+        raise BundleError(STALE_REPORT)
+    return bundle
+
+
+# ---- The output directory's lifecycle: what `extract` may write into, what `repack` rewrites and
+# what `discard` deletes. Every check goes through `SafeDir.kind` (a link is never followed), the
+# same rule the reader and the writer use.
+LOCAL_OUTPUTS = (
+    "summary.json",
+    "sessions.jsonl",
+    "calls.jsonl",
+    "share.tar.gz",
+    "share.tar.gz.sha256",
+)
+SHARE_DIR = "share"
+
+
+def _is_reg(mode: int | None) -> bool:
+    return mode is not None and stat.S_ISREG(mode)
+
+
+def _open_existing(path: Path) -> SafeDir | None:
+    try:
+        return SafeDir.open(path)
+    except FileNotFoundError:
+        return None
+
+
+def refuse_unsafe_outputs(out: Path) -> None:
+    """Refuse an output directory whose share/ or any file this tool writes is not a plain one.
+
+    A friendly early refusal with the names, before any work. It is not what keeps a write from
+    following a link: every write goes through :class:`SafeDir` (no-follow directory, a new file
+    renamed over the target), which also covers a link planted after this check.
+    """
+    d = _open_existing(out)
+    if d is None:
+        return
+    with d:
+        mode = d.kind(SHARE_DIR)
+        if mode is not None and not stat.S_ISDIR(mode):
+            raise UnsafePathError(
+                f"refusing to write: {SHARE_DIR}/ is a symlink or not a directory"
+            )
+        bad = [n for n in LOCAL_OUTPUTS if d.kind(n) is not None and not _is_reg(d.kind(n))]
+        if mode is not None:
+            with d.child(SHARE_DIR) as share:
+                bad += [
+                    n
+                    for n in BUNDLE_FILES
+                    if share.kind(n) is not None and not _is_reg(share.kind(n))
+                ]
+    if bad:
+        raise UnsafePathError(f"refusing to write: {bad} already exist as a symlink or non-file")
+
+
+def _inside(child: Path, parent: Path) -> bool:
+    return child == parent or parent in child.parents
+
+
+def refuse_extract_target(out: Path, inputs: Sequence[Path]) -> None:
+    """Refuse an ``extract --out`` that could overwrite or delete something that is not ours.
+
+    The invariant: ``extract`` writes only into a directory that is missing, empty or holds only
+    what a previous ``extract`` wrote (:data:`LOCAL_OUTPUTS` and share/ with the bundle files), and
+    that is neither an input directory nor inside or around one (symlinks resolved): a transcript
+    named ``sessions.jsonl`` in the input would otherwise be replaced by the output's.
+    """
+    target = out.resolve()
+    for root in inputs:
+        src = root.resolve()
+        if _inside(target, src) or _inside(src, target):
+            raise ValueError(
+                f"refusing to write: --out {out.name or out} is, contains or is inside the input "
+                f"directory {root.name or root}; use a separate, empty directory"
+            )
+    d = _open_existing(out)
+    if d is None:
+        return
+    with d:
+        foreign = [n for n in d.names() if n not in LOCAL_OUTPUTS and n != SHARE_DIR]
+        if stat.S_ISDIR(d.kind(SHARE_DIR) or 0):
+            with d.child(SHARE_DIR) as share:
+                foreign += [f"{SHARE_DIR}/{n}" for n in share.names() if n not in BUNDLE_FILES]
+    if foreign:
+        shown = ", ".join(foreign[:3]) + (", ..." if len(foreign) > 3 else "")
+        raise ValueError(
+            f"refusing to write: --out {out.name or out} holds files `audit extract` did not write "
+            f"({len(foreign)}: {shown}); use a new or empty directory"
+        )
+
+
+def generated_paths(out_dir: Path) -> list[Path]:
+    """Exactly the files ``extract`` writes into ``out_dir`` that are there (nothing else is ever
+    listed).
+
+    Refuses a directory that does not look like extract output, and symlinks, so a typo'd path
+    cannot delete someone's files. ``extract`` writes nothing until its share bundle has passed
+    every check, so a failed extract leaves nothing behind for this to miss.
+    """
+    not_ours = ValueError(f"{out_dir.name or out_dir} does not look like `audit extract` output")
+    d = _open_existing(out_dir)
+    if d is None:
+        raise not_ours
+    with d:
+        share_mode = d.kind(SHARE_DIR)
+        if d.kind("summary.json") is None or share_mode is None:
+            raise not_ours
+        if not stat.S_ISDIR(share_mode):  # its files would be deleted in the link's target
+            raise UnsafePathError(f"refusing to delete: {SHARE_DIR}/ is a symlink")
+        with d.child(SHARE_DIR) as share:
+            if share.kind("manifest.json") is None:
+                raise not_ours
+            found = [(d, out_dir / n, n) for n in LOCAL_OUTPUTS if d.kind(n) is not None]
+            found += [
+                (share, out_dir / SHARE_DIR / n, n)
+                for n in BUNDLE_FILES
+                if share.kind(n) is not None
+            ]
+            if not all(_is_reg(where.kind(n)) for where, _, n in found):
+                raise UnsafePathError("refusing to delete: output contains a symlink or non-file")
+    return [p for _, p, _ in found]
+
+
+def discard(out_dir: Path) -> int:
+    """Delete what :func:`generated_paths` lists, through no-follow directory handles (a link
+    swapped in after the listing is refused, never followed); returns how many files went."""
+    listed = generated_paths(out_dir)
+    with SafeDir.open(out_dir) as out, out.child(SHARE_DIR) as share:
+        for p in listed:
+            (share if p.parent == out_dir / SHARE_DIR else out).unlink(p.name)
+    for d in (out_dir / SHARE_DIR, out_dir):
+        try:
+            d.rmdir()  # only if now empty: anything else of yours stays
+        except OSError:
+            pass
+    return len(listed)
 
 
 def tar_bytes(files: Mapping[str, bytes]) -> bytes:

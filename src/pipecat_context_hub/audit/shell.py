@@ -7,6 +7,7 @@ hub tool or CLI subcommand from it.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import shlex
 from typing import Any
@@ -26,6 +27,13 @@ HUB_TOOL_SUBCOMMANDS = {
 }
 CLI_SUBCOMMANDS = frozenset(HUB_TOOL_SUBCOMMANDS.values())
 CLI_TO_TOOL = {sub: tool for tool, sub in HUB_TOOL_SUBCOMMANDS.items()}
+# Groups of the same tools, as the heuristics read them: searches (a zero-hit result is a miss),
+# fetches (a search followed by none of these is a session that never read a result) and the
+# searches that accept `pipecat_version`. A test pins each to the vocabulary and the tool schemas.
+SEARCH_TOOLS = frozenset({"search_docs", "search_examples", "search_api", "get_code_snippet"})
+FETCH_TOOLS = frozenset({"get_doc", "get_example"})
+VERSIONED_TOOLS = frozenset({"search_examples", "search_api", "get_code_snippet"})
+STATUS_TOOL = "get_hub_status"
 
 # ---- shell: which commands a shell line actually runs
 #
@@ -46,11 +54,194 @@ CLI_TO_TOOL = {sub: tool for tool, sub in HUB_TOOL_SUBCOMMANDS.items()}
 # regex, but shares no command text from the line.
 
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
-# Words that may precede the hub binary in the command that runs it.
-_LAUNCHERS = frozenset(
-    {"uv", "uvx", "run", "tool", "pipx", "env", "time", "timeout", "nice", "nohup", "command",
-     "exec", "sudo", "xargs", "{", "!", "if", "then", "else", "elif", "do", "while", "until"}
+
+
+@dataclasses.dataclass(frozen=True)
+class _Launcher:
+    """The option grammar of a word that runs the command after it (``env``, ``sudo``, ``uv run``).
+
+    ``flags`` take no value; ``valued`` take the next word (or an attached ``-uNAME`` /
+    ``--user=NAME``); ``no_exec`` mean nothing is run (``command -v`` prints a path); ``opaque``
+    make the launcher run something this grammar does not model (``env -S STRING``). ``positional``
+    words come before the command (``timeout``'s duration); ``subcommands`` must come first (``uv
+    run``, ``uv tool run``), and without one the launcher word is itself the command. Any other
+    option is undecidable (does it take a value?), so the line fails closed.
+    """
+
+    flags: frozenset[str] = frozenset()
+    valued: frozenset[str] = frozenset()
+    no_exec: frozenset[str] = frozenset({"--help", "--version"})
+    opaque: frozenset[str] = frozenset()
+    positional: int = 0
+    subcommands: tuple[tuple[str, ...], ...] = ()
+    numeric_flags: bool = False
+
+
+_UV_VALUED = frozenset(
+    {"--with", "--with-editable", "--with-requirements", "--from", "--python", "-p", "--directory",
+     "--project", "--env-file", "--index", "--default-index", "--index-url", "--extra-index-url",
+     "--extra", "--no-extra", "--group", "--no-group", "--only-group", "--package", "--config-file",
+     "--cache-dir", "--find-links", "-f", "--index-strategy", "--keyring-provider", "--resolution",
+     "--prerelease", "--exclude-newer", "--python-preference", "--color", "--allow-insecure-host",
+     "--refresh-package", "--reinstall-package", "--upgrade-package", "-P", "--link-mode",
+     "--no-binary-package", "--no-build-package", "--config-setting", "-C", "--constraints", "-c",
+     "--overrides", "--build-constraints", "-b"}
 )  # fmt: skip
+_UV_FLAGS = frozenset(
+    {"--no-project", "--isolated", "--frozen", "--locked", "--no-sync", "--offline", "--quiet",
+     "-q", "--verbose", "-v", "--active", "--no-active", "--no-dev", "--dev", "--all-extras",
+     "--all-packages", "--all-groups", "--no-default-groups", "--only-dev", "--no-editable",
+     "--exact", "--no-cache", "-n", "--refresh", "--reinstall", "--upgrade", "-U", "--native-tls",
+     "--no-config", "--no-progress", "--no-python-downloads", "--managed-python",
+     "--no-managed-python", "--script", "-s", "--gui-script", "--compile-bytecode",
+     "--no-build-isolation", "--no-build", "--no-binary", "--no-sources", "--no-env-file",
+     "--preview"}
+)  # fmt: skip
+_KEYWORD = _Launcher(no_exec=frozenset())
+# Words that may precede the hub binary in the command that runs it, each with its option grammar.
+_LAUNCHERS: dict[str, _Launcher] = {
+    **{w: _KEYWORD for w in ("{", "!", "if", "then", "else", "elif", "do", "while", "until")},
+    "nohup": _Launcher(),
+    "time": _Launcher(
+        flags=frozenset({"-p", "-a", "-v", "-q", "--verbose", "--portability", "--append"}),
+        valued=frozenset({"-f", "-o", "--format", "--output"}),
+    ),
+    "nice": _Launcher(valued=frozenset({"-n", "--adjustment"}), numeric_flags=True),
+    "timeout": _Launcher(
+        flags=frozenset({"-v", "--verbose", "--preserve-status", "--foreground"}),
+        valued=frozenset({"-s", "-k", "--signal", "--kill-after"}),
+        positional=1,
+    ),
+    "env": _Launcher(
+        flags=frozenset({"-i", "-0", "-v", "-", "--ignore-environment", "--null", "--debug"}),
+        valued=frozenset({"-u", "--unset", "-C", "--chdir", "-P"}),
+        opaque=frozenset({"-S", "--split-string"}),
+    ),
+    "command": _Launcher(
+        flags=frozenset({"-p"}), no_exec=frozenset({"-v", "-V", "--help", "--version"})
+    ),
+    "exec": _Launcher(flags=frozenset({"-c", "-l"}), valued=frozenset({"-a"})),
+    "sudo": _Launcher(
+        flags=frozenset(
+            {
+                "-A",
+                "-b",
+                "-B",
+                "-E",
+                "-H",
+                "-k",
+                "-n",
+                "-N",
+                "-P",
+                "-S",
+                "-s",
+                "-i",
+                "--askpass",
+                "--background",
+                "--bell",
+                "--preserve-env",
+                "--preserve-groups",
+                "--set-home",
+                "--login",
+                "--remove-timestamp",
+                "--reset-timestamp",
+                "--non-interactive",
+                "--stdin",
+                "--shell",
+                "--no-update",
+            }
+        ),
+        valued=frozenset(
+            {
+                "-u",
+                "-g",
+                "-p",
+                "-C",
+                "-D",
+                "-r",
+                "-t",
+                "-T",
+                "-U",
+                "-R",
+                "--user",
+                "--group",
+                "--prompt",
+                "--close-from",
+                "--chdir",
+                "--role",
+                "--type",
+                "--command-timeout",
+                "--other-user",
+                "--chroot",
+                "--host",
+            }
+        ),
+        no_exec=frozenset(
+            {"-l", "--list", "-v", "--validate", "-V", "--version", "-K", "--help", "-e", "--edit"}
+        ),
+        opaque=frozenset({"-h"}),  # help alone, a host with a value
+    ),  # fmt: skip
+    "xargs": _Launcher(
+        flags=frozenset(
+            {
+                "-0",
+                "-r",
+                "-t",
+                "-p",
+                "-x",
+                "-o",
+                "-i",
+                "-l",
+                "-e",
+                "--null",
+                "--no-run-if-empty",
+                "--verbose",
+                "--interactive",
+                "--exit",
+                "--open-tty",
+            }
+        ),
+        valued=frozenset(
+            {
+                "-I",
+                "-n",
+                "-P",
+                "-L",
+                "-d",
+                "-E",
+                "-s",
+                "-a",
+                "--max-args",
+                "--max-procs",
+                "--max-lines",
+                "--delimiter",
+                "--eof",
+                "--max-chars",
+                "--arg-file",
+                "--replace",
+            }
+        ),
+    ),  # fmt: skip
+    "uv": _Launcher(
+        flags=_UV_FLAGS,
+        valued=_UV_VALUED,
+        no_exec=frozenset({"--help", "-h", "--version", "-V"}),
+        opaque=frozenset({"-m", "--module", "--with-pip"}),
+        subcommands=(("tool", "run"), ("run",)),
+    ),
+    "uvx": _Launcher(
+        flags=_UV_FLAGS,
+        valued=_UV_VALUED,
+        no_exec=frozenset({"--help", "-h", "--version", "-V"}),
+    ),
+    "pipx": _Launcher(
+        flags=frozenset(
+            {"--no-cache", "--verbose", "-v", "--quiet", "-q", "--system-site-packages"}
+        ),
+        valued=frozenset({"--spec", "--python", "--index-url", "-i", "--pip-args", "--backend"}),
+        subcommands=(("run",),),
+    ),
+}
 _ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?")
 _SHELL_C_RE = re.compile(r"-[A-Za-z]*c[A-Za-z]*")
@@ -365,22 +556,82 @@ def _hub_head(argv: list[str], i: int) -> int:
     return 0
 
 
+def _skip_launcher(argv: list[str], i: int, spec: _Launcher) -> int | None:
+    """Index of the command the launcher at ``argv[i]`` runs (``i`` itself when the launcher word
+    is the command, ``len(argv)`` when there is none), or None when it runs nothing (``command
+    -v``). Raises ShellSyntaxError for an option its grammar does not decide."""
+    start, i = i, i + 1
+    if spec.subcommands:
+        sub = next((s for s in spec.subcommands if tuple(argv[i : i + len(s)]) == s), None)
+        if sub is None:
+            if argv[i : i + 1] and argv[i].startswith("-"):
+                raise ShellSyntaxError("a launcher option before its subcommand")
+            return start  # `uv pip ...`: uv itself is the command
+        i += len(sub)
+    while i < len(argv):
+        w = argv[i]
+        if w == "--":
+            i += 1
+            break
+        if not w.startswith("-") or (w == "-" and "-" not in spec.flags):
+            break
+        name, eq, _ = w.partition("=")
+        if w.startswith("--") or w == "-":
+            if name in spec.no_exec:
+                return None
+            if name in spec.opaque or (name in spec.flags and eq and name != "--preserve-env"):
+                raise ShellSyntaxError("a launcher option this grammar does not model")
+            if name in spec.valued:
+                i += 1 if eq else 2
+            elif name in spec.flags or eq:  # an unknown `--opt=value` is self-contained
+                i += 1
+            else:
+                raise ShellSyntaxError("an unknown launcher option")
+            continue
+        if spec.numeric_flags and w[1:].isdigit():
+            i += 1
+            continue
+        for j in range(1, len(w)):  # a cluster of short options: `-qv`, `-uNAME`
+            opt = "-" + w[j]
+            if opt in spec.no_exec:
+                return None
+            if opt in spec.opaque:
+                raise ShellSyntaxError("a launcher option this grammar does not model")
+            if opt in spec.valued:
+                i += 1 if j + 1 < len(w) else 2
+                break
+            if opt not in spec.flags:
+                raise ShellSyntaxError("an unknown launcher option")
+        else:
+            i += 1
+    for _ in range(spec.positional):
+        if i >= len(argv) or not _DURATION_RE.fullmatch(argv[i]):
+            raise ShellSyntaxError("a launcher argument this grammar does not model")
+        i += 1
+    return min(i, len(argv))
+
+
 def _command_start(argv: list[str]) -> int:
-    """Index of the command word: past NAME=value assignments and launcher words, or len(argv)."""
+    """Index of the command word: past NAME=value assignments and launchers (each with its option
+    grammar, ``_LAUNCHERS``), or ``len(argv)`` when the segment runs no command (``command -v``).
+    Raises ShellSyntaxError when a launcher's options cannot be decided (fail closed)."""
     i = 0
     while i < len(argv):
         w = argv[i]
         if _hub_head(argv, i):
             return i
-        launcher_arg = i > 0 and (
-            w.startswith("-")
-            or _DURATION_RE.fullmatch(w) is not None
-            or (argv[i - 1].startswith("--") and "=" not in argv[i - 1])  # `uvx --from pkg`
-        )
-        if _ASSIGN_RE.fullmatch(w) or _basename(w) in _LAUNCHERS or launcher_arg:
+        if _ASSIGN_RE.fullmatch(w):
             i += 1
             continue
-        return i
+        spec = _LAUNCHERS.get(_basename(w))
+        if spec is None:
+            return i
+        nxt = _skip_launcher(argv, i, spec)
+        if nxt is None:
+            return len(argv)
+        if nxt == i:
+            return i
+        i = nxt
     return i
 
 
