@@ -15,24 +15,22 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import hmac
-import secrets
 import json
 import re
+import secrets
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pipecat_context_hub.audit.analysis import annotate_calls, link_parents
-from pipecat_context_hub.audit.analysis import analyze
+from pipecat_context_hub.audit.analysis import SEARCH_TOOLS, analyze, annotate_calls, link_parents
 from pipecat_context_hub.audit.analysis import render as render_analysis
 
-HUB_MENTION_RE = re.compile(r"context[- ]hub|pipecat[-_]context[-_]hub|\\bPCH\\b", re.IGNORECASE)
+HUB_MENTION_RE = re.compile(r"context[- ]hub|pipecat[-_]context[-_]hub|\bPCH\b", re.IGNORECASE)
 HUB_TOOLSEARCH_RE = re.compile(
     r"pipecat|context[-_ ]hub|search_docs|search_api|search_examples", re.IGNORECASE
 )
-SEARCH_TOOLS = {"search_docs", "search_examples", "search_api", "get_code_snippet"}
 LARGE_RESULT_BYTES = 30_000
 SLOW_SECONDS = 8.0
 FOLLOWUP_EVENTS = 8
@@ -44,21 +42,43 @@ ERROR_RE = re.compile(
 )
 # Secrets must never reach the output files. Over-redact rather than under-redact.
 SECRET_RES = [
-    re.compile(r"\b(sk|pk|rk|dg|gsk|xox[abprs]|ghp|gho|github_pat)[-_][A-Za-z0-9_\-]{16,}"),
+    re.compile(r"\b(sk|pk|rk|dg|gsk|hf|xox[abprs]|ghp|gho|github_pat)[-_][A-Za-z0-9_\-]{16,}"),
     re.compile(r"(?i)\b(bearer|token)\s+[A-Za-z0-9._\-]{20,}"),
     re.compile(r"(?i)\b([A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)\s*[=:]\s*\S{8,}"),
-    re.compile(r"\b[0-9a-f]{40}\b(?<!\b[0-9a-f]{40}\b(?=.*commit))"),  # 40-hex tokens
+    # Bare hex keys (Deepgram 40, Twilio/AssemblyAI 32, Daily 64) and git SHAs alike: a commit
+    # SHA in a query is worth nothing, a key that escapes is worth a lot.
+    re.compile(r"\b[0-9a-fA-F]{32,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),  # AWS access key id
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{30,}"),  # Google API key
+    re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),  # JWT
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 ]
 HOME_RE = re.compile(r"/(Users|home)/[^/\s\"']+")
+WIN_HOME_RE = re.compile(r"([A-Za-z]:\\{1,2}Users\\{1,2})[^\\/\s\"']+")
 HIT_ID_KEYS = ("doc_id", "example_id", "path", "file_path", "title", "class_name", "name", "id")
 
 
 def redact(text: str) -> str:
     text = HOME_RE.sub(r"/\1/<user>", text)
+    text = WIN_HOME_RE.sub(r"\1<user>", text)
     for rx in SECRET_RES:
         text = rx.sub("<redacted>", text)
     return text
+
+
+def map_strings(v: Any, fn: Callable[[str], str]) -> Any:
+    """``v`` with ``fn`` applied to every string value, structure untouched.
+
+    Redaction must walk the parsed value, never the serialised text: a secret pattern's ``\\S{8,}``
+    swallows the closing quote and brace of a JSON dump, and the result no longer parses.
+    """
+    if isinstance(v, str):
+        return fn(v)
+    if isinstance(v, list):
+        return [map_strings(x, fn) for x in v]
+    if isinstance(v, dict):
+        return {k: map_strings(x, fn) for k, x in v.items()}
+    return v
 
 
 def clip(text: str, n: int) -> str:
@@ -69,8 +89,6 @@ def clip(text: str, n: int) -> str:
 def parse_ts(s: str | None) -> float | None:
     if not s:
         return None
-    from datetime import datetime
-
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
     except ValueError:
@@ -157,6 +175,11 @@ PIPECAT_WORK_RE = re.compile(
     r"pipecat\.(pipeline|services|transports|frames|processors|runner|audio)|\bPipelineTask\b"
 )
 TEXT_SUFFIXES = {".jsonl", ".json", ".md", ".txt"}
+# Sibling files of a Claude Code project's transcripts that are not sessions: auto-memory notes,
+# persisted oversized tool results and subagent metadata. Scanned as text they would become
+# phantom participants and phantom "Pipecat work without Context Hub".
+NOT_SESSION_DIRS = {"memory", "tool-results", ".git", "node_modules"}
+NOT_SESSION_SUFFIXES = (".meta.json",)
 
 
 def categorize(name: str, inp: Any) -> str | None:
@@ -223,12 +246,19 @@ def _call_expression(text: str, start: int, limit: int = 2000) -> str:
     return text[start : opening + 1] + "...)" if opening >= 0 else ""
 
 
+def command_text(inp: Any) -> str:
+    """The shell line or JS batch of a call as one string (Codex's ``shell`` passes an argv list)."""
+    if isinstance(inp, dict):
+        cmd = inp.get("command") or inp.get("cmd")
+        if isinstance(cmd, list):
+            return " ".join(str(part) for part in cmd)
+        return cmd if isinstance(cmd, str) else json.dumps(inp)
+    return inp if isinstance(inp, str) else ""
+
+
 def hub_invocation(inp: Any) -> str:
     """Just the Context Hub part of a call: the CLI segment or the MCP call, never the whole shell line."""
-    if isinstance(inp, dict):
-        text = inp.get("command") or inp.get("cmd") or json.dumps(inp)
-    else:
-        text = inp or ""
+    text = command_text(inp)
     m = CLI_RE.search(text)
     if m:
         seg = re.split(r"\s*(?:\|\||&&|[|;&>\n])", text[m.start() :], maxsplit=1)[0]
@@ -296,8 +326,22 @@ def adapt_claude(lines: list[str]) -> Iterator[tuple[Any, ...]]:
             },
         )
         content = (o.get("message") or {}).get("content")
-        if o["type"] == "user" and isinstance(content, str):
-            yield ("prompt", content)
+        if o["type"] == "user" and not o.get("isMeta"):  # isMeta: harness-injected, not typed
+            if isinstance(content, str):
+                yield ("prompt", content)
+            elif isinstance(content, list) and not any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+            ):
+                # Prompts with images or IDE context arrive as text blocks, not a bare string.
+                texts = [
+                    b["text"]
+                    for b in content
+                    if isinstance(b, dict)
+                    and b.get("type") == "text"
+                    and isinstance(b.get("text"), str)
+                ]
+                if texts:
+                    yield ("prompt", "\n".join(texts))
         if not isinstance(content, list):
             continue
         for b in content:
@@ -400,9 +444,13 @@ ADAPTERS = {"claude": adapt_claude, "pi": adapt_pi, "codex": adapt_codex}
 def event_target(name: str, inp: Any) -> str:
     if isinstance(inp, str):
         return clip(inp, 120)
+    if not isinstance(inp, dict):
+        return ""
     for k in ("file_path", "path", "pattern", "command", "cmd", "url", "query", "description"):
         if isinstance(inp.get(k), str):
             return clip(inp[k], 120)
+        if k in ("command", "cmd") and isinstance(inp.get(k), list):
+            return clip(command_text(inp), 120)
     return ""
 
 
@@ -460,7 +508,8 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
         elif kind == "meta":
             for k, v in rec[1].items():
                 if k == "ts":
-                    meta.setdefault("start", v)
+                    if v:  # a record without a timestamp must not pin `start` to None
+                        meta.setdefault("start", v)
                     meta["end"] = v or meta.get("end")
                 elif v:
                     meta.setdefault(k, v)
@@ -505,8 +554,10 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
             ev["latency_s"] = round(t1 - t0, 2) if t0 and t1 else None
             if ev["is_hub"]:
                 ev["result"] = summarize_hub_result(text, extras, ev["via"])
-            ev["has_py_error"] = bool(ERROR_RE.search(text[:20_000]))
-            ev["err_head"] = clip(text, 200) if ev["has_py_error"] else ""
+            err = ERROR_RE.search(text[:20_000])
+            ev["has_py_error"] = bool(err)
+            # Start at the match: an error after 200 characters of output must keep its class name.
+            ev["err_head"] = clip(text[err.start() :], 200) if err else ""
     meta["sessionId"] = meta.get("id")
     meta["version"] = meta.get("version")
 
@@ -568,7 +619,7 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
         if (
             tool in SEARCH_TOOLS
             and isinstance(q, str)
-            and re.search(r"\b(and|&|,)\b", q)
+            and re.search(r"\band\b|[,&]", q)
             and " + " not in q
             and " & " not in q
             and len(q.split()) > 6
@@ -599,7 +650,7 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
                 "tool": tool,
                 "via": e["via"],
                 "hub_invocation": hub_invocation(e["input"]),
-                "input": json.loads(redact(json.dumps(e["input"]))),
+                "input": map_strings(e["input"], redact),
                 "latency_s": e.get("latency_s"),
                 "result": res,
                 "flags": call_flags,
@@ -621,12 +672,15 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
     bypass_before = [
         e for e in events if e["category"] and (first_hub is None or e["idx"] < first_hub)
     ]
+    # Claude Code keeps a subagent's transcript in `<session>/subagents/`; only that directory
+    # counts, so a user's own folder named `subagents` does not turn every session into one.
+    is_subagent = path.parent.name == "subagents"
     session = {
         "participant": participant,
         "session_id": session_id,
         "file": redact(str(path.name)),
-        "is_subagent": "subagents" in path.parts,
-        "parent_session_id": meta.get("sessionId") if "subagents" in path.parts else None,
+        "is_subagent": is_subagent,
+        "parent_session_id": meta.get("sessionId") if is_subagent else None,
         "hub_tools_deferred": hub_deferred if harness == "claude" else None,
         "tool_search_calls": tool_search_calls,
         "hub_tool_search_calls": hub_tool_search_calls,
@@ -639,7 +693,7 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
         "user_prompts": user_prompts,
         "tool_calls_total": len(events),
         "hub_available": bool(
-            MCP_RE.search(raw) or CLI_RE.search(raw) or "mcp__pipecat-context-hub" in raw
+            "mcp__pipecat-context-hub" in raw or MCP_RE.search(raw) or CLI_RE.search(raw)
         ),
         "hub_via": dict(Counter(e["via"] for e in hub_events)),
         "hub_used": bool(hub_events),
@@ -663,13 +717,7 @@ SHARE_PATH_RE = re.compile(
 
 def scrub_paths(v: Any) -> Any:
     """Replace local absolute paths in every string of a share row (doc paths like /guides/x stay)."""
-    if isinstance(v, str):
-        return SHARE_PATH_RE.sub("<path>", v)
-    if isinstance(v, list):
-        return [scrub_paths(x) for x in v]
-    if isinstance(v, dict):
-        return {k: scrub_paths(x) for k, x in v.items()}
-    return v
+    return map_strings(v, lambda text: SHARE_PATH_RE.sub("<path>", text))
 
 
 SCHEMA_VERSION = 1
@@ -856,7 +904,8 @@ def build_share_bundle(
         inp = c["input"] if isinstance(c["input"], dict) else {}
         q = inp.get("query") or inp.get("path") or inp.get("doc_id") or c["hub_invocation"]
         rows.append(
-            f"| {sid(c['participant'])}/{sid(c['session_id'])}#{c['call_idx']} | {c['tool']} | {clip(str(q), 80).replace('|', '/')} | {', '.join(c['flags'])} "
+            f"| {sid(c['participant'])}/{sid(c['session_id'])}#{c['call_idx']} | {c['tool']} "
+            f"| {scrub_paths(clip(str(q), 80)).replace('|', '/').replace(chr(10), ' ')} | {', '.join(c['flags'])} "
             f"| {r.get('n_hits', '')} | {round(r['confidence'], 2) if isinstance(r.get('confidence'), float) else ''} |"
         )
     md = [
@@ -898,8 +947,6 @@ def build_share_bundle(
         + "\n".join(f"- `{k}` ({SEVERITY.get(k, 1)}): {v}" for k, v in FLAG_GLOSSARY.items())
         + "\n"
     )  # fmt: skip
-    from datetime import datetime, timezone
-
     (share / "manifest.json").write_text(
         json.dumps(
             {
@@ -907,7 +954,11 @@ def build_share_bundle(
                 "extractor_version": EXTRACTOR_VERSION,
                 "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "scope": scope,
-                "counts": {k: summary[k] for k in ("sessions", "participants", "hub_used", "hub_calls")},
+                "counts": {
+                    **{k: summary[k] for k in ("sessions", "participants", "hub_used", "hub_calls")},
+                    # rows in calls.jsonl: `hub_calls` also counts mentions in text-scanned sessions
+                    "call_rows": len(calls),
+                },
                 "harnesses": summary["by_harness"],
                 "needs_manual_read": summary["needs_manual_read"],
                 "files": ["manifest.json", "SCHEMA.md", "report.md", "calls.jsonl", "sessions.jsonl"],
@@ -959,6 +1010,8 @@ def generated_paths(out_dir: Path) -> list[Path]:
         or not (out_dir / "share" / "manifest.json").is_file()
     ):
         raise ValueError(f"{out_dir.name or out_dir} does not look like `audit extract` output")
+    if (out_dir / "share").is_symlink():  # its files would be deleted in the link's target
+        raise ValueError("refusing to delete: share/ is a symlink")
     candidates = [out_dir / n for n in _LOCAL_OUTPUTS] + [
         out_dir / "share" / n for n in BUNDLE_FILES
     ]
@@ -968,12 +1021,47 @@ def generated_paths(out_dir: Path) -> list[Path]:
     return found
 
 
+_REPORT_ROW_RE = re.compile(r"^\| ([0-9a-f]{12}/[0-9a-f]{12}#\d+) \|")
+
+
 def repack(out_dir: Path) -> tuple[Path, str]:
-    """Rebuild ``share.tar.gz`` from an (edited) ``out_dir/share/``."""
+    """Rebuild ``share.tar.gz`` from an (edited) ``out_dir/share/``.
+
+    A call deleted from ``calls.jsonl`` is also dropped from ``report.md``'s "Look first" table,
+    which repeats each flagged call's query: deleting a row must delete what it said.
+    """
     share = out_dir / "share"
-    missing = [n for n in BUNDLE_FILES if not (share / n).is_file()]
+    missing = [n for n in BUNDLE_FILES if not (share / n).is_file() or (share / n).is_symlink()]
     if missing:
         raise ValueError(f"cannot repack: {share.name}/ is missing {missing}")
+    refs: set[str] = set()
+    rows = 0
+    for i, line in enumerate((share / "calls.jsonl").read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            raise ValueError(f"cannot repack: calls.jsonl line {i} is not valid JSON") from None
+        rows += 1
+        if isinstance(row, dict) and isinstance(row.get("ref"), str):
+            refs.add(row["ref"])
+    try:  # keep the manifest's row count honest: `audit gist` / `ingest` rely on it
+        manifest = json.loads((share / "manifest.json").read_text())
+        counts = manifest["counts"]
+        if counts.get("call_rows") != rows:
+            counts["call_rows"] = rows
+            (share / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        pass  # an unreadable manifest is the participant's edit to own; ingest rejects it
+    report = (share / "report.md").read_text()
+    kept = [
+        ln
+        for ln in report.splitlines()
+        if not ((m := _REPORT_ROW_RE.match(ln)) and m.group(1) not in refs)
+    ]
+    if len(kept) != len(report.splitlines()):
+        (share / "report.md").write_text("\n".join(kept) + "\n")
     return pack_share(share)
 
 
@@ -989,9 +1077,17 @@ def run_extract(
     all_calls: list[dict[str, Any]] = []
     warnings: list[str] = []
     aliases: dict[str, str] = {}
+    out_resolved = out.resolve()
     for root in inputs:
         for f in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in TEXT_SUFFIXES):
             rel = f.relative_to(root)
+            if (
+                NOT_SESSION_DIRS.intersection(rel.parts[:-1])
+                or f.name.endswith(NOT_SESSION_SUFFIXES)
+                or out_resolved
+                in f.resolve().parents  # a previous run's output, when out is inside -i
+            ):
+                continue
             # One sub-directory per participant when collecting. A Claude Code project directory
             # holds `<session-id>/subagents/...`: that first component is a session, not a person.
             nested = len(rel.parts) > 1 and rel.parts[1] != "subagents"

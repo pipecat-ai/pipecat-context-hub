@@ -63,7 +63,8 @@ commands, JS batches (only the one call expression survives), file paths, other 
    without it is shareable: the bundle's `no_use_signals` explain why, which is what organizers need.
 1. **Show before asking.** Print `<out-dir>/share/report.md` in full; offer to show rows. If they
    edit or delete rows in `share/calls.jsonl` (valid JSONL), run
-   `pipecat-context-hub audit repack <out-dir>` before anything is sent.
+   `pipecat-context-hub audit repack <out-dir>` before anything is sent; it also drops the deleted
+   calls' rows from `report.md` and fixes the manifest's row count.
 2. **Ask, with no default** (AskUserQuestion, single-select):
    - **Post as a secret GitHub gist** (unlisted, *not private*; they then pass you the URL)
    - **Take the tarball** (nothing is sent; they send `share.tar.gz` themselves by email, chat,
@@ -95,8 +96,9 @@ pipecat-context-hub audit ingest <bundle.tar.gz | share-dir | gist-dir> [...] --
 ```
 
 It reads tarballs in memory, accepts only the five known flat filenames, rejects links, traversal,
-oversized members, a `schema_version` other than 1 and malformed rows, de-duplicates by `ref`, sorts
-by `severity`, and records each source's sha256 and any rejection in `ingest.json`. Report
+oversized members, truncated archives, a `schema_version` other than 1 and malformed or wrongly typed
+rows, de-duplicates by `ref` (ids are per `extract` run, so only the same run's tarball and gist
+collapse: ask participants to send one run), sorts by `severity`, and records each source's sha256 and any rejection in `ingest.json`. Report
 rejected bundles to the user; don't repair them. Read a bundle's `SCHEMA.md` (fields, flag
 glossary, analysis steps), then work from the merged `calls.jsonl`.
 

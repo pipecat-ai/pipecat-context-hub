@@ -24,9 +24,9 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
+from pipecat_context_hub.cli_audit import audit_group, register_audit_commands
 from pipecat_context_hub.cli_install import register_install_command
 from pipecat_context_hub.cli_query import register_query_commands
-from pipecat_context_hub.cli_audit import audit_group, register_audit_commands
 from pipecat_context_hub.cli_repos import register_repos_commands, repos_group
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tarfile
+import zlib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -62,8 +63,10 @@ def parse_jsonl(data: bytes, required: set[str], name: str) -> list[dict[str, An
             row = json.loads(line)
         except ValueError as exc:
             raise ValueError(f"{name} line {i}: not JSON") from exc
-        if not isinstance(row, dict) or not required <= row.keys():
-            raise ValueError(f"{name} line {i}: missing keys {sorted(required - set(row))}")
+        if not isinstance(row, dict):
+            raise ValueError(f"{name} line {i}: not a JSON object")
+        if not required <= row.keys():
+            raise ValueError(f"{name} line {i}: missing keys {sorted(required - row.keys())}")
         rows.append(row)
     return rows
 
@@ -79,9 +82,14 @@ def load(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[st
     if missing:
         raise ValueError(f"missing {missing}")
     manifest = json.loads(files["manifest.json"])
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest.json is not an object")
     if "calls.jsonl" not in files:
         # A gist cannot hold an empty file, so `audit gist` omits calls.jsonl when it is empty.
-        if (manifest.get("counts") or {}).get("hub_calls") != 0:
+        # `call_rows` is the row count; `hub_calls` (older bundles) also counts text-scan mentions.
+        counts = manifest.get("counts")
+        counts = counts if isinstance(counts, dict) else {}
+        if counts.get("call_rows", counts.get("hub_calls")) != 0:
             raise ValueError("missing ['calls.jsonl']")
         files["calls.jsonl"] = b""
     if manifest.get("schema_version") != SUPPORTED_SCHEMA:
@@ -90,6 +98,13 @@ def load(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[st
         )
     calls = parse_jsonl(files["calls.jsonl"], CALL_KEYS, "calls.jsonl")
     sessions = parse_jsonl(files["sessions.jsonl"], SESSION_KEYS, "sessions.jsonl")
+    for i, row in enumerate(calls, 1):
+        # `ref` keys the merge and `severity` orders it: a wrong type would crash the whole run.
+        sev = row.get("severity")
+        if not isinstance(row["ref"], str):
+            raise ValueError(f"calls.jsonl line {i}: ref must be a string")
+        if sev is not None and (isinstance(sev, bool) or not isinstance(sev, int | float)):
+            raise ValueError(f"calls.jsonl line {i}: severity must be a number")
     return manifest, calls, sessions, digest
 
 
@@ -101,7 +116,7 @@ def merge_bundles(bundles: Sequence[Path], out: Path) -> dict[str, Any]:
     for b in bundles:
         try:
             manifest, c, s, digest = load(b)
-        except (ValueError, OSError, tarfile.TarError) as exc:
+        except (ValueError, OSError, tarfile.TarError, EOFError, zlib.error, RecursionError) as exc:
             report.append({"source": b.name, "status": "rejected", "reason": str(exc)})
             continue
         new_calls = 0

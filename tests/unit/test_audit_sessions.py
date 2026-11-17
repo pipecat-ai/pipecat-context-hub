@@ -691,3 +691,292 @@ class TestIngest:
         bad = _tar(tmp_path / "bad.tar.gz", [("evil\x1b[31m.txt", b"x", "f")])
         result = _invoke("ingest", str(bad), "--out", str(tmp_path / "m"))
         assert "\x1b" not in result.output
+
+
+def _hub_session(path: Path, query: str = "TTS", confident: bool = True) -> None:
+    body = {"hits": [{"doc_id": "d"}], "evidence": {"confidence": 0.9}}
+    if not confident:
+        body = {"hits": [], "evidence": {"confidence": 0.1, "low_confidence": True}}
+    _jl(
+        path,
+        [
+            _use(
+                1, "2026-11-18T10:00:00Z", "mcp__pipecat-context-hub__search_docs", {"query": query}
+            ),
+            _result(1, "2026-11-18T10:00:01Z", json.dumps(body)),
+        ],
+    )
+
+
+class TestReviewRegressions:
+    """Each case freezes a defect found in review, with the input that exposed it."""
+
+    def test_pch_acronym_in_a_prompt_counts_as_a_mention(self) -> None:
+        assert audit_extract.HUB_MENTION_RE.search("please use PCH for this")
+        assert not audit_extract.HUB_MENTION_RE.search("a PCHE value")
+
+    def test_codex_shell_argv_list_is_a_cli_call_not_a_skipped_session(
+        self, tmp_path: Path
+    ) -> None:
+        argv = ["bash", "-lc", "pipecat-context-hub search-docs TTS"]
+        rows = [
+            {"type": "session_meta", "timestamp": "2026-11-18T10:00:00Z", "payload": {"id": "c1"}},
+            {
+                "type": "response_item",
+                "timestamp": "2026-11-18T10:00:01Z",
+                "payload": {
+                    "type": "function_call",
+                    "name": "shell",
+                    "call_id": "k1",
+                    "arguments": json.dumps({"command": argv}),
+                },
+            },
+            {
+                "type": "response_item",
+                "timestamp": "2026-11-18T10:00:02Z",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "k1",
+                    "output": '{"hits": []}',
+                },
+            },
+        ]
+        _jl(tmp_path / "in" / "carol" / "r.jsonl", rows)
+        result = _extract(tmp_path / "in", tmp_path / "out")
+        assert result.exit_code == 0 and "skipped" not in result.output
+        (c,) = _rows(tmp_path / "out" / "calls.jsonl")
+        assert (c["tool"], c["via"]) == ("search_docs", "cli")
+        assert c["hub_invocation"] == "pipecat-context-hub search-docs TTS"
+
+    @pytest.mark.parametrize(
+        "inp",
+        [
+            {"command": "pipecat-context-hub search-docs x; export TOKEN=abcdefghij"},
+            {"query": "why does API_KEY=abcdefghijkl fail"},
+            {"query": 'a "quoted" /Users/bob"x path'},
+        ],
+    )
+    def test_redacting_an_input_never_corrupts_it(
+        self, tmp_path: Path, inp: dict[str, str]
+    ) -> None:
+        """A secret pattern's `\\S{8,}` used to swallow a JSON dump's closing quote and brace, so the
+        whole session was skipped as unparseable."""
+        name = "mcp__pipecat-context-hub__search_docs"
+        _jl(
+            tmp_path / "in" / "zed" / "s.jsonl",
+            [_use(1, "2026-11-18T10:00:00Z", name, inp), _result(1, "2026-11-18T10:00:01Z", "{}")],
+        )
+        result = _extract(tmp_path / "in", tmp_path / "out")
+        assert result.exit_code == 0 and "skipped" not in result.output
+        (c,) = _rows(tmp_path / "out" / "calls.jsonl")
+        assert set(c["input"]) == set(inp)
+
+    def test_bare_hex_keys_are_redacted_even_beside_the_word_commit(self) -> None:
+        for key in ("a" * 40, "b" * 32, "c" * 64):
+            assert key not in audit_extract.redact(f"key {key} commit")
+        assert "C:\\Users\\alice" not in audit_extract.redact("C:\\Users\\alice\\proj\\bot.py")
+
+    def test_report_md_scrubs_paths_like_the_jsonl_rows(self, tmp_path: Path) -> None:
+        q = r"error in C:\Users\alice\proj\bot.py and /tmp/xyz/secret.py"
+        _hub_session(tmp_path / "in" / "zed" / "s.jsonl", q, confident=False)
+        assert _extract(tmp_path / "in", tmp_path / "out").exit_code == 0
+        report = (tmp_path / "out" / "share" / "report.md").read_text()
+        assert "alice" not in report and "/tmp/xyz" not in report and "<path>" in report
+
+    def test_claude_project_siblings_are_not_sessions(self, tmp_path: Path) -> None:
+        proj = tmp_path / "proj"
+        _hub_session(proj / "s1.jsonl")
+        note = "from pipecat.pipeline import Pipeline\nuv add pipecat-ai"
+        for rel in ("memory/MEMORY.md", "s1/tool-results/abc.txt", "s1/subagents/a.meta.json"):
+            (proj / rel).parent.mkdir(parents=True, exist_ok=True)
+            (proj / rel).write_text(note)
+        out = tmp_path / "out"
+        summary = json.loads(_extract(proj, out).stdout)
+        assert (summary["sessions"], summary["participants"]) == (1, 1)
+        assert summary["missed_opportunity"] == 0
+
+    def test_output_inside_the_input_is_not_read_back(self, tmp_path: Path) -> None:
+        src = tmp_path / "in"
+        _hub_session(src / "alice" / "s1.jsonl")
+        first = json.loads(_extract(src, src / "audit").stdout)
+        second = json.loads(_extract(src, src / "audit").stdout)
+        assert first["sessions"] == second["sessions"] == 1
+
+    def test_text_scan_only_gist_ingests(self, tmp_path: Path) -> None:
+        """A text-scanned session counts mentions in `hub_calls` but writes no calls.jsonl rows; the
+        gist omits the empty file and ingest must still accept it."""
+        chat = tmp_path / "in" / "alice" / "chat.md"
+        chat.parent.mkdir(parents=True)
+        chat.write_text("ran mcp__pipecat-context-hub__search_docs\nfrom pipecat.pipeline import X")
+        out = tmp_path / "out"
+        assert json.loads(_extract(tmp_path / "in", out).stdout)["hub_calls"] == 1
+        assert (out / "share" / "calls.jsonl").stat().st_size == 0
+        gist_dir = tmp_path / "gist"
+        gist_dir.mkdir()
+        for n in set(BUNDLE) - {"calls.jsonl"}:
+            (gist_dir / n).write_bytes((out / "share" / n).read_bytes())
+        merged = tmp_path / "merged"
+        assert _invoke("ingest", str(gist_dir), "--out", str(merged)).exit_code == 0
+
+    def test_session_without_a_first_timestamp_still_has_a_start(self, tmp_path: Path) -> None:
+        first = _use(1, "", "Bash", {"command": "ls"})
+        del first["timestamp"]
+        later = _use(2, "2026-11-18T10:00:00Z", "Bash", {"command": "ls"})
+        _jl(tmp_path / "s.jsonl", [first, later])
+        session, _ = audit_extract.process_session(tmp_path / "s.jsonl", "p")
+        assert session["start"] == "2026-11-18T10:00:00Z"
+
+    def test_text_block_prompts_are_counted_and_injected_ones_are_not(self, tmp_path: Path) -> None:
+        def prompt(text: str, **extra: Any) -> dict[str, Any]:
+            return {
+                "type": "user",
+                "sessionId": "s1",
+                "timestamp": "2026-11-18T10:00:00Z",
+                "message": {"content": [{"type": "text", "text": text}]},
+                **extra,
+            }
+
+        rows = [
+            prompt("use pipecat-context-hub please"),
+            prompt("<system-reminder>context hub</system-reminder>", isMeta=True),
+            _use(1, "2026-11-18T10:00:01Z", "Bash", {"command": "ls"}),
+        ]
+        _jl(tmp_path / "s.jsonl", rows)
+        session, _ = audit_extract.process_session(tmp_path / "s.jsonl", "p")
+        assert session["user_prompts"] == 1 and session["prompt_mentions_hub"] is True
+
+    def test_only_the_directory_named_subagents_marks_a_subagent(self, tmp_path: Path) -> None:
+        _jl(tmp_path / "subagents" / "p" / "s.jsonl", [_use(1, "", "Bash", {"command": "ls"})])
+        session, _ = audit_extract.process_session(tmp_path / "subagents" / "p" / "s.jsonl", "p")
+        assert session["is_subagent"] is False
+        _jl(tmp_path / "s9" / "subagents" / "a.jsonl", [_use(1, "", "Bash", {"command": "ls"})])
+        session, _ = audit_extract.process_session(tmp_path / "s9" / "subagents" / "a.jsonl", "p")
+        assert session["is_subagent"] is True
+
+    def test_a_downstream_error_past_the_first_200_characters_keeps_its_class(
+        self, tmp_path: Path
+    ) -> None:
+        rows = [
+            _use(
+                1, "2026-11-18T10:00:00Z", "mcp__pipecat-context-hub__search_docs", {"query": "x"}
+            ),
+            _result(1, "2026-11-18T10:00:01Z", "{}"),
+            _use(2, "2026-11-18T10:00:02Z", "Bash", {"command": "python bot.py"}),
+            _result(2, "2026-11-18T10:00:03Z", "." * 400 + "\nImportError: boom"),
+        ]
+        _jl(tmp_path / "in" / "zed" / "s.jsonl", rows)
+        assert _extract(tmp_path / "in", tmp_path / "out").exit_code == 0
+        (c,) = _rows(tmp_path / "out" / "share" / "calls.jsonl")
+        assert [d["error"] for d in c["downstream_errors"]] == ["ImportError"]
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "Deepgram, Cartesia, OpenAI pipeline setup example now",
+            "TTS and STT latency tuning for the pipeline today",
+        ],
+    )
+    def test_multi_concept_query_with_commas_is_flagged(self, tmp_path: Path, query: str) -> None:
+        _hub_session(tmp_path / "in" / "zed" / "s.jsonl", query)
+        assert _extract(tmp_path / "in", tmp_path / "out").exit_code == 0
+        (c,) = _rows(tmp_path / "out" / "calls.jsonl")
+        assert "multi_concept_without_delimiter" in c["flags"]
+
+    def test_discard_refuses_a_symlinked_share_directory(
+        self, audited: Path, tmp_path: Path
+    ) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        (audited / "share").rename(elsewhere)
+        (audited / "share").symlink_to(elsewhere)
+        assert _invoke("discard", str(audited), "--yes").exit_code == 1
+        assert (elsewhere / "manifest.json").exists()
+
+    def test_repack_drops_report_rows_of_deleted_calls(self, tmp_path: Path) -> None:
+        _hub_session(tmp_path / "in" / "zed" / "s.jsonl", "my private acme-secret", confident=False)
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        assert "acme-secret" in (out / "share" / "report.md").read_text()
+        (out / "share" / "calls.jsonl").write_text("")
+        assert _invoke("repack", str(out)).exit_code == 0
+        assert "acme-secret" not in (out / "share" / "report.md").read_text()
+        assert json.loads((out / "share" / "manifest.json").read_text())["counts"]["call_rows"] == 0
+
+    def test_repack_rejects_invalid_calls_jsonl(self, audited: Path) -> None:
+        (audited / "share" / "calls.jsonl").write_text("not json\n")
+        result = _invoke("repack", str(audited))
+        assert result.exit_code == 1 and "calls.jsonl line 1" in result.output
+
+    @pytest.mark.parametrize(
+        "calls",
+        [
+            [
+                {
+                    "ref": ["x"],
+                    "tool": "t",
+                    "via": "mcp",
+                    "flags": [],
+                    "severity": 1,
+                    "result": {},
+                    "followups": [],
+                }
+            ],
+            [
+                {
+                    "ref": "a",
+                    "tool": "t",
+                    "via": "mcp",
+                    "flags": [],
+                    "severity": "hi",
+                    "result": {},
+                    "followups": [],
+                }
+            ],
+            [5],
+        ],
+        ids=["ref-list", "severity-string", "row-not-object"],
+    )
+    def test_ingest_rejects_wrongly_typed_rows_instead_of_crashing(
+        self, tmp_path: Path, calls: list[Any]
+    ) -> None:
+        bundle = tmp_path / "b"
+        bundle.mkdir()
+        (bundle / "manifest.json").write_text(
+            json.dumps({"schema_version": 1, "counts": {"hub_calls": len(calls)}})
+        )
+        (bundle / "calls.jsonl").write_text("".join(json.dumps(r) + "\n" for r in calls))
+        (bundle / "sessions.jsonl").write_text("")
+        result = _invoke("ingest", str(bundle), "--out", str(tmp_path / "m"))
+        assert (
+            result.exit_code == 1
+            and "REJECTED" in result.output
+            and isinstance(result.exception, SystemExit)
+        )
+
+    def test_ingest_rejects_a_non_object_manifest(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "b"
+        bundle.mkdir()
+        (bundle / "manifest.json").write_text("[1]")
+        (bundle / "sessions.jsonl").write_text("")
+        result = _invoke("ingest", str(bundle), "--out", str(tmp_path / "m"))
+        assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
+
+    def test_ingest_rejects_a_truncated_tarball_and_deeply_nested_json(
+        self, tmp_path: Path
+    ) -> None:
+        good = _tar(
+            tmp_path / "good.tar.gz",
+            [
+                ("manifest.json", b'{"schema_version": 1, "counts": {"hub_calls": 0}}', "f"),
+                ("sessions.jsonl", b"x" * 200_000, "f"),
+            ],
+        )
+        data = good.read_bytes()
+        truncated = tmp_path / "trunc.tar.gz"
+        truncated.write_bytes(data[: len(data) // 2])
+        deep = tmp_path / "deep"
+        deep.mkdir()
+        (deep / "manifest.json").write_text("[" * 100_000)
+        (deep / "sessions.jsonl").write_text("")
+        result = _invoke("ingest", str(truncated), str(deep), "--out", str(tmp_path / "m"))
+        assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
+        assert result.output.count("REJECTED") == 2

@@ -16,6 +16,7 @@ member names come from other people's transcripts and bundles.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess  # nosec B404 - runs `gh gist create` with a fixed argv, never a shell
 from datetime import datetime
@@ -41,8 +42,6 @@ def _nothing_to_share(share: Path) -> bool:
     A zero-call bundle is still worth sending when it explains non-use (``analysis.usage``):
     that is the adoption data an organizer most needs. An unreadable manifest is not "empty".
     """
-    import json
-
     try:
         manifest = json.loads((share / "manifest.json").read_text())
         calls = int(manifest["counts"]["hub_calls"])
@@ -128,8 +127,6 @@ def extract_cmd(inputs: tuple[Path, ...], out: Path, anonymize: bool, since: str
             "tarball yourself, or `audit discard`.",
             err=True,
         )
-    import json
-
     echo_json(json.dumps(result.summary, indent=2))
 
 
@@ -193,7 +190,12 @@ def gist_cmd(out_dir: Path, yes: bool, allow_empty: bool) -> None:
         proc = subprocess.run(  # nosec B603 - fixed argv, no shell, secret gist (no --public)
             argv, capture_output=True, text=True, timeout=_GIST_TIMEOUT_S, check=False
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
+        _fail(
+            f"gh gist create timed out after {_GIST_TIMEOUT_S}s and may still have created the gist: "
+            "check `gh gist list` before retrying"
+        )
+    except OSError as exc:
         _fail(f"gh gist create failed: {type(exc).__name__}")
     if proc.returncode != 0:
         _fail(f"gh gist create exited {proc.returncode}: {proc.stderr.strip()[:300]}")
@@ -235,8 +237,6 @@ def ingest_cmd(bundles: tuple[Path, ...], out: Path) -> None:
     Bundles are untrusted input: tarballs are read in memory, only the five known filenames are
     accepted, and bundles with a wrong schema version or malformed rows are rejected.
     """
-    import json
-
     from pipecat_context_hub.audit.ingest import merge_bundles
 
     try:
