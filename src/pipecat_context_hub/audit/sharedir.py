@@ -75,6 +75,11 @@ _NONBLOCK = getattr(os, "O_NONBLOCK", 0)  # a FIFO at a bundle name must not blo
 # What open(2) reports for a final component that is a symlink under O_NOFOLLOW (ELOOP; EMLINK on
 # FreeBSD) or not a directory under O_DIRECTORY.
 _LINK_ERRNOS = {errno.ELOOP, errno.EMLINK, errno.ENOTDIR}
+# Everything written here is derived from a participant's transcripts (the local detail files hold
+# commands, error heads and queries), so it is created private to its owner, never group- or
+# world-readable under a permissive umask.
+_DIR_MODE = 0o700
+_FILE_MODE = 0o600
 
 
 class UnsafePathError(ValueError):
@@ -99,7 +104,7 @@ class SafeDir:
         if create:
             path.parent.mkdir(parents=True, exist_ok=True)
             with contextlib.suppress(FileExistsError):
-                os.mkdir(path)
+                os.mkdir(path, _DIR_MODE)
         return cls._open_at(None, str(path), path)
 
     def child(self, name: str, *, create: bool = False) -> SafeDir:
@@ -107,9 +112,9 @@ class SafeDir:
         if create:
             with contextlib.suppress(FileExistsError):
                 if self._fd is None:
-                    os.mkdir(self.path / name)
+                    os.mkdir(self.path / name, _DIR_MODE)
                 else:
-                    os.mkdir(name, dir_fd=self._fd)
+                    os.mkdir(name, _DIR_MODE, dir_fd=self._fd)
         return self._open_at(self._fd, name, self.path / name)
 
     @classmethod
@@ -202,7 +207,9 @@ class SafeDir:
             if mode is not None and not stat.S_ISREG(mode):
                 raise _not_plain(target, "")
             fd = os.open(
-                self.path / tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+                self.path / tmp,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                _FILE_MODE,
             )
             try:
                 with os.fdopen(fd, "wb") as fh:
@@ -214,7 +221,7 @@ class SafeDir:
                 raise
             return
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _CLOEXEC
-        fd = os.open(tmp, flags, 0o644, dir_fd=self._fd)
+        fd = os.open(tmp, flags, _FILE_MODE, dir_fd=self._fd)
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)

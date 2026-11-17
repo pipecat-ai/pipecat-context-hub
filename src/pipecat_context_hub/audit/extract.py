@@ -206,6 +206,12 @@ def _embedded_hub_response(text: str, tool: str | None) -> dict[str, Any] | None
     return None
 
 
+def _head(v: Any, n: int) -> list[Any]:
+    """The first ``n`` items of ``v`` when it is a list, else none (a response field of another
+    type is not a list to slice)."""
+    return v[:n] if isinstance(v, list) else []
+
+
 def summarize_hub_result(
     text: str, extras: list[str], via: str | None = None, tool: str | None = None
 ) -> dict[str, Any]:
@@ -217,7 +223,12 @@ def summarize_hub_result(
     result is unparsed (``cli_unparsed`` / ``js_unparsed``, not flagged) and nothing is derived
     from the text.
     """
-    out: dict[str, Any] = {"bytes": len(text.encode()) + sum(len(e.encode()) for e in extras)}
+    # "replace": a lone surrogate (a string cut inside an emoji upstream) is one `?` byte here, not
+    # a UnicodeEncodeError that drops the whole session.
+    out: dict[str, Any] = {
+        "bytes": len(text.encode("utf-8", "replace"))
+        + sum(len(e.encode("utf-8", "replace")) for e in extras)
+    }
     data: Any = None
     try:
         data = json.loads(text)
@@ -256,9 +267,9 @@ def summarize_hub_result(
     if isinstance(ev, dict):
         out["confidence"] = ev.get("confidence")
         out["low_confidence"] = bool(ev.get("low_confidence"))
-        out["unknown"] = [clip(json.dumps(u), 160) for u in (ev.get("unknown") or [])[:3]]
+        out["unknown"] = [clip(json.dumps(u), 160) for u in _head(ev.get("unknown"), 3)]
         out["next_queries"] = [
-            clip(str(q), 100) for q in (ev.get("next_retrieval_queries") or [])[:3]
+            clip(str(q), 100) for q in _head(ev.get("next_retrieval_queries"), 3)
         ]
     if data.get("corpus_hint"):
         out["corpus_hint"] = clip(json.dumps(data["corpus_hint"]), 300)
@@ -281,7 +292,7 @@ MCP_RE = re.compile(r"pipecat[-_]context[-_]hub__(" + _TOOL_ALT + r")\b")
 # CLI surface: `pipecat-context-hub search-docs ...` / `pipecat context-hub ...` (uvx/uv run prefixes
 # fine). Detection only (text scans and lines the tokenizer cannot parse): never a shared invocation.
 CLI_RE = re.compile(
-    r"(?:pipecat[-_]context[-_]hub|pipecat\s+context-hub)\s+("
+    r"(?:pipecat(?:[-_]ai)?[-_]context[-_]hub(?:@\S+)?|pipecat\s+context-hub)\s+("
     + "|".join(re.escape(c) for c in sorted(CLI_SUBCOMMANDS, key=len, reverse=True))
     + r")\b"
 )
@@ -307,8 +318,10 @@ def categorize(name: str, inp: Any) -> str | None:
         "site-packages/pipecat" in blob or re.search(r"\.venv[^\"]*pipecat", blob)
     ):
         return "read_pipecat_source"
+    # A hub call is not a way around the hub: a direct call's tool name is in `name`, not in its
+    # input, so `get_doc` given a docs URL must not read as a web fetch.
     if re.search(r"docs\.pipecat\.ai|github\.com/pipecat-ai|pipecat\.ai/", blob) and not (
-        MCP_RE.search(blob) or CLI_RE.search(blob)
+        MCP_RE.search(name) or MCP_RE.search(blob) or CLI_RE.search(blob)
     ):
         return "web_pipecat"
     return None
@@ -1019,7 +1032,10 @@ def process_session(
     """One transcript file's session row and call rows. ``source_key`` identifies the file among
     all inputs (default: its path); a text-scanned session, which has no id of its own, uses it."""
     raw = path.read_text(errors="replace")
-    lines = raw.splitlines()
+    # A JSONL record ends at "\n" only: `str.splitlines` also breaks at U+2028, U+2029 and U+0085,
+    # which JSON.stringify writes unescaped inside a string, so a tool result holding one lost its
+    # record (the call kept no result, no flags).
+    lines = raw.split("\n")
     harness = detect_harness(lines) if path.suffix == ".jsonl" else "unknown"
     if harness == "unknown":
         if "pipecat" not in raw.lower():
@@ -1071,7 +1087,8 @@ def process_session(
                 "batched": n_in_event,
             }
             if (
-                tool is None
+                not pipecat_work  # once seen, never unseen: stop serialising every later input
+                and tool is None
                 and name.lower() not in READONLY_TOOLS
                 and PIPECAT_WORK_RE.search(json.dumps(inp))
             ):
@@ -1277,7 +1294,7 @@ FIELDS_MD = f"""\
 
 ## sessions.jsonl row
 
-`parent_session` (a subagent's parent `session` hash), `parent_used_hub`, `hub_tools_deferred` (how many Context Hub tools the harness listed as deferred, Claude Code only; deferred tools cannot be called until `ToolSearch` loads them), `tool_search_calls`, `hub_tool_search_calls`, `prompt_mentions_hub` (a user prompt, for a subagent its delegation prompt, names Context Hub; it may only cite it as a source of a fact, not tell the agent to use it; null when prompt text is not available), `no_use_signals` (coded reasons for a `missed_opportunity`: `hub_not_in_transcript`, `hub_tools_deferred_never_loaded`, `prompt_silent_about_hub`, `parent_also_unused`, `read_source_or_web_instead`, `unexplained`), `harness` (`claude`/`codex`/`pi`/`unknown`), `fidelity` (`events`; `events_approx_batched` = Codex JS batches count as one event; `text_scan` = detection only, no calls), `hub_available` (name seen in transcript, not proof the server connected), `hub_used`, `pipecat_work` (real Pipecat code/commands seen), `missed_opportunity` (pipecat_work and not hub_used), `hub_calls`, `hub_calls_by_tool`, `hub_via`, `bypass_events_before_first_hub`, `bypass_events_total`, `hub_share_of_calls`, `hub_via`, `harness_version`, `start`/`end`, `flag_counts`, `user_prompts`, `tool_calls_total`.
+`parent_session` (a subagent's parent `session` hash), `parent_used_hub`, `hub_tools_deferred` (how many Context Hub tools the harness listed as deferred, Claude Code only; deferred tools cannot be called until `ToolSearch` loads them), `tool_search_calls`, `hub_tool_search_calls`, `prompt_mentions_hub` (a user prompt, for a subagent its delegation prompt, names Context Hub; it may only cite it as a source of a fact, not tell the agent to use it; null when prompt text is not available), `no_use_signals` (coded reasons for a `missed_opportunity`: `hub_not_in_transcript`, `hub_tools_deferred_never_loaded`, `prompt_silent_about_hub`, `parent_also_unused`, `read_source_or_web_instead`, `unexplained`), `harness` (`claude`/`codex`/`pi`/`unknown`), `fidelity` (`events`; `events_approx_batched` = Codex JS batches count as one event; `text_scan` = detection only, no calls), `hub_available` (name seen in transcript, not proof the server connected), `hub_used`, `pipecat_work` (real Pipecat code/commands seen), `missed_opportunity` (pipecat_work and not hub_used), `hub_calls`, `hub_calls_by_tool`, `hub_via`, `bypass_events_before_first_hub`, `bypass_events_total`, `hub_share_of_calls`, `harness_version`, `start`/`end`, `flag_counts`, `user_prompts`, `tool_calls_total`.
 
 ## How to analyse
 

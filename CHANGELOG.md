@@ -119,6 +119,13 @@ This changelog retains repository and Context Hub package history.
   comment holding a line break is a line break to the JS lexer, a call after a top-level `throw`,
   `return`, `break`, `continue` or `process.exit` does not surely run, and a Codex year, month or
   day directory given as `-i` is one participant (the sessions directory's name).
+- **Audit detection and robustness (xhigh review).** `uvx pipecat-ai-context-hub <cmd>`, the form
+  `docs/cli.md` documents, is a hub CLI call (it read as non-use); `--since 2026-11-5` is
+  `2026-11-05` (it was compared as text and dropped later sessions); a transcript line is a record
+  up to `\n` only (U+2028, U+2029 and U+0085 inside a tool result lost the record); a lone
+  surrogate in a transcript string no longer aborts `extract` or drops the session; a hub call
+  given a docs URL is not a web-docs bypass; and `extract` creates its output directories `0700`
+  and files `0600`.
 
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and

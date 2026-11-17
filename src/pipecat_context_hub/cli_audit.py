@@ -41,10 +41,11 @@ def _since(_ctx: click.Context, _param: click.Parameter, value: str | None) -> s
     if value is None:
         return None
     try:
-        datetime.strptime(value, "%Y-%m-%d")
+        # strptime accepts `2026-11-5`; `extract` compares dates as text, where `2026-11-18` sorts
+        # before `2026-11-5` and the session would be dropped. Hand it the zero-padded spelling.
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
     except ValueError:
         raise click.BadParameter("expected YYYY-MM-DD") from None
-    return value
 
 
 @click.group("audit")

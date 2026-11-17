@@ -1412,7 +1412,12 @@ def clean_text(text: str) -> str:
     (``KEY=`` then a hex key). Repeating until stable makes the result idempotent and free of every
     shape the tripwire looks for, so ``sanitize`` succeeding implies ``verify_files`` passes. A text
     that never settles is replaced whole (fail closed).
+
+    A lone surrogate (a transcript string cut inside an emoji, which JSON allows as ``\\ud83d``) has
+    no UTF-8 form: it is replaced by ``?`` first, so every shared string can be written.
     """
+    if not text.isascii():
+        text = text.encode("utf-8", "replace").decode("utf-8")
     for _ in range(_MAX_CLEAN_PASSES):
         cleaned = SHARE_PATH_RE.sub("<path>", redact(text))
         if cleaned == text:

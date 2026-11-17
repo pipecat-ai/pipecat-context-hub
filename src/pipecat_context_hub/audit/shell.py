@@ -547,9 +547,20 @@ def _basename(word: str) -> str:
     return word.rsplit("/", 1)[-1]
 
 
+# The hub's executables: the command, and the distribution-name alias that `uvx
+# pipecat-ai-context-hub <cmd>` resolves (`[project.scripts]` in pyproject.toml; the form
+# docs/cli.md tells users to run).
+_HUB_BINARIES = frozenset({"pipecat-context-hub", "pipecat-ai-context-hub"})
+
+
+def _is_hub_binary(word: str) -> bool:
+    """``word`` names a hub executable: bare, by path, or as the ``name@version`` `uvx` accepts."""
+    return _basename(word).split("@", 1)[0] in _HUB_BINARIES
+
+
 def _hub_head(argv: list[str], i: int) -> int:
     """How many words of ``argv`` from ``i`` name the hub binary followed by a subcommand, else 0."""
-    if _basename(argv[i]) == "pipecat-context-hub":
+    if _is_hub_binary(argv[i]):
         return 1 if argv[i + 1 : i + 2] and argv[i + 1] in CLI_SUBCOMMANDS else 0
     if _basename(argv[i]) == "pipecat" and argv[i + 1 : i + 2] == ["context-hub"]:
         return 2 if argv[i + 2 : i + 3] and argv[i + 2] in CLI_SUBCOMMANDS else 0

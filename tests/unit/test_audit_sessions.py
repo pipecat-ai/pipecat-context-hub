@@ -4778,3 +4778,151 @@ class TestRound5FixerHygiene:
             assert part in cli, part
         assert "the password running to the last `@`" not in cli  # F8
         assert "scheme and user are not kept" in cli and "zero-width" in cli
+
+
+class TestXhighReviewRegressions:
+    """Defects found by the xhigh review, each frozen with the input that exposed it."""
+
+    @staticmethod
+    def _hub_rows(query: str, result_text: str, *, ensure_ascii: bool = True) -> list[str]:
+        use = _use(
+            1, "2026-11-18T10:00:00Z", "mcp__pipecat-context-hub__search_docs", {"query": query}
+        )
+        res = _result(1, "2026-11-18T10:00:01Z", result_text)
+        return [json.dumps(r, ensure_ascii=ensure_ascii) for r in (use, res)]
+
+    def test_since_unpadded_date_is_read_as_the_padded_date(self, tmp_path: Path) -> None:
+        """`--since 2026-11-5` was kept as text, and `2026-11-18` sorts before `2026-11-5`: a
+        session on the 18th was dropped."""
+        _claude_session(tmp_path / "in" / "alice" / "s1.jsonl")  # starts 2026-11-18
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out, "--since", "2026-11-5").exit_code == 0
+        assert len(_rows(out / "sessions.jsonl")) == 1
+        scope = json.loads((out / "share" / "manifest.json").read_text())["scope"]
+        assert scope["since"] == "2026-11-05"
+
+    @pytest.mark.parametrize(
+        ("line", "argv"),
+        [
+            (
+                "uvx pipecat-ai-context-hub search-docs 'TTS + STT' --limit 3",
+                ["pipecat-context-hub", "search-docs", "TTS + STT", "--limit", "3"],
+            ),
+            (
+                "uvx pipecat-ai-context-hub@0.10.0 search-docs 'TTS + STT'",
+                ["pipecat-context-hub", "search-docs", "TTS + STT"],
+            ),
+            (
+                "cd /x && uvx --quiet pipecat-ai-context-hub search-docs 'TTS + STT' | head",
+                ["pipecat-context-hub", "search-docs", "TTS + STT"],
+            ),
+        ],
+    )
+    def test_the_documented_uvx_alias_is_a_hub_cli_call(self, line: str, argv: list[str]) -> None:
+        """docs/cli.md tells users to run `uvx pipecat-ai-context-hub <cmd>`; only
+        `pipecat-context-hub` was recognised, so those sessions looked like non-use."""
+        from pipecat_context_hub.audit.shell import shell_hub_calls
+
+        assert shell_hub_calls(line) == [argv]
+        assert audit_extract.detect_hub("Bash", {"command": line}) == ("search_docs", "cli", 1)
+        assert audit_extract.hub_invocation({"command": line}, "cli") == shlex.join(argv)
+
+    def test_installing_the_alias_package_is_not_a_hub_call(self) -> None:
+        from pipecat_context_hub.audit.shell import shell_hub_calls
+
+        for line in (
+            "uv tool upgrade pipecat-ai-context-hub",
+            "uvx --from pipecat-ai-context-hub --help",
+            "echo pipecat-ai-context-hub status",
+        ):
+            assert shell_hub_calls(line) == [], line
+        assert audit_extract.detect_hub(
+            "Bash", {"command": "uv tool upgrade pipecat-ai-context-hub"}
+        ) == (
+            None,
+            None,
+            0,
+        )
+
+    def test_the_text_scan_sees_the_alias_too(self) -> None:
+        match = audit_extract.CLI_RE.search("run pipecat-ai-context-hub status now")
+        assert match and match.group(1) == "status"
+
+    @pytest.mark.parametrize("sep", [" ", " ", "\u0085"])
+    def test_a_unicode_line_separator_inside_a_result_does_not_lose_the_record(
+        self, tmp_path: Path, sep: str
+    ) -> None:
+        """JSON.stringify writes U+2028, U+2029 and U+0085 unescaped; `str.splitlines` broke the
+        transcript line there, so the result record was dropped (no hit count, no flags)."""
+        result = json.dumps(
+            {"hits": [], "note": f"a{sep}b", "evidence": {"confidence": 0.1}}, ensure_ascii=False
+        )
+        path = tmp_path / "s.jsonl"
+        path.write_text(
+            "\n".join(self._hub_rows("TTS", result, ensure_ascii=False)) + "\n", encoding="utf-8"
+        )
+        assert sep in path.read_text(encoding="utf-8")  # raw in the transcript, as JSON.stringify
+        _, calls = audit_extract.process_session(path, "p")
+        assert calls[0]["result"]["n_hits"] == 0
+        assert "zero_hits" in calls[0]["flags"]
+
+    def test_a_lone_surrogate_in_a_query_does_not_abort_the_extract(self, tmp_path: Path) -> None:
+        """A transcript string cut inside an emoji is JSON `\\ud83d`: it has no UTF-8 form, and the
+        report rendered from a flagged call's query raised UnicodeEncodeError for the whole run."""
+        empty = json.dumps({"hits": [], "evidence": {"confidence": 0.1, "low_confidence": True}})
+        path = tmp_path / "in" / "alice" / "s.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text("\n".join(self._hub_rows("voice \ud83d agent", empty)) + "\n")
+        out = tmp_path / "out"
+        result = _extract(tmp_path / "in", out)
+        assert result.exit_code == 0, result.output
+        for name in BUNDLE:
+            (out / "share" / name).read_bytes().decode("utf-8")  # every shared byte is UTF-8
+
+    def test_a_lone_surrogate_in_a_result_keeps_the_session(self, tmp_path: Path) -> None:
+        path = tmp_path / "in" / "alice" / "s.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text("\n".join(self._hub_rows("TTS", "partial \ud83d")) + "\n")
+        result = _extract(tmp_path / "in", tmp_path / "out")
+        assert result.exit_code == 0, result.output
+        assert "skipped" not in result.output
+        assert json.loads(result.stdout)["hub_calls"] == 1
+
+    def test_a_hub_call_given_a_docs_url_is_not_a_web_bypass(self, tmp_path: Path) -> None:
+        """A direct call's tool name is in the event's name, not its input: `get_doc` given a
+        docs URL read as the agent fetching web docs, and flagged the call before it as bypassed."""
+        ok = json.dumps({"hits": [{"doc_id": "d1"}], "evidence": {"confidence": 0.9}})
+        rows = [
+            _use(
+                1, "2026-11-18T10:00:00Z", "mcp__pipecat-context-hub__search_docs", {"query": "x"}
+            ),
+            _result(1, "2026-11-18T10:00:01Z", ok),
+            _use(
+                2,
+                "2026-11-18T10:00:02Z",
+                "mcp__pipecat-context-hub__get_doc",
+                {"path": "https://docs.pipecat.ai/guides/x"},
+            ),
+            _result(2, "2026-11-18T10:00:03Z", json.dumps({"doc_id": "d1"})),
+        ]
+        _jl(tmp_path / "s.jsonl", rows)
+        session, calls = audit_extract.process_session(tmp_path / "s.jsonl", "p")
+        assert "agent_bypassed_after_result" not in calls[0]["flags"]
+        assert session["bypass_events_total"] == 0
+        web = audit_extract.categorize("WebFetch", {"url": "https://docs.pipecat.ai/guides/x"})
+        assert web == "web_pipecat"  # a real web fetch still is one
+
+    @pytest.mark.parametrize("bad", [5, "abc", {"a": 1}, True])
+    def test_a_response_field_of_the_wrong_type_is_not_sliced(self, bad: Any) -> None:
+        text = json.dumps({"hits": [], "evidence": {"unknown": bad, "next_retrieval_queries": bad}})
+        out = audit_extract.summarize_hub_result(text, [], "mcp", "search_docs")
+        assert out["unknown"] == [] and out["next_queries"] == []
+
+    @pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX permission bits")
+    def test_everything_extract_writes_is_private_to_its_owner(self, audited: Path) -> None:
+        import os
+        import stat
+
+        paths = [audited, audited / "share", *audited.rglob("*")]
+        for p in paths:
+            assert stat.S_IMODE(os.stat(p).st_mode) & 0o077 == 0, p
