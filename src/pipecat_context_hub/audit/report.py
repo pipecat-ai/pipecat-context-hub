@@ -1,9 +1,12 @@
-"""``report.md``: one renderer, used by ``extract`` and ``repack``.
+"""``report.md``: one renderer, used by ``extract`` and ``repack``, for every section (the
+computed answers from ``manifest.json``'s ``analysis`` included).
 
 The report is rebuilt from the bundle's own files (``manifest.json`` and ``calls.jsonl``), never
 edited in place. It is a function of rows the tripwire already accepted: every value is rendered
-through the egress's canonical text form (``value_text``, never ``str()``/``repr``) and table cells
-through ``md_cell``, each bounded by whitespace, so a report rendered from clean rows is clean.
+through the egress's canonical text form (``value_text``, never ``str()``/``repr``), inline with
+:func:`_line` and in a table cell with :func:`_cell`. In running text a value is preceded by
+``label: `` and followed only by the item separator `` · `` or the end of the line, so no rule can
+match across a value and the text around it, and a report rendered from clean values is clean.
 
 A participant who deletes a call from ``calls.jsonl`` and runs ``repack`` therefore loses
 everything derived from it, by construction: there is no second copy of a query to find, and no
@@ -18,7 +21,6 @@ from collections import Counter
 from typing import Any
 
 from pipecat_context_hub.audit.analysis import latency_stats, triage_order
-from pipecat_context_hub.audit.analysis import render as render_analysis
 from pipecat_context_hub.audit.egress import md_cell, one_line, value_text
 
 LOOK_FIRST_LIMIT = 60
@@ -49,7 +51,7 @@ def _cell(v: Any) -> str:
     """A table cell for a row value: its canonical text, one line, ``|`` escaped. No redaction.
 
     Every value rendered here already came through the egress (``extract``) or is checked in its own
-    file (``repack``), and ``verify_share`` scans ``report.md`` with the ``|`` escape undone, so the
+    file (``repack``), and ``verify_files`` scans ``report.md`` with the ``|`` escape undone, so the
     escape can never make a match the value did not have. Substituting a character (``|`` to ``/``)
     could fabricate a path the row never held.
     """
@@ -81,6 +83,66 @@ def _query(c: dict[str, Any]) -> str:
     return _cell(_prefix(value_text(q), QUERY_CELL_CHARS))
 
 
+def _answers(a: dict[str, Any]) -> list[str]:
+    """The answers to the four questions, from a manifest ``analysis`` block. Reads only the keys
+    ``bundle.ANALYSIS_SHAPE`` names (``load_files`` / ``decode_manifest`` check them first)."""
+    u, e, c = a["usage"], a["efficiency"], a["correctness"]
+    md = [
+        "## Answers to the four questions (computed, heuristic)",
+        "",
+        "### 1. Did they use Context Hub?",
+        "",
+        f"- Sessions that called it: {_line(u['used'])} · sessions: {_line(u['sessions'])} · "
+        f"session trees: {_line(u['session_trees'])} · subagent sessions: "
+        f"{_line(u['subagent_sessions'])}",
+        f"- Sessions with Pipecat work that called it: {_line(u['pipecat_work_and_used'])} · "
+        f"with Pipecat work: {_line(u['with_pipecat_work'])} · adoption percent: "
+        f"{_line(u['adoption_pct_of_pipecat_work'])}",
+        f"- Sessions listing its tools as deferred: {_line(u['hub_tools_listed_deferred'])} · "
+        f"sessions using `ToolSearch` (which loads them): {_line(u['tool_search_ever_used'])}",
+    ]
+    if u["missed_opportunity"]:
+        md.append(
+            f"- Sessions with Pipecat work without it: {_line(u['missed_opportunity'])} · "
+            f"signals: {_line(u['why_not_used'])}"
+        )
+    md += ["", "### 2. Was it inefficient?", ""]
+    if e["calls"]:
+        v = e["versioned_search_calls_without_pipecat_version"]
+        md += [
+            f"- Calls: {_line(e['calls'])} · percent with no flag: {_line(e['clean_pct'])} · "
+            f"median latency in seconds: {_line(e['median_latency_s'])}",
+            "- Sessions that searched 3+ times and never fetched a doc or example: "
+            f"{_line(e['sessions_searching_3plus_times_never_fetching'])} · sessions with 3+ "
+            f"`get_hub_status` calls: {_line(e['sessions_with_3plus_status_calls'])}",
+            f"- Versioned searches without `pipecat_version`: {_line(v['without'])} · "
+            f"versioned searches: {_line(v['of'])}",
+        ]
+    else:
+        md.append("- No calls, so nothing to measure.")
+    md += ["", "### 3. Correct or incorrect?", "", f"- {_line(c['note'])}"]
+    if c["outcomes"]:
+        md.append(f"- Outcomes: {_line(c['outcomes'])}")
+    if c["read_these_first"]:
+        md.append(f"- Read first: {_line(c['read_these_first'])}")
+    md += ["", "### 4. What to improve (by suspected owner)", ""]
+    if a["improvement_backlog"]:
+        md += [
+            "| target | calls | sessions | participants | top signals | examples |",
+            "|---|---|---|---|---|---|",
+        ]
+        for b in a["improvement_backlog"]:
+            md.append(
+                f"| {_cell(b['target'])} | {_cell(b['calls'])} | {_cell(b['sessions'])} "
+                f"| {_cell(b['participants'])} | {_cell(b['top_signals'])} "
+                f"| {_cell(b['example_refs'][:3])} |"
+            )
+    else:
+        md.append("- Nothing to improve was signalled.")
+    md.append("")
+    return md
+
+
 def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     """The report for ``rows`` (share-form call rows) under ``manifest``'s counts and analysis."""
     counts = manifest.get("counts") or {}
@@ -106,7 +168,7 @@ def render_report(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         f"Calls by tool: {_line(dict(Counter(c['tool'] for c in rows)))}",
         f"Flags: {_line(dict(flag_totals))}",
         "",
-        *(render_analysis(analysis) if analysis else []),
+        *(_answers(analysis) if analysis else []),
         "## Look first (flagged calls, highest severity first)"
         + (
             f" — first {LOOK_FIRST_LIMIT} of {len(flagged)}"

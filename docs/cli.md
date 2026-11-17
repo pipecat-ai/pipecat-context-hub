@@ -65,9 +65,14 @@ finished files: JSON is checked decoded (every string, key and repeated key, so 
 escape cannot hide a token), and a hit refuses the whole bundle, naming the file and rule but never
 the matched text. "Nothing to share" means no call rows, no session that used Context Hub and no
 session that did Pipecat work without it; `gist` refuses such a bundle unless `--allow-empty`, and
-leaves out a `calls.jsonl` or `sessions.jsonl` with no rows (a gist cannot hold an empty file).
-`extract`, `repack`, `gist` and `ingest` validate a bundle with the same rules, so a bundle `repack`
-accepts is one `ingest` accepts; after a hand edit, run `repack` before `gist`.
+leaves out a `calls.jsonl` or `sessions.jsonl` with no rows (a file holding only whitespace counts
+as empty; a gist cannot hold an empty file). `gist`, `repack` and `ingest` read a share/ directory
+the same way (no symlinked directory or file, size limits) and `extract`, `repack`, `gist` and
+`ingest` validate a bundle with the same rules, including the shape of `manifest.json`'s `analysis`
+and each call's `latency_s` and `input`, so a bundle `repack` accepts is one `ingest` accepts; after
+a hand edit, run `repack` before `gist`. A refused `extract` or `repack` writes nothing: no file is
+kept or rewritten until the whole bundle has passed, and no output is ever written through a
+symlink. `gist` posts the bytes it checked, and refuses a `gh` found in the current directory.
 
 `ingest` treats bundles as untrusted: tarballs are read in memory as a stream with fixed limits
 (archive size, member count, member size, total bytes), only the five known filenames are accepted

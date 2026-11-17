@@ -62,6 +62,18 @@ This changelog retains repository and Context Hub package history.
   refused by the leak check, and `report.md` renders every value as text (never a Python repr),
   so a clean row can no longer fail the leak check once rendered. The audit skill and `SCHEMA.md`
   tell organizers to rebuild a call by hand, never to run `hub_invocation`.
+  share/ has one reader (`audit/sharedir.py`) for `gist`, `repack` and `ingest`, so a symlinked or
+  oversized file gets the same verdict everywhere, and every output is written without following a
+  link (a new file renamed over the target in a directory opened with `O_NOFOLLOW`; path checks on
+  Windows). `extract` and `repack` validate the whole bundle before writing anything, so a refused
+  run leaves no unscrubbed local copy and no half-rewritten share/; a malformed `analysis` block or
+  a non-numeric `latency_s` is a one-line error, not a traceback. A whitespace-only JSONL file is
+  empty for omission, the bundle digest and validation alike, so its tarball and gist ingest as one
+  bundle. Text-scanned sessions are identified by their file's place under the input root, so two
+  `chat.txt` files are two sessions. `gist` posts the bytes it checked and refuses a `gh` found in
+  the current directory (Windows searches it first). The per-call latency p90 is now the
+  nearest-rank 90th percentile (it reported the maximum for up to 10 calls). Flag thresholds and
+  outcome classes are declared once, so `SCHEMA.md` quotes the values the extractor uses.
 
 ### Changed
 - Shortened the package README and moved setup, tool, CLI, data-source and

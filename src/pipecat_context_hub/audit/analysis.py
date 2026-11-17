@@ -16,7 +16,8 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from pipecat_context_hub.audit.flags import FLAGS, OUTCOME_ORDER, severity, spec
+from pipecat_context_hub.audit.flags import CLEAN_OUTCOME, FLAGS, OUTCOME_ORDER, OUTCOMES, severity
+from pipecat_context_hub.audit.flags import spec
 
 SEARCH_TOOLS = {"search_docs", "search_examples", "search_api", "get_code_snippet"}
 VERSIONED_TOOLS = {"search_examples", "search_api", "get_code_snippet"}
@@ -27,15 +28,6 @@ _CLASSES: list[tuple[str, dict[str, str]]] = [
     (outcome, {name: s.target for name, s in FLAGS.items() if s.outcome == outcome})
     for outcome in OUTCOME_ORDER
 ]
-
-OUTCOME_GLOSSARY = {
-    "failed": "the call errored, was schema-invalid, or the result was too big or not JSON",
-    "miss": "no hits, low confidence, or the topic's repos are not indexed",
-    "suspect": "a Python error followed within 25 events (correlation only; read the call to judge)",
-    "bypassed": "the agent read pipecat source or web docs right after the result",
-    "inefficient": "the call worked but wasted effort (repeat, retry, slow, oversized)",
-    "no_negative_signal": "no flag fired; NOT proof the answer was right",
-}
 
 
 def classify_call(call: dict[str, Any]) -> tuple[str, str | None]:
@@ -51,7 +43,7 @@ def classify_call(call: dict[str, Any]) -> tuple[str, str | None]:
         for flag, target in mapping.items():
             if flag in flags:
                 return outcome, target
-    return "no_negative_signal", None
+    return CLEAN_OUTCOME, None
 
 
 def annotate_calls(calls: list[dict[str, Any]]) -> None:
@@ -72,12 +64,16 @@ def triage_order(calls: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 def latency_stats(latencies: Iterable[float]) -> tuple[float | None, float | None]:
     """(median rounded to 0.1 s, p90) of ``latencies``; (None, None) when there are none.
 
-    The one formula for the answers' per-tool efficiency and the report's per-tool table.
+    p90 is the nearest-rank 90th percentile: the smallest value at least 90% of the values are at
+    or below, ``sorted[ceil(0.9 * n) - 1]`` (computed in integers, so no float rounding moves it).
+    The one formula for the answers' overall and per-tool efficiency and the report's per-tool
+    table.
     """
     lat = sorted(latencies)
     if not lat:
         return None, None
-    return round(statistics.median(lat), 1), lat[min(len(lat) - 1, int(0.9 * len(lat)))]
+    rank = -(-9 * len(lat) // 10)  # ceil(0.9 * n)
+    return round(statistics.median(lat), 1), lat[rank - 1]
 
 
 def no_use_signals(session: dict[str, Any]) -> list[str]:
@@ -148,7 +144,7 @@ def analyze(
         median, p90 = latency_stats(c["latency_s"] for c in cs if c.get("latency_s") is not None)
         tool_stats[tool] = {
             "calls": len(cs),
-            "not_clean": sum(c["outcome"] != "no_negative_signal" for c in cs),
+            "not_clean": sum(c["outcome"] != CLEAN_OUTCOME for c in cs),
             "median_s": median,
             "p90_s": p90,
         }
@@ -168,19 +164,11 @@ def analyze(
     no_version = sum(
         not (isinstance(c["input"], dict) and c["input"].get("pipecat_version")) for c in versioned
     )
+    median_all, _ = latency_stats(c["latency_s"] for c in calls if c.get("latency_s") is not None)
     efficiency = {
         "calls": len(calls),
-        "clean_pct": _pct(outcomes["no_negative_signal"], len(calls)),
-        "median_latency_s": (
-            round(
-                statistics.median(
-                    [c["latency_s"] for c in calls if c.get("latency_s") is not None]
-                ),
-                1,
-            )
-            if any(c.get("latency_s") is not None for c in calls)
-            else None
-        ),
+        "clean_pct": _pct(outcomes[CLEAN_OUTCOME], len(calls)),
+        "median_latency_s": median_all,
         "per_tool": tool_stats,
         "sessions_searching_3plus_times_never_fetching": search_only,
         "sessions_with_3plus_status_calls": status_spam,
@@ -193,7 +181,7 @@ def analyze(
     correctness = {
         "note": "outcome is a signal class from structure, not a verdict on content; no_negative_signal is not proof of a right answer",
         "outcomes": dict(outcomes.most_common()),
-        "glossary": OUTCOME_GLOSSARY,
+        "glossary": dict(OUTCOMES),
         "read_these_first": [
             ref(c)
             for c in triage_order(
@@ -262,54 +250,3 @@ def prune_refs(a: dict[str, Any], keep: set[str]) -> None:
         b["example_refs"] = [r for r in b.get("example_refs", []) if r in keep]
     c = a.get("correctness") or {}
     c["read_these_first"] = [r for r in c.get("read_these_first", []) if r in keep]
-
-
-def render(a: dict[str, Any]) -> list[str]:
-    """Markdown for the top of report.md."""
-    u, e, c = a["usage"], a["efficiency"], a["correctness"]
-    md = [
-        "## Answers to the four questions (computed, heuristic)",
-        "",
-        "### 1. Did they use Context Hub?",
-        "",
-        f"- {u['used']} of {u['sessions']} sessions ({u['session_trees']} session trees; "
-        f"{u['subagent_sessions']} sessions are subagents) called it; {u['pipecat_work_and_used']} of "
-        f"{u['with_pipecat_work']} sessions with Pipecat work ({u['adoption_pct_of_pipecat_work']}%).",
-        f"- Its tools were listed as deferred in {u['hub_tools_listed_deferred']} sessions; "
-        f"`ToolSearch` (which loads them) was used in {u['tool_search_ever_used']}.",
-    ]
-    if u["missed_opportunity"]:
-        why = ", ".join(f"`{k}` {v}" for k, v in u["why_not_used"].items())
-        md.append(f"- Pipecat work without it: {u['missed_opportunity']} sessions. Signals: {why}.")
-    md += ["", "### 2. Was it inefficient?", ""]
-    if e["calls"]:
-        md += [
-            f"- {e['calls']} calls, {e['clean_pct']}% with no flag; median latency {e['median_latency_s']} s.",
-            f"- Sessions that searched 3+ times and never fetched a doc or example: {e['sessions_searching_3plus_times_never_fetching']}; "
-            f"sessions with 3+ `get_hub_status` calls: {e['sessions_with_3plus_status_calls']}.",
-            f"- {e['versioned_search_calls_without_pipecat_version']['without']} of "
-            f"{e['versioned_search_calls_without_pipecat_version']['of']} versioned searches omitted `pipecat_version`.",
-        ]
-    else:
-        md.append("- No calls, so nothing to measure.")
-    md += ["", "### 3. Correct or incorrect?", "", f"- {c['note']}."]
-    if c["outcomes"]:
-        md.append("- Outcomes: " + ", ".join(f"{k} {v}" for k, v in c["outcomes"].items()) + ".")
-    if c["read_these_first"]:
-        md.append("- Read first: " + ", ".join(f"`{r}`" for r in c["read_these_first"]) + ".")
-    md += ["", "### 4. What to improve (by suspected owner)", ""]
-    if a["improvement_backlog"]:
-        md += [
-            "| target | calls | sessions | participants | top signals | examples |",
-            "|---|---|---|---|---|---|",
-        ]
-        for b in a["improvement_backlog"]:
-            sig = ", ".join(f"{k} {v}" for k, v in b["top_signals"].items())
-            ex = ", ".join(f"`{r}`" for r in b["example_refs"][:3])
-            md.append(
-                f"| {b['target']} | {b['calls']} | {b['sessions']} | {b['participants']} | {sig} | {ex} |"
-            )
-    else:
-        md.append("- Nothing to improve was signalled.")
-    md.append("")
-    return md

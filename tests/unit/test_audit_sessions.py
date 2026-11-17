@@ -1310,11 +1310,11 @@ class TestEgressParity:
         row = REPRESENTATIONS[rep](text)
         share = tmp_path / "share"
         _write_sink(share, sink, json.dumps(egress.sanitize(row)))
-        assert egress.verify_share(share, (sink,)) == []
+        assert _verify_share(share, (sink,)) == []
         assert payload not in _decoded_text(share / sink)
         for encoded in (json.dumps(row), _escape_all(row)):  # a hand edit, plain or escaped
             _write_sink(share, sink, encoded)
-            assert egress.verify_share(share, (sink,)), (rep, sink, encoded[:40])
+            assert _verify_share(share, (sink,)), (rep, sink, encoded[:40])
 
     @pytest.mark.parametrize("shape", SECRET_SHAPES, ids=[p for _, p in SECRET_SHAPES])
     def test_every_shape_in_the_text_sinks(self, tmp_path: Path, shape: tuple[str, str]) -> None:
@@ -1329,10 +1329,10 @@ class TestEgressParity:
         }
         report = render_report({}, [row])
         _write_sink(share, "report.md", report)
-        assert egress.verify_share(share, ("report.md",)) == []
+        assert _verify_share(share, ("report.md",)) == []
         assert payload not in report
         _write_sink(share, "report.md", f"| q | {text} |")  # a hand edit to report.md
-        assert egress.verify_share(share, ("report.md",))
+        assert _verify_share(share, ("report.md",))
 
     @pytest.mark.parametrize("sink", JSON_SINKS)
     @pytest.mark.parametrize("rep", list(REPRESENTATIONS))
@@ -1344,7 +1344,7 @@ class TestEgressParity:
         row = REPRESENTATIONS[rep](text)
         clean = egress.sanitize(row)
         _write_sink(share, sink, json.dumps(clean))
-        assert egress.verify_share(share, (sink,)) == []
+        assert _verify_share(share, (sink,)) == []
         if rep != "credential-key":
             assert clean == row  # nothing benign is rewritten
 
@@ -1366,7 +1366,7 @@ class TestEgressParity:
         assert [r["input"] for r in shared] == [{"query": q, "max_tokens": 5} for q in BENIGN]
         report = (out / "share" / "report.md").read_text()
         assert "a\\|tmp\\|b" in report and "a/tmp/b" not in report
-        assert egress.verify_share(out / "share", tuple(BUNDLE)) == []
+        assert _verify_share(out / "share", tuple(BUNDLE)) == []
 
     def test_a_long_query_is_cut_at_whitespace_never_inside_a_token(self, tmp_path: Path) -> None:
         """Cutting a 78-char hex run followed by `g` at 80 chars made a bare hex key appear."""
@@ -1429,7 +1429,7 @@ class TestEgressParity:
         # the check is structural: it does not need a pattern to recognise the value
         share = tmp_path / "hand"
         _write_sink(share, "calls.jsonl", json.dumps({"input": {"apiKey": STRUCTURED}}))
-        assert egress.verify_share(share, ("calls.jsonl",)) == ["calls.jsonl: credential field"]
+        assert _verify_share(share, ("calls.jsonl",)) == ["calls.jsonl: credential field"]
 
     @pytest.mark.parametrize(
         ("name", "credential"),
@@ -1477,9 +1477,9 @@ class TestEgressParity:
     def test_a_duplicate_key_or_an_unparsable_line_is_refused(self, tmp_path: Path) -> None:
         share = tmp_path / "share"
         _write_sink(share, "calls.jsonl", '{"query": "' + SECRET + '", "query": "x"}')
-        assert egress.verify_share(share, ("calls.jsonl",))  # json.loads keeps only the last
+        assert _verify_share(share, ("calls.jsonl",))  # json.loads keeps only the last
         _write_sink(share, "sessions.jsonl", "not json")
-        assert egress.verify_share(share, ("sessions.jsonl",)) == [
+        assert _verify_share(share, ("sessions.jsonl",)) == [
             "sessions.jsonl: line 1 is not valid JSON"
         ]
 
@@ -1499,7 +1499,7 @@ class TestEgressParity:
         # separator no rule matches across, instead of a space that could join a label to a value)
         assert f"{SECRET} a\\|b · c" in report
         _write_sink(tmp_path / "share", "report.md", report)
-        assert egress.verify_share(tmp_path / "share", ("report.md",))
+        assert _verify_share(tmp_path / "share", ("report.md",))
 
     def test_sanitize_is_a_fixpoint_the_tripwire_accepts(self) -> None:
         """Property (no finding): `clean_text` repeats until stable, so its output never trips a rule."""
@@ -1752,6 +1752,11 @@ class TestResultShapeAndErrors:
 # ---- C1: the bundle contract has one definition -------------------------------------------------
 
 
+def _verify_share(share: Path, names: tuple[str, ...]) -> list[str]:
+    """The leak check over the named share/ files as they are on disk (egress checks bytes)."""
+    return egress.verify_files({n: (share / n).read_bytes() for n in names if (share / n).exists()})
+
+
 def _merge(paths: list[Path], out: Path) -> dict[str, Any]:
     from pipecat_context_hub.audit.ingest import merge_bundles
 
@@ -1812,15 +1817,15 @@ VALID_CELLS = {
 
 
 def _required_key_cells() -> dict[str, tuple[str, Any]]:
-    from pipecat_context_hub.audit.bundle import CALL_KEYS, SESSION_KEYS
+    from pipecat_context_hub.audit.bundle import CALL_FIELDS, SESSION_FIELDS
 
     cells: dict[str, tuple[str, Any]] = {}
-    for k in sorted(CALL_KEYS):
+    for k in sorted(CALL_FIELDS):
         cells[f"call-missing-{k}"] = (
             "calls.jsonl",
             lambda r, k=k: {x: v for x, v in r.items() if x != k},
         )
-    for k in sorted(SESSION_KEYS):
+    for k in sorted(SESSION_FIELDS):
         cells[f"session-missing-{k}"] = (
             "sessions.jsonl",
             lambda r, k=k: {x: v for x, v in r.items() if x != k},
@@ -1842,6 +1847,14 @@ INVALID_CELLS: dict[str, tuple[str, Any]] = {
     "participant-null": ("sessions.jsonl", lambda r: {**r, "participant": None}),
     "duplicate-key": ("calls.jsonl", "dup"),
     "bad-json": ("calls.jsonl", "bad"),
+    # Q3: latency_s and input were untyped; a string latency_s crashed repack's report render.
+    "latency-string": ("calls.jsonl", lambda r: {**r, "latency_s": "slow"}),
+    "latency-negative": ("calls.jsonl", lambda r: {**r, "latency_s": -1}),
+    "latency-nan": ("calls.jsonl", lambda r: {**r, "latency_s": float("nan")}),
+    "latency-infinite": ("calls.jsonl", lambda r: {**r, "latency_s": float("inf")}),
+    "latency-bool": ("calls.jsonl", lambda r: {**r, "latency_s": True}),
+    "input-string": ("calls.jsonl", lambda r: {**r, "input": "TTS"}),
+    "input-list": ("calls.jsonl", lambda r: {**r, "input": ["TTS"]}),
 }  # fmt: skip
 
 
@@ -1981,7 +1994,7 @@ class TestBundleContract:
         f = audited / "share" / "calls.jsonl"
         first, *rest = f.read_text().splitlines()
         f.write_text("".join(x + "\n" for x in [first.replace("{", '{"tool": "x", ', 1), *rest]))
-        assert egress.verify_share(audited / "share", ("calls.jsonl",)) == []  # nothing to leak
+        assert _verify_share(audited / "share", ("calls.jsonl",)) == []  # nothing to leak
         for args in (("repack", str(audited)), ("gist", str(audited))):
             refused = _invoke(*args)
             assert refused.exit_code == 1 and "repeats a key" in refused.output, refused.output
@@ -2165,7 +2178,7 @@ class TestFlagVocabulary:
         src = Path(audit_extract.__file__).read_text()
         emitted = set(re.findall(r'call_flags\.append\(\s*"(\w+)"', src))
         assert emitted == set(flags.FLAGS), emitted ^ set(flags.FLAGS)
-        assert set(flags.FLAG_GLOSSARY) == set(flags.SEVERITY) == set(flags.FLAGS)
+        assert not hasattr(flags, "FLAG_GLOSSARY") and not hasattr(flags, "SEVERITY")  # F10
         assert {f for _, m in analysis._CLASSES for f in m} == set(flags.FLAGS)
         schema = (audited / "share" / "SCHEMA.md").read_text()
         for name, spec in flags.FLAGS.items():
@@ -2312,6 +2325,36 @@ def _fuzz_value(rng: Any, depth: int = 0) -> Any:
     return {_fuzz_text(rng): _fuzz_value(rng, depth + 1) for _ in range(rng.randint(0, 3))}
 
 
+def _fuzz_shaped(rng: Any, shape: Any) -> Any:
+    """A value with ``shape`` (bundle.ANALYSIS_SHAPE's notation) whose leaves are fuzzed."""
+    if shape is None:
+        return _fuzz_value(rng)
+    if shape is str:
+        return _fuzz_text(rng)
+    if shape is dict:
+        return {_fuzz_text(rng): _fuzz_value(rng) for _ in range(rng.randint(0, 3))}
+    if isinstance(shape, list):
+        return [_fuzz_shaped(rng, shape[0]) for _ in range(rng.randint(0, 3))]
+    return {k: _fuzz_shaped(rng, sub) for k, sub in shape.items()}
+
+
+def _plain_shaped(shape: Any) -> Any:
+    """The smallest value with ``shape``: every leaf 0, every container empty."""
+    if shape is None:
+        return 0
+    if shape is str:
+        return ""
+    if shape is dict or isinstance(shape, list):
+        return [] if isinstance(shape, list) else {}
+    return {k: _plain_shaped(sub) for k, sub in shape.items()}
+
+
+def _fuzz_analysis(rng: Any) -> Any:
+    from pipecat_context_hub.audit import bundle
+
+    return _fuzz_shaped(rng, bundle.ANALYSIS_SHAPE)
+
+
 def _json_clean(v: Any) -> bool:
     return egress._file_leaks("calls.jsonl", json.dumps(v)) == []
 
@@ -2323,10 +2366,11 @@ def _report_clean(text: str) -> bool:
 class TestRenderClosure:
     @pytest.mark.parametrize("seed", range(4))
     def test_sanitize_and_render_are_closed_over_generated_values(self, seed: int) -> None:
-        """Property: sanitize-closure, render-closure, value_text-closure and the cell identity."""
+        """Property: sanitize-closure, render-closure (the answers section from a hand-editable
+        manifest `analysis` included), value_text-closure and the cell identity."""
         import random
 
-        from pipecat_context_hub.audit import flags
+        from pipecat_context_hub.audit import bundle, flags
 
         rng = random.Random(seed)
         names = sorted(flags.FLAGS)
@@ -2348,7 +2392,10 @@ class TestRenderClosure:
             }
             clean = egress.sanitize(row)
             assert _json_clean(clean), clean  # closure under sanitize
-            manifest = egress.sanitize({"harnesses": _fuzz_value(rng)})
+            manifest = egress.sanitize(
+                {"harnesses": _fuzz_value(rng), "analysis": _fuzz_analysis(rng)}
+            )
+            assert bundle.shape_error(manifest["analysis"], bundle.ANALYSIS_SHAPE, "a") is None
             candidates = [clean] + ([row] if _json_clean(row) else [])
             for r in candidates:  # closure under rendering
                 report = render_report(manifest, [r])
@@ -2371,7 +2418,7 @@ class TestRenderClosure:
         out = tmp_path / "out"
         result = _extract(tmp_path / "in", out)
         assert result.exit_code == 0, result.output
-        assert egress.verify_share(out / "share", tuple(BUNDLE)) == []
+        assert _verify_share(out / "share", tuple(BUNDLE)) == []
 
     def test_a_non_string_query_renders_as_text_not_repr(self, tmp_path: Path) -> None:
         """F22: `str(["voice options:\\nTTS"])` wrote `\\n` after `s:`, read as a Windows path."""
@@ -2389,7 +2436,7 @@ class TestRenderClosure:
         assert result.exit_code == 0, result.output
         report = (out / "share" / "report.md").read_text()
         assert "| voice options: · TTS |" in report and "['" not in report
-        assert egress.verify_share(out / "share", tuple(BUNDLE)) == []
+        assert _verify_share(out / "share", tuple(BUNDLE)) == []
         # headers render dicts the same way, never as a Python dict repr
         assert "Calls by tool: search_docs → 1" in report
 
@@ -2400,9 +2447,9 @@ class TestRenderClosure:
         assert out == {"n": egress.REDACTED, "small": 7, "max": 2**63, "f": 1e40, "b": True}
         share = tmp_path / "share"
         _write_sink(share, "calls.jsonl", json.dumps(out))
-        assert egress.verify_share(share, ("calls.jsonl",)) == []
+        assert _verify_share(share, ("calls.jsonl",)) == []
         _write_sink(share, "calls.jsonl", json.dumps({"input": {"n": big}}))  # a hand edit
-        assert egress.verify_share(share, ("calls.jsonl",)) == ["calls.jsonl: secret pattern 7"]
+        assert _verify_share(share, ("calls.jsonl",)) == ["calls.jsonl: secret pattern 7"]
         assert egress.value_text(big) == str(big) and egress.value_text(1e40) == "1e+40"
 
     # (representation, how the shape reaches a share row). `argv` goes through a real shell line.
@@ -2439,9 +2486,9 @@ class TestRenderClosure:
         )
         share = tmp_path / "share"
         _write_sink(share, "calls.jsonl", json.dumps(row))  # a hand edit: refused independently
-        assert egress.verify_share(share, ("calls.jsonl",))
+        assert _verify_share(share, ("calls.jsonl",))
         _write_sink(share, "report.md", f"| q | {text} |")
-        assert egress.verify_share(share, ("report.md",))
+        assert _verify_share(share, ("report.md",))
 
     @pytest.mark.parametrize(
         ("flag", "payload"),
@@ -2741,3 +2788,592 @@ class TestShellFailClosed:
             == shell.shell_source(argv)
             == shlex.join(argv["command"])
         )
+
+
+# ---- Contract H1: share/ has one reader, one no-follow writer and one send-side verdict ---------
+#
+# Invariant. (1) `sharedir.read_share` / `SafeDir.read_bundle` is the only reader of a share/
+# directory; gist, repack and ingest all use it, so the same bytes get the same contract verdict
+# (`bundle.load_files`). (2) No write goes through a link: every output is a new file created with
+# O_EXCL|O_NOFOLLOW in a directory opened with O_NOFOLLOW, then renamed over the target, and repack
+# and extract validate everything before writing anything. (3) A failed extract writes nothing,
+# so nothing unscrubbed is left that `discard` cannot remove. (4) A malformed manifest, analysis,
+# row field or whitespace-only file is a one-line error naming the file, never a traceback, and
+# never after a partial rewrite.
+
+
+def _snapshot(out: Path) -> dict[str, bytes]:
+    names = ["share/" + n for n in BUNDLE] + ["share.tar.gz", "share.tar.gz.sha256"]
+    return {n: (out / n).read_bytes() for n in names if (out / n).is_file()}
+
+
+def _clean_exit(result: Result) -> bool:
+    """No traceback: the command succeeded or refused with an `Error:` line (exit 1)."""
+    return result.exception is None or (
+        isinstance(result.exception, SystemExit) and result.exit_code == 1
+    )
+
+
+def _ingest_verdict(path: Path, tmp: Path) -> str:
+    (row,) = _merge([path], tmp)["report"]
+    return str(row["status"])
+
+
+def _edit_first_row(path: Path, change: Any) -> None:
+    first, *rest = path.read_text().splitlines()
+    path.write_text("".join(x + "\n" for x in [json.dumps(change(json.loads(first))), *rest]))
+
+
+def _edit_manifest(out: Path, change: Any) -> None:
+    f = out / "share" / "manifest.json"
+    m = json.loads(f.read_text())
+    f.write_text(json.dumps(change(m), indent=2))
+
+
+def _fd_safe() -> bool:
+    try:
+        from pipecat_context_hub.audit import sharedir
+    except ImportError:  # pragma: no cover - only when run against code without the module
+        return True
+    return sharedir.FD_SAFE
+
+
+_NOFOLLOW_ONLY = pytest.mark.skipif(
+    not _fd_safe(),
+    reason="no dir_fd/O_NOFOLLOW (Windows): the path-based fallback has a check-then-use window",
+)
+
+
+def _make_zero_call(tmp_path: Path) -> Path:
+    out = tmp_path / "zc"
+    assert _extract(_source("missed", tmp_path / "zsrc"), out).exit_code == 0
+    return out
+
+
+# (setup on a fresh bundle, gist verdict, ingest verdict, repack verdict); a verdict is "ok" or
+# "rejected". gist and ingest read the same bytes, so they agree on every cell; repack may differ
+# only where it is the documented fix (it re-derives stale counts).
+def _state_symlinked_share_dir(out: Path, tmp: Path) -> None:
+    elsewhere = tmp / "elsewhere"
+    (out / "share").rename(elsewhere)
+    (out / "share").symlink_to(elsewhere)
+
+
+def _state_symlinked_file(out: Path, tmp: Path) -> None:
+    copy = tmp / "report-copy.md"
+    copy.write_bytes((out / "share" / "report.md").read_bytes())
+    (out / "share" / "report.md").unlink()
+    (out / "share" / "report.md").symlink_to(copy)
+
+
+def _state_fifo(out: Path, _tmp: Path) -> None:
+    import os
+
+    (out / "share" / "calls.jsonl").unlink()
+    os.mkfifo(out / "share" / "calls.jsonl")
+
+
+def _state_whitespace_calls(out: Path, _tmp: Path) -> None:
+    (out / "share" / "calls.jsonl").write_text("\n \n")
+
+
+def _state_oversized(out: Path, _tmp: Path) -> None:
+    (out / "share" / "SCHEMA.md").write_text("x" * 200_000)  # the limit is lowered to 100 KB
+
+
+def _state_analysis(value: Any) -> Any:
+    def apply(out: Path, _tmp: Path) -> None:
+        _edit_manifest(out, lambda m: {**m, "analysis": value(m["analysis"])})
+
+    return apply
+
+
+def _state_latency(value: Any) -> Any:
+    def apply(out: Path, _tmp: Path) -> None:
+        _edit_first_row(out / "share" / "calls.jsonl", lambda r: {**r, "latency_s": value})
+
+    return apply
+
+
+SHARE_STATES: dict[str, tuple[Any, str, str, str]] = {
+    "fresh": (lambda _o, _t: None, "ok", "ok", "ok"),
+    "symlinked-share-dir": (_state_symlinked_share_dir, "rejected", "rejected", "rejected"),
+    "symlinked-share-file": (_state_symlinked_file, "rejected", "rejected", "rejected"),
+    "fifo-at-calls": (_state_fifo, "rejected", "rejected", "rejected"),
+    "whitespace-calls-stale-counts": (_state_whitespace_calls, "rejected", "rejected", "ok"),
+    "file-over-the-size-limit": (_state_oversized, "rejected", "rejected", "rejected"),
+    "analysis-null": (_state_analysis(lambda a: None), "rejected", "rejected", "rejected"),
+    "analysis-list": (_state_analysis(lambda a: [a]), "rejected", "rejected", "rejected"),
+    "analysis-missing-efficiency": (
+        _state_analysis(lambda a: {k: v for k, v in a.items() if k != "efficiency"}),
+        "rejected", "rejected", "rejected",
+    ),
+    "analysis-backlog-object": (
+        _state_analysis(lambda a: {**a, "improvement_backlog": {}}),
+        "rejected", "rejected", "rejected",
+    ),
+    "analysis-backlog-item-no-refs": (
+        _state_analysis(
+            lambda a: {**a, "improvement_backlog": [{"target": "x", "calls": 1, "sessions": 1,
+                                                     "participants": 1, "top_signals": {}}]}
+        ),
+        "rejected", "rejected", "rejected",
+    ),
+    "analysis-refs-not-strings": (
+        _state_analysis(lambda a: {**a, "correctness": {**a["correctness"],
+                                                        "read_these_first": [[1]]}}),
+        "rejected", "rejected", "rejected",
+    ),
+    "analysis-signals-list": (
+        _state_analysis(lambda a: {**a, "usage": {**a["usage"], "why_not_used": []}}),
+        "rejected", "rejected", "rejected",
+    ),
+    "latency-string": (_state_latency("slow"), "rejected", "rejected", "rejected"),
+    "latency-negative": (_state_latency(-2.5), "rejected", "rejected", "rejected"),
+    "latency-nan": (_state_latency(float("nan")), "rejected", "rejected", "rejected"),
+    "latency-bool": (_state_latency(False), "rejected", "rejected", "rejected"),
+}  # fmt: skip
+
+
+class TestShareDirOneReader:
+    """H1 (1) and (4) over the state space SHARE_STATES x {gist, ingest, repack}."""
+
+    @pytest.mark.parametrize("state", list(SHARE_STATES))
+    def test_every_reader_gives_the_same_verdict_and_no_traceback(
+        self, audited: Path, tmp_path: Path, state: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F1/F17/Q3: three readers with three rule sets; a malformed analysis or a string latency
+        crashed repack with a traceback after it had rewritten manifest.json."""
+        from pipecat_context_hub.audit import bundle
+
+        if state == "fifo-at-calls" and not hasattr(__import__("os"), "mkfifo"):
+            pytest.skip("no FIFOs on this platform")
+        setup, gist_ok, ingest_ok, repack_ok = SHARE_STATES[state]
+        setup(audited, tmp_path)
+        # one limit, every reader (raising=False: the regression run against older code)
+        monkeypatch.setattr(bundle, "MAX_FILE_BYTES", 100_000, raising=False)
+        before = _snapshot(audited) if state != "fifo-at-calls" else {}
+
+        gist = _invoke("gist", str(audited))
+        assert _clean_exit(gist), gist.output
+        assert ("ok" if gist.exit_code == 0 else "rejected") == gist_ok, gist.output
+        assert _ingest_verdict(audited / "share", tmp_path / "m") == ingest_ok
+
+        repack = _invoke("repack", str(audited))
+        assert _clean_exit(repack), (repack.output, repack.exception)
+        assert ("ok" if repack.exit_code == 0 else "rejected") == repack_ok, repack.output
+        if repack_ok == "rejected":
+            assert repack.output.startswith("Error: ") and repack.output.count("\n") == 1
+            if state != "fifo-at-calls":  # a refused repack rewrote nothing
+                assert _snapshot(audited) == before
+        if state.startswith(("analysis", "latency")):
+            name = "manifest.json" if state.startswith("analysis") else "calls.jsonl"
+            for out in (gist.output, repack.output):
+                assert name in out, out
+
+    def test_a_zero_call_bundle_reads_the_same_with_a_missing_or_symlinked_calls_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F1: ingest skipped a symlinked calls.jsonl (absent, allowed at zero rows) while gist
+        refused it, and gist demanded a calls.jsonl that ingest let be absent."""
+        out = _make_zero_call(tmp_path)
+        calls = out / "share" / "calls.jsonl"
+        calls.unlink()  # absent: allowed at zero rows, by all three
+        assert _invoke("gist", str(out)).exit_code == 0
+        assert _ingest_verdict(out / "share", tmp_path / "m1") == "ok"
+        assert _invoke("repack", str(out)).exit_code == 0
+        empty = tmp_path / "empty"
+        empty.write_text("")
+        calls.symlink_to(empty)  # a link: refused by all three
+        assert _invoke("gist", str(out)).exit_code == 1
+        assert _ingest_verdict(out / "share", tmp_path / "m2") == "rejected"
+        assert _invoke("repack", str(out)).exit_code == 1
+
+    def test_gist_repack_and_ingest_all_read_through_the_one_reader(
+        self, audited: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F1: each command read share/ its own way."""
+        from pipecat_context_hub import cli_audit
+        from pipecat_context_hub.audit import ingest, sharedir
+
+        reads: list[str] = []
+        real = sharedir.SafeDir.read_bundle
+
+        def recording(self: sharedir.SafeDir) -> dict[str, bytes]:
+            reads.append(self.path.name)
+            return real(self)
+
+        monkeypatch.setattr(sharedir.SafeDir, "read_bundle", recording)
+        assert _invoke("gist", str(audited)).exit_code == 0
+        assert _invoke("repack", str(audited)).exit_code == 0
+        _merge([audited / "share"], tmp_path / "m")
+        assert reads == ["share", "share", "share"]
+        assert not hasattr(ingest, "read_dir") and not hasattr(audit_extract, "_read_share")
+        for mod in (cli_audit, audit_extract, ingest):
+            assert "read_bytes()" not in Path(str(mod.__file__)).read_text(), mod.__name__
+
+    def test_the_gist_pre_flight_is_an_audit_function_and_posts_the_checked_bytes(
+        self, audited: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F11: gist's pre-flight (leak check, validator, nothing-to-share, omission) lived in the
+        click command; gh then re-read share/ after the checks."""
+        from pipecat_context_hub import cli_audit
+        from pipecat_context_hub.audit import sharedir
+
+        import inspect
+
+        plan = sharedir.gist_plan(audited, allow_empty=False)
+        assert list(plan.post) == BUNDLE and plan.omitted == []
+        src = inspect.getsource(cli_audit.gist_cmd.callback)  # type: ignore[arg-type]
+        for name in ("load_files", "verify_", "has_content", "omitted_when_posting", "read_"):
+            assert name not in src, name
+        posted: dict[str, bytes] = {}
+
+        def fake_run(argv: list[str], **_k: Any) -> subprocess.CompletedProcess[str]:
+            for a in argv[argv.index("--") + 1 :]:
+                posted[Path(a).name] = Path(a).read_bytes()
+            return subprocess.CompletedProcess(argv, 0, "https://gist.github.com/x/abc\n", "")
+
+        real_plan = sharedir.gist_plan
+
+        def plan_then_swap(out_dir: Path, *, allow_empty: bool) -> sharedir.GistPlan:
+            p = real_plan(out_dir, allow_empty=allow_empty)
+            (out_dir / "share" / "report.md").write_text(f"swapped after the check {SECRET}\n")
+            return p
+
+        monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/gh")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(sharedir, "gist_plan", plan_then_swap)
+        assert _invoke("gist", str(audited), "--yes").exit_code == 0
+        assert posted == plan.post and SECRET.encode() not in b"".join(posted.values())
+
+    def test_decode_manifest_is_the_bundle_contracts_and_fakes_no_counts(self) -> None:
+        """F8: extract.decode_manifest spliced zeroed counts into the manifest to reuse the
+        validator."""
+        from pipecat_context_hub.audit import bundle
+
+        src = Path(audit_extract.__file__).read_text()
+        assert "def decode_manifest" not in src and "ROW_COUNT_KEYS" not in src
+        assert vars(audit_extract)["decode_manifest"] is bundle.decode_manifest
+        shape = _plain_shaped(bundle.ANALYSIS_SHAPE)
+        m = {"schema_version": 1, "counts": {"call_rows": "stale"}, "analysis": shape}
+        assert bundle.decode_manifest(json.dumps(m).encode())["counts"] == {"call_rows": "stale"}
+        assert bundle.manifest_error(m) is not None  # the count values are load_files's check
+        for bad in (b"[]", b'{"schema_version": 2, "counts": {}}', b'{"schema_version": 1}'):
+            with pytest.raises(bundle.BundleError):
+                bundle.decode_manifest(bad)
+
+
+class TestShareDirNoFollowWrites:
+    """H1 (2): a link planted at any output, before or after the early check, is never written
+    through; repack refuses a symlinked share/ before writing anything."""
+
+    def test_repack_refuses_a_symlinked_share_directory_before_writing(
+        self, audited: Path, tmp_path: Path
+    ) -> None:
+        """F26: repack overwrote the link target's manifest.json and report.md, then refused."""
+        target = tmp_path / "target"
+        (audited / "share").rename(target)
+        (audited / "share").symlink_to(target)
+        _keep_lines(target / "calls.jsonl", 1)  # a hand edit repack would act on (new counts)
+        before = {n: (target / n).read_bytes() for n in BUNDLE}
+        result = _invoke("repack", str(audited))
+        assert result.exit_code == 1 and "symlink" in result.output, result.output
+        assert {n: (target / n).read_bytes() for n in BUNDLE} == before
+
+    @_NOFOLLOW_ONLY
+    @pytest.mark.parametrize(
+        "plant",
+        ["share/report.md", "share/manifest.json", "share.tar.gz", "share.tar.gz.sha256",
+         "summary.json", "calls.jsonl"],
+    )  # fmt: skip
+    def test_a_link_planted_after_the_check_is_replaced_never_followed(
+        self, tmp_path: Path, plant: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Q1: refuse_unsafe_outputs then open(..., "w"): a link planted in between was followed.
+        The check is disabled here, which is the window; the writer alone must hold."""
+        _hub_session(tmp_path / "in" / "zed" / "s.jsonl")
+        out = tmp_path / "out"
+        (out / "share").mkdir(parents=True)
+        victim = tmp_path / "victim"
+        victim.write_text("keep me")
+        (out / plant).symlink_to(victim)
+        monkeypatch.setattr(audit_extract, "refuse_unsafe_outputs", lambda _o: None)
+        result = _extract(tmp_path / "in", out)
+        assert result.exit_code == 0, result.output
+        assert victim.read_text() == "keep me"
+        assert (out / plant).is_file() and not (out / plant).is_symlink()
+
+    @_NOFOLLOW_ONLY
+    @pytest.mark.parametrize("cmd", ["extract", "repack"])
+    def test_a_link_swapped_in_between_validation_and_write_is_not_followed(
+        self, audited: Path, tmp_path: Path, cmd: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Q1: the hook plants links right after the checks pass, before the first write."""
+        from pipecat_context_hub.audit import sharedir
+
+        victims = {n: tmp_path / f"victim-{n}" for n in ("report.md", "manifest.json")}
+        real = sharedir.check_share
+
+        def check_then_plant(files: Any) -> Any:
+            verdict = real(files)
+            for name, victim in victims.items():
+                victim.write_text("keep me")
+                (audited / "share" / name).unlink()
+                (audited / "share" / name).symlink_to(victim)
+            return verdict
+
+        monkeypatch.setattr(audit_extract, "check_share", check_then_plant)
+        result = (
+            _extract(tmp_path / "in", audited)
+            if cmd == "extract"
+            else _invoke("repack", str(audited))
+        )
+        assert result.exit_code == 0, result.output
+        assert all(v.read_text() == "keep me" for v in victims.values())
+        assert not any((audited / "share" / n).is_symlink() for n in victims)
+
+    @_NOFOLLOW_ONLY
+    def test_a_share_directory_swapped_for_a_link_after_the_check_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Q1: share/ itself replaced by a link after the early check: nothing lands in the target."""
+        _hub_session(tmp_path / "in" / "zed" / "s.jsonl")
+        out = tmp_path / "out"
+        out.mkdir()
+        target = tmp_path / "target"
+        target.mkdir()
+        (out / "share").symlink_to(target)
+        monkeypatch.setattr(audit_extract, "refuse_unsafe_outputs", lambda _o: None)
+        result = _extract(tmp_path / "in", out)
+        assert result.exit_code == 1 and "symlink" in result.output, result.output
+        assert list(target.iterdir()) == []
+
+    def test_ingest_never_writes_through_a_link_in_its_output(
+        self, audited: Path, tmp_path: Path
+    ) -> None:
+        victim = tmp_path / "victim"
+        victim.write_text("keep me")
+        out = tmp_path / "merged"
+        out.mkdir()
+        (out / "ingest.json").symlink_to(victim)
+        result = _invoke("ingest", str(audited / "share.tar.gz"), "--out", str(out))
+        assert _clean_exit(result) and victim.read_text() == "keep me", result.output
+
+
+class TestEmptyFileAndFailedBuilds:
+    """H1 (3) and the one "empty file" predicate."""
+
+    @pytest.mark.parametrize("data", [b"", b"\n", b" \t\r\n", " \n".encode(), b"{}\n", b"x"])
+    def test_one_empty_rule_for_omission_digest_and_rows(self, data: bytes) -> None:
+        """F25: gist omitted a whitespace-only file (`data.strip()`), the digest hashed its bytes."""
+        from pipecat_context_hub.audit import bundle
+
+        empty = bundle.is_empty(data)
+        assert bundle.omitted_when_posting("calls.jsonl", data) is empty
+        assert (bundle.content_digest({"calls.jsonl": data}) == bundle.content_digest({})) is empty
+        if empty:
+            assert bundle.jsonl_rows({"calls.jsonl": data}, "calls.jsonl") == []
+        else:
+            with pytest.raises(bundle.BundleError):  # a line to parse, and it is not a row
+                bundle.jsonl_rows({"calls.jsonl": data}, "calls.jsonl")
+        assert not bundle.omitted_when_posting("report.md", data)  # only JSONL may be left out
+
+    @pytest.mark.parametrize("name", ["calls.jsonl", "sessions.jsonl"])
+    def test_a_whitespace_only_jsonl_file_has_one_identity_as_tarball_and_gist(
+        self, audited: Path, tmp_path: Path, name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F25: delete every row but leave a newline, repack: the gist left the file out, the
+        tarball kept the newline, and ingest kept the same session twice as a collision."""
+        (audited / "share" / name).write_text("\n")
+        assert _invoke("repack", str(audited)).exit_code == 0
+        seen = _fake_gh(monkeypatch)
+        assert _invoke("gist", str(audited), "--yes", "--allow-empty").exit_code == 0
+        posted = {Path(a).name for a in seen[-1][seen[-1].index("--") + 1 :]}
+        assert name not in posted
+        gist = _posted_dir(audited / "share", seen[-1], tmp_path / "gist")
+        report = _merge([audited / "share.tar.gz", gist], tmp_path / "m")["report"]
+        assert [r["status"] for r in report] == ["ok", "ok"], report
+        assert report[1].get("duplicate_of") == "share.tar.gz", report
+        assert report[0]["bundle"] == report[1]["bundle"]
+
+    def test_a_failed_leak_check_leaves_nothing_unscrubbed_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F18: out/sessions.jsonl and calls.jsonl were written before the leak check; on failure
+        summary.json was never written, so `discard` refused the directory."""
+        src = TestEgress()._canary_transcript(tmp_path / "c")
+        out = tmp_path / "out"
+        monkeypatch.setattr(audit_extract, "sanitize", lambda v: v)  # a sink that skips the egress
+        result = _extract(src, out)
+        assert result.exit_code == 1 and "leak check" in result.output
+        assert not out.exists() or list(out.rglob("*")) == []
+
+    def test_a_failed_re_run_keeps_the_previous_run_whole_and_discardable(
+        self, audited: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F18: a failed re-run deleted share/ (so discard refused the directory) and left the new
+        run's unscrubbed local JSONL on disk."""
+        before = {p: p.read_bytes() for p in audited.rglob("*") if p.is_file()}
+        src = TestEgress()._canary_transcript(tmp_path / "c")
+        monkeypatch.setattr(audit_extract, "sanitize", lambda v: v)
+        assert _extract(src, audited).exit_code == 1
+        monkeypatch.undo()
+        assert {p: p.read_bytes() for p in audited.rglob("*") if p.is_file()} == before
+        assert _invoke("discard", str(audited), "--yes").exit_code == 0
+        assert not audited.exists()
+
+
+class TestSmallFixes:
+    def test_same_named_text_dumps_are_distinct_sessions(self, tmp_path: Path) -> None:
+        """F16: root/alice/day1/chat.txt and root/alice/day2/chat.txt were one session ('chat'),
+        and ingest kept only the first."""
+        for day in ("day1", "day2"):
+            f = tmp_path / "in" / "alice" / day / "chat.txt"
+            f.parent.mkdir(parents=True)
+            f.write_text(
+                "ran mcp__pipecat-context-hub__search_docs\nfrom pipecat.pipeline import X"
+            )
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        sessions = _rows(out / "share" / "sessions.jsonl")
+        assert len({(s["participant"], s["session"]) for s in sessions}) == 2
+        assert all("chat" not in s["session"] for s in sessions)  # still opaque
+        assert _merge([out / "share.tar.gz"], tmp_path / "m")["sessions"] == 2
+
+    @pytest.mark.parametrize("found", ["gh.bat", "{cwd}/gh.exe"])
+    def test_gist_refuses_a_gh_found_in_the_current_directory(
+        self, audited: Path, tmp_path: Path, found: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F24: on Windows shutil.which searches the current directory first, so a planted
+        gh.bat in an untrusted checkout ran with the bundle."""
+        cwd = tmp_path / "checkout"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise AssertionError("must not run a gh from the current directory")
+
+        monkeypatch.setattr("shutil.which", lambda _n: found.format(cwd=cwd))
+        monkeypatch.setattr(subprocess, "run", boom)
+        result = _invoke("gist", str(audited), "--yes")
+        assert result.exit_code == 1 and "current directory" in result.output, result.output
+
+    def test_skill_flag_table_names_every_flag_and_the_gist_step_the_omission(self) -> None:
+        """F12/F13/F14: the table missed non_json_result, named only ' + ', and the gist step said
+        it previews five files though an empty JSONL file is left out."""
+        from pipecat_context_hub.audit import flags
+
+        root = Path(audit_extract.__file__).parents[3]
+        skill = (root / ".claude/skills/context-hub-session-audit/SKILL.md").read_text()
+        judge = skill[skill.index("## 2. Judge") : skill.index("## 3. Report")]
+        rows = [line for line in judge.splitlines() if line.startswith("| `")]
+        for name in flags.FLAGS:
+            assert any(f"`{name}`" in r.split("|")[1] for r in rows), name
+        (multi,) = [r for r in rows if "`multi_concept_without_delimiter`" in r]
+        assert all(f"`{d}`" in multi for d in flags.MULTI_CONCEPT_DELIMITERS)
+        gist = " ".join(skill[skill.index("**Gist:**") : skill.index("**Tarball:**")].split())
+        assert "left out" in gist and "five files" not in gist
+
+
+# ---- Contract H2: one description of each analysis and report concept --------------------------
+
+
+class TestOneDescriptionPerConcept:
+    def test_outcome_classes_are_declared_once_with_their_descriptions(self, audited: Path) -> None:
+        """F3: outcome classes in flags.OUTCOME_ORDER, their text in analysis.OUTCOME_GLOSSARY."""
+        from pipecat_context_hub.audit import analysis, flags
+
+        assert not hasattr(analysis, "OUTCOME_GLOSSARY")
+        assert set(flags.OUTCOMES) == {*flags.OUTCOME_ORDER, flags.CLEAN_OUTCOME}
+        assert tuple(flags.OUTCOMES)[: len(flags.OUTCOME_ORDER)] == flags.OUTCOME_ORDER
+        manifest = json.loads((audited / "share" / "manifest.json").read_text())
+        assert manifest["analysis"]["correctness"]["glossary"] == flags.OUTCOMES
+        for name in flags.FLAGS:
+            assert analysis.classify_call({"flags": [name]})[0] in flags.OUTCOMES
+
+    def test_the_overall_median_is_latency_stats(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """F4: analyze recomputed the overall median inline beside latency_stats."""
+        from pipecat_context_hub.audit import analysis
+
+        sentinel = 123.4
+        monkeypatch.setattr(analysis, "latency_stats", lambda _l: (sentinel, None))
+        calls = [{"participant": "p", "session_id": "s", "call_idx": 0, "tool": "get_doc",
+                  "via": "mcp", "input": {}, "latency_s": 1.0, "flags": [], "result": {}}]  # fmt: skip
+        analysis.annotate_calls(calls)
+        assert analysis.analyze([], calls, lambda c: "r")["efficiency"]["median_latency_s"] == 123.4
+
+    @pytest.mark.parametrize("n", range(1, 26))
+    def test_p90_is_the_nearest_rank_percentile(self, n: int) -> None:
+        """F15: int(0.9 * n) picked the maximum for every n up to 10."""
+        from pipecat_context_hub.audit.analysis import latency_stats
+
+        values = [float(v) for v in range(1, n + 1)]
+        reference = next(v for i, v in enumerate(values) if 10 * (i + 1) >= 9 * n)
+        assert latency_stats(reversed(values))[1] == reference
+        assert latency_stats([1, 2, 3, 4, 5, 6, 7, 8, 9, 100]) == (5.5, 9)  # the finding's case
+
+    def test_the_answers_section_is_rendered_by_report_through_its_cell_rules(self) -> None:
+        """F5: analysis.render built the answers and backlog rows itself: a `|` broke the table,
+        and backticks glued to a 7-character value made the 8+ character secret rule match."""
+        from pipecat_context_hub.audit import analysis, bundle
+
+        assert not hasattr(analysis, "render")
+        render_report({"analysis": _plain_shaped(bundle.ANALYSIS_SHAPE)}, [])  # reads no other key
+        a = _plain_shaped(bundle.ANALYSIS_SHAPE)
+        a["usage"]["missed_opportunity"] = 1
+        a["usage"]["why_not_used"] = {"MONKEY=abcdefg": 1}
+        a["improvement_backlog"] = [{"target": "a|b", "calls": 1, "sessions": 1,
+                                     "participants": 1, "top_signals": {"x": 1},
+                                     "example_refs": ["r1"]}]  # fmt: skip
+        assert _json_clean(a)
+        md = render_report({"analysis": a}, [])
+        assert "| a\\|b | 1 |" in md
+        assert _report_clean(md), egress._file_leaks("report.md", md)
+
+    def test_every_threshold_a_text_names_is_its_constant(self) -> None:
+        """F9: SLOW_SECONDS, LARGE_RESULT_BYTES, FOLLOWUP_EVENTS and ERROR_WINDOW_EVENTS lived in
+        extract.py and were restated as '8 s', '30 KB', '8 events', '25 events'."""
+        import re
+
+        from pipecat_context_hub.audit import flags
+
+        for name in ("SLOW_SECONDS", "LARGE_RESULT_BYTES", "FOLLOWUP_EVENTS",
+                     "ERROR_WINDOW_EVENTS", "REFORMULATION_EVENTS", "MULTI_CONCEPT_WORDS"):  # fmt: skip
+            assert vars(audit_extract)[name] is getattr(flags, name), name
+        g = {k: f.glossary for k, f in flags.FLAGS.items()}
+        assert f"{flags.SLOW_SECONDS:g} s" in g["slow"]
+        assert f"{flags.LARGE_RESULT_BYTES // 1000} KB" in g["large_result"]
+        assert f"within {flags.FOLLOWUP_EVENTS} events" in g["agent_bypassed_after_result"].lower()
+        assert f"within {flags.ERROR_WINDOW_EVENTS} events" in g["downstream_error"]
+        assert f"within {flags.REFORMULATION_EVENTS} events" in g["reformulation_after_bad_result"]
+        assert (
+            f"more than {flags.MULTI_CONCEPT_WORDS} words" in g["multi_concept_without_delimiter"]
+        )
+        assert f"within {flags.ERROR_WINDOW_EVENTS} events" in flags.OUTCOMES["suspect"]
+        assert f"next {flags.FOLLOWUP_EVENTS} tool calls" in audit_extract.FIELDS_MD
+        assert f"next {flags.ERROR_WINDOW_EVENTS} events" in audit_extract.FIELDS_MD
+        allowed = {
+            f"{flags.SLOW_SECONDS:g}",
+            str(flags.LARGE_RESULT_BYTES // 1000),
+            *(
+                str(getattr(flags, n))
+                for n in (
+                    "FOLLOWUP_EVENTS",
+                    "ERROR_WINDOW_EVENTS",
+                    "REFORMULATION_EVENTS",
+                    "MULTI_CONCEPT_WORDS",
+                )
+            ),
+            "0.3",
+        }  # fmt: skip  (0.3: the hub's own low-confidence threshold, not ours)
+        for text in [*g.values(), *flags.OUTCOMES.values()]:
+            assert set(re.findall(r"\d+(?:\.\d+)?", text)) <= allowed, text
+
+    def test_no_parallel_alias_tables(self) -> None:
+        """F10: FLAG_GLOSSARY / SEVERITY / CALL_KEYS / SESSION_KEYS had no consumer in src."""
+        from pipecat_context_hub.audit import bundle, flags
+
+        for mod, name in ((flags, "FLAG_GLOSSARY"), (flags, "SEVERITY"),
+                          (bundle, "CALL_KEYS"), (bundle, "SESSION_KEYS")):  # fmt: skip
+            assert not hasattr(mod, name), name

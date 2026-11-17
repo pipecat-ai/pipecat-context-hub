@@ -75,10 +75,12 @@ commands, JS batches (only the one call expression survives), file paths, other 
 3. Anything that isn't a clear choice means "take the tarball". Each send needs a preview and an
    explicit yes first.
 
-**Gist:** `pipecat-context-hub audit gist <out-dir>` previews the five files and sizes; after a
-yes, run it again with `--yes`. It is always secret, never `--public`. Say plainly that secret means
-unlisted: anyone with the link can read it. A gist holds text only, so it carries the five files, not
-the tarball. If `gh` is missing or fails, say so and offer the tarball.
+**Gist:** `pipecat-context-hub audit gist <out-dir>` previews the files that will be posted and
+their sizes; an empty `calls.jsonl` or `sessions.jsonl` is left out (a gist cannot hold an empty
+file, and `ingest` accepts the bundle without it), and the preview says so. After a yes, run it
+again with `--yes`. It is always secret, never `--public`. Say plainly that secret means unlisted:
+anyone with the link can read it. A gist holds text only, so it carries the share/ files, not the
+tarball. If `gh` is missing or fails, say so and offer the tarball.
 
 **Tarball:** print its absolute path and sha256; who to send it to is their call. Don't send it.
 
@@ -126,9 +128,10 @@ Flags are places to look, never verdicts.
 | `large_result`, `result_exceeds_harness_limit` | response too big to read |
 | `input_validation_error` | agent misread the tool schema: tool description/param problem |
 | `slow` | latency over 8 s |
-| `multi_concept_without_delimiter` | didn't use ` + ` multi-concept syntax |
+| `multi_concept_without_delimiter` | long query joined concepts with "and" or commas instead of the ` + ` / ` & ` multi-concept syntax |
 | `agent_bypassed_after_result` | agent went to source/web right after a result |
 | `error` | tool error |
+| `non_json_result` | a direct MCP result that is not JSON: unexpected for Context Hub |
 | `downstream_error` | Python error in the next 25 events: correlation only |
 
 For every flagged call plus a ~10% random sample of the rest (min 5), read the row and decide:

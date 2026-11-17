@@ -29,12 +29,9 @@ from pipecat_context_hub.audit.analysis import prune_refs
 from pipecat_context_hub.audit.bundle import (
     BUNDLE_FILES,
     SCHEMA_VERSION,
-    ROW_COUNT_KEYS,
     BundleError,
-    decode_json,
-    load_files,
-    manifest_error,
-    parse_rows,
+    decode_manifest,
+    jsonl_rows,
     row_counts,
 )
 from pipecat_context_hub.audit.egress import (
@@ -45,10 +42,19 @@ from pipecat_context_hub.audit.egress import (
     public_tool_name,
     redact,
     sanitize,
-    verify_share,
 )
-from pipecat_context_hub.audit.flags import FLAGS
+from pipecat_context_hub.audit.flags import (
+    ERROR_WINDOW_EVENTS,
+    FLAGS,
+    FOLLOWUP_EVENTS,
+    LARGE_RESULT_BYTES,
+    MULTI_CONCEPT_DELIMITERS,
+    MULTI_CONCEPT_WORDS,
+    REFORMULATION_EVENTS,
+    SLOW_SECONDS,
+)
 from pipecat_context_hub.audit.report import render_report
+from pipecat_context_hub.audit.sharedir import SafeDir, check_share, write_tarball
 from pipecat_context_hub.audit.shell import (
     CLI_SUBCOMMANDS,
     CLI_TO_TOOL,
@@ -63,11 +69,6 @@ HUB_MENTION_RE = re.compile(r"context[- ]hub|pipecat[-_]context[-_]hub|\bPCH\b",
 HUB_TOOLSEARCH_RE = re.compile(
     r"pipecat|context[-_ ]hub|search_docs|search_api|search_examples", re.IGNORECASE
 )
-LARGE_RESULT_BYTES = 30_000
-SLOW_SECONDS = 8.0
-FOLLOWUP_EVENTS = 8
-ERROR_WINDOW_EVENTS = 25
-
 ERROR_RE = re.compile(
     r"Traceback \(most recent call last\)|ImportError|ModuleNotFoundError|AttributeError|"
     r"unexpected keyword argument|TypeError:|ValidationError|NameError",
@@ -689,15 +690,20 @@ def event_target(name: str, inp: Any) -> str:
 
 
 def process_text_scan(
-    path: Path, label: str, raw: str
+    path: Path, label: str, raw: str, key: str
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Fallback for harnesses without an adapter (Cursor exports, chat dumps, ...): detect only."""
+    """Fallback for harnesses without an adapter (Cursor exports, chat dumps, ...): detect only.
+
+    A text dump carries no session id, so the session is identified by ``key``, unique per input
+    file: two files named ``chat.txt`` in different directories are two sessions (the bare file stem made them one, and ``ingest`` kept only the first). The share
+    bundle carries only its per-run HMAC.
+    """
     tools = Counter(m for m in MCP_RE.findall(raw))
     tools.update(_cli_tool(c) for c in CLI_RE.findall(raw))
     participant = label
     return {
         "participant": participant,
-        "session_id": path.stem,
+        "session_id": key,
         "file": redact(path.name),
         "harness": "unknown",
         "fidelity": "text_scan",
@@ -714,14 +720,18 @@ def process_text_scan(
     }, []
 
 
-def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def process_session(
+    path: Path, label: str, source_key: str | None = None
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """One transcript file's session row and call rows. ``source_key`` identifies the file among
+    all inputs (default: its path); a text-scanned session, which has no id of its own, uses it."""
     raw = path.read_text(errors="replace")
     lines = raw.splitlines()
     harness = detect_harness(lines) if path.suffix == ".jsonl" else "unknown"
     if harness == "unknown":
         if "pipecat" not in raw.lower():
             return {"tool_calls_total": 0}, []
-        return process_text_scan(path, label, raw)
+        return process_text_scan(path, label, raw, source_key or path.as_posix())
 
     events: list[dict[str, Any]] = []  # every tool call, in order
     by_id: dict[str, dict[str, Any]] = {}
@@ -847,7 +857,7 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
             and tool in SEARCH_TOOLS
             and prev_search["tool"] == tool
             and prev_search["bad"]
-            and e["idx"] - prev_search["idx"] <= 3
+            and e["idx"] - prev_search["idx"] <= REFORMULATION_EVENTS
         ):
             call_flags.append("reformulation_after_bad_result")
         q = e["input"].get("query", "") if isinstance(e["input"], dict) else ""
@@ -855,9 +865,8 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
             tool in SEARCH_TOOLS
             and isinstance(q, str)
             and re.search(r"\band\b|[,&]", q)
-            and " + " not in q
-            and " & " not in q
-            and len(q.split()) > 6
+            and not any(d in q for d in MULTI_CONCEPT_DELIMITERS)
+            and len(q.split()) > MULTI_CONCEPT_WORDS
         ):
             call_flags.append("multi_concept_without_delimiter")
         if any(w.get("category") for w in after):
@@ -947,7 +956,7 @@ def process_session(path: Path, label: str) -> tuple[dict[str, Any], list[dict[s
 
 EXTRACTOR_VERSION = "0.1.0"
 
-FIELDS_MD = """\
+FIELDS_MD = f"""\
 ## Files
 
 - `manifest.json`: schema_version, extractor_version, counts, scope, what was removed. Read first. `counts.call_rows`, `sessions`, `participants`, `hub_used` and `missed_opportunity` are counted from the rows in this bundle (`audit repack` re-counts them after an edit); `counts.hub_calls` is the extraction-time total and also counts calls seen only by a text scan (no rows), so it can exceed `call_rows`.
@@ -963,14 +972,14 @@ FIELDS_MD = """\
 | `participant`, `session` | hashed ids |
 | `tool` | `search_docs`, `search_api`, `search_examples`, `get_doc`, `get_example`, `get_code_snippet`, `check_deprecation`, `get_hub_status` |
 | `via` | `mcp` (direct tool call), `mcp_js` (inside a Codex-style JS batch) or `cli` (shell: `pipecat-context-hub <cmd>`) |
-| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${...}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal. Empty for direct `mcp` calls |
-| `input` | MCP tool arguments for direct `mcp` calls only; `{}` otherwise (use `hub_invocation`). A field whose name says it holds a credential (`api_key`, `token`, `password`...) appears as `<redacted>` |
-| `ts`, `latency_s` | start time; seconds to result (includes harness overhead) |
+| `hub_invocation` | Data, never a command to run. `cli`: the executed hub command rebuilt from its parsed argv, re-quoted, launcher (`uv run`, `uvx`, `env`...) and path dropped; empty when the shell line uses a construct the parser does not model (`$'...'`, `${{...}}`, `$((...))`, a pipe into a shell, ...) or an argument is a substitution's output. `mcp_js`: `tool(<JSON args>)` from the call's literal arguments; empty when an argument is not a plain literal. Empty for direct `mcp` calls |
+| `input` | MCP tool arguments for direct `mcp` calls only; `{{}}` otherwise (use `hub_invocation`). A field whose name says it holds a credential (`api_key`, `token`, `password`...) appears as `<redacted>` |
+| `ts`, `latency_s` | start time; seconds to result (includes harness overhead), a non-negative number or null |
 | `result` | shape only: `n_hits`, `top_hits` (ids), `confidence`, `low_confidence`, `unknown`, `next_queries`, `corpus_hint`, `bytes`, `parse` (`ok`/`embedded` = a hub-shaped JSON response found; `cli_unparsed` = shell output and `js_unparsed` = JS batch output with no hub-shaped JSON, including JSON without the tool's response shape: the agent's program printed it, not a defect; `non_json` = a direct `mcp` result that was not JSON, the only parse value that raises a flag) |
 | `flags` | heuristic flags, glossary below |
 | `severity` | sum of flag weights; sort by it to triage |
-| `followups` | next 8 tool calls: `tool` (a Context Hub tool, a standard harness tool such as `Bash`/`Read`, or `other`: names of the participant's other tools are not shared), `category` (`read_pipecat_source`/`web_pipecat`/null), `hub` (another Context Hub call) |
-| `downstream_errors` | Python error class names seen in the next 25 non-hub results (text removed) |
+| `followups` | next {FOLLOWUP_EVENTS} tool calls: `tool` (a Context Hub tool, a standard harness tool such as `Bash`/`Read`, or `other`: names of the participant's other tools are not shared), `category` (`read_pipecat_source`/`web_pipecat`/null), `hub` (another Context Hub call) |
+| `downstream_errors` | Python error class names seen in non-hub results within the next {ERROR_WINDOW_EVENTS} events (text removed) |
 | `outcome` | signal class, NOT a verdict: `failed` / `miss` / `suspect` / `bypassed` / `inefficient` / `no_negative_signal` (first match wins; see `manifest.json` analysis.correctness.glossary) |
 | `suspect_target` | likely owner of the signal: `hub-tools` / `hub-retrieval` / `hub-corpus` / `agent-misuse` / `needs-judgment`; null when `no_negative_signal` |
 
@@ -995,9 +1004,9 @@ ERR_NAME_RE = re.compile(r"[A-Za-z]*(?:Error|Exception)\b|Traceback")
 def refuse_unsafe_outputs(out: Path) -> None:
     """Refuse an output directory whose share/ or any file this tool writes is not a plain one.
 
-    A pre-planted symlink (``share/SCHEMA.md -> ~/.zshrc``, ``--out`` under a shared ``/tmp``) would
-    be written through, and packed as a link whose target path no check ever sees. Checked before
-    anything is written, by ``extract`` and (through ``pack_share``) ``repack``.
+    A friendly early refusal with the names, before any work. It is not what keeps a write from
+    following a link: every write goes through ``sharedir.SafeDir`` (no-follow directory, a new
+    file renamed over the target), which also covers a link planted after this check.
     """
     share = out / "share"
     if share.is_symlink() or (share.exists() and not share.is_dir()):
@@ -1008,109 +1017,69 @@ def refuse_unsafe_outputs(out: Path) -> None:
         raise ValueError(f"refusing to write: {bad} already exist as a symlink or non-file")
 
 
-def pack_share(share: Path) -> tuple[Path, str]:
-    """Deterministic share.tar.gz next to share/ (flat names, no owners, fixed mtime) + its sha256.
-
-    Packs regular files only: anything else in the bundle refuses the pack.
-    """
-    import gzip
-    import tarfile
-
-    refuse_unsafe_outputs(share.parent)
-    tar_path = share.parent / "share.tar.gz"
-    with tar_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
-        with tarfile.open(fileobj=gz, mode="w") as tf:
-            for name in BUNDLE_FILES:
-                info = tf.gettarinfo(str(share / name), arcname=name)
-                if not info.isreg():
-                    raise ValueError(f"refusing to pack: {name} is not a regular file")
-                info.uid = info.gid = 0
-                info.uname = info.gname = ""
-                info.mtime = 0
-                info.mode = 0o644
-                with (share / name).open("rb") as fh:
-                    tf.addfile(info, fh)
-    digest = hashlib.sha256(tar_path.read_bytes()).hexdigest()
-    (share.parent / "share.tar.gz.sha256").write_text(f"{digest}  share.tar.gz\n")
-    return tar_path, digest
-
-
 def _hub_name(name: str, is_hub: bool) -> str | None:
     """A hub follow-up's own tool name (``search_docs``), ``hub`` if it cannot be read, else None."""
     m = MCP_RE.search(name)
     return m.group(1) if m else ("hub" if is_hub else None)
 
 
-def build_share_bundle(
-    out: Path,
+def build_share_files(
     summary: dict[str, Any],
     sessions: list[dict[str, Any]],
     calls: list[dict[str, Any]],
     scope: dict[str, Any],
-) -> tuple[Path, dict[str, Any]]:
-    """Write out/share/: a stricter, human-reviewable subset that is safe to send on.
+) -> tuple[dict[str, bytes], dict[str, Any]]:
+    """The share/ files (name to bytes) and the manifest: a stricter, human-reviewable subset that
+    is safe to send on. Built in memory; nothing is written here.
 
     Kept: Context Hub tool, query/inputs, result shape (hit count, confidence, top hit ids), flags,
     latency. Dropped: session ids/file names (hashed), shell commands, file paths, and error text of
     the agent's other tool calls (only the error class name survives). Nothing is sent from here.
 
-    Every row and the manifest go through ``sanitize`` as they are written, ``report.md`` is
-    rendered from the sanitised rows, and the finished files must pass ``verify_share`` or none of
-    them is kept: a sink that bypassed the egress fails the build instead of shipping.
+    Every row and the manifest go through ``sanitize``, ``report.md`` is rendered from the
+    sanitised rows, and the finished files must pass ``sharedir.check_share`` (the leak check and
+    the validator ``ingest`` runs) or ``ShareLeakError`` / ``BundleError`` is raised before
+    anything is written: a sink that bypassed the egress fails the build instead of shipping.
     """
-    share = out / "share"
-    share.mkdir(exist_ok=True)
-
     key = secrets.token_bytes(16)  # per run, never written: ids cannot be dictionary-reversed
 
     def sid(x: str) -> str:
         return hmac.new(key, x.encode(), hashlib.sha256).hexdigest()[:12]
 
     share_sessions: list[dict[str, Any]] = []
-    with (share / "sessions.jsonl").open("w") as fh:
-        for r in sessions:
-            keep = {
-                k: v
-                for k, v in r.items()
-                if k not in {"file", "session_id", "participant", "issues", "parent_session_id"}
-            }
-            if r.get("parent_session_id"):
-                keep["parent_session"] = sid(
-                    r["parent_session_id"]
-                )  # links to the parent's `session`
-            keep["session"] = sid(r["session_id"])
-            keep["participant"] = sid(r["participant"])
-            srow = sanitize(keep)
-            share_sessions.append(srow)
-            fh.write(json.dumps(srow) + "\n")
+    for r in sessions:
+        keep = {
+            k: v
+            for k, v in r.items()
+            if k not in {"file", "session_id", "participant", "issues", "parent_session_id"}
+        }
+        if r.get("parent_session_id"):
+            keep["parent_session"] = sid(r["parent_session_id"])  # the parent's `session`
+        keep["session"] = sid(r["session_id"])
+        keep["participant"] = sid(r["participant"])
+        share_sessions.append(sanitize(keep))
     share_calls: list[dict[str, Any]] = []
-    with (share / "calls.jsonl").open("w") as fh:
-        for c in calls:
-            keep = dict(c)
-            if c["via"] != "mcp" or not isinstance(c["input"], dict):
-                keep["input"] = {}  # shell line / JS batch: only hub_invocation is shared
-            keep["session"] = sid(keep.pop("session_id"))
-            keep["participant"] = sid(keep["participant"])
-            keep["ref"] = f"{keep['participant']}/{keep['session']}#{keep['call_idx']}"
-            keep["followups"] = [
-                {
-                    "tool": public_tool_name(w["tool"], _hub_name(w["tool"], w["hub"])),
-                    "category": w["category"],
-                    "hub": w["hub"],
-                }
-                for w in c["followups"]
-            ]
-            keep["downstream_errors"] = [
-                {
-                    "tool": public_tool_name(d["tool"], None),
-                    "error": error_class(d["err"]),
-                }
-                for d in c["downstream_errors"]
-            ]
-            keep["result"] = {k: v for k, v in c["result"].items() if k != "text_head"}
-            row = sanitize(keep)
-            share_calls.append(row)
-            fh.write(json.dumps(row) + "\n")
+    for c in calls:
+        keep = dict(c)
+        if c["via"] != "mcp" or not isinstance(c["input"], dict):
+            keep["input"] = {}  # shell line / JS batch: only hub_invocation is shared
+        keep["session"] = sid(keep.pop("session_id"))
+        keep["participant"] = sid(keep["participant"])
+        keep["ref"] = f"{keep['participant']}/{keep['session']}#{keep['call_idx']}"
+        keep["followups"] = [
+            {
+                "tool": public_tool_name(w["tool"], _hub_name(w["tool"], w["hub"])),
+                "category": w["category"],
+                "hub": w["hub"],
+            }
+            for w in c["followups"]
+        ]
+        keep["downstream_errors"] = [
+            {"tool": public_tool_name(d["tool"], None), "error": error_class(d["err"])}
+            for d in c["downstream_errors"]
+        ]
+        keep["result"] = {k: v for k, v in c["result"].items() if k != "text_head"}
+        share_calls.append(sanitize(keep))
 
     analysis = analyze(
         sessions, calls, lambda c: f"{sid(c['participant'])}/{sid(c['session_id'])}#{c['call_idx']}"
@@ -1141,23 +1110,26 @@ def build_share_bundle(
             ],
         }
     )  # fmt: skip
-    (share / "report.md").write_text(render_report(manifest, share_calls))
-    (share / "SCHEMA.md").write_text(
+    schema = (
         "# Context Hub session bundle: schema v" + str(SCHEMA_VERSION) + "\n\n" + FIELDS_MD
         + "\n## Flag glossary (severity weight)\n\n"
         + "\n".join(f"- `{k}` ({f.weight}): {f.glossary}" for k, f in FLAGS.items())
         + "\n"
     )  # fmt: skip
-    (share / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    leaks = verify_share(share, BUNDLE_FILES)
-    if leaks:
-        for name in BUNDLE_FILES:  # fail closed: keep nothing that failed the check
-            (share / name).unlink(missing_ok=True)
+    files = {
+        "manifest.json": json.dumps(manifest, indent=2).encode(),
+        "SCHEMA.md": schema.encode(),
+        "report.md": render_report(manifest, share_calls).encode(),
+        "calls.jsonl": "".join(json.dumps(r) + "\n" for r in share_calls).encode(),
+        "sessions.jsonl": "".join(json.dumps(r) + "\n" for r in share_sessions).encode(),
+    }
+    try:  # what extract writes is what ingest accepts and the leak check passes, or nothing is
+        check_share(files)
+    except ShareLeakError as exc:
         raise ShareLeakError(
-            f"share bundle failed the leak check and was not kept: {'; '.join(leaks)}"
-        )
-    load_files(_read_share(share))  # what extract writes is what ingest accepts, or the build fails
-    return share, manifest
+            f"share bundle failed the leak check and was not kept: {exc}"
+        ) from None
+    return files, manifest
 
 
 @dataclasses.dataclass
@@ -1183,7 +1155,8 @@ def generated_paths(out_dir: Path) -> list[Path]:
     """Exactly the files ``run_extract`` writes into ``out_dir`` (nothing else is ever listed).
 
     Refuses a directory that does not look like extract output, and symlinks, so a typo'd path
-    cannot delete someone's files.
+    cannot delete someone's files. ``extract`` writes nothing until its share bundle has passed
+    every check, so a failed extract leaves nothing behind for this to miss.
     """
     if (
         not (out_dir / "summary.json").is_file()
@@ -1201,58 +1174,63 @@ def generated_paths(out_dir: Path) -> list[Path]:
     return found
 
 
-def _read_share(share: Path, names: tuple[str, ...] = BUNDLE_FILES) -> dict[str, bytes]:
-    return {n: (share / n).read_bytes() for n in names}
+def discard(out_dir: Path) -> int:
+    """Delete what :func:`generated_paths` lists, through no-follow directory handles (a link
+    swapped in after the listing is refused, never followed); returns how many files went."""
+    listed = generated_paths(out_dir)
+    with SafeDir.open(out_dir) as out, out.child("share") as share:
+        for p in listed:
+            (share if p.parent == out_dir / "share" else out).unlink(p.name)
+    for d in (out_dir / "share", out_dir):
+        try:
+            d.rmdir()  # only if now empty: anything else of yours stays
+        except OSError:
+            pass
+    return len(listed)
+
+
+def _repacked(files: dict[str, bytes]) -> dict[str, bytes]:
+    """The bundle ``files`` with row counts re-derived, dead refs pruned and ``report.md``
+    regenerated. Pure: raises ``BundleError`` on a malformed manifest or row, writes nothing."""
+    manifest = decode_manifest(files.get("manifest.json"))
+    rows = jsonl_rows(files, "calls.jsonl")
+    sessions = jsonl_rows(files, "sessions.jsonl")
+    manifest["counts"] = {**manifest["counts"], **row_counts(rows, sessions)}
+    prune_refs(manifest["analysis"], {r["ref"] for r in rows})
+    return {
+        **files,
+        "manifest.json": json.dumps(manifest, indent=2).encode(),
+        "report.md": render_report(manifest, rows).encode(),
+    }
 
 
 def repack(out_dir: Path) -> tuple[Path, str]:
     """Rebuild ``share.tar.gz`` from an (edited) ``out_dir/share/``.
 
-    Every row must pass the bundle contract's row validator (``bundle.parse_rows``), the manifest's
-    row counts are re-derived from the rows that remain, and ``report.md`` is regenerated from
-    ``calls.jsonl`` and ``manifest.json`` rather than patched, so a call deleted from
-    ``calls.jsonl`` disappears from everything derived from it. The finished files must pass the
-    leak check and the whole-bundle validator ``ingest`` runs (``bundle.load_files``): a bundle
-    repack accepts is one ingest accepts.
+    share/ is read once through the one reader (``SafeDir.read_bundle``: a symlinked share/ or
+    bundle file is refused before anything else happens). Every row must pass the bundle
+    contract's row validator, the manifest's row counts are re-derived from the rows that remain,
+    and ``report.md`` is regenerated from ``calls.jsonl`` and ``manifest.json`` rather than
+    patched, so a call deleted from ``calls.jsonl`` disappears from everything derived from it.
+    The result must pass ``check_share`` (the leak check and the validator ``ingest`` runs) before
+    anything is written: a refused repack leaves share/ and the tarball as they were.
     """
-    share = out_dir / "share"
-    missing = [n for n in BUNDLE_FILES if not (share / n).is_file() or (share / n).is_symlink()]
-    if missing:
-        raise ValueError(f"cannot repack: {share.name}/ is missing {missing}")
-    try:
-        rows = parse_rows((share / "calls.jsonl").read_text(), "calls.jsonl")
-        sessions = parse_rows((share / "sessions.jsonl").read_text(), "sessions.jsonl")
-        manifest = decode_manifest((share / "manifest.json").read_text())
-    except (BundleError, UnicodeDecodeError) as exc:
-        raise ValueError(f"cannot repack: {exc}") from None
-    manifest["counts"].update(row_counts(rows, sessions))  # gist and ingest decide with these
-    if isinstance(manifest.get("analysis"), dict):
-        prune_refs(manifest["analysis"], {r["ref"] for r in rows})
-    (share / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    (share / "report.md").write_text(render_report(manifest, rows))
-    leaks = verify_share(share, BUNDLE_FILES)
-    if leaks:
-        raise ValueError(
-            f"cannot repack: the bundle still holds a secret or local path ({'; '.join(leaks)}); "
-            "remove it from the file named and run repack again"
-        )
-    try:
-        load_files(_read_share(share))
-    except BundleError as exc:
-        raise ValueError(f"cannot repack: {exc}") from None
-    return pack_share(share)
-
-
-def decode_manifest(text: str) -> dict[str, Any]:
-    """A hand-edited manifest whose row counts are about to be re-derived: version and counts object
-    are checked here, the counts themselves after ``repack`` rewrites them."""
-    manifest = decode_json(text, "manifest.json")
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("counts"), dict):
-        raise BundleError("manifest.json is not an object with a counts object")
-    err = manifest_error({**manifest, "counts": dict.fromkeys(ROW_COUNT_KEYS, 0)})
-    if err:
-        raise BundleError(err)
-    return manifest
+    refuse_unsafe_outputs(out_dir)
+    with SafeDir.open(out_dir) as out, out.child("share") as share:
+        files = share.read_bundle()
+        try:
+            new = _repacked(files)
+            check_share(new)
+        except ShareLeakError as exc:
+            raise ValueError(
+                f"cannot repack: the bundle still holds a secret or local path ({exc}); "
+                "remove it from the file named and run repack again"
+            ) from None
+        except BundleError as exc:
+            raise ValueError(f"cannot repack: {exc}") from None
+        share.write("manifest.json", new["manifest.json"])
+        share.write("report.md", new["report.md"])
+        return write_tarball(out, new)
 
 
 def run_extract(
@@ -1263,14 +1241,14 @@ def run_extract(
         if not root.is_dir():
             raise ValueError(f"not a directory: {root.name or root}")
     refuse_unsafe_outputs(out)
-    out.mkdir(parents=True, exist_ok=True)
     sessions: list[dict[str, Any]] = []
     all_calls: list[dict[str, Any]] = []
     warnings: list[str] = []
     aliases: dict[str, str] = {}
     out_resolved = out.resolve()
-    for root in inputs:
-        for f in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in TEXT_SUFFIXES):
+    for root_no, root in enumerate(inputs):
+        found = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in TEXT_SUFFIXES)
+        for file_no, f in enumerate(found):
             rel = f.relative_to(root)
             if (
                 NOT_SESSION_DIRS.intersection(rel.parts[:-1])
@@ -1286,7 +1264,8 @@ def run_extract(
             if anonymize:  # sequential aliases: nothing derived from the label survives
                 label = aliases.setdefault(label, f"participant-{len(aliases) + 1}")
             try:
-                s, c = process_session(f, label)
+                # Unique per file and opaque (no path or label, so --anonymize holds locally too).
+                s, c = process_session(f, label, f"file-{root_no}-{file_no}")
             except Exception as exc:  # one bad file must not sink the batch
                 warnings.append(f"skipped {f.name}: {type(exc).__name__}")
                 continue
@@ -1303,12 +1282,6 @@ def run_extract(
 
     link_parents(sessions)
     annotate_calls(all_calls)
-    with (out / "sessions.jsonl").open("w") as fh:
-        for s in sessions:
-            fh.write(json.dumps(s) + "\n")
-    with (out / "calls.jsonl").open("w") as fh:
-        for row in all_calls:
-            fh.write(json.dumps(row) + "\n")
 
     flag_totals: Counter[str] = Counter()
     tool_totals: Counter[str] = Counter()
@@ -1329,10 +1302,20 @@ def run_extract(
         "needs_manual_read": sum(bool(s.get("needs_manual_read")) for s in sessions),
         "sessions_with_issues": sum(bool(s["issues"]) for s in sessions),
     }
-    share, manifest = build_share_bundle(
-        out, summary, sessions, all_calls, {"since": since, "anonymized": anonymize}
+    files, manifest = build_share_files(
+        summary, sessions, all_calls, {"since": since, "anonymized": anonymize}
     )
     summary["analysis"] = manifest["analysis"]
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
-    tar_path, digest = pack_share(share)
-    return ExtractResult(summary, share, tar_path, digest, warnings, manifest["counts"])
+    # Nothing is written before the share bundle has passed every check (a failed build leaves no
+    # local copy of the participant's text behind). The two files `discard` recognises extract
+    # output by go first.
+    with SafeDir.open(out, create=True) as d, d.child("share", create=True) as share:
+        d.write("summary.json", json.dumps(summary, indent=2).encode())
+        share.write("manifest.json", files["manifest.json"])
+        for name in BUNDLE_FILES:
+            if name != "manifest.json":
+                share.write(name, files[name])
+        d.write("sessions.jsonl", "".join(json.dumps(r) + "\n" for r in sessions).encode())
+        d.write("calls.jsonl", "".join(json.dumps(r) + "\n" for r in all_calls).encode())
+        tar_path, digest = write_tarball(d, files)
+    return ExtractResult(summary, share.path, tar_path, digest, warnings, manifest["counts"])

@@ -9,8 +9,10 @@ bounded by constants, never by what the archive claims: the compressed file size
 (``MAX_ARCHIVE_BYTES``), the member count (one per bundle file), the per-member size
 (``MAX_MEMBER_BYTES``) and the total decompressed bytes (``MAX_DECOMPRESSED_BYTES``, which also
 bounds the tar metadata blocks the reader parses between members). Nothing is extracted to disk.
-The bytes are then validated by the bundle contract (``bundle.load_files``): the same validator
-``repack`` and ``gist`` use, so a bundle they accept is one this accepts.
+A directory (a share/ or a cloned gist) is read by the one share reader (``sharedir.read_share``),
+the same one ``gist`` and ``repack`` use. The bytes are then validated by the bundle contract
+(``bundle.load_files``): the same validator ``repack`` and ``gist`` use, so a bundle they accept is
+one this accepts.
 
 Merging. A row's identity is namespaced by its source bundle: calls are keyed by
 ``(bundle, ref)`` and sessions by ``(bundle, participant, session)``, where ``bundle`` is the
@@ -38,15 +40,18 @@ from typing import Any, BinaryIO
 from pipecat_context_hub.audit.analysis import triage_order
 from pipecat_context_hub.audit.bundle import (
     BUNDLE_FILES,
+    MAX_BUNDLE_BYTES,
+    MAX_FILE_BYTES,
     BundleError,
     content_digest,
     has_content,
     load_files,
 )
+from pipecat_context_hub.audit.sharedir import SafeDir, read_share
 
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024  # a tarball's own (compressed) size
-MAX_MEMBER_BYTES = 50 * 1024 * 1024  # one member or one directory file
-MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024  # everything read from a tarball's stream, or a directory
+MAX_MEMBER_BYTES = MAX_FILE_BYTES  # one member (a directory file: the same, in sharedir)
+MAX_DECOMPRESSED_BYTES = MAX_BUNDLE_BYTES  # everything read from a tarball's stream
 MAX_MEMBERS = len(BUNDLE_FILES)
 
 
@@ -94,25 +99,6 @@ def read_tar(path: Path) -> dict[str, bytes]:
     return out
 
 
-def read_dir(path: Path) -> dict[str, bytes]:
-    """The bundle files in a share/ directory or a cloned gist (other files there are ignored)."""
-    out: dict[str, bytes] = {}
-    total = 0
-    for name in BUNDLE_FILES:
-        f = path / name
-        if f.is_symlink() or not f.is_file():
-            continue
-        with f.open("rb") as fh:
-            data = fh.read(MAX_MEMBER_BYTES + 1)
-        if len(data) > MAX_MEMBER_BYTES:
-            raise BundleError(f"{name} too large")
-        total += len(data)
-        if total > MAX_DECOMPRESSED_BYTES:
-            raise BundleError(f"bundle larger than {MAX_DECOMPRESSED_BYTES} bytes")
-        out[name] = data
-    return out
-
-
 def _file_sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -127,8 +113,8 @@ def load(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[st
     ``sha256`` is the tarball file's own digest (what ``share.tar.gz.sha256`` names), or the bundle
     digest for a directory.
     """
-    if path.is_dir():
-        files = read_dir(path)
+    if path.is_dir():  # a share/ directory or a cloned gist: the one share reader
+        files = read_share(path)
         digest = content_digest(files)
         sha = digest
     else:
@@ -192,11 +178,11 @@ def merge_bundles(bundles: Sequence[Path], out: Path) -> dict[str, Any]:
                 entry["session_collisions"] += 1
             sessions[skey] = {**row, "source_bundle": digest}
 
-    out.mkdir(parents=True, exist_ok=True)
     merged = triage_order(calls.values())
-    (out / "calls.jsonl").write_text("".join(json.dumps(r) + "\n" for r in merged))
-    (out / "sessions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in sessions.values()))
-    (out / "ingest.json").write_text(json.dumps(report, indent=2))
+    with SafeDir.open(out, create=True) as d:  # never written through a planted link
+        d.write("calls.jsonl", "".join(json.dumps(r) + "\n" for r in merged).encode())
+        d.write("sessions.jsonl", "".join(json.dumps(r) + "\n" for r in sessions.values()).encode())
+        d.write("ingest.json", json.dumps(report, indent=2).encode())
     ok = sum(r["status"] == "ok" for r in report)
     return {
         "bundles_ok": ok,

@@ -2,14 +2,14 @@
 
 Everything a share bundle carries that came from a participant's transcript (queries, argument
 names and values, hit ids, error text, version strings) goes through :func:`sanitize` at write time,
-and the finished files are checked by :func:`verify_share`, which fails closed. Sanitising at each
+and the finished files are checked by :func:`verify_files`, which fails closed. Sanitising at each
 call site that happens to touch text is how holes appeared (dict keys, the report table); a single
 egress plus a tripwire means a new field or sink is covered, or the build refuses to finish.
 
 Redaction is a denylist of known shapes and stays best-effort. This module makes it *complete over
 sinks*, not over secrets: the participant still reads the report before sending anything.
 
-Representation parity: ``sanitize`` cleans parsed values, so ``verify_share`` checks parsed values
+Representation parity: ``sanitize`` cleans parsed values, so ``verify_files`` checks parsed values
 too. A JSON file is decoded (every row, every pair, duplicates included) and each decoded string
 and key is scanned, and every number through its canonical text (the number rule); the markdown
 files (``SCHEMA.md``, ``report.md``) are scanned as the text a reader sees, with the one table-cell
@@ -29,8 +29,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
-from collections.abc import Callable
-from pathlib import Path
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 # The item separator of every text a text sink renders (lists, line breaks; see `value_text`).
@@ -237,7 +236,7 @@ def clean_text(text: str) -> str:
 
     One pass is not a fixpoint: a later rule's ``<redacted>`` can complete an earlier rule's match
     (``KEY=`` then a hex key). Repeating until stable makes the result idempotent and free of every
-    shape the tripwire looks for, so ``sanitize`` succeeding implies ``verify_share`` passes. A text
+    shape the tripwire looks for, so ``sanitize`` succeeding implies ``verify_files`` passes. A text
     that never settles is replaced whole (fail closed).
     """
     for _ in range(_MAX_CLEAN_PASSES):
@@ -272,7 +271,7 @@ def sanitize(v: Any) -> Any:
     """``v`` with every string (and dict key) cleaned: the egress for every share JSON row.
 
     The value of a credential-named key is replaced by ``REDACTED`` whole (``None`` stays ``None``),
-    judged on the key as written and as cleaned, so ``verify_share`` (which sees the cleaned key)
+    judged on the key as written and as cleaned, so ``verify_files`` (which sees the cleaned key)
     agrees. A number whose canonical text (:func:`value_text`) would trip a rule becomes
     ``REDACTED``; every other number is kept as it is.
     """
@@ -446,18 +445,16 @@ def _file_leaks(name: str, text: str) -> list[str]:
     return rules
 
 
-def verify_share(share: Path, names: tuple[str, ...]) -> list[str]:
-    """``["file: rule", ...]`` for every bundle file that trips a leak rule; empty when clean.
+def verify_files(files: Mapping[str, bytes]) -> list[str]:
+    """``["file: rule", ...]`` for every bundle file in ``files`` (name to bytes) that trips a leak
+    rule; empty when clean.
 
     JSON and JSONL files are checked decoded (see the module docstring), a markdown file as the
     text its reader sees (the table-cell escape undone, :func:`md_decoded`), anything else as text.
+    It checks the bytes it is given, never a path: the caller holds the bytes it will write or post.
     """
     found: list[str] = []
-    for n in names:
-        f = share / n
-        try:
-            text = f.read_text(errors="replace")
-        except OSError:
-            continue
+    for n, data in files.items():
+        text = data.decode("utf-8", "replace")
         found.extend(f"{n}: {rule}" for rule in dict.fromkeys(_file_leaks(n, text)))
     return found
