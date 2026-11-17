@@ -980,3 +980,47 @@ class TestReviewRegressions:
         result = _invoke("ingest", str(truncated), str(deep), "--out", str(tmp_path / "m"))
         assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
         assert result.output.count("REJECTED") == 2
+
+    @pytest.mark.parametrize("sep", ["\r", "\x0b", "\x0c", "\x1c", "\x85", "\u2028"])
+    def test_repack_removes_a_deleted_calls_query_whatever_line_break_it_holds(
+        self, tmp_path: Path, sep: str
+    ) -> None:
+        """`repack` finds report rows with str.splitlines(); a query with any of its line breaks
+        must not leave a fragment behind once its call row is deleted (security review)."""
+        empty = json.dumps({"hits": [], "evidence": {"confidence": 0.1, "low_confidence": True}})
+        rows = [
+            _use(
+                1,
+                "2026-11-18T10:00:00Z",
+                "mcp__pipecat-context-hub__search_docs",
+                {"query": f"alpha{sep}LEAKME"},
+            ),
+            _result(1, "2026-11-18T10:00:01Z", empty),
+        ]
+        _jl(tmp_path / "in" / "zed" / "s.jsonl", rows)
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        assert "LEAKME" in (out / "share" / "report.md").read_text()  # the row is there to delete
+        (out / "share" / "calls.jsonl").write_text("")  # the participant deletes the call
+        assert _invoke("repack", str(out)).exit_code == 0
+        assert "LEAKME" not in (out / "share" / "report.md").read_text()
+        with tarfile.open(out / "share.tar.gz") as tf:
+            assert b"LEAKME" not in tf.extractfile("report.md").read()  # type: ignore[union-attr]
+
+    def test_secrets_and_paths_in_input_keys_are_redacted_too(self, tmp_path: Path) -> None:
+        """Redaction walked dict values but not keys; a hub call's argument names are agent-chosen."""
+        inp = {"query": "TTS", SECRET: "x", f"{HOME_PATH}/f.py": "y"}
+        _jl(
+            tmp_path / "in" / "zed" / "s.jsonl",
+            [
+                _use(1, "2026-11-18T10:00:00Z", "mcp__pipecat-context-hub__search_docs", inp),
+                _result(1, "2026-11-18T10:00:01Z", json.dumps({"hits": [{"doc_id": "d"}]})),
+            ],
+        )
+        out = tmp_path / "out"
+        assert _extract(tmp_path / "in", out).exit_code == 0
+        shared = (out / "share" / "calls.jsonl").read_text()
+        assert SECRET not in shared and HOME_PATH not in shared
+        assert (
+            SECRET not in (out / "calls.jsonl").read_text()
+        )  # the local detail file is redacted too

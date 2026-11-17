@@ -67,7 +67,10 @@ def redact(text: str) -> str:
 
 
 def map_strings(v: Any, fn: Callable[[str], str]) -> Any:
-    """``v`` with ``fn`` applied to every string value, structure untouched.
+    """``v`` with ``fn`` applied to every string value and every string dict key, structure untouched.
+
+    Keys matter: a hub call's argument names are chosen by the agent, so a secret or a path can sit
+    in a key as easily as in a value.
 
     Redaction must walk the parsed value, never the serialised text: a secret pattern's ``\\S{8,}``
     swallows the closing quote and brace of a JSON dump, and the result no longer parses.
@@ -77,8 +80,18 @@ def map_strings(v: Any, fn: Callable[[str], str]) -> Any:
     if isinstance(v, list):
         return [map_strings(x, fn) for x in v]
     if isinstance(v, dict):
-        return {k: map_strings(x, fn) for k, x in v.items()}
+        return {(fn(k) if isinstance(k, str) else k): map_strings(x, fn) for k, x in v.items()}
     return v
+
+
+def one_line(text: str) -> str:
+    """``text`` on a single line under EVERY line break ``str.splitlines`` honours.
+
+    ``repack`` finds report rows with ``splitlines()``; a row built with a narrower rule (just
+    ``\\n``) splits there on ``\\r``, ``\\x0b``, ``\\u2028`` and friends, and a deleted call's
+    query survives in the fragment.
+    """
+    return " ".join(text.splitlines())
 
 
 def clip(text: str, n: int) -> str:
@@ -905,7 +918,7 @@ def build_share_bundle(
         q = inp.get("query") or inp.get("path") or inp.get("doc_id") or c["hub_invocation"]
         rows.append(
             f"| {sid(c['participant'])}/{sid(c['session_id'])}#{c['call_idx']} | {c['tool']} "
-            f"| {scrub_paths(clip(str(q), 80)).replace('|', '/').replace(chr(10), ' ')} | {', '.join(c['flags'])} "
+            f"| {one_line(scrub_paths(clip(str(q), 80))).replace('|', '/')} | {', '.join(c['flags'])} "
             f"| {r.get('n_hits', '')} | {round(r['confidence'], 2) if isinstance(r.get('confidence'), float) else ''} |"
         )
     md = [
