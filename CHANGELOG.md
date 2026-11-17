@@ -12,7 +12,7 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
-## [0.10.0] - 2026-11-16
+## [0.10.0] - 2026-11-17
 
 ### Added
 - **`pipecat-context-hub audit` command group** (`extract`, `repack`, `gist`, `discard`, `ingest`)
