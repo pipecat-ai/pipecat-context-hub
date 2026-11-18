@@ -1,6 +1,6 @@
 # Task: `check_deprecation` gives no signal for bare member names
 
-**Status**: Not Started
+**Status**: Complete (4/4 phases implemented; 6-round review gauntlet run; PR #169 open)
 **Component**: check_deprecation / deprecation map
 **Assigned to**: vr000m / Claude
 **Priority**: Medium
@@ -182,7 +182,7 @@ Each phase is one commit; every commit keeps `just check` and the tests green. T
 - The cold-agent check (A1) is recorded in the PR description.
 - Code reviewed and approved; tests, `ruff` and `mypy` passing; documentation and changelog updated.
 
-<!-- reviewed: 2026-11-18 @ ee0506800cb0180173184a4e5d4f63b7523b7ba1 -->
+<!-- reviewed: 2026-11-18 @ a334cb786e45b46c72f7126bf98e40c743b6699d -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
@@ -202,7 +202,7 @@ Durable notes that survive after the run: diagnostic query results, decision rat
 - Review run 1 (2026-11-17): 30 raw findings across architecture, sequencing, spec-and-testing, assumptions and codebase-claims; all addressed. One spec-and-testing finding (MagicMock maps) was withdrawn by its lens. The sequential Contradiction Pass was not run.
 - Review run 2 (2026-11-17, plan read from file, not embedded in the prompts): 21 raw findings (1 Critical, 10 Important, 10 Minor); codebase-claims clean (26 references). The Critical (Decision 4 turning current module paths into hints) was re-grilled and accepted in its revised form. The sequential Contradiction Pass was not run.
 - Review gauntlet (2026-11-17, six rounds, ledger `.gauntlet/ledger-claude-branch-fix-check-deprecation-bare-member-names-*`): the dotted-hint grammar was tightened across rounds 1-3 (every segment a plain non-keyword identifier; class-like owner = uppercase initial after optional leading underscores; `members_named` matches nothing for an empty or non-identifier name). Two statements above the review marker are now known to be inaccurate and are left as signed off: (a) the output-shape bullet says both new fields are null in non-hint responses, but an exact bare key such as `InputParams` returns `candidates` (10) and `candidates_total` (44) with its verdict (Decision 3); (b) `OpenAILLMService.model` is an exact registry key (see the note above). Accepted, not fixed: identical removal records from different modules collapse in `members_named`; a member key over 256 characters can appear as a candidate; a bare subject shadowed by another module's record is not listed.
-- Plan header drift: the header `**Status**` still reads "Not Started" although all four phases are committed and the dev-plans index says "Implemented". The header sits above the review marker, so it was left as signed off; refresh it (and the marker) when the PR is opened or merged.
+- Plan header drift (resolved): the header `**Status**` read "Not Started" after all four phases were committed. It was refreshed to Complete once the PR was open, and the review marker was rewritten with `write-review-marker.py`. The only contract-section change since sign-off is that status line.
 - Run 2 counts correction: "95 unique last segments" in the first draft was wrong; recomputed in Phase 1.
 - Phase 2 and 3 conduct notes (2026-11-17): `OpenAILLMService.model` is an exact registry key in v1.16.0 (verdict `deprecated: true`), so the plan's example of it staying `current` as a many-homes dotted miss is wrong; tests use a made-up owner (`OpenAILLMServiceX.model`) for that case and assert `OpenAILLMService.model` as an exact hit. The invariant is unaffected.
 - Phase 3 advisory review (opus/high; no Critical/Important), for the gauntlet: (1) `check-deprecation "InputParams."` returns `deprecated: true` via the existing prefix rule, so the plan's "trailing dot returns current" holds only for non-key names; (2, resolved in ded0863) the `candidates` field and `DeprecationCandidate` docs say "null unless the name has such members" / "bare query", wrong for dotted exact keys, prefix matches, multi-home dotted misses and Decision 4 hints; (3, closed as accepted after the review gauntlet: Decision 3 keeps the exact-key verdict, and the cold-agent check passed; the note is left unchanged) exact-hit notes (e.g. `InputParams`) do not mention the attached candidates, so a note-reading agent can take the wrong replacement (assumption A1 risk); (4, resolved in ded0863) the all-current hint note says "at the evaluated version" instead of naming the version.

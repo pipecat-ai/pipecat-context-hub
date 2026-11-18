@@ -3,13 +3,13 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-11-17 | fix | `check_deprecation` gives no signal for bare member names (e.g. `trigger_user_turn_stopped`); hint with qualified candidates, never assert | Implemented (4/4 phases committed; 6-round review gauntlet run; PR #169 open) | vr000m | `fix/check-deprecation-bare-member-names` | `20261117-fix-check-deprecation-bare-member-names.md` |
 | 2026-10-15 | feature | Windows index locking: shared locks via `LockFileEx`, `--reset-index` vs running `serve`, Windows CI for the lock path | Planned (design notes) | vr000m | _(not started)_ | `20261015-feature-windows-index-locking.md` |
 | 2026-10-17 | feature | Repo catalog PR 1: catalog, generator and the `repos` command | Complete (signed off 2026-10-17; Phases 1, 2a-2d implemented; PR #144 merged) | vr000m | `feature/repo-catalog-pr1` | `20261017-feature-repo-catalog-pr1-catalog-and-repos.md` |
 
 ## Completed Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
+| 2026-11-17 | fix | `check_deprecation` gives no signal for bare member names (e.g. `trigger_user_turn_stopped`); hint with qualified candidates, never assert | Complete (4/4 phases implemented; 6-round review gauntlet run; PR #169 open) | vr000m | `fix/check-deprecation-bare-member-names` | `20261117-fix-check-deprecation-bare-member-names.md` |
 | 2026-11-13 | fix | Raise OpenTelemetry API security floor for CVE-2026-126360 | Complete (PR #165) | vr000m | `fix/opentelemetry-api-cve-2026-126360` | `20261113-fix-opentelemetry-api-cve-2026-126360.md` |
 | 2026-10-16 | feature | Repo catalog, `repos list/add/remove` and corpus hints for vendor/example questions | Complete (design of record, signed off 2026-10-17; delivered as two PRs via the two plans below, PR 1 merged (#144), PR 2 merged (#147); #145 follow-up: PR #151; identifier-aware corpus hints, #148: PR #152) | vr000m | `feature/repo-catalog-pr1` | `20261016-feature-repo-catalog-and-repos-command.md` |
 | 2026-10-18 | fix | `refresh` docs re-crawl no longer deletes README-fallback chunks (issue #146) | Complete (PR #150) | vr000m | fix/refresh-readme-chunks | _(no plan file)_ |
