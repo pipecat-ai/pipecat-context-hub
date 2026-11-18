@@ -115,7 +115,8 @@ class TestSourceCounts:
             f"SOURCE.md records count keys with no computation in this test: {unknown}; "
             "add them to _compute() so the two stay in sync"
         )
-        mismatches = {k: (v, compute[k]()) for k, v in recorded.items() if compute[k]() != v}
+        recomputed = {k: compute[k]() for k in recorded}
+        mismatches = {k: (v, recomputed[k]) for k, v in recorded.items() if recomputed[k] != v}
         assert not mismatches, f"SOURCE.md (recorded, recomputed) mismatch: {mismatches}"
 
     def test_every_computation_is_recorded(self) -> None:
