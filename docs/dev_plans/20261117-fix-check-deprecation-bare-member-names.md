@@ -193,7 +193,7 @@ Per-phase completion tracked here so ticking a box during a run does not bust th
 - [x] Phase 1: Fixture
 - [x] Phase 2: `members_named`
 - [x] Phase 3: Types, handler, descriptions
-- [ ] Phase 4: Docs, smoke script, changelog, cold-agent gate
+- [x] Phase 4: Docs, smoke script, changelog, cold-agent gate
 
 ## Findings
 

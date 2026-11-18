@@ -33,6 +33,9 @@ semantic queries do.
 (and, when present, `scripts/deprecations/removals.json`) from the indexed
 framework checkout. Deprecation checks do not require GitHub CLI authentication.
 
+`check-deprecation` bare-name rule: A name that matches no registry symbol exactly but names deprecated members returns no verdict and lists them; query one of the listed symbols.
+Example: `check-deprecation trigger_user_turn_stopped` prints `deprecated: false`, `status: null`, a `note` and one entry in `candidates` (`BaseUserTurnStopStrategy.trigger_user_turn_stopped`, replacement `report_user_turn_stopped`). `status: null` with `candidates` is that hint; `status: null` with only a `note` means the deprecation map could not be loaded. Every response carries `candidates` and `candidates_total` (`null` when absent); at most 10 candidates are listed and `candidates_total` is the full count. An exact bare key such as `InputParams` keeps its verdict (`deprecated: true`) and attaches the other same-named members as candidates. A lower-case owner (`foo.bar`) or a multi-home dotted name stays `current`.
+
 ## Audit commands (session feedback)
 
 `audit` reviews how coding agents used Context Hub in real sessions. It reads local transcripts

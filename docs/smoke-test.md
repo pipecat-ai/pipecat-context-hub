@@ -478,6 +478,17 @@ the indexed pipecat version; re-verify against the current registry if they drif
     changed verdict is a data change, not a regression. Regression:
     `tests/unit/test_corpus_hint.py` (`test_issue_148_*`) and
     `tests/unit/test_cli_query.py` (`TestCorpusHintBothFrontDoors`).
+57. **Bare deprecated member name returns a hint, not a clean `false`.**
+    `uv run pipecat-context-hub check-deprecation trigger_user_turn_stopped` —
+    `deprecated: false`, `status: null`, a `note`, exactly one candidate
+    (`BaseUserTurnStopStrategy.trigger_user_turn_stopped`) with
+    `replacement: "report_user_turn_stopped"`. Regression canary for a bare
+    member name that previously read as `current`. Runnable:
+    `scripts/smoke_check_deprecation.py` (HINT group).
+58. **Exact bare key keeps its verdict and lists siblings.**
+    `uv run pipecat-context-hub check-deprecation InputParams` —
+    `deprecated: true` (the exact registry key) plus `candidates` (other
+    `*.InputParams` members, at most 10) and `candidates_total` above 10.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

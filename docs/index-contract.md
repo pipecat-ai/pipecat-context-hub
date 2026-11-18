@@ -71,7 +71,16 @@ the older release the floor names.
 
 If the deprecation map is missing or unreadable, `check_deprecation` returns a
 null `status` and a note to run `refresh` rather than answering `current` for
-every symbol, and `serve` logs a warning at startup.
+every symbol, and `serve` logs a warning at startup. A null `status` with a `note`
+and no `candidates` is this unloadable case.
+
+A name that matches no registry symbol exactly but names deprecated members returns no verdict and lists them; query one of the listed symbols.
+That response is a hint: `deprecated: false`, `status: null`, a `note` and `candidates`
+(each with `symbol`, `kind`, `status`, `deprecated_in`, `removed_in`, `replacement`; at most 10, with the
+full count in `candidates_total`). Both keys are `null` in every other response. An exact
+bare key keeps its verdict and lists other same-named members as candidates. A dotted miss
+hints only for a class-like (uppercase) owner with exactly one member; a lower-case owner or
+a multi-home dotted name stays `current`.
 
 ## Compatibility
 

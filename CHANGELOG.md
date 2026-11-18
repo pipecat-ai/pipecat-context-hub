@@ -12,6 +12,23 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+### Fixed
+- **`check_deprecation` no longer reads a bare deprecated member name as `current`.** A name that
+  matches no registry symbol exactly but names deprecated members (for example
+  `trigger_user_turn_stopped`) now returns `deprecated: false`, `status: null`, a note and
+  `candidates` (at most 10, with `candidates_total`) instead of a clean `current`. A dotted miss
+  hints only for a class-like owner with exactly one member.
+
+### Changed
+- `check_deprecation` responses gain two keys, `candidates` and `candidates_total`, that are `null`
+  when absent. `status: null` now also means "hint" (with `candidates`); with only a `note` it still
+  means an unloadable deprecation map.
+- A bare exact key such as `InputParams` keeps its verdict and now also lists other same-named
+  members as `candidates`.
+- `scripts/smoke_check_deprecation.py` gains a HINT group and checks `status == "current"` with no
+  `candidates` for the not-deprecated group.
+- Plugin version unchanged; its release stays with the plugin release process.
+
 ## [0.10.0] - 2026-11-17
 
 ### Added
