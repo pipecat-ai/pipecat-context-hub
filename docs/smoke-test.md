@@ -478,6 +478,35 @@ the indexed pipecat version; re-verify against the current registry if they drif
     changed verdict is a data change, not a regression. Regression:
     `tests/unit/test_corpus_hint.py` (`test_issue_148_*`) and
     `tests/unit/test_cli_query.py` (`TestCorpusHintBothFrontDoors`).
+57. **Bare deprecated member name returns a hint, not a clean `false`.**
+    `uv run pipecat-context-hub check-deprecation trigger_user_turn_stopped` —
+    `deprecated: false`, `status: null`, a `note`, exactly one candidate
+    (`BaseUserTurnStopStrategy.trigger_user_turn_stopped`) with
+    `replacement: "report_user_turn_stopped"`. Regression canary for a bare
+    member name that previously read as `current`. Runnable:
+    `scripts/smoke_check_deprecation.py` (HINT group, `HINT_EXPECTED`): it
+    requires `deprecated: false`, `status: null`, `candidates_total == 1` and
+    the expected symbol and replacement. Its CURRENT group requires
+    `status == "current"` with explicit null `candidates` and `candidates_total`.
+58. **Exact bare key keeps its verdict and lists siblings.**
+    `uv run pipecat-context-hub check-deprecation InputParams` —
+    `deprecated: true` (the exact registry key) plus `candidates` (other
+    `*.InputParams` members, at most 10) and `candidates_total` above 10.
+59. **A real method that shares a name with another class's deprecated member.**
+    `uv run pipecat-context-hub check-deprecation FrameProcessor.setup` —
+    `deprecated: false`, `status: null`, one candidate (`TaskManager.setup`; a
+    second class registering a deprecated `setup` adds a second candidate, not a
+    different verdict), and
+    a `note` that says `setup` is registered only under another owner and that
+    this does not make `FrameProcessor.setup` deprecated unless `FrameProcessor`
+    inherits the member. Regression canary for a hint whose wording read as
+    "possibly deprecated" for a current method.
+60. **A dotted hint survives several owners, and parameter-style names stay `current`.**
+    `uv run pipecat-context-hub check-deprecation Sub.trigger_disconnect` — a
+    hint (`status: null`) with 5 candidates and a note that says "under other
+    owners". `check-deprecation Sub.model` — `status: current`, no candidates
+    (`model` has more owners than the 10-candidate cap). Regression canary for
+    the hint disappearing once a second class registers the same member name.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

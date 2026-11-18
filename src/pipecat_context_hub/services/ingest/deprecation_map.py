@@ -104,6 +104,51 @@ class DeprecationMap:
                 return entry
         return None
 
+    def members_named(self, name: str) -> list[tuple[str, DeprecationEntry]]:
+        """Version-free lookup of member entries whose last ``old_path`` segment is ``name``.
+
+        Returns ``(symbol, entry)`` pairs sorted by ``symbol``. An entry is a
+        member when its ``old_path`` contains a dot, its ``kind`` is neither
+        ``"module"`` nor ``None``, and its last ``old_path`` segment equals
+        ``name`` (case-sensitive). A ``name`` that is not an identifier (empty,
+        whitespace-bearing, ``()``...) matches nothing.
+
+        Entries are de-duplicated by their serialised form, never by object
+        identity or dict key: a loaded map holds the ``<module>.`` alias key and
+        the bare key as separate objects for one subject. An active entry and a
+        removal that share an ``old_path`` serialise differently, so both stay.
+
+        Limit: a bare subject (no dot) is never a member, so a record shadowed by
+        another module's record of the same bare subject (e.g. ``AggregationType``
+        in two modules) is not returned and gives no hint that a second exists.
+
+        ``symbol`` is a key under which :meth:`check` returns that entry:
+        ``old_path`` when ``entries[old_path]`` is that entry, otherwise the
+        alias key that points at it (a removal is stored under its own subject
+        unless an active entry already owns that key, and then only its module
+        alias resolves it; a shadowed bare key may hold a different entry).
+        """
+        if not name.isidentifier():
+            # Empty or malformed input matches nothing, even when a persisted
+            # record's last segment is just as malformed (a subject ``Owner.``).
+            return []
+        found: dict[str, tuple[str, DeprecationEntry]] = {}
+        for key, entry in self.entries.items():
+            if "." not in entry.old_path or entry.kind in (None, "module"):
+                continue
+            if entry.old_path.rsplit(".", 1)[-1] != name:
+                continue
+            ser = _entry_to_dict(entry)
+            ident = json.dumps(ser, sort_keys=True)
+            direct = self.entries.get(entry.old_path)
+            if direct is not None and _entry_to_dict(direct) == ser:
+                symbol = entry.old_path
+            else:
+                prev = found.get(ident)
+                symbol = key if prev is None else min(prev[0], key)
+            found[ident] = (symbol, entry)
+        return sorted(found.values(), key=lambda p: p[0])
+
     def to_dict(self) -> dict[str, object]:
         """Serialize to a JSON-compatible dict."""
         return {

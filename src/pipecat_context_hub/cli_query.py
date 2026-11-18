@@ -61,6 +61,7 @@ from pipecat_context_hub.shared.support_links import (
     bug_report_hint,
 )
 from pipecat_context_hub.shared.terminal import echo, echo_json
+from pipecat_context_hub.shared.types import BARE_NAME_RULE
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -728,7 +729,14 @@ def search_api_command(
     )
 
 
-@click.command("check-deprecation")
+@click.command(
+    "check-deprecation",
+    help=(
+        "Check whether a module path, class, or method is deprecated.\n\n"
+        "The cheapest and most important call: run it on any Pipecat API you are "
+        "about to write from memory (e.g. 'PipelineTask').\n\n" + BARE_NAME_RULE
+    ),
+)
 @click.argument("symbol")
 @click.option(
     "--at-version",
@@ -742,11 +750,6 @@ def search_api_command(
 )
 @click.pass_context
 def check_deprecation_command(ctx: click.Context, symbol: str, at_version: str | None) -> None:
-    """Check whether a module path, class, or method is deprecated.
-
-    The cheapest and most important call: run it on any Pipecat API you are
-    about to write from memory (e.g. 'PipelineTask').
-    """
     args: dict[str, object] = {"symbol": symbol}
     if at_version is not None:
         args["version"] = at_version

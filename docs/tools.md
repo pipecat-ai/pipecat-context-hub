@@ -10,7 +10,7 @@ Part of the [Pipecat Context Hub documentation](README.md). For terminal usage, 
 | `get_example` | Retrieve full source files for a specific example |
 | `search_api` | Class definitions, method signatures, frame types, inheritance |
 | `get_code_snippet` | Get targeted code by symbol name, intent, or file path + line range |
-| `check_deprecation` | Verify whether a pipecat import path is deprecated or removed (supports `at_version` for lifecycle at a specific version) |
+| `check_deprecation` | Verify whether a pipecat import path is deprecated or removed (supports `version` (CLI `--at-version`) for lifecycle at a specific version; a bare member name returns a hint with `candidates`, see below) |
 | `get_hub_status` | Index health, reranker runtime state, record counts, framework version, commit SHAs, repo coverage (`indexed_repos`, `configured_no_records`, `catalog_groups_not_indexed`) |
 
 All search results include an **EvidenceReport** with confidence scores,
@@ -57,6 +57,12 @@ search_api("BaseTransport + WebSocketTransport")
 
 Each concept is searched independently and results are interleaved for balanced
 coverage.
+
+### `check_deprecation` bare names and `candidates`
+
+A name that matches no registry symbol exactly but names deprecated members returns no verdict and lists them; query one of the listed symbols.
+
+A response carries two keys, `candidates` and `candidates_total`, that are `null` unless the lookup found members to list (a hint, or an exact bare key with same-named siblings). `status: null` has two meanings: with `candidates` set it is a **hint** (the name matched no registry symbol, `deprecated: false`, and `note` says so); with only a `note` it is an unloadable deprecation map (run `refresh`). Each candidate has `symbol` (qualified), `kind`, `status`, `deprecated_in`, `removed_in` and `replacement`. At most 10 are returned; `candidates_total` is the full count. An exact bare key (for example `InputParams`) keeps its own verdict and lists other members of the same name as candidates. A bare subject that another module's record shadows is not listed as a member, so no hint reveals the second record. A dotted miss hints only for a class-like owner (an uppercase initial, optionally after leading underscores, as in `_Base`) when every owner of the member name fits in the candidate list (one to 10 owners); a dotted miss with a lower-case owner, or a name with more than 10 owners (a parameter-style name such as `model`), stays `current`. A dotted hint's `note` names the other owner(s) and says the queried symbol is deprecated only if its class inherits the member. A dotted miss (not under a registry key, which keeps its verdict) with any segment that is not a plain identifier (an empty segment from a leading, trailing or doubled dot, surrounding whitespace, `()`, a hyphen, a Python keyword) matches nothing and stays `current`, as does an empty name. Current module paths stay `current` because package segments are lower-case; a dotted name whose owner is uppercase-initial and whose member name has one to 10 owners is read as a member reference and hinted.
 
 ## Version-Aware Queries
 

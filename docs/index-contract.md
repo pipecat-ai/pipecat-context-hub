@@ -71,7 +71,22 @@ the older release the floor names.
 
 If the deprecation map is missing or unreadable, `check_deprecation` returns a
 null `status` and a note to run `refresh` rather than answering `current` for
-every symbol, and `serve` logs a warning at startup.
+every symbol, and `serve` logs a warning at startup. A null `status` with a `note`
+and no `candidates` is this unloadable case.
+
+A name that matches no registry symbol exactly but names deprecated members returns no verdict and lists them; query one of the listed symbols.
+That response is a hint: `deprecated: false`, `status: null`, a `note` and `candidates`
+(each with `symbol`, `kind`, `status`, `deprecated_in`, `removed_in`, `replacement`; at most 10, with the
+full count in `candidates_total`). Both keys are `null` on a response for a dotted or
+prefix query that is not a hint, and for a bare name with no same-named members; only a hint
+and an exact bare key with same-named siblings carry them. An exact bare key keeps its
+verdict and lists other same-named members as candidates. A dotted miss that is neither an
+exact key nor under one hints only for a class-like owner (uppercase initial, optionally
+after leading underscores) when every owner of the member name fits in the candidate list (one to
+10 owners); a lower-case owner, or a name with more than 10 owners (a parameter-style name such as
+`model`), stays `current`. A dotted miss (neither an exact key nor under one; a name under a registry key keeps that key's verdict) with any segment that is not a plain identifier (an empty
+segment from a leading, trailing or doubled dot, surrounding whitespace, `()`, a hyphen, a
+Python keyword) matches nothing and stays `current`, as does an empty name.
 
 ## Compatibility
 
