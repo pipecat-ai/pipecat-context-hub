@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from pipecat_context_hub.services.ingest.deprecation_map import (
     build_deprecation_map_from_registry,
     status_for,
 )
+
+from tests._deprecation_fixture import build_fixture_map, load_fixture_map
 
 
 class TestDeprecationMapCheck:
@@ -935,3 +938,154 @@ class TestWriterReaderContract:
             bad.save(path)
         assert path.read_bytes() == before
         assert not list(tmp_path.glob("*.tmp.*"))
+
+
+def _ser(entry: DeprecationEntry) -> dict[str, object]:
+    return dataclasses.asdict(entry)
+
+
+def _synthetic_map() -> DeprecationMap:
+    """Active deprecation + removal sharing an old_path, plus a cross-module shadow."""
+    active = DeprecationEntry(
+        old_path="Foo.bar",
+        new_path="Foo.baz",
+        deprecated_in="1.0.0",
+        kind="method",
+        location="pkg/a.py",
+    )
+    removed = DeprecationEntry(
+        old_path="Foo.bar",
+        removed_in="2.0.0",
+        kind="method",
+        status="removed",
+        location="pkg/b.py",
+    )
+    shadowed = DeprecationEntry(old_path="Qux.run", kind="method", location="pkg/one.py")
+    shadower = DeprecationEntry(old_path="Qux.run", kind="method", location="pkg/two.py")
+    return DeprecationMap(
+        entries={
+            "Foo.bar": active,
+            "pkg.b.Foo.bar": removed,
+            "Qux.run": shadower,
+            "pkg.one.Qux.run": shadowed,
+            "pkg.two.Qux.run": shadower,
+        }
+    )
+
+
+class TestMembersNamed:
+    """Version-free member lookup; must be right on a LOADED map (identity lost)."""
+
+    def test_built_and_loaded_give_one_entry_for_trigger_user_turn_stopped(
+        self, tmp_path: Path
+    ) -> None:
+        name = "trigger_user_turn_stopped"
+        subject = "BaseUserTurnStopStrategy.trigger_user_turn_stopped"
+        built = build_fixture_map()
+        keys = [k for k, e in built.entries.items() if k.rsplit(".", 1)[-1] == name]
+        assert len(keys) == 2  # bare subject + module alias, one entry
+
+        for dm in (built, load_fixture_map(tmp_path)):
+            hits = dm.members_named(name)
+            assert len(hits) == 1
+            symbol, entry = hits[0]
+            assert entry.old_path == subject
+            assert symbol == subject or symbol.endswith("." + subject)
+            checked = dm.check(symbol)
+            assert checked is not None and _ser(checked) == _ser(entry)
+
+    def test_module_key_excluded(self, tmp_path: Path) -> None:
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path)):
+            assert "pipecat.services.grok.llm" in dm.entries
+            hits = dm.members_named("llm")
+            assert hits
+            assert all(e.kind != "module" for _, e in hits)
+            assert all(e.old_path != "pipecat.services.grok.llm" for _, e in hits)
+            assert all(s != "pipecat.services.grok.llm" for s, _ in hits)
+
+    def test_task_returns_the_one_record(self, tmp_path: Path) -> None:
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path)):
+            hits = dm.members_named("task")
+            assert [e.old_path for _, e in hits] == ["FlowManager.task"]
+            assert all(e.kind != "module" for _, e in hits)
+
+    def test_module_qualified_function_uses_old_path_as_symbol(self, tmp_path: Path) -> None:
+        old = "pipecat.audio.utils.alaw_to_pcm"
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path)):
+            assert dm.members_named("alaw_to_pcm") == [(old, dm.entries[old])]
+
+    def test_map_without_kind_returns_nothing(self) -> None:
+        dm = DeprecationMap.from_dict(
+            {
+                "entries": {
+                    "Foo.bar": {"old_path": "Foo.bar", "new_path": "Foo.baz"},
+                    "pkg.mod.Foo.bar": {"old_path": "Foo.bar", "new_path": "Foo.baz"},
+                }
+            }
+        )
+        assert all(e.kind is None for e in dm.entries.values())
+        assert dm.members_named("bar") == []
+
+    def test_active_and_removal_sharing_old_path_both_kept(self) -> None:
+        dm = _synthetic_map()
+        hits = dm.members_named("bar")
+        assert len(hits) == 2
+        symbols = [s for s, _ in hits]
+        assert len(set(symbols)) == 2
+        assert set(symbols) == {"Foo.bar", "pkg.b.Foo.bar"}
+        assert {e.status for _, e in hits} == {"deprecated", "removed"}
+        for symbol, entry in hits:
+            checked = dm.check(symbol)
+            assert checked is not None and _ser(checked) == _ser(entry)
+
+    def test_shadowed_subject_from_another_module_is_kept(self) -> None:
+        dm = _synthetic_map()
+        hits = dm.members_named("run")
+        assert sorted(e.location or "" for _, e in hits) == ["pkg/one.py", "pkg/two.py"]
+        for symbol, entry in hits:
+            checked = dm.check(symbol)
+            assert checked is not None and _ser(checked) == _ser(entry)
+
+    def test_symbol_resolves_to_its_entry_for_every_pair(self, tmp_path: Path) -> None:
+        maps = [build_fixture_map(), load_fixture_map(tmp_path), _synthetic_map()]
+        for dm in maps:
+            names = {
+                e.old_path.rsplit(".", 1)[-1]
+                for e in dm.entries.values()
+                if "." in e.old_path and e.kind not in (None, "module")
+            }
+            assert names
+            for name in names:
+                for symbol, entry in dm.members_named(name):
+                    checked = dm.check(symbol)
+                    assert checked is not None
+                    assert _ser(checked) == _ser(entry)
+
+    def test_results_sorted_by_symbol(self, tmp_path: Path) -> None:
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path), _synthetic_map()):
+            for name in ("model", "llm", "bar", "run"):
+                symbols = [s for s, _ in dm.members_named(name)]
+                assert symbols == sorted(symbols)
+
+    def test_model_has_59_homes(self, tmp_path: Path) -> None:
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path)):
+            hits = dm.members_named("model")
+            assert len(hits) == 59
+            assert len({json.dumps(_ser(e), sort_keys=True) for _, e in hits}) == 59
+
+    @pytest.mark.parametrize("name", ["", " ", "a b", "x()", "1x", "model "])
+    def test_non_identifier_name_matches_nothing_even_if_a_subject_ends_that_way(
+        self, name: str
+    ) -> None:
+        """A persisted map can hold a subject like ``Owner.`` (empty last segment)."""
+        dm = DeprecationMap(
+            entries={
+                s: DeprecationEntry(old_path=s, new_path=None, deprecated_in="1.0.0", kind="method")
+                for s in ("Owner.", "Owner. ", "Owner.a b", "Owner.x()", "Owner.1x", "Owner.model ")
+            }
+        )
+        assert dm.members_named(name) == []
+
+    @pytest.mark.parametrize("name", ["Model", "", "x.y", "no_such_member_anywhere"])
+    def test_unknown_or_wrong_case_names_give_nothing(self, name: str) -> None:
+        assert build_fixture_map().members_named(name) == []

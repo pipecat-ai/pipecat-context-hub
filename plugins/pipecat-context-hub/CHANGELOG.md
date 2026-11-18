@@ -6,6 +6,12 @@ independent plugin release history and is included in prepared plugin copies.
 
 ## [Unreleased]
 
+### Changed
+
+- The `explore` skill now tells the agent that a `check_deprecation` response with a null
+  `status` and `candidates` is a hint for a bare member name (query one of the listed
+  symbols), not a clean `current`.
+
 ## [0.2.4] - 2026-10-23
 
 > Submitted to OpenAI for review. The submitted artifact is frozen; later

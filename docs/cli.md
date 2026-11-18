@@ -33,6 +33,9 @@ semantic queries do.
 (and, when present, `scripts/deprecations/removals.json`) from the indexed
 framework checkout. Deprecation checks do not require GitHub CLI authentication.
 
+`check-deprecation` bare-name rule: A name that matches no registry symbol exactly but names deprecated members returns no verdict and lists them; query one of the listed symbols.
+Example: `check-deprecation trigger_user_turn_stopped` prints `deprecated: false`, `status: null`, a `note` and one entry in `candidates` (`BaseUserTurnStopStrategy.trigger_user_turn_stopped`, replacement `report_user_turn_stopped`). `status: null` with `candidates` is that hint; `status: null` with only a `note` means the deprecation map could not be loaded. Every response carries `candidates` and `candidates_total` (`null` when absent); at most 10 candidates are listed and `candidates_total` is the full count. An exact bare key such as `InputParams` keeps its verdict (`deprecated: true`) and attaches the other same-named members as candidates. A dotted name that matches neither an exact key nor under one (a lower-case owner such as `foo.bar`, or a name with more than 10 owners such as `model`) stays `current`, as does a dotted miss (not under a registry key, which keeps its verdict) with any segment that is not a plain identifier (an empty segment from a leading, trailing or doubled dot, surrounding whitespace, `()`, a hyphen, a Python keyword) and an empty name. Only a class-like owner (uppercase initial, optionally after leading underscores) whose member name has 1 to 10 owners is hinted. A dotted hint's `note` names the other owner(s) and says the queried symbol is deprecated only if its class inherits the member.
+
 ## Audit commands (session feedback)
 
 `audit` reviews how coding agents used Context Hub in real sessions. It reads local transcripts

@@ -8,7 +8,7 @@ the ``deprecated`` verdict. Unlike the offline fixture smoke under
 from pipecat's deprecation registry (PR #85), and therefore requires a prior
 ``refresh`` — it is intentionally NOT part of the pytest gate.
 
-Two directions are checked:
+Three groups are checked:
 
 * CURRENT — current, non-deprecated APIs that must return ``deprecated: false``.
   A false positive here (current API flagged deprecated) is the worst failure
@@ -17,6 +17,9 @@ Two directions are checked:
 * DEPRECATED — genuinely deprecated APIs that must stay ``deprecated: true``.
   Guards against the lookup over-narrowing and silently dropping real
   deprecations.
+* HINT — bare deprecated member names: ``deprecated: false``, ``status: null`` and
+  exactly the expected candidate (symbol and replacement, from ``HINT_EXPECTED``): a
+  hint, not a verdict; a clean ``current`` or a wrong candidate is a miss.
 
 Note: the registry only carries symbols that still exist in the indexed pipecat
 source with an active marker. Already-*removed* symbols are absent and correctly
@@ -63,6 +66,70 @@ DEPRECATED: dict[str, str] = {
 }
 
 
+# Bare member names — must return a hint: deprecated false, status null, candidates.
+HINT: dict[str, str] = {
+    "trigger_user_turn_stopped": "bare deprecated member -> report_user_turn_stopped",
+}
+
+# The one candidate each HINT name must list: (candidate symbol, replacement).
+HINT_EXPECTED: dict[str, tuple[str, str]] = {
+    "trigger_user_turn_stopped": (
+        "BaseUserTurnStopStrategy.trigger_user_turn_stopped",
+        "report_user_turn_stopped",
+    ),
+}
+
+
+def classify(
+    response: dict[str, object],
+    expected_group: str,
+    expected_candidate: tuple[str, str] | None = None,
+) -> str | None:
+    """Return a failure description, or None when ``response`` fits ``expected_group``.
+
+    ``expected_group`` is ``"current"``, ``"deprecated"`` or ``"hint"``. The
+    ``"hint"`` group also needs ``expected_candidate``, the ``(symbol, replacement)``
+    of the single candidate the hint must list.
+    """
+    dep = bool(response.get("deprecated"))
+    status = response.get("status")
+    candidates = response.get("candidates")
+    if expected_group == "current":
+        for key in ("deprecated", "status", "candidates", "candidates_total"):
+            if key not in response:
+                return f"missing key {key!r}"
+        if response["deprecated"] is not False:
+            return f"expected deprecated=false, got {response['deprecated']!r}"
+        if status != "current":
+            return f"expected status='current', got {status!r}"
+        if candidates is not None or response["candidates_total"] is not None:
+            return "expected candidates and candidates_total to be null"
+        return None
+    if expected_group == "deprecated":
+        return None if dep else "expected deprecated=true, got false"
+    if expected_group == "hint":
+        for key in ("deprecated", "status", "candidates", "candidates_total"):
+            if key not in response:
+                return f"missing key {key!r}"
+        if response["deprecated"] is not False:
+            return f"expected deprecated=false, got {response['deprecated']!r}"
+        if status is not None:
+            return f"expected status=null, got {status!r}"
+        if expected_candidate is None:
+            raise ValueError("the hint group needs expected_candidate")
+        if not isinstance(candidates, list) or len(candidates) != 1:
+            return f"expected exactly one candidate, got {candidates!r}"
+        total = response["candidates_total"]
+        if type(total) is not int or total != 1:
+            return f"expected candidates_total=1, got {response['candidates_total']!r}"
+        (cand,) = candidates
+        got = (cand.get("symbol"), cand.get("replacement")) if isinstance(cand, dict) else None
+        if got != expected_candidate:
+            return f"expected candidate {expected_candidate!r}, got {got!r}"
+        return None
+    raise ValueError(f"unknown group {expected_group!r}")
+
+
 def _check(symbol: str) -> dict[str, object]:
     """Run the check-deprecation CLI and return the parsed JSON verdict."""
     result = subprocess.run(  # nosec B603 B607 — hardcoded args, symbol is from our own dicts
@@ -84,23 +151,18 @@ def main() -> int:
 
     failures: list[str] = []
 
-    print("== CURRENT APIs (expect deprecated: false) ==")
-    for symbol, why in CURRENT.items():
-        verdict = _check(symbol)
-        dep = bool(verdict.get("deprecated"))
-        status = "FAIL" if dep else "ok  "
-        if dep:
-            failures.append(f"{symbol}: expected deprecated=false, got true ({why})")
-        print(f"  [{status}] {symbol:<32} ({why})")
-
-    print("\n== DEPRECATED APIs (expect deprecated: true) ==")
-    for symbol, why in DEPRECATED.items():
-        verdict = _check(symbol)
-        dep = bool(verdict.get("deprecated"))
-        status = "ok  " if dep else "FAIL"
-        if not dep:
-            failures.append(f"{symbol}: expected deprecated=true, got false ({why})")
-        print(f"  [{status}] {symbol:<32} ({why})")
+    groups = (
+        ("CURRENT APIs (expect deprecated: false, status: current)", "current", CURRENT),
+        ("DEPRECATED APIs (expect deprecated: true)", "deprecated", DEPRECATED),
+        ("HINT names (expect deprecated: false, status: null, candidates)", "hint", HINT),
+    )
+    for i, (title, group, symbols) in enumerate(groups):
+        print(("\n" if i else "") + f"== {title} ==")
+        for symbol, why in symbols.items():
+            problem = classify(_check(symbol), group, HINT_EXPECTED.get(symbol))
+            if problem:
+                failures.append(f"{symbol}: {problem} ({why})")
+            print(f"  [{'FAIL' if problem else 'ok  '}] {symbol:<32} ({why})")
 
     if failures:
         print(f"\n{len(failures)} regression(s):")

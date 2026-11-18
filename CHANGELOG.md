@@ -12,6 +12,45 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+### Fixed
+- **`check_deprecation` no longer reads a bare deprecated member name as `current`.** A name that
+  matches no registry symbol exactly but names deprecated members (for example
+  `trigger_user_turn_stopped`) now returns `deprecated: false`, `status: null`, a note and
+  `candidates` (at most 10, with `candidates_total`) instead of a clean `current`. A dotted miss
+  hints only for a class-like owner (uppercase initial, optionally after leading underscores)
+  when the name's owners all fit in the 10-candidate list (at least one, at most 10). A name
+  with more owners than that, such as `model` or `params`, stays `current`. A dotted miss with any segment that is not a plain identifier (empty
+  segment, whitespace, `()`, a hyphen, a Python keyword), and an empty name, matches nothing and
+  stays `current`; a name under a registry key keeps that key's verdict.
+
+### Changed
+- `check_deprecation` responses gain two keys, `candidates` and `candidates_total`, that are `null`
+  when absent. `status: null` now also means "hint" (with `candidates`); with only a `note` it still
+  means an unloadable deprecation map.
+- A bare exact key such as `InputParams` keeps its verdict and now also lists other same-named
+  members as `candidates`.
+- One sentence (`BARE_NAME_RULE`, in `shared/types.py`) now appears in the `check_deprecation` tool
+  description and `symbol` input description, the server instructions, `check-deprecation --help`,
+  and `docs/tools.md`, `docs/cli.md` and `docs/index-contract.md`. It tells the agent that a bare
+  member name returns no verdict and that it should query one of the listed symbols.
+  `tests/unit/test_check_deprecation_docs.py` asserts it verbatim in the three docs. The plugin's
+  `explore` skill carries its own wording of the same rule.
+- A dotted hint's `note` now says the name is registered only under another owner, names that
+  owner's symbol, and says the queried symbol is deprecated only if its class inherits the member.
+  Before, `check-deprecation FrameProcessor.setup` returned the bare-name wording, which read as
+  "possibly deprecated" for a current method. The response fields are unchanged.
+- A dotted hint no longer disappears when a second class registers a deprecated member of the same
+  name. The gate was "exactly one owner", so a second `setup` owner would have turned
+  `FrameProcessor.setup` back into a plain `current`. It is now "every owner fits in the candidate
+  list", so the second owner becomes a second candidate. A name with 11 or more owners (`model`,
+  `params`, `InputParams`, `voice_id`, `language`, `aggregate_sentences` in v1.16.0) is a
+  parameter-style name and still stays `current`.
+- New `DeprecationMap.members_named(name)` lists a name's member entries across all modules, without
+  a version check; `check_deprecation` builds its candidates from it.
+- `scripts/smoke_check_deprecation.py` gains a HINT group and checks `status == "current"` with no
+  `candidates` for the not-deprecated group.
+- Plugin version unchanged; its release stays with the plugin release process.
+
 ## [0.10.0] - 2026-11-17
 
 ### Added

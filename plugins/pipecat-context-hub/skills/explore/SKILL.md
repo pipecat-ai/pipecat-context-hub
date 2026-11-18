@@ -151,7 +151,7 @@ separating multiple concepts with ` + ` or ` & ` (for example `TTS + STT`).
 Check that hits cover each requested concept. Read the relevant page/section
 with `get_doc` and the relevant example with `get_example`. Use `search_api`
 and `get_code_snippet` where a concrete API assertion needs definition evidence.
-Check deprecations for Pipecat imports before recommending them.
+Check deprecations for Pipecat imports before recommending them. A name that matches no registry symbol exactly but names deprecated members returns no verdict and lists them; query one of the listed symbols. A null `status` with `candidates` is that hint, not a clean `current`.
 
 For a multimodal or vision request, retrieve the requested modality explicitly
 and report the coverage boundary. Do not infer image/video support from a generic

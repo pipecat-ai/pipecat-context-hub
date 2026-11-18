@@ -736,6 +736,15 @@ class SearchApiOutput(BaseModel):
 DeprecationStatus = Literal["current", "deprecated", "removed"]
 """Lifecycle status of a symbol at a given pipecat version."""
 
+BARE_NAME_RULE = (
+    "A name that matches no registry symbol exactly but names deprecated members "
+    "returns no verdict and lists them; query one of the listed symbols."
+)
+"""The one-sentence bare-name rule, shown verbatim on every caller-facing surface."""
+
+DEPRECATION_CANDIDATE_CAP = 10
+"""Most ``candidates`` a ``check_deprecation`` response lists (the rest are counted)."""
+
 
 class CheckDeprecationInput(BaseModel):
     """Input for the check_deprecation MCP tool."""
@@ -744,7 +753,7 @@ class CheckDeprecationInput(BaseModel):
         max_length=256,
         description=(
             "Module path, class name, or method to check. "
-            "E.g., 'pipecat.services.grok.llm' or 'DailyTransport'."
+            "E.g., 'pipecat.services.grok.llm' or 'DailyTransport'. " + BARE_NAME_RULE
         ),
     )
     version: str | None = Field(
@@ -758,15 +767,35 @@ class CheckDeprecationInput(BaseModel):
     )
 
 
+class DeprecationCandidate(BaseModel):
+    """A registry symbol that shares its last name segment with the queried name."""
+
+    symbol: str = Field(description="Registry symbol to query for a verdict.")
+    kind: str | None = None
+    status: DeprecationStatus
+    deprecated_in: str | None = None
+    removed_in: str | None = None
+    replacement: str | None = None
+
+
 class CheckDeprecationOutput(BaseModel):
-    """Output for the check_deprecation MCP tool."""
+    """Output for the check_deprecation MCP tool.
+
+    ``status`` is null when no verdict was given. Two shapes share that:
+    ``status: null`` with ``candidates`` set is a hint (the name matched no
+    registry symbol exactly but names deprecated members; query one of the
+    listed symbols), while ``status: null`` with only a ``note`` means the
+    deprecation map could not be loaded.
+    """
 
     deprecated: bool
     status: DeprecationStatus | None = Field(
         default=None,
         description=(
             "Lifecycle status at the evaluated version: 'current' (not deprecated), "
-            "'deprecated' (deprecated but still present), or 'removed' (deleted in removed_in)."
+            "'deprecated' (deprecated but still present), or 'removed' (deleted in removed_in). "
+            "Null when no verdict was given: a hint (candidates set) or an unloadable "
+            "deprecation map (only a note)."
         ),
     )
     replacement: str | None = None
@@ -797,4 +826,17 @@ class CheckDeprecationOutput(BaseModel):
             "Source file of the deprecation marker as 'path/to/file.py', relative to "
             "the pipecat repo root, for locating the definition."
         ),
+    )
+    candidates: list[DeprecationCandidate] | None = Field(
+        default=None,
+        description=(
+            "Registry symbols sharing the queried name's last segment "
+            f"(at most {DEPRECATION_CANDIDATE_CAP}; "
+            "deprecated/removed first). Set on a hint, and on an exact bare-key "
+            "verdict that has other same-named members; null otherwise."
+        ),
+    )
+    candidates_total: int | None = Field(
+        default=None,
+        description="Total number of such symbols; set together with candidates.",
     )

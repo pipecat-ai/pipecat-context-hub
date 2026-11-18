@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,7 +25,8 @@ from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
     RETRIEVAL_QUALITY_ISSUE_URL,
 )
-from pipecat_context_hub.shared.types import EvidenceReport, SearchDocsOutput
+from pipecat_context_hub.shared.types import BARE_NAME_RULE, EvidenceReport, SearchDocsOutput
+from tests._deprecation_fixture import load_fixture_map
 
 runner = CliRunner()
 
@@ -1840,3 +1842,33 @@ class TestCorpusHintBothFrontDoors(_HintCatalogMixin):
         )
         assert mcp_payload["corpus_hint"] == cli_hint
         assert cli_hint["report_issue_url"] == RETRIEVAL_QUALITY_ISSUE_URL
+
+
+class TestCheckDeprecationBareMember:
+    """Bare member names return a hint with candidates through the CLI."""
+
+    def test_bare_member_exits_0_with_candidates(self, tmp_path):
+        load_fixture_map(tmp_path)
+        with (
+            patch(
+                "pipecat_context_hub.services.index.store.IndexStore",
+                return_value=_index_store_mock(total=10),
+            ),
+            patch.dict("os.environ", {"PIPECAT_HUB_DATA_DIR": str(tmp_path)}),
+        ):
+            result = runner.invoke(main, ["check-deprecation", "trigger_user_turn_stopped"])
+        assert result.exit_code == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["deprecated"] is False
+        assert payload["status"] is None
+        assert payload["candidates_total"] == 1
+        assert (
+            payload["candidates"][0]["symbol"]
+            == "BaseUserTurnStopStrategy.trigger_user_turn_stopped"
+        )
+
+    def test_help_carries_bare_name_rule(self):
+        result = runner.invoke(main, ["check-deprecation", "--help"])
+        assert result.exit_code == 0
+        norm = lambda t: re.sub(r"\s+", " ", t)  # noqa: E731
+        assert norm(BARE_NAME_RULE) in norm(result.stdout)

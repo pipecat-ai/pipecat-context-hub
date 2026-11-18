@@ -8,6 +8,7 @@ from typing import Any
 
 from pipecat_context_hub.shared.interfaces import Retriever
 from pipecat_context_hub.shared.types import (
+    BARE_NAME_RULE,
     CheckDeprecationInput,
     GetCodeSnippetInput,
     GetDocInput,
@@ -155,7 +156,7 @@ _TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         "check_deprecation",
         "Check if a pipecat module path, class, or import is deprecated. "
         "Use when you see pipecat imports to verify they are current. "
-        "Returns replacement path if deprecated. "
+        "Returns replacement path if deprecated. " + BARE_NAME_RULE + " "
         "E.g., check_deprecation(symbol='pipecat.services.grok.llm') → deprecated, use pipecat.services.xai.llm.",
         CheckDeprecationInput.model_json_schema(),
         _handle_check_deprecation_registry,
