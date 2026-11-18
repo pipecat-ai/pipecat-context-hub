@@ -765,7 +765,7 @@ class CheckDeprecationInput(BaseModel):
 
 
 class DeprecationCandidate(BaseModel):
-    """A registry symbol that shares a last name segment with a bare query."""
+    """A registry symbol that shares its last name segment with the queried name."""
 
     symbol: str = Field(description="Registry symbol to query for a verdict.")
     kind: str | None = None
@@ -826,7 +826,8 @@ class CheckDeprecationOutput(BaseModel):
         default=None,
         description=(
             "Registry symbols sharing the queried name's last segment (at most 10; "
-            "deprecated/removed first). Null unless the name has such members."
+            "deprecated/removed first). Set on a hint, and on an exact bare-key "
+            "verdict that has other same-named members; null otherwise."
         ),
     )
     candidates_total: int | None = Field(

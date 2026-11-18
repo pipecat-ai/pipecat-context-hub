@@ -1,4 +1,4 @@
-"""Tests for server.tools.check_deprecation.resolve_framework_version."""
+"""Tests for server.tools.check_deprecation: version resolution and the handler."""
 
 from __future__ import annotations
 
@@ -565,6 +565,10 @@ class TestVersionAware:
         assert out["status"] is None
         assert out["candidates"]
         assert "none" in str(out["note"]).lower()
+        # The note names the version it evaluated, explicit or the indexed default.
+        assert "None is deprecated at 1.14.0." in str(out["note"])
+        out = _run(loaded_map, "trigger_user_turn_stopped", fw="1.14.0")
+        assert "None is deprecated at 1.14.0." in str(out["note"])
 
 
 class TestOutputShape:

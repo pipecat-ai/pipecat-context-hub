@@ -28,19 +28,17 @@ def _numbered_main_items() -> list[tuple[int, str]]:
     """Top-level numbered items of the first (live smoke) list, with bodies."""
     lines = (_DOCS / "smoke-test.md").read_text().splitlines()
     items: list[tuple[int, str]] = []
-    expect = 1
     started = False
     for line in lines:
         m = re.match(r"^(\d+)\. ", line)
         if m:
             n = int(m.group(1))
-            if started and n != expect:
-                break  # the next list (e.g. the CLI-query list) restarts at 1
-            if n != expect:
+            if not started and n != 1:
                 continue
+            if started and n <= items[-1][0]:
+                break  # the next list (e.g. the CLI-query list) restarts at 1
             started = True
             items.append((n, line))
-            expect += 1
         elif started and items and not line.startswith("#"):
             items[-1] = (items[-1][0], items[-1][1] + "\n" + line)
     return items

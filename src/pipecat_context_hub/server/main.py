@@ -77,10 +77,10 @@ def _assert_no_unsubstituted_placeholder(text: str) -> None:
     if _UNSUBSTITUTED_PLACEHOLDER.search(text):
         raise ValueError(
             "_SERVER_INSTRUCTIONS still contains an unsubstituted {PLACEHOLDER} — "
-            "a renamed/typo'd RETRIEVAL_QUALITY_ISSUE_URL or BUG_REPORT_ISSUE_URL "
-            "constant would otherwise ship literal placeholder text to MCP clients "
-            "with no error. Check the .replace() chain above against the two "
-            "shared/support_links.py constants."
+            "a renamed/typo'd RETRIEVAL_QUALITY_ISSUE_URL, BUG_REPORT_ISSUE_URL or "
+            "BARE_NAME_RULE constant would otherwise ship literal placeholder text to "
+            "MCP clients with no error. Check the .replace() chain above against the "
+            "shared/support_links.py and shared/types.py constants."
         )
 
 
