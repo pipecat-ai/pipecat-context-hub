@@ -793,7 +793,9 @@ class CheckDeprecationOutput(BaseModel):
         default=None,
         description=(
             "Lifecycle status at the evaluated version: 'current' (not deprecated), "
-            "'deprecated' (deprecated but still present), or 'removed' (deleted in removed_in)."
+            "'deprecated' (deprecated but still present), or 'removed' (deleted in removed_in). "
+            "Null when no verdict was given: a hint (candidates set) or an unloadable "
+            "deprecation map (only a note)."
         ),
     )
     replacement: str | None = None
