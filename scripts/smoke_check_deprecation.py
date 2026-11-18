@@ -108,15 +108,16 @@ def classify(
         for key in ("deprecated", "status", "candidates", "candidates_total"):
             if key not in response:
                 return f"missing key {key!r}"
-        if dep:
-            return "expected deprecated=false, got true"
+        if response["deprecated"] is not False:
+            return f"expected deprecated=false, got {response['deprecated']!r}"
         if status is not None:
             return f"expected status=null, got {status!r}"
         if expected_candidate is None:
             raise ValueError("the hint group needs expected_candidate")
         if not isinstance(candidates, list) or len(candidates) != 1:
             return f"expected exactly one candidate, got {candidates!r}"
-        if response["candidates_total"] != 1:
+        total = response["candidates_total"]
+        if type(total) is not int or total != 1:
             return f"expected candidates_total=1, got {response['candidates_total']!r}"
         (cand,) = candidates
         got = (cand.get("symbol"), cand.get("replacement")) if isinstance(cand, dict) else None

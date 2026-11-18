@@ -113,7 +113,16 @@ def test_hint_group_requires_present_keys_and_total(smoke) -> None:
     no_total = {k: v for k, v in HINT_RESPONSE.items() if k != "candidates_total"}
     wrong_total = {**HINT_RESPONSE, "candidates_total": 2}
     null_total = {**HINT_RESPONSE, "candidates_total": None}
-    for bad in (only_candidates, no_total, wrong_total, null_total):
+    null_deprecated = {**HINT_RESPONSE, "deprecated": None}
+    bool_total = {**HINT_RESPONSE, "candidates_total": True}
+    for bad in (
+        only_candidates,
+        no_total,
+        wrong_total,
+        null_total,
+        null_deprecated,
+        bool_total,
+    ):
         assert smoke.classify(bad, "hint", HINT_EXPECTED) is not None
     assert smoke.classify(HINT_RESPONSE, "hint", HINT_EXPECTED) is None
 
