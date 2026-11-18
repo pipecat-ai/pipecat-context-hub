@@ -127,11 +127,14 @@ def _hint_output(
     if "." in symbol:
         # A dotted miss: the registry holds the member only under another owner,
         # which says nothing about this owner unless it inherits the member.
+        owner = symbol.rsplit(".", 2)[-2]
+        others = ", ".join(f"`{c.symbol}`" for c in candidates)
+        where = f"under another owner, {others}" if total == 1 else f"under other owners, {others}"
         note = (
             f"`{symbol}` is not in the deprecation registry. `{last}` is registered only "
-            f"under another owner, `{candidates[0].symbol}`. That does not make `{symbol}` "
-            f"deprecated unless `{symbol.rsplit('.', 2)[-2]}` inherits the member; query "
-            "the listed symbol for its verdict."
+            f"{where}. That does not make `{symbol}` deprecated unless `{owner}` inherits "
+            f"the member; query {'the listed symbol' if total == 1 else 'a listed symbol'} "
+            "for its verdict."
         )
     else:
         note = (
@@ -197,7 +200,12 @@ async def handle_check_deprecation(
                 and owner.lstrip("_")[:1].isupper()
             ):
                 candidates, total = _candidates(deprecation_map, last, target_version)
-                if total == 1:
+                # Hint only when the candidate list is complete: every owner fits
+                # under the cap. A count-based gate such as "exactly one" would
+                # drop the hint the moment a second owner registers the same name;
+                # a name with more owners than the cap (``model``, ``params``) is
+                # a parameter-style name and hinting on every ``X.model`` is noise.
+                if 0 < total <= DEPRECATION_CANDIDATE_CAP:
                     return _hint_output(symbol, candidates, total, target_version).model_dump_json()
         return CheckDeprecationOutput(deprecated=False, status="current").model_dump_json()
 

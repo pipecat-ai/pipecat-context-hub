@@ -499,6 +499,33 @@ class TestDottedQueries:
         assert "unless `FrameProcessor` inherits the member" in note
         assert "matched no symbol exactly" not in note
 
+    def test_second_owner_adds_a_candidate_and_keeps_the_hint(self, loaded_map: DeprecationMap):
+        # The invariant: registering another owner of the same member name must never
+        # remove the hint (it used to flip FrameProcessor.setup to plain "current").
+        before = _run(loaded_map, "FrameProcessor.setup")
+        assert _is_hint(before) and before["candidates_total"] == 1
+        entries = list(loaded_map.entries.values()) + [_entry("Sibling.setup")]
+        after = _run(_synthetic(entries), "FrameProcessor.setup")
+        assert _is_hint(after)
+        assert after["candidates_total"] == 2
+        assert {c["symbol"] for c in after["candidates"]} == {"TaskManager.setup", "Sibling.setup"}
+        assert "under other owners" in after["note"]
+        assert "`Sibling.setup`" in after["note"] and "`TaskManager.setup`" in after["note"]
+        assert "a listed symbol" in after["note"]
+
+    @pytest.mark.parametrize("owners", [1, 2, CAP - 1, CAP, CAP + 1, CAP + 2])
+    def test_dotted_hint_iff_the_candidate_list_is_complete(self, owners: int):
+        dep = _synthetic([_entry(f"Home{i:02d}.shared") for i in range(owners)])
+        out = _run(dep, "Queried.shared")
+        if owners <= CAP:
+            assert _is_hint(out)
+            # Never truncated: every owner is listed.
+            assert len(out["candidates"]) == out["candidates_total"] == owners
+        else:
+            assert out["status"] == "current"
+            assert out["candidates"] is None
+            assert out["candidates_total"] is None
+
     def test_bare_hint_note_is_unchanged(self, loaded_map: DeprecationMap):
         out = _run(loaded_map, "trigger_user_turn_stopped")
         assert "matched no symbol exactly" in out["note"]
@@ -544,13 +571,15 @@ class TestDottedQueries:
         assert out["candidates"][0]["symbol"] == "SarvamSTTService.set_prompt"
         assert out["candidates"][0]["status"] == "removed"
 
-    def test_two_homes_one_current_stays_current(self):
+    def test_two_homes_one_current_still_hints(self):
         dep = _synthetic(
             [_entry("A.foo", deprecated_in="1.0.0"), _entry("B.foo", deprecated_in="3.0.0")]
         )
         out = _run(dep, "Sub.foo", version="2.0.0")
-        assert out["status"] == "current"
-        assert out["candidates"] is None
+        assert out["status"] is None
+        assert out["candidates_total"] == 2
+        assert [c["symbol"] for c in out["candidates"]] == ["A.foo", "B.foo"]
+        assert [c["status"] for c in out["candidates"]] == ["deprecated", "current"]
 
 
 class TestRemovals:
