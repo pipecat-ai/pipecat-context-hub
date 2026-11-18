@@ -34,6 +34,10 @@ This changelog retains repository and Context Hub package history.
   member name returns no verdict and that it should query one of the listed symbols.
   `tests/unit/test_check_deprecation_docs.py` asserts it verbatim in the three docs. The plugin's
   `explore` skill carries its own wording of the same rule.
+- A dotted hint's `note` now says the name is registered only under another owner, names that
+  owner's symbol, and says the queried symbol is deprecated only if its class inherits the member.
+  Before, `check-deprecation FrameProcessor.setup` returned the bare-name wording, which read as
+  "possibly deprecated" for a current method. The response fields are unchanged.
 - New `DeprecationMap.members_named(name)` lists a name's member entries across all modules, without
   a version check; `check_deprecation` builds its candidates from it.
 - `scripts/smoke_check_deprecation.py` gains a HINT group and checks `status == "current"` with no
