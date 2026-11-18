@@ -484,7 +484,10 @@ the indexed pipecat version; re-verify against the current registry if they drif
     (`BaseUserTurnStopStrategy.trigger_user_turn_stopped`) with
     `replacement: "report_user_turn_stopped"`. Regression canary for a bare
     member name that previously read as `current`. Runnable:
-    `scripts/smoke_check_deprecation.py` (HINT group).
+    `scripts/smoke_check_deprecation.py` (HINT group, `HINT_EXPECTED`): it
+    requires `deprecated: false`, `status: null`, `candidates_total == 1` and
+    the expected symbol and replacement. Its CURRENT group requires
+    `status == "current"` with explicit null `candidates` and `candidates_total`.
 58. **Exact bare key keeps its verdict and lists siblings.**
     `uv run pipecat-context-hub check-deprecation InputParams` —
     `deprecated: true` (the exact registry key) plus `candidates` (other

@@ -18,9 +18,9 @@ This changelog retains repository and Context Hub package history.
   `trigger_user_turn_stopped`) now returns `deprecated: false`, `status: null`, a note and
   `candidates` (at most 10, with `candidates_total`) instead of a clean `current`. A dotted miss
   hints only for a class-like owner (uppercase initial, optionally after leading underscores)
-  with exactly one member; a dotted miss (not under a registry key, which keeps its verdict) with any segment that is not a plain identifier (empty
+  with exactly one member. A dotted miss with any segment that is not a plain identifier (empty
   segment, whitespace, `()`, a hyphen, a Python keyword), and an empty name, matches nothing and
-  stays `current`.
+  stays `current`; a name under a registry key keeps that key's verdict.
 
 ### Changed
 - `check_deprecation` responses gain two keys, `candidates` and `candidates_total`, that are `null`
