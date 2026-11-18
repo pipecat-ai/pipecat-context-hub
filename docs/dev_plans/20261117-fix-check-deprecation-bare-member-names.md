@@ -192,7 +192,7 @@ Per-phase completion tracked here so ticking a box during a run does not bust th
 
 - [x] Phase 1: Fixture
 - [x] Phase 2: `members_named`
-- [ ] Phase 3: Types, handler, descriptions
+- [x] Phase 3: Types, handler, descriptions
 - [ ] Phase 4: Docs, smoke script, changelog, cold-agent gate
 
 ## Findings
@@ -202,3 +202,5 @@ Durable notes that survive after the run: diagnostic query results, decision rat
 - Review run 1 (2026-11-17): 30 raw findings across architecture, sequencing, spec-and-testing, assumptions and codebase-claims; all addressed. One spec-and-testing finding (MagicMock maps) was withdrawn by its lens. The sequential Contradiction Pass was not run.
 - Review run 2 (2026-11-17, plan read from file, not embedded in the prompts): 21 raw findings (1 Critical, 10 Important, 10 Minor); codebase-claims clean (26 references). The Critical (Decision 4 turning current module paths into hints) was re-grilled and accepted in its revised form. The sequential Contradiction Pass was not run.
 - Run 2 counts correction: "95 unique last segments" in the first draft was wrong; recomputed in Phase 1.
+- Phase 2 and 3 conduct notes (2026-11-17): `OpenAILLMService.model` is an exact registry key in v1.16.0 (verdict `deprecated: true`), so the plan's example of it staying `current` as a many-homes dotted miss is wrong; tests use a made-up owner (`OpenAILLMServiceX.model`) for that case and assert `OpenAILLMService.model` as an exact hit. The invariant is unaffected.
+- Phase 3 advisory review (opus/high; no Critical/Important), for the gauntlet: (1) `check-deprecation "InputParams."` returns `deprecated: true` via the existing prefix rule, so the plan's "trailing dot returns current" holds only for non-key names; (2) the `candidates` field and `DeprecationCandidate` docs say "null unless the name has such members" / "bare query", wrong for dotted exact keys, prefix matches, multi-home dotted misses and Decision 4 hints; (3) exact-hit notes (e.g. `InputParams`) do not mention the attached candidates, so a note-reading agent can take the wrong replacement (assumption A1 risk); (4) the all-current hint note says "at the evaluated version" instead of naming the version.

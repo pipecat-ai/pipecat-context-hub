@@ -34,7 +34,7 @@ from pipecat_context_hub.shared.support_links import (
     RETRIEVAL_QUALITY_ISSUE_URL,
 )
 from pipecat_context_hub.shared.tracking import IdleTracker
-from pipecat_context_hub.shared.types import RerankerStatus
+from pipecat_context_hub.shared.types import BARE_NAME_RULE, RerankerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,8 @@ def _assert_no_unsubstituted_placeholder(text: str) -> None:
         )
 
 
-_SERVER_INSTRUCTIONS = """\
+_SERVER_INSTRUCTIONS = (
+    """\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
 framework documentation, code examples, and API source.
 
@@ -102,7 +103,8 @@ Tool selection guide:
 
 **Important:** When you see pipecat imports in user code (e.g. \
 ``from pipecat.services.grok import ...``), use ``check_deprecation`` \
-to verify the import path is not deprecated before recommending it.
+to verify the import path is not deprecated before recommending it. \
+{BARE_NAME_RULE}
 
 **Version-aware results:** If the user mentions their pipecat version \
 (e.g. in pyproject.toml or requirements.txt), pass it as \
@@ -200,8 +202,9 @@ the user and suggest they file a bug report at {BUG_REPORT_ISSUE_URL}.
 A ``reranker_disabled_reason`` of ``config_disabled`` is a supported \
 operator choice (``PIPECAT_HUB_RERANKER_ENABLED=0``), not a degraded state \
 — do not treat it as an incident or route it into the bug-report flow.\
-""".replace("{RETRIEVAL_QUALITY_ISSUE_URL}", RETRIEVAL_QUALITY_ISSUE_URL).replace(
-    "{BUG_REPORT_ISSUE_URL}", BUG_REPORT_ISSUE_URL
+""".replace("{RETRIEVAL_QUALITY_ISSUE_URL}", RETRIEVAL_QUALITY_ISSUE_URL)
+    .replace("{BUG_REPORT_ISSUE_URL}", BUG_REPORT_ISSUE_URL)
+    .replace("{BARE_NAME_RULE}", BARE_NAME_RULE)
 )
 _assert_no_unsubstituted_placeholder(_SERVER_INSTRUCTIONS)
 

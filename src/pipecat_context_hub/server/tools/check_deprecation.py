@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from pipecat_context_hub.services.ingest.deprecation_map import status_for
-from pipecat_context_hub.shared.types import CheckDeprecationInput, CheckDeprecationOutput
+from pipecat_context_hub.services.ingest.deprecation_map import _entry_to_dict, status_for
+from pipecat_context_hub.shared.types import (
+    CheckDeprecationInput,
+    CheckDeprecationOutput,
+    DeprecationCandidate,
+)
 from pipecat_context_hub.shared.versioning import is_sentinel_pin
 
 
@@ -78,6 +82,61 @@ def _unloadable_map_note(deprecation_map: Any) -> str | None:
     )
 
 
+_CANDIDATE_CAP = 10
+
+
+def _candidates(
+    deprecation_map: Any,
+    name: str,
+    target_version: str | None,
+    exclude: Any = None,
+) -> tuple[list[DeprecationCandidate], int]:
+    """Candidates named ``name`` (capped), and the total before the cap.
+
+    ``exclude`` is the entry an exact hit already reported; it is compared by
+    serialised form, never identity (a loaded map holds separate objects per key).
+    Deprecated/removed candidates sort before current ones, then by symbol.
+    """
+    excluded = _entry_to_dict(exclude) if exclude is not None else None
+    found = [
+        (symbol, entry, status_for(entry, target_version))
+        for symbol, entry in deprecation_map.members_named(name)
+        if excluded is None or _entry_to_dict(entry) != excluded
+    ]
+    found.sort(key=lambda item: (item[2] == "current", item[0]))
+    candidates = [
+        DeprecationCandidate(
+            symbol=symbol,
+            kind=entry.kind,
+            status=status,
+            deprecated_in=entry.deprecated_in,
+            removed_in=entry.removed_in,
+            replacement=entry.new_path,
+        )
+        for symbol, entry, status in found[:_CANDIDATE_CAP]
+    ]
+    return candidates, len(found)
+
+
+def _hint_output(
+    symbol: str, candidates: list[DeprecationCandidate], total: int
+) -> CheckDeprecationOutput:
+    """The no-verdict hint: ``status`` null, candidates listed."""
+    shown = len(candidates)
+    noun = "symbol" if total == 1 else "symbols"
+    note = (
+        f"`{symbol}` matched no symbol exactly. {total} {noun} named "
+        f"`{symbol.rsplit('.', 1)[-1]}` {'is' if total == 1 else 'are'} in the "
+        f"deprecation registry (showing {shown}); query one of the listed symbols "
+        "for a verdict."
+    )
+    if all(c.status == "current" for c in candidates):
+        note += " None is deprecated at the evaluated version."
+    return CheckDeprecationOutput(
+        deprecated=False, note=note, candidates=candidates, candidates_total=total
+    )
+
+
 async def handle_check_deprecation(
     arguments: dict[str, Any],
     deprecation_map: Any,
@@ -102,14 +161,32 @@ async def handle_check_deprecation(
         return output.model_dump_json()
 
     entry = deprecation_map.check(inp.symbol)
+    target_version = inp.version or framework_version
     if entry is None:
         unloadable = _unloadable_map_note(deprecation_map)
         if unloadable is not None:
             # No verdict: "current" would assert something the map never checked.
             return CheckDeprecationOutput(deprecated=False, note=unloadable).model_dump_json()
+        symbol = inp.symbol
+        if "." not in symbol:
+            candidates, total = _candidates(deprecation_map, symbol, target_version)
+            if candidates:
+                return _hint_output(symbol, candidates, total).model_dump_json()
+        else:
+            parts = symbol.split(".")
+            owner, last = parts[-2], parts[-1]
+            if owner[:1].isupper() and last:
+                candidates, total = _candidates(deprecation_map, last, target_version)
+                if total == 1:
+                    return _hint_output(symbol, candidates, total).model_dump_json()
         return CheckDeprecationOutput(deprecated=False, status="current").model_dump_json()
 
-    target_version = inp.version or framework_version
+    extra: dict[str, Any] = {}
+    if "." not in inp.symbol:
+        candidates, total = _candidates(deprecation_map, inp.symbol, target_version, entry)
+        if candidates:
+            extra = {"candidates": candidates, "candidates_total": total}
+
     status = status_for(entry, target_version)
 
     if status == "current":
@@ -121,6 +198,7 @@ async def handle_check_deprecation(
             status="current",
             deprecated_in=entry.deprecated_in,
             note=f"`{inp.symbol}` is not deprecated{at}{suffix}",
+            **extra,
         )
         return output.model_dump_json()
 
@@ -142,5 +220,6 @@ async def handle_check_deprecation(
         kind=entry.kind,
         relation=entry.relation,
         location=entry.location,
+        **extra,
     )
     return output.model_dump_json()
