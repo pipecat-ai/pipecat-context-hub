@@ -1073,6 +1073,19 @@ class TestMembersNamed:
             assert len(hits) == 59
             assert len({json.dumps(_ser(e), sort_keys=True) for _, e in hits}) == 59
 
+    @pytest.mark.parametrize("name", ["", " ", "a b", "x()", "1x", "model "])
+    def test_non_identifier_name_matches_nothing_even_if_a_subject_ends_that_way(
+        self, name: str
+    ) -> None:
+        """A persisted map can hold a subject like ``Owner.`` (empty last segment)."""
+        dm = DeprecationMap(
+            entries={
+                s: DeprecationEntry(old_path=s, new_path=None, deprecated_in="1.0.0", kind="method")
+                for s in ("Owner.", "Owner. ", "Owner.a b", "Owner.x()", "Owner.1x", "Owner.model ")
+            }
+        )
+        assert dm.members_named(name) == []
+
     @pytest.mark.parametrize("name", ["Model", "", "x.y", "no_such_member_anywhere"])
     def test_unknown_or_wrong_case_names_give_nothing(self, name: str) -> None:
         assert build_fixture_map().members_named(name) == []

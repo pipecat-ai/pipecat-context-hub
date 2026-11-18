@@ -17,7 +17,10 @@ This changelog retains repository and Context Hub package history.
   matches no registry symbol exactly but names deprecated members (for example
   `trigger_user_turn_stopped`) now returns `deprecated: false`, `status: null`, a note and
   `candidates` (at most 10, with `candidates_total`) instead of a clean `current`. A dotted miss
-  hints only for a class-like owner with exactly one member.
+  hints only for a class-like owner (uppercase initial, optionally after leading underscores)
+  with exactly one member; a dotted name with any segment that is not a plain identifier (empty
+  segment, whitespace, `()`, a hyphen, a Python keyword), and an empty name, matches nothing and
+  stays `current`.
 
 ### Changed
 - `check_deprecation` responses gain two keys, `candidates` and `candidates_total`, that are `null`

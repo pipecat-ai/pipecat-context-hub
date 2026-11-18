@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import MagicMock
-
 import asyncio
 import json
 import re
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,7 +28,12 @@ from pipecat_context_hub.shared.types import (
     DeprecationCandidate,
     DeprecationStatus,
 )
-from tests._deprecation_fixture import fixture_member_subjects, homes, load_fixture_map
+from tests._deprecation_fixture import (
+    expected_member_counts,
+    fixture_member_subjects,
+    homes,
+    load_fixture_map,
+)
 
 
 def _index_store(metadata: dict[str, Any]) -> MagicMock:
@@ -261,6 +265,8 @@ class TestInvariantOverFixture:
         # The expectation comes from the fixture's own member subjects, never from
         # ``members_named``, so a name that function drops cannot hide a regression.
         by_name = homes(fixture_member_subjects())
+        expected = expected_member_counts()
+        assert set(expected) == set(by_name)
         segments = {seg for k in loaded_map.entries for seg in k.split(".")}
         bare = {s for s in segments if s and s not in loaded_map.entries}
         assert set(by_name) - set(loaded_map.entries), "fixture has no bare member names"
@@ -271,9 +277,9 @@ class TestInvariantOverFixture:
             if name in by_name:
                 assert out["status"] is None, name
                 assert out["candidates"], name
-                # A removal sharing an old_path with an active entry is a second
-                # candidate, so the total can exceed the number of subjects.
-                assert out["candidates_total"] >= len(by_name[name]), name
+                # Exact, from the raw records (a removal sharing an old_path with
+                # an active entry is a second candidate), so over-counting fails.
+                assert out["candidates_total"] == expected[name], name
                 assert len(out["candidates"]) <= DEPRECATION_CANDIDATE_CAP, name
                 checked_hint += 1
             else:
@@ -401,9 +407,16 @@ class TestInputParams:
 
 
 class TestCapAndOrder:
+    def test_cap_contract_is_ten(self):
+        """Pins the public contract literally: the other cap tests derive from the constant."""
+        assert DEPRECATION_CANDIDATE_CAP == 10
+        desc = CheckDeprecationOutput.model_json_schema()["properties"]["candidates"]["description"]
+        assert "at most 10" in desc
+
     def test_model_cap_and_order(self, loaded_map: DeprecationMap):
         out = _run(loaded_map, "model")
         homes = loaded_map.members_named("model")
+        assert len(out["candidates"]) == 10  # literal: the public contract, not the constant
         assert len(out["candidates"]) == CAP
         assert out["candidates_total"] == len(homes) > CAP
         assert [c["symbol"] for c in out["candidates"]] == sorted([s for s, _ in homes])[:CAP]
@@ -662,6 +675,29 @@ class TestInputEdgeCases:
         assert out["candidates_total"] is None
 
 
+class TestEmptyNameMatchesNothing:
+    """A persisted map may hold a method subject ``Owner.`` (empty last segment).
+
+    ``CheckDeprecationInput`` accepts ``symbol=""``, so an empty bare query must
+    not list that subject as a candidate: empty input matches nothing.
+    """
+
+    @pytest.mark.parametrize("symbol", ["", " ", ".", "Owner. "])
+    def test_empty_member_subject_is_never_listed(self, symbol: str):
+        dep = _synthetic([_entry("Owner."), _entry("Owner.real_name")])
+        out = _run(dep, symbol)
+        assert out["deprecated"] is False
+        assert out["status"] == "current"
+        assert out["candidates"] is None
+        assert out["candidates_total"] is None
+
+    def test_neighbouring_member_still_hints(self):
+        dep = _synthetic([_entry("Owner."), _entry("Owner.real_name")])
+        out = _run(dep, "real_name")
+        assert _is_hint(out)
+        assert [c["symbol"] for c in out["candidates"]] == ["Owner.real_name"]
+
+
 class TestDottedSymbolSegments:
     """A dotted symbol is valid only when EVERY segment is a well-formed identifier.
 
@@ -693,6 +729,24 @@ class TestDottedSymbolSegments:
             ("1pipecat.x.Sub.trigger_user_turn_stopped", False),
             ("Sub.trigger_user_turn_stopped()", False),
             ("pipecat.x.sub.trigger_user_turn_stopped", False),
+            # Underscore-led (private) class owners are class-like; a lone or
+            # lower-case underscore-led owner is not.
+            ("_Priv.trigger_user_turn_stopped", True),
+            ("pipecat.x._Priv.trigger_user_turn_stopped", True),
+            ("__Priv.trigger_user_turn_stopped", True),
+            ("_priv.trigger_user_turn_stopped", False),
+            ("_.trigger_user_turn_stopped", False),
+            ("__.trigger_user_turn_stopped", False),
+            # Python keywords are identifiers to str.isidentifier but never a
+            # valid dotted reference segment (owner or package).
+            ("class.Sub.trigger_user_turn_stopped", False),
+            ("pipecat.import.Sub.trigger_user_turn_stopped", False),
+            ("None.trigger_user_turn_stopped", False),
+            ("True.trigger_user_turn_stopped", False),
+            ("pipecat.None.Sub.trigger_user_turn_stopped", False),
+            # Documented: an uppercase-initial owner with one same-named member is read
+            # as a member reference even inside a module-shaped path.
+            ("pipecat.services.OpenAI.llm", True),
             ("Sub.model", False),
             ("p\u00e4ckage.Sub.trigger_user_turn_stopped", True),
             ("\u00dcnder.trigger_user_turn_stopped", True),

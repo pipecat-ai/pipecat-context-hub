@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import keyword
 from typing import Any
 
 from pipecat_context_hub.services.ingest.deprecation_map import status_for
@@ -174,11 +175,16 @@ async def handle_check_deprecation(
         else:
             parts = symbol.split(".")
             owner, last = parts[-2], parts[-1]
-            # Every segment must be a well-formed identifier (this also rejects an
-            # empty segment from a leading/trailing/doubled dot, surrounding
-            # whitespace, ``()`` and the like): anything else is not a dotted
-            # symbol, so it matches nothing.
-            if all(p.isidentifier() for p in parts) and owner[:1].isupper():
+            # Every segment must be a plain identifier and not a Python keyword
+            # (this also rejects an empty segment from a leading/trailing/doubled
+            # dot, surrounding whitespace, ``()``, a hyphen and the like):
+            # anything else is not a dotted symbol, so it matches nothing. The
+            # owner must be class-like: an uppercase initial, after any leading
+            # underscores (a private class such as ``_Base``).
+            if (
+                all(p.isidentifier() and not keyword.iskeyword(p) for p in parts)
+                and owner.lstrip("_")[:1].isupper()
+            ):
                 candidates, total = _candidates(deprecation_map, last, target_version)
                 if total == 1:
                     return _hint_output(symbol, candidates, total, target_version).model_dump_json()

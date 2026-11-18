@@ -11,6 +11,7 @@ The count-recompute helpers (raw records, ``SOURCE.md`` parsing) are private to
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from pathlib import Path
 
@@ -64,3 +65,42 @@ def homes(subjects: set[str]) -> dict[str, set[str]]:
     for s in subjects:
         by_last[s.rsplit(".", 1)[1]].add(s)
     return by_last
+
+
+def expected_member_counts() -> dict[str, int]:
+    """Independent count of distinct member records per last-segment name.
+
+    Computed from the raw registry files, never through ``members_named`` or the
+    map builders. A record is one registry record; the last record wins per
+    (source file, subject, module), as the builders do when one repeats; two
+    records that agree on every field the map stores are one candidate (the
+    accepted collapse of identical records from different modules). An active
+    record and a removal sharing a subject differ in status, so both count.
+    """
+    last: dict[tuple[str, object, object], tuple[dict[str, object], str]] = {}
+    for status, path, field in (
+        ("deprecated", DEPRECATIONS_PATH, "deprecations"),
+        ("removed", REMOVALS_PATH, "removals"),
+    ):
+        for rec in json.loads(path.read_text(encoding="utf-8"))[field]:
+            last[(status, rec["subject"], rec.get("module"))] = (rec, status)
+    distinct: dict[str, set[tuple[object, ...]]] = defaultdict(set)
+    for rec, status in last.values():
+        subject = str(rec["subject"])
+        if not is_member(rec.get("kind"), subject):
+            continue
+        distinct[subject.rsplit(".", 1)[1]].add(
+            (
+                subject,
+                rec.get("replacement") or None,
+                rec.get("deprecated_in"),
+                rec.get("removed_in"),
+                rec.get("message") or "",
+                rec.get("kind"),
+                rec.get("relation"),
+                rec.get("location") if status == "deprecated" else None,
+                status,
+                rec.get("announced_removed_in") if status == "removed" else None,
+            )
+        )
+    return {name: len(records) for name, records in distinct.items()}

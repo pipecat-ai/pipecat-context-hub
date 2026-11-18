@@ -110,7 +110,8 @@ class DeprecationMap:
         Returns ``(symbol, entry)`` pairs sorted by ``symbol``. An entry is a
         member when its ``old_path`` contains a dot, its ``kind`` is neither
         ``"module"`` nor ``None``, and its last ``old_path`` segment equals
-        ``name`` (case-sensitive).
+        ``name`` (case-sensitive). A ``name`` that is not an identifier (empty,
+        whitespace-bearing, ``()``...) matches nothing.
 
         Entries are de-duplicated by their serialised form, never by object
         identity or dict key: a loaded map holds the ``<module>.`` alias key and
@@ -126,6 +127,10 @@ class DeprecationMap:
         alias key that points at it (removals are registered alias-only, and a
         shadowed bare key may hold a different entry).
         """
+        if not name.isidentifier():
+            # Empty or malformed input matches nothing, even when a persisted
+            # record's last segment is just as malformed (a subject ``Owner.``).
+            return []
         found: dict[str, tuple[str, DeprecationEntry]] = {}
         for key, entry in self.entries.items():
             if "." not in entry.old_path or entry.kind in (None, "module"):
