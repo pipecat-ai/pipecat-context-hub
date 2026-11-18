@@ -83,7 +83,7 @@ and an exact bare key with same-named siblings carry them. An exact bare key kee
 verdict and lists other same-named members as candidates. A dotted miss that is neither an
 exact key nor a prefix of one hints only for a class-like owner (uppercase initial, optionally
 after leading underscores) with exactly one member; a lower-case owner or a multi-home dotted
-miss stays `current`. A dotted name with any segment that is not a plain identifier (an empty
+miss stays `current`. A dotted miss (neither an exact key nor under one; a name under a registry key keeps that key's verdict) with any segment that is not a plain identifier (an empty
 segment from a leading, trailing or doubled dot, surrounding whitespace, `()`, a hyphen, a
 Python keyword) matches nothing and stays `current`, as does an empty name.
 

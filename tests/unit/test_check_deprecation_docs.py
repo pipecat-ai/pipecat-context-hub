@@ -68,6 +68,7 @@ HINT_RESPONSE = {
     "candidates": [
         {"symbol": "A.trigger_user_turn_stopped", "replacement": "report_user_turn_stopped"}
     ],
+    "candidates_total": 1,
 }
 CLEAN_RESPONSE = {"deprecated": False, "status": "current", "candidates": None}
 DEPRECATED_RESPONSE = {"deprecated": True, "status": "deprecated", "candidates": None}
@@ -105,6 +106,16 @@ def test_hint_group_rejects_wrong_candidate(smoke) -> None:
         assert smoke.classify(bad, "hint", HINT_EXPECTED) is not None
     assert smoke.classify({**HINT_RESPONSE, "status": "current"}, "hint", HINT_EXPECTED)
     assert smoke.classify({**HINT_RESPONSE, "deprecated": True}, "hint", HINT_EXPECTED)
+
+
+def test_hint_group_requires_present_keys_and_total(smoke) -> None:
+    only_candidates = {"candidates": HINT_RESPONSE["candidates"]}
+    no_total = {k: v for k, v in HINT_RESPONSE.items() if k != "candidates_total"}
+    wrong_total = {**HINT_RESPONSE, "candidates_total": 2}
+    null_total = {**HINT_RESPONSE, "candidates_total": None}
+    for bad in (only_candidates, no_total, wrong_total, null_total):
+        assert smoke.classify(bad, "hint", HINT_EXPECTED) is not None
+    assert smoke.classify(HINT_RESPONSE, "hint", HINT_EXPECTED) is None
 
 
 def test_hint_group_needs_an_expected_candidate(smoke) -> None:
