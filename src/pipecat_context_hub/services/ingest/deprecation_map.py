@@ -117,6 +117,10 @@ class DeprecationMap:
         the bare key as separate objects for one subject. An active entry and a
         removal that share an ``old_path`` serialise differently, so both stay.
 
+        Limit: a bare subject (no dot) is never a member, so a record shadowed by
+        another module's record of the same bare subject (e.g. ``AggregationType``
+        in two modules) is not returned and gives no hint that a second exists.
+
         ``symbol`` is a key under which :meth:`check` returns that entry:
         ``old_path`` when ``entries[old_path]`` is that entry, otherwise the
         alias key that points at it (removals are registered alias-only, and a

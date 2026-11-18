@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,19 @@ from pipecat_context_hub.server.tools.check_deprecation import (
     handle_check_deprecation,
     resolve_framework_version,
 )
-from pipecat_context_hub.services.ingest.deprecation_map import DeprecationMap
+from pipecat_context_hub.services.ingest.deprecation_map import (
+    DeprecationEntry,
+    DeprecationMap,
+    status_for,
+)
+from pipecat_context_hub.shared.types import (
+    BARE_NAME_RULE,
+    CheckDeprecationInput,
+    CheckDeprecationOutput,
+    DeprecationCandidate,
+    DeprecationStatus,
+)
+from tests._deprecation_fixture import build_fixture_map
 
 
 def _index_store(metadata: dict[str, Any]) -> MagicMock:
@@ -164,21 +177,6 @@ class TestUnloadableMap:
 # ---------------------------------------------------------------------------
 # Bare member names: hint-only candidates (dev plan 20261117, Phase 3)
 # ---------------------------------------------------------------------------
-
-import re  # noqa: E402
-
-from pipecat_context_hub.services.ingest.deprecation_map import (  # noqa: E402
-    DeprecationEntry,
-    status_for,
-)
-from pipecat_context_hub.shared.types import (  # noqa: E402
-    BARE_NAME_RULE,
-    CheckDeprecationInput,
-    CheckDeprecationOutput,
-    DeprecationCandidate,
-    DeprecationStatus,
-)
-from tests.unit.test_deprecation_fixture import build_fixture_map  # noqa: E402
 
 CAP = 10
 
@@ -358,13 +356,19 @@ class TestInputParams:
         assert out["candidates"]
         assert out["candidates_total"] == len(loaded_map.members_named("InputParams"))
 
-    def test_removed_branch_also_attaches(self, loaded_map: DeprecationMap):
-        out = _run(loaded_map, "InputParams", version="9.9.9")
-        exact_entry = loaded_map.check("InputParams")
-        assert exact_entry is not None
-        # Verdict is whatever status_for gives; candidates are attached regardless.
-        assert out["status"] == status_for(exact_entry, "9.9.9")
-        assert out["candidates"]
+    def test_removed_branch_also_attaches(self):
+        dep = _synthetic(
+            [
+                _entry("Params", kind="class", status="removed", removed_in="2.0.0"),
+                _entry("A.Params", kind="class"),
+                _entry("B.Params", kind="class"),
+            ]
+        )
+        out = _run(dep, "Params", version="2.0.0")
+        assert out["status"] == "removed"
+        assert out["deprecated"] is True
+        assert [c["symbol"] for c in out["candidates"]] == ["A.Params", "B.Params"]
+        assert out["candidates_total"] == 2
 
     def test_prefix_match_has_no_candidates(self, loaded_map: DeprecationMap):
         out = _run(loaded_map, "InputParams.voice_id")
@@ -655,6 +659,39 @@ class TestInputEdgeCases:
         assert out["status"] == "current"
         assert out["candidates"] is None
         assert out["candidates_total"] is None
+
+
+class TestDottedSymbolSegments:
+    """A dotted symbol is valid only when EVERY segment is non-empty.
+
+    State space: leading dot / trailing dot / interior empty segment x an
+    uppercase owner x one home. Only the well-formed row may hint.
+    """
+
+    @pytest.mark.parametrize(
+        ("symbol", "hints"),
+        [
+            ("Sub.trigger_user_turn_stopped", True),
+            ("pipecat.x.Sub.trigger_user_turn_stopped", True),
+            (".Sub.trigger_user_turn_stopped", False),
+            ("..Sub.trigger_user_turn_stopped", False),
+            ("Sub..trigger_user_turn_stopped", False),
+            ("pipecat..Sub.trigger_user_turn_stopped", False),
+            ("Sub.trigger_user_turn_stopped.", False),
+            (".pipecat.x.Sub.trigger_user_turn_stopped", False),
+        ],
+    )
+    def test_only_wellformed_dotted_symbol_hints(
+        self, loaded_map: DeprecationMap, symbol: str, hints: bool
+    ):
+        out = _run(loaded_map, symbol)
+        assert out["deprecated"] is False
+        if hints:
+            assert _is_hint(out)
+        else:
+            assert out["status"] == "current"
+            assert out["candidates"] is None
+            assert out["candidates_total"] is None
 
 
 class TestBareNameRuleSurfaces:

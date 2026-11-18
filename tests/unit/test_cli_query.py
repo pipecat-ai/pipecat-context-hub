@@ -1846,7 +1846,7 @@ class TestCheckDeprecationBareMember:
     """Bare member names return a hint with candidates through the CLI."""
 
     def test_bare_member_exits_0_with_candidates(self, tmp_path):
-        from tests.unit.test_deprecation_fixture import build_fixture_map
+        from tests._deprecation_fixture import build_fixture_map
 
         dep_path = tmp_path / "deprecation_map.json"
         build_fixture_map().save(dep_path)

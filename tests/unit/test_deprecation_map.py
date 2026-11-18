@@ -17,7 +17,7 @@ from pipecat_context_hub.services.ingest.deprecation_map import (
     status_for,
 )
 
-from tests.unit.test_deprecation_fixture import build_fixture_map
+from tests._deprecation_fixture import build_fixture_map
 
 
 class TestDeprecationMapCheck:

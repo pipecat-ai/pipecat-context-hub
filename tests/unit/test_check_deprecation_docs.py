@@ -98,8 +98,7 @@ def test_smoke_script_declares_hint_group(smoke) -> None:
     assert "trigger_user_turn_stopped" in smoke.HINT
 
 
-def test_changelog_unreleased_mentions_hint() -> None:
+def test_changelog_mentions_hint() -> None:
+    """Whole-file search, so it survives the release that moves [Unreleased] under a version."""
     text = (_ROOT / "CHANGELOG.md").read_text()
-    unreleased = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
-    assert "candidates" in unreleased
-    assert "hint" in unreleased.lower()
+    assert "check_deprecation` no longer reads a bare deprecated member name" in text

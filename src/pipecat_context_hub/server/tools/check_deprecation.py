@@ -176,7 +176,9 @@ async def handle_check_deprecation(
         else:
             parts = symbol.split(".")
             owner, last = parts[-2], parts[-1]
-            if owner[:1].isupper() and last:
+            # Every segment must be non-empty: a leading dot, trailing dot or ``..``
+            # is not a dotted symbol, so it matches nothing.
+            if all(parts) and owner[:1].isupper():
                 candidates, total = _candidates(deprecation_map, last, target_version)
                 if total == 1:
                     return _hint_output(symbol, candidates, total, target_version).model_dump_json()
