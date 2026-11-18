@@ -102,13 +102,13 @@ Low. The limitation stays: a caller using a small `limit` still sees at most fou
 
 - [ ] Phase 0: measure the workarounds, file the issue
 - [ ] Issue number: #____ (Phase 0 step 7 fills this in)
-- [ ] Phase 1: index check, smoke item 57, stale reranker text fixes, README row, PR
+- [ ] Phase 1: index check, smoke item, stale reranker text and path-example fixes, README row, PR
 
 ## Findings
 
 ### Review Waivers
 
-- **Unit regression test (AGENTS.md "freeze it twice").** Waived. The plan changes no code path, only a docstring and documentation, so there is no behaviour for a test to freeze. Item 57 records live data, and its provenance clause says a changed verdict is a data change.
+- **Unit regression test (AGENTS.md "freeze it twice").** Waived. The plan changes no code path, only a docstring and documentation, so there is no behaviour for a test to freeze. The smoke item records live data, and its triage says a failure that also fails on main is a data change.
 - **Caller-facing hint (architecture and assumptions lenses, round 5).** Deferred to a separate plan, recorded under Follow-up. The user chose to close this plan as a documented limitation with no code change.
 
 Rounds 1-8 of `/review-plan` (runs 20261118T090148, 20261118T095852, 20261118T033032, 20261118T034000_4, 20261118T102356_5, 20261118T103507_6, 20261118T105440_7, 20261118T123734_8) drove the plan from a ranking fix to this limitation; the decision to close as a limitation was taken in a grill on 2026-11-18 after round 4 showed the old Goal already passes at `limit=20` and branches D and A cannot move it.
