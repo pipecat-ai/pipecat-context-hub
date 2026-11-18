@@ -191,7 +191,7 @@ Each phase is one commit; every commit keeps `just check` and the tests green. T
 Per-phase completion tracked here so ticking a box during a run does not bust the review marker. `/conduct` reads this section to skip already-done phases. Format: `- [ ] Phase <label>: <title>`.
 
 - [x] Phase 1: Fixture
-- [ ] Phase 2: `members_named`
+- [x] Phase 2: `members_named`
 - [ ] Phase 3: Types, handler, descriptions
 - [ ] Phase 4: Docs, smoke script, changelog, cold-agent gate
 
