@@ -3,7 +3,7 @@
 ## Current Tasks
 | Date | Type | Name | Status | Assignee | Branch | Plan |
 |---|---|---|---|---|---|---|
-| 2026-11-17 | fix | `search_docs` misses cross-provider additions (speaker diarization, 1.16); investigate cause, fix or document the limit | Planned (Phase 0 measurement first) | vr000m | `fix/search-docs-cross-provider-recall` | `20261117-fix-search-docs-cross-provider-recall.md` |
+| 2026-11-17 | fix | `search_docs` misses cross-provider additions (speaker diarization, 1.16); document the limitation (no ranking change; table compaction deferred to a follow-up plan) | Planned (Phase 0 workaround check first) | vr000m | `fix/search-docs-cross-provider-recall` | `20261117-fix-search-docs-cross-provider-recall.md` |
 | 2026-10-15 | feature | Windows index locking: shared locks via `LockFileEx`, `--reset-index` vs running `serve`, Windows CI for the lock path | Planned (design notes) | vr000m | _(not started)_ | `20261015-feature-windows-index-locking.md` |
 | 2026-10-17 | feature | Repo catalog PR 1: catalog, generator and the `repos` command | Complete (signed off 2026-10-17; Phases 1, 2a-2d implemented; PR #144 merged) | vr000m | `feature/repo-catalog-pr1` | `20261017-feature-repo-catalog-pr1-catalog-and-repos.md` |
 
