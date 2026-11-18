@@ -95,12 +95,15 @@ def classify(
     status = response.get("status")
     candidates = response.get("candidates")
     if expected_group == "current":
-        if dep:
-            return "expected deprecated=false, got true"
+        for key in ("deprecated", "status", "candidates", "candidates_total"):
+            if key not in response:
+                return f"missing key {key!r}"
+        if response["deprecated"] is not False:
+            return f"expected deprecated=false, got {response['deprecated']!r}"
         if status != "current":
             return f"expected status='current', got {status!r}"
-        if candidates:
-            return "expected no candidates, got some"
+        if candidates is not None or response["candidates_total"] is not None:
+            return "expected candidates and candidates_total to be null"
         return None
     if expected_group == "deprecated":
         return None if dep else "expected deprecated=true, got false"

@@ -124,8 +124,9 @@ class DeprecationMap:
 
         ``symbol`` is a key under which :meth:`check` returns that entry:
         ``old_path`` when ``entries[old_path]`` is that entry, otherwise the
-        alias key that points at it (removals are registered alias-only, and a
-        shadowed bare key may hold a different entry).
+        alias key that points at it (a removal is stored under its own subject
+        unless an active entry already owns that key, and then only its module
+        alias resolves it; a shadowed bare key may hold a different entry).
         """
         if not name.isidentifier():
             # Empty or malformed input matches nothing, even when a persisted

@@ -70,8 +70,18 @@ HINT_RESPONSE = {
     ],
     "candidates_total": 1,
 }
-CLEAN_RESPONSE = {"deprecated": False, "status": "current", "candidates": None}
-DEPRECATED_RESPONSE = {"deprecated": True, "status": "deprecated", "candidates": None}
+CLEAN_RESPONSE = {
+    "deprecated": False,
+    "status": "current",
+    "candidates": None,
+    "candidates_total": None,
+}
+DEPRECATED_RESPONSE = {
+    "deprecated": True,
+    "status": "deprecated",
+    "candidates": None,
+    "candidates_total": None,
+}
 
 
 def test_hint_fails_not_deprecated_expectation(smoke) -> None:
@@ -125,6 +135,15 @@ def test_hint_group_requires_present_keys_and_total(smoke) -> None:
     ):
         assert smoke.classify(bad, "hint", HINT_EXPECTED) is not None
     assert smoke.classify(HINT_RESPONSE, "hint", HINT_EXPECTED) is None
+
+
+def test_current_group_requires_explicit_null_fields(smoke) -> None:
+    assert smoke.classify(CLEAN_RESPONSE, "current") is None
+    only_status = {"status": "current"}
+    empty_candidates = {**CLEAN_RESPONSE, "candidates": [], "candidates_total": 1}
+    null_deprecated = {**CLEAN_RESPONSE, "deprecated": None}
+    for bad in (only_status, empty_candidates, null_deprecated):
+        assert smoke.classify(bad, "current") is not None
 
 
 def test_hint_group_needs_an_expected_candidate(smoke) -> None:
