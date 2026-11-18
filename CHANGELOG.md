@@ -28,6 +28,14 @@ This changelog retains repository and Context Hub package history.
   means an unloadable deprecation map.
 - A bare exact key such as `InputParams` keeps its verdict and now also lists other same-named
   members as `candidates`.
+- One sentence (`BARE_NAME_RULE`, in `shared/types.py`) now appears in the `check_deprecation` tool
+  description and `symbol` input description, the server instructions, `check-deprecation --help`,
+  and `docs/tools.md`, `docs/cli.md` and `docs/index-contract.md`. It tells the agent that a bare
+  member name returns no verdict and that it should query one of the listed symbols.
+  `tests/unit/test_check_deprecation_docs.py` asserts it verbatim in the three docs. The plugin's
+  `explore` skill carries its own wording of the same rule.
+- New `DeprecationMap.members_named(name)` lists a name's member entries across all modules, without
+  a version check; `check_deprecation` builds its candidates from it.
 - `scripts/smoke_check_deprecation.py` gains a HINT group and checks `status == "current"` with no
   `candidates` for the not-deprecated group.
 - Plugin version unchanged; its release stays with the plugin release process.
