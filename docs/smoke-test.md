@@ -492,6 +492,13 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `uv run pipecat-context-hub check-deprecation InputParams` —
     `deprecated: true` (the exact registry key) plus `candidates` (other
     `*.InputParams` members, at most 10) and `candidates_total` above 10.
+59. **A real method that shares a name with another class's deprecated member.**
+    `uv run pipecat-context-hub check-deprecation FrameProcessor.setup` —
+    `deprecated: false`, `status: null`, one candidate (`TaskManager.setup`), and
+    a `note` that says `setup` is registered only under another owner and that
+    this does not make `FrameProcessor.setup` deprecated unless `FrameProcessor`
+    inherits the member. Regression canary for a hint whose wording read as
+    "possibly deprecated" for a current method.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

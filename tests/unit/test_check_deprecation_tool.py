@@ -485,6 +485,25 @@ class TestDottedQueries:
             out["candidates"][0]["symbol"] == "BaseUserTurnStopStrategy.trigger_user_turn_stopped"
         )
 
+    def test_dotted_hint_note_names_the_other_owner(self, loaded_map: DeprecationMap):
+        # A real, current method that shares a name with a deprecated member of another
+        # class must not read as "possibly deprecated": the note says the registry holds
+        # the name only under a different owner and the inheritance caveat.
+        out = _run(loaded_map, "FrameProcessor.setup")
+        assert out["deprecated"] is False
+        assert out["status"] is None
+        assert out["candidates"][0]["symbol"] == "TaskManager.setup"
+        note = out["note"]
+        assert "`FrameProcessor.setup` is not in the deprecation registry" in note
+        assert "another owner, `TaskManager.setup`" in note
+        assert "unless `FrameProcessor` inherits the member" in note
+        assert "matched no symbol exactly" not in note
+
+    def test_bare_hint_note_is_unchanged(self, loaded_map: DeprecationMap):
+        out = _run(loaded_map, "trigger_user_turn_stopped")
+        assert "matched no symbol exactly" in out["note"]
+        assert "another owner" not in out["note"]
+
     def test_many_homes_stays_current(self, loaded_map: DeprecationMap):
         assert "OpenAILLMServiceX.model" not in loaded_map.entries
         out = _run(loaded_map, "OpenAILLMServiceX.model")

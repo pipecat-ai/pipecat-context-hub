@@ -123,12 +123,23 @@ def _hint_output(
     """The no-verdict hint: ``status`` null, candidates listed."""
     shown = len(candidates)
     noun = "symbol" if total == 1 else "symbols"
-    note = (
-        f"`{symbol}` matched no symbol exactly. {total} {noun} named "
-        f"`{symbol.rsplit('.', 1)[-1]}` {'is' if total == 1 else 'are'} in the "
-        f"deprecation registry (showing {shown}); query one of the listed symbols "
-        "for a verdict."
-    )
+    last = symbol.rsplit(".", 1)[-1]
+    if "." in symbol:
+        # A dotted miss: the registry holds the member only under another owner,
+        # which says nothing about this owner unless it inherits the member.
+        note = (
+            f"`{symbol}` is not in the deprecation registry. `{last}` is registered only "
+            f"under another owner, `{candidates[0].symbol}`. That does not make `{symbol}` "
+            f"deprecated unless `{symbol.rsplit('.', 2)[-2]}` inherits the member; query "
+            "the listed symbol for its verdict."
+        )
+    else:
+        note = (
+            f"`{symbol}` matched no symbol exactly. {total} {noun} named "
+            f"`{last}` {'is' if total == 1 else 'are'} in the "
+            f"deprecation registry (showing {shown}); query one of the listed symbols "
+            "for a verdict."
+        )
     if all(c.status == "current" for c in candidates):
         at = target_version if target_version else "the evaluated version"
         note += f" None is deprecated at {at}."
