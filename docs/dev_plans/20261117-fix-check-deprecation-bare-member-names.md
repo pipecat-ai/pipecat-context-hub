@@ -182,7 +182,8 @@ Each phase is one commit; every commit keeps `just check` and the tests green. T
 - The cold-agent check (A1) is recorded in the PR description.
 - Code reviewed and approved; tests, `ruff` and `mypy` passing; documentation and changelog updated.
 
-<!-- reviewed: YYYY-MM-DD @ <hash> -->
+<!-- reviewed: 2026-11-18 @ ee0506800cb0180173184a4e5d4f63b7523b7ba1 -->
+
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
 ## Progress
