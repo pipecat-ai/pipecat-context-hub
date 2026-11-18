@@ -82,8 +82,9 @@ prefix query that is not a hint, and for a bare name with no same-named members;
 and an exact bare key with same-named siblings carry them. An exact bare key keeps its
 verdict and lists other same-named members as candidates. A dotted miss that is neither an
 exact key nor under one hints only for a class-like owner (uppercase initial, optionally
-after leading underscores) with exactly one member; a lower-case owner or a multi-home dotted
-miss stays `current`. A dotted miss (neither an exact key nor under one; a name under a registry key keeps that key's verdict) with any segment that is not a plain identifier (an empty
+after leading underscores) when every owner of the member name fits in the candidate list (one to
+10 owners); a lower-case owner, or a name with more than 10 owners (a parameter-style name such as
+`model`), stays `current`. A dotted miss (neither an exact key nor under one; a name under a registry key keeps that key's verdict) with any segment that is not a plain identifier (an empty
 segment from a leading, trailing or doubled dot, surrounding whitespace, `()`, a hyphen, a
 Python keyword) matches nothing and stays `current`, as does an empty name.
 

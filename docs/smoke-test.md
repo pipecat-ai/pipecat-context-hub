@@ -499,6 +499,12 @@ the indexed pipecat version; re-verify against the current registry if they drif
     this does not make `FrameProcessor.setup` deprecated unless `FrameProcessor`
     inherits the member. Regression canary for a hint whose wording read as
     "possibly deprecated" for a current method.
+60. **A dotted hint survives several owners, and parameter-style names stay `current`.**
+    `uv run pipecat-context-hub check-deprecation Sub.trigger_disconnect` — a
+    hint (`status: null`) with 5 candidates and a note that says "under other
+    owners". `check-deprecation Sub.model` — `status: current`, no candidates
+    (`model` has more owners than the 10-candidate cap). Regression canary for
+    the hint disappearing once a second class registers the same member name.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
