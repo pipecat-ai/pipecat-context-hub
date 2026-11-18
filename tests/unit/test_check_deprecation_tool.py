@@ -752,8 +752,8 @@ class TestDottedSymbolSegments:
     State space: empty segments (leading dot / trailing dot / interior) x
     whitespace (leading on the first segment, around an earlier segment, on the
     owner, on the last segment) x non-identifier text (spaces inside, ``()``,
-    hyphen, leading digit) x lowercase or uppercase owner x one home or many x
-    ASCII or unicode identifier. Only the well-formed single-home rows hint.
+    hyphen, leading digit) x lowercase or uppercase owner x owner count within or over the candidate cap x
+    ASCII or unicode identifier. Only the well-formed rows whose owners fit in the cap hint.
     """
 
     @pytest.mark.parametrize(
