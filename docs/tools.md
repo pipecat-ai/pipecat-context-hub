@@ -10,7 +10,7 @@ Part of the [Pipecat Context Hub documentation](README.md). For terminal usage, 
 | `get_example` | Retrieve full source files for a specific example |
 | `search_api` | Class definitions, method signatures, frame types, inheritance |
 | `get_code_snippet` | Get targeted code by symbol name, intent, or file path + line range |
-| `check_deprecation` | Verify whether a pipecat import path is deprecated or removed (supports `at_version` for lifecycle at a specific version; a bare member name returns a hint with `candidates`, see below) |
+| `check_deprecation` | Verify whether a pipecat import path is deprecated or removed (supports `version` (CLI `--at-version`) for lifecycle at a specific version; a bare member name returns a hint with `candidates`, see below) |
 | `get_hub_status` | Index health, reranker runtime state, record counts, framework version, commit SHAs, repo coverage (`indexed_repos`, `configured_no_records`, `catalog_groups_not_indexed`) |
 
 All search results include an **EvidenceReport** with confidence scores,

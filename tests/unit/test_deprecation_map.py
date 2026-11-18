@@ -17,7 +17,7 @@ from pipecat_context_hub.services.ingest.deprecation_map import (
     status_for,
 )
 
-from tests._deprecation_fixture import build_fixture_map
+from tests._deprecation_fixture import build_fixture_map, load_fixture_map
 
 
 class TestDeprecationMapCheck:
@@ -944,14 +944,6 @@ def _ser(entry: DeprecationEntry) -> dict[str, object]:
     return dataclasses.asdict(entry)
 
 
-def _fixture_loaded(tmp_path: Path) -> DeprecationMap:
-    path = tmp_path / "deprecation_map.json"
-    build_fixture_map().save(path)
-    loaded = DeprecationMap.load(path)
-    assert loaded.load_error is None
-    return loaded
-
-
 def _synthetic_map() -> DeprecationMap:
     """Active deprecation + removal sharing an old_path, plus a cross-module shadow."""
     active = DeprecationEntry(
@@ -993,7 +985,7 @@ class TestMembersNamed:
         keys = [k for k, e in built.entries.items() if k.rsplit(".", 1)[-1] == name]
         assert len(keys) == 2  # bare subject + module alias, one entry
 
-        for dm in (built, _fixture_loaded(tmp_path)):
+        for dm in (built, load_fixture_map(tmp_path)):
             hits = dm.members_named(name)
             assert len(hits) == 1
             symbol, entry = hits[0]
@@ -1003,7 +995,7 @@ class TestMembersNamed:
             assert checked is not None and _ser(checked) == _ser(entry)
 
     def test_module_key_excluded(self, tmp_path: Path) -> None:
-        for dm in (build_fixture_map(), _fixture_loaded(tmp_path)):
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path)):
             assert "pipecat.services.grok.llm" in dm.entries
             hits = dm.members_named("llm")
             assert hits
@@ -1012,14 +1004,14 @@ class TestMembersNamed:
             assert all(s != "pipecat.services.grok.llm" for s, _ in hits)
 
     def test_task_returns_the_one_record(self, tmp_path: Path) -> None:
-        for dm in (build_fixture_map(), _fixture_loaded(tmp_path)):
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path)):
             hits = dm.members_named("task")
             assert [e.old_path for _, e in hits] == ["FlowManager.task"]
             assert all(e.kind != "module" for _, e in hits)
 
     def test_module_qualified_function_uses_old_path_as_symbol(self, tmp_path: Path) -> None:
         old = "pipecat.audio.utils.alaw_to_pcm"
-        for dm in (build_fixture_map(), _fixture_loaded(tmp_path)):
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path)):
             assert dm.members_named("alaw_to_pcm") == [(old, dm.entries[old])]
 
     def test_map_without_kind_returns_nothing(self) -> None:
@@ -1055,7 +1047,7 @@ class TestMembersNamed:
             assert checked is not None and _ser(checked) == _ser(entry)
 
     def test_symbol_resolves_to_its_entry_for_every_pair(self, tmp_path: Path) -> None:
-        maps = [build_fixture_map(), _fixture_loaded(tmp_path), _synthetic_map()]
+        maps = [build_fixture_map(), load_fixture_map(tmp_path), _synthetic_map()]
         for dm in maps:
             names = {
                 e.old_path.rsplit(".", 1)[-1]
@@ -1070,13 +1062,13 @@ class TestMembersNamed:
                     assert _ser(checked) == _ser(entry)
 
     def test_results_sorted_by_symbol(self, tmp_path: Path) -> None:
-        for dm in (build_fixture_map(), _fixture_loaded(tmp_path), _synthetic_map()):
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path), _synthetic_map()):
             for name in ("model", "llm", "bar", "run"):
                 symbols = [s for s, _ in dm.members_named(name)]
                 assert symbols == sorted(symbols)
 
     def test_model_has_59_homes(self, tmp_path: Path) -> None:
-        for dm in (build_fixture_map(), _fixture_loaded(tmp_path)):
+        for dm in (build_fixture_map(), load_fixture_map(tmp_path)):
             hits = dm.members_named("model")
             assert len(hits) == 59
             assert len({json.dumps(_ser(e), sort_keys=True) for _, e in hits}) == 59

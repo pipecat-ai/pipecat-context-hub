@@ -61,10 +61,13 @@ def smoke():
     return _import_script(_ROOT / "scripts" / "smoke_check_deprecation.py", "smoke_dep")
 
 
+HINT_EXPECTED = ("A.trigger_user_turn_stopped", "report_user_turn_stopped")
 HINT_RESPONSE = {
     "deprecated": False,
     "status": None,
-    "candidates": [{"symbol": "A.trigger_user_turn_stopped"}],
+    "candidates": [
+        {"symbol": "A.trigger_user_turn_stopped", "replacement": "report_user_turn_stopped"}
+    ],
 }
 CLEAN_RESPONSE = {"deprecated": False, "status": "current", "candidates": None}
 DEPRECATED_RESPONSE = {"deprecated": True, "status": "deprecated", "candidates": None}
@@ -84,18 +87,39 @@ def test_deprecated_passes_deprecated(smoke) -> None:
 
 
 def test_hint_group_requires_candidates(smoke) -> None:
-    assert smoke.classify(HINT_RESPONSE, "hint") is None
-    assert smoke.classify({**HINT_RESPONSE, "candidates": []}, "hint") is not None
-    assert smoke.classify({**HINT_RESPONSE, "candidates": None}, "hint") is not None
+    assert smoke.classify(HINT_RESPONSE, "hint", HINT_EXPECTED) is None
+    assert smoke.classify({**HINT_RESPONSE, "candidates": []}, "hint", HINT_EXPECTED)
+    assert smoke.classify({**HINT_RESPONSE, "candidates": None}, "hint", HINT_EXPECTED)
+
+
+def test_hint_group_rejects_wrong_candidate(smoke) -> None:
+    good = HINT_RESPONSE["candidates"][0]  # type: ignore[index]
+    wrong_symbol = {**HINT_RESPONSE, "candidates": [{**good, "symbol": "Wrong.method"}]}
+    wrong_repl = {**HINT_RESPONSE, "candidates": [{**good, "replacement": "other"}]}
+    no_repl = {**HINT_RESPONSE, "candidates": [{"symbol": good["symbol"]}]}
+    extra = {
+        **HINT_RESPONSE,
+        "candidates": [good, {**good, "symbol": "B.trigger_user_turn_stopped"}],
+    }
+    for bad in (wrong_symbol, wrong_repl, no_repl, extra):
+        assert smoke.classify(bad, "hint", HINT_EXPECTED) is not None
+    assert smoke.classify({**HINT_RESPONSE, "status": "current"}, "hint", HINT_EXPECTED)
+    assert smoke.classify({**HINT_RESPONSE, "deprecated": True}, "hint", HINT_EXPECTED)
+
+
+def test_hint_group_needs_an_expected_candidate(smoke) -> None:
+    with pytest.raises(ValueError):
+        smoke.classify(HINT_RESPONSE, "hint")
 
 
 def test_clean_current_is_not_a_hint_pass(smoke) -> None:
-    assert smoke.classify(CLEAN_RESPONSE, "hint") is not None
-    assert smoke.classify(DEPRECATED_RESPONSE, "hint") is not None
+    assert smoke.classify(CLEAN_RESPONSE, "hint", HINT_EXPECTED) is not None
+    assert smoke.classify(DEPRECATED_RESPONSE, "hint", HINT_EXPECTED) is not None
 
 
 def test_smoke_script_declares_hint_group(smoke) -> None:
     assert "trigger_user_turn_stopped" in smoke.HINT
+    assert set(smoke.HINT_EXPECTED) == set(smoke.HINT)
 
 
 def test_changelog_mentions_hint() -> None:

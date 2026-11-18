@@ -4,26 +4,54 @@ The fixture is pinned (``tests/fixtures/deprecations/v1.16.0``). Every count
 recorded in its ``SOURCE.md`` ``## Counts`` section must equal what the existing
 builders recompute, so the snapshot and the tests cannot drift apart silently.
 
-The helpers live in ``tests/_deprecation_fixture.py``.
+The map builders and member oracle are shared from ``tests/_deprecation_fixture.py``;
+the count-recompute helpers below are private to this module.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 
 from tests._deprecation_fixture import (
     DEPRECATIONS_PATH,
+    FIXTURE_DIR,
     FIXTURE_TAG,
     REMOVALS_PATH,
-    SOURCE_PATH,
     build_fixture_map,
     fixture_member_subjects,
     homes,
-    parse_counts,
-    raw_member_subjects,
-    raw_records,
+    is_member,
 )
+
+SOURCE_PATH = FIXTURE_DIR / "SOURCE.md"
+
+
+def _raw_records() -> list[dict[str, object]]:
+    """All raw registry records: deprecations.json then removals.json."""
+    deps = json.loads(DEPRECATIONS_PATH.read_text(encoding="utf-8"))["deprecations"]
+    rems = json.loads(REMOVALS_PATH.read_text(encoding="utf-8"))["removals"]
+    return [*deps, *rems]
+
+
+def _raw_member_subjects() -> list[str]:
+    return [
+        str(r["subject"]) for r in _raw_records() if is_member(r.get("kind"), str(r["subject"]))
+    ]
+
+
+def parse_counts(text: str) -> dict[str, int]:
+    """Parse ``key: integer`` lines from SOURCE.md's ``## Counts`` section."""
+    m = re.search(r"^## Counts\s*$(.*?)(?=^## |\Z)", text, re.S | re.M)
+    assert m, "SOURCE.md has no '## Counts' section"
+    counts: dict[str, int] = {}
+    for line in m.group(1).splitlines():
+        lm = re.fullmatch(r"([a-z][a-z0-9_]*):\s*(\d+)", line.strip())
+        if lm:
+            assert lm.group(1) not in counts, f"duplicate count key {lm.group(1)}"
+            counts[lm.group(1)] = int(lm.group(2))
+    return counts
 
 
 def _compute() -> dict[str, Callable[[], int]]:
@@ -37,11 +65,11 @@ def _compute() -> dict[str, Callable[[], int]]:
         return len(json.loads(REMOVALS_PATH.read_text(encoding="utf-8"))["removals"])
 
     return {
-        "raw_records_total": lambda: len(raw_records()),
+        "raw_records_total": lambda: len(_raw_records()),
         "raw_deprecations_records": raw_deps,
         "raw_removals_records": raw_rems,
-        "raw_dotted_member_records": lambda: len(raw_member_subjects()),
-        "raw_dotted_member_last_segments": lambda: len(homes(set(raw_member_subjects()))),
+        "raw_dotted_member_records": lambda: len(_raw_member_subjects()),
+        "raw_dotted_member_last_segments": lambda: len(homes(set(_raw_member_subjects()))),
         "map_total_entries": lambda: len(build_fixture_map().entries),
         "map_member_subjects": lambda: len(map_subjects()),
         "map_member_last_segments": lambda: len(homes(map_subjects())),

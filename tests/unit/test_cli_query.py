@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,7 +25,8 @@ from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
     RETRIEVAL_QUALITY_ISSUE_URL,
 )
-from pipecat_context_hub.shared.types import EvidenceReport, SearchDocsOutput
+from pipecat_context_hub.shared.types import BARE_NAME_RULE, EvidenceReport, SearchDocsOutput
+from tests._deprecation_fixture import load_fixture_map
 
 runner = CliRunner()
 
@@ -1846,10 +1848,7 @@ class TestCheckDeprecationBareMember:
     """Bare member names return a hint with candidates through the CLI."""
 
     def test_bare_member_exits_0_with_candidates(self, tmp_path):
-        from tests._deprecation_fixture import build_fixture_map
-
-        dep_path = tmp_path / "deprecation_map.json"
-        build_fixture_map().save(dep_path)
+        load_fixture_map(tmp_path)
         with (
             patch(
                 "pipecat_context_hub.services.index.store.IndexStore",
@@ -1869,10 +1868,6 @@ class TestCheckDeprecationBareMember:
         )
 
     def test_help_carries_bare_name_rule(self):
-        import re
-
-        from pipecat_context_hub.shared.types import BARE_NAME_RULE
-
         result = runner.invoke(main, ["check-deprecation", "--help"])
         assert result.exit_code == 0
         norm = lambda t: re.sub(r"\s+", " ", t)  # noqa: E731

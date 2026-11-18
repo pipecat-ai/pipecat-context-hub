@@ -23,12 +23,13 @@ from pipecat_context_hub.services.ingest.deprecation_map import (
 )
 from pipecat_context_hub.shared.types import (
     BARE_NAME_RULE,
+    DEPRECATION_CANDIDATE_CAP,
     CheckDeprecationInput,
     CheckDeprecationOutput,
     DeprecationCandidate,
     DeprecationStatus,
 )
-from tests._deprecation_fixture import build_fixture_map
+from tests._deprecation_fixture import fixture_member_subjects, homes, load_fixture_map
 
 
 def _index_store(metadata: dict[str, Any]) -> MagicMock:
@@ -178,7 +179,7 @@ class TestUnloadableMap:
 # Bare member names: hint-only candidates (dev plan 20261117, Phase 3)
 # ---------------------------------------------------------------------------
 
-CAP = 10
+CAP = DEPRECATION_CANDIDATE_CAP
 
 
 def _run(
@@ -196,9 +197,7 @@ def _run(
 @pytest.fixture(scope="module")
 def loaded_map(tmp_path_factory: pytest.TempPathFactory) -> DeprecationMap:
     """The vendored v1.16.0 registry, built, saved and loaded (as serve sees it)."""
-    path = tmp_path_factory.mktemp("depmap") / "deprecation_map.json"
-    build_fixture_map().save(path)
-    return DeprecationMap.load(path)
+    return load_fixture_map(tmp_path_factory.mktemp("depmap"))
 
 
 def _entry(
@@ -259,27 +258,25 @@ class TestFrozenRealRecord:
 class TestInvariantOverFixture:
     def test_bare_non_key_names(self, loaded_map: DeprecationMap):
         """Both clauses of the invariant for every bare name that is not an exact key."""
-        member_names = {
-            e.old_path.rsplit(".", 1)[-1]
-            for e in loaded_map.entries.values()
-            if "." in e.old_path and e.kind not in (None, "module")
-        }
+        # The expectation comes from the fixture's own member subjects, never from
+        # ``members_named``, so a name that function drops cannot hide a regression.
+        by_name = homes(fixture_member_subjects())
         segments = {seg for k in loaded_map.entries for seg in k.split(".")}
         bare = {s for s in segments if s and s not in loaded_map.entries}
-        assert member_names - set(loaded_map.entries), "fixture has no bare member names"
+        assert set(by_name) - set(loaded_map.entries), "fixture has no bare member names"
         checked_hint = checked_current = 0
         for name in sorted(bare):
             out = _run(loaded_map, name)
-            members = loaded_map.members_named(name)
-            if members:
-                assert out["deprecated"] is False, name
+            assert out["deprecated"] is False, name
+            if name in by_name:
                 assert out["status"] is None, name
                 assert out["candidates"], name
-                assert out["candidates_total"] == len(members), name
-                assert len(out["candidates"]) <= CAP, name
+                # A removal sharing an old_path with an active entry is a second
+                # candidate, so the total can exceed the number of subjects.
+                assert out["candidates_total"] >= len(by_name[name]), name
+                assert len(out["candidates"]) <= DEPRECATION_CANDIDATE_CAP, name
                 checked_hint += 1
             else:
-                assert out["deprecated"] is False, name
                 assert out["status"] == "current", name
                 assert out["candidates"] is None, name
                 assert out["candidates_total"] is None, name
@@ -646,6 +643,10 @@ class TestInputEdgeCases:
             "",
             " ",
             "  trigger_user_turn_stopped  ",
+            " trigger_user_turn_stopped",
+            "trigger_user_turn_stopped ",
+            "trigger_user_turn_stopped\n",
+            "\ttrigger_user_turn_stopped",
             ".trigger_user_turn_stopped",
             "trigger_user_turn_stopped.",
             "trigger_user_turn_stopped()",
@@ -662,10 +663,13 @@ class TestInputEdgeCases:
 
 
 class TestDottedSymbolSegments:
-    """A dotted symbol is valid only when EVERY segment is non-empty.
+    """A dotted symbol is valid only when EVERY segment is a well-formed identifier.
 
-    State space: leading dot / trailing dot / interior empty segment x an
-    uppercase owner x one home. Only the well-formed row may hint.
+    State space: empty segments (leading dot / trailing dot / interior) x
+    whitespace (leading on the first segment, around an earlier segment, on the
+    owner, on the last segment) x non-identifier text (spaces inside, ``()``,
+    hyphen, leading digit) x lowercase or uppercase owner x one home or many x
+    ASCII or unicode identifier. Only the well-formed single-home rows hint.
     """
 
     @pytest.mark.parametrize(
@@ -679,6 +683,19 @@ class TestDottedSymbolSegments:
             ("pipecat..Sub.trigger_user_turn_stopped", False),
             ("Sub.trigger_user_turn_stopped.", False),
             (".pipecat.x.Sub.trigger_user_turn_stopped", False),
+            ("  pipecat.x.Sub.trigger_user_turn_stopped", False),
+            ("Sub .trigger_user_turn_stopped", False),
+            (" Sub.trigger_user_turn_stopped", False),
+            ("Sub.trigger_user_turn_stopped ", False),
+            ("a b.Sub.trigger_user_turn_stopped", False),
+            ("x().Sub.trigger_user_turn_stopped", False),
+            ("pipecat.x-y.Sub.trigger_user_turn_stopped", False),
+            ("1pipecat.x.Sub.trigger_user_turn_stopped", False),
+            ("Sub.trigger_user_turn_stopped()", False),
+            ("pipecat.x.sub.trigger_user_turn_stopped", False),
+            ("Sub.model", False),
+            ("p\u00e4ckage.Sub.trigger_user_turn_stopped", True),
+            ("\u00dcnder.trigger_user_turn_stopped", True),
         ],
     )
     def test_only_wellformed_dotted_symbol_hints(

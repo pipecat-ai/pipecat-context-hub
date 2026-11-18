@@ -18,7 +18,8 @@ Three groups are checked:
   Guards against the lookup over-narrowing and silently dropping real
   deprecations.
 * HINT — bare deprecated member names: ``deprecated: false``, ``status: null`` and
-  non-empty ``candidates`` (a hint, not a verdict; a clean ``current`` is a miss).
+  exactly the expected candidate (symbol and replacement, from ``HINT_EXPECTED``): a
+  hint, not a verdict; a clean ``current`` or a wrong candidate is a miss.
 
 Note: the registry only carries symbols that still exist in the indexed pipecat
 source with an active marker. Already-*removed* symbols are absent and correctly
@@ -70,11 +71,25 @@ HINT: dict[str, str] = {
     "trigger_user_turn_stopped": "bare deprecated member -> report_user_turn_stopped",
 }
 
+# The one candidate each HINT name must list: (candidate symbol, replacement).
+HINT_EXPECTED: dict[str, tuple[str, str]] = {
+    "trigger_user_turn_stopped": (
+        "BaseUserTurnStopStrategy.trigger_user_turn_stopped",
+        "report_user_turn_stopped",
+    ),
+}
 
-def classify(response: dict[str, object], expected_group: str) -> str | None:
+
+def classify(
+    response: dict[str, object],
+    expected_group: str,
+    expected_candidate: tuple[str, str] | None = None,
+) -> str | None:
     """Return a failure description, or None when ``response`` fits ``expected_group``.
 
-    ``expected_group`` is ``"current"``, ``"deprecated"`` or ``"hint"``.
+    ``expected_group`` is ``"current"``, ``"deprecated"`` or ``"hint"``. The
+    ``"hint"`` group also needs ``expected_candidate``, the ``(symbol, replacement)``
+    of the single candidate the hint must list.
     """
     dep = bool(response.get("deprecated"))
     status = response.get("status")
@@ -94,8 +109,14 @@ def classify(response: dict[str, object], expected_group: str) -> str | None:
             return "expected deprecated=false, got true"
         if status is not None:
             return f"expected status=null, got {status!r}"
-        if not candidates:
-            return "expected non-empty candidates"
+        if expected_candidate is None:
+            raise ValueError("the hint group needs expected_candidate")
+        if not isinstance(candidates, list) or len(candidates) != 1:
+            return f"expected exactly one candidate, got {candidates!r}"
+        (cand,) = candidates
+        got = (cand.get("symbol"), cand.get("replacement")) if isinstance(cand, dict) else None
+        if got != expected_candidate:
+            return f"expected candidate {expected_candidate!r}, got {got!r}"
         return None
     raise ValueError(f"unknown group {expected_group!r}")
 
@@ -129,7 +150,7 @@ def main() -> int:
     for i, (title, group, symbols) in enumerate(groups):
         print(("\n" if i else "") + f"== {title} ==")
         for symbol, why in symbols.items():
-            problem = classify(_check(symbol), group)
+            problem = classify(_check(symbol), group, HINT_EXPECTED.get(symbol))
             if problem:
                 failures.append(f"{symbol}: {problem} ({why})")
             print(f"  [{'FAIL' if problem else 'ok  '}] {symbol:<32} ({why})")

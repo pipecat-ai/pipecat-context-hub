@@ -6,6 +6,7 @@ from typing import Any
 
 from pipecat_context_hub.services.ingest.deprecation_map import status_for
 from pipecat_context_hub.shared.types import (
+    DEPRECATION_CANDIDATE_CAP,
     CheckDeprecationInput,
     CheckDeprecationOutput,
     DeprecationCandidate,
@@ -82,9 +83,6 @@ def _unloadable_map_note(deprecation_map: Any) -> str | None:
     )
 
 
-_CANDIDATE_CAP = 10
-
-
 def _candidates(
     deprecation_map: Any,
     name: str,
@@ -110,7 +108,7 @@ def _candidates(
             removed_in=entry.removed_in,
             replacement=entry.new_path,
         )
-        for symbol, entry, status in found[:_CANDIDATE_CAP]
+        for symbol, entry, status in found[:DEPRECATION_CANDIDATE_CAP]
     ]
     return candidates, len(found)
 
@@ -176,9 +174,11 @@ async def handle_check_deprecation(
         else:
             parts = symbol.split(".")
             owner, last = parts[-2], parts[-1]
-            # Every segment must be non-empty: a leading dot, trailing dot or ``..``
-            # is not a dotted symbol, so it matches nothing.
-            if all(parts) and owner[:1].isupper():
+            # Every segment must be a well-formed identifier (this also rejects an
+            # empty segment from a leading/trailing/doubled dot, surrounding
+            # whitespace, ``()`` and the like): anything else is not a dotted
+            # symbol, so it matches nothing.
+            if all(p.isidentifier() for p in parts) and owner[:1].isupper():
                 candidates, total = _candidates(deprecation_map, last, target_version)
                 if total == 1:
                     return _hint_output(symbol, candidates, total, target_version).model_dump_json()

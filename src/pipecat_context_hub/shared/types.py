@@ -742,6 +742,9 @@ BARE_NAME_RULE = (
 )
 """The one-sentence bare-name rule, shown verbatim on every caller-facing surface."""
 
+DEPRECATION_CANDIDATE_CAP = 10
+"""Most ``candidates`` a ``check_deprecation`` response lists (the rest are counted)."""
+
 
 class CheckDeprecationInput(BaseModel):
     """Input for the check_deprecation MCP tool."""
@@ -825,7 +828,8 @@ class CheckDeprecationOutput(BaseModel):
     candidates: list[DeprecationCandidate] | None = Field(
         default=None,
         description=(
-            "Registry symbols sharing the queried name's last segment (at most 10; "
+            "Registry symbols sharing the queried name's last segment "
+            f"(at most {DEPRECATION_CANDIDATE_CAP}; "
             "deprecated/removed first). Set on a hint, and on an exact bare-key "
             "verdict that has other same-named members; null otherwise."
         ),
