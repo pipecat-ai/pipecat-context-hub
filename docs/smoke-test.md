@@ -494,7 +494,9 @@ the indexed pipecat version; re-verify against the current registry if they drif
     `*.InputParams` members, at most 10) and `candidates_total` above 10.
 59. **A real method that shares a name with another class's deprecated member.**
     `uv run pipecat-context-hub check-deprecation FrameProcessor.setup` —
-    `deprecated: false`, `status: null`, one candidate (`TaskManager.setup`), and
+    `deprecated: false`, `status: null`, one candidate (`TaskManager.setup`; a
+    second class registering a deprecated `setup` adds a second candidate, not a
+    different verdict), and
     a `note` that says `setup` is registered only under another owner and that
     this does not make `FrameProcessor.setup` deprecated unless `FrameProcessor`
     inherits the member. Regression canary for a hint whose wording read as
