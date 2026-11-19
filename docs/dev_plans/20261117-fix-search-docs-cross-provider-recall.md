@@ -105,7 +105,7 @@ Use the one-shot CLI on the live index (`uv run pipecat-context-hub search-docs 
 
 Low. The limitation stays: a caller using a small `limit` still sees at most four of the twelve Settings pages and gets no `low_confidence` prompt. The mitigation is documentation of two verified workarounds (`limit=20`, which holds on this index with a one-rank margin, and `get_doc` on the exact `.md` path with `--section Settings`). If Phase 0 shows either failing for a page, the plan stops and is re-scoped before anything is written into the smoke item.
 
-<!-- reviewed: YYYY-MM-DD @ <hash> -->
+<!-- reviewed: 2026-11-19 @ 8b7294d51981d18a692981e36bb120507a0a6650 -->
 
 ## Progress
 
