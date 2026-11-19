@@ -28,7 +28,7 @@ body:
       label: What did you expect?
       description: What result or content should have been returned?
       placeholder: |
-        I expected the docs page at /guides/learn/transports with the WebSocket
+        I expected the docs page at /api-reference/server/frames/system-frames.md with the relevant
         section to be the top result.
     validations:
       required: true
@@ -130,12 +130,13 @@ body:
            - If no, proceed to step 4.
 
         4. **Check if content is indexed** — if the expected result is a doc page, try
-           `get_doc(path="EXPECTED_PATH")`. If it's an API symbol, try
+           `get_doc(path="EXPECTED_PATH")` (the exact path, including `.md`). If it's an API symbol, try
            `search_api(query="SYMBOL_NAME", limit=5)`. If it's an example, try
            `search_examples(query="EXAMPLE_NAME", limit=5)`. Report:
            - Was the content found by direct lookup?
            - If found: what was its chunk_id, content_type, and metadata?
-           - If not found: the content is likely not indexed.
+           - If it returned `Not Found`: the path may be wrong, so try `search_docs`
+             with the page title before concluding the content is not indexed.
 
         5. **Try alternative queries** — run 2-3 rephrased queries or multi-concept
            queries (using ` + ` syntax) against the same tool. Report:

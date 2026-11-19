@@ -5,7 +5,7 @@ Part of the [Pipecat Context Hub documentation](README.md). For terminal usage, 
 | Tool | Use when... |
 |------|-------------|
 | `search_docs` | "How do I ...?" — conceptual questions, guides, configuration |
-| `get_doc` | Retrieve a specific doc page by ID or path (e.g. `/guides/learn/transports`) |
+| `get_doc` | Retrieve a specific doc page by ID or path (e.g. `/api-reference/server/frames/system-frames.md`) |
 | `search_examples` | "Show me an example of ..." — find working code by task or component |
 | `get_example` | Retrieve full source files for a specific example |
 | `search_api` | Class definitions, method signatures, frame types, inheritance |

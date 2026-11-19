@@ -68,7 +68,7 @@ uv run pipecat-context-hub check-deprecation trigger_user_turn_stopped  # bare m
 uv run pipecat-context-hub status                           # index health; <1s
 uv run pipecat-context-hub search-api "WebsocketServerParams" --limit 3   # ~3s (loads models)
 uv run pipecat-context-hub search-docs "TTS + STT"
-uv run pipecat-context-hub get-doc --path /guides/telephony/overview
+uv run pipecat-context-hub get-doc --path /api-reference/server/frames/system-frames.md
 ```
 
 Exit codes (`shared/exit_codes.py`): 0 success, 1 invalid input (also

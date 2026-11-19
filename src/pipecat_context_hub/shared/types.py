@@ -267,7 +267,7 @@ class GetDocInput(BaseModel):
     path: str | None = Field(
         default=None,
         max_length=512,
-        description="Doc path prefix (e.g. '/guides/learn/transports'). Looks up by path when doc_id is not known.",
+        description="Exact doc path, including `.md` (e.g. '/api-reference/server/frames/system-frames.md'). Looks up by path when doc_id is not known.",
     )
     section: str | None = Field(
         default=None,

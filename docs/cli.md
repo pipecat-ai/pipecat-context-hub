@@ -20,7 +20,7 @@ MCP, print JSON to stdout and send logs and warnings to stderr.
 uvx pipecat-ai-context-hub status
 uvx pipecat-ai-context-hub search-api "DailyTransport" --limit 3
 uvx pipecat-ai-context-hub search-docs "TTS + STT"
-uvx pipecat-ai-context-hub get-doc --path /guides/learn/transports
+uvx pipecat-ai-context-hub get-doc --path /api-reference/server/frames/system-frames.md
 uvx pipecat-ai-context-hub check-deprecation PipelineTask --at-version 2.0.0
 ```
 

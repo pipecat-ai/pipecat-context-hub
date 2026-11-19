@@ -101,7 +101,7 @@ _TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         "get_doc",
         "Retrieve a specific Pipecat documentation page by chunk ID or path. "
-        "Use `doc_id` (from a search_docs result) or `path` (e.g. '/guides/learn/transports') for direct lookup. "
+        "Use `doc_id` (from a search_docs result) or the exact `path` including `.md` (e.g. '/api-reference/server/frames/system-frames.md') for direct lookup. "
         "Use `section` to extract a specific heading; falls back to full document if not found.",
         GetDocInput.model_json_schema(),
         _handle_get_doc,

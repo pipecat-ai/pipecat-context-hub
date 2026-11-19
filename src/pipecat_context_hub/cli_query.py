@@ -515,7 +515,11 @@ def search_docs_command(ctx: click.Context, query: str, area: str | None, limit:
 
 @click.command("get-doc")
 @click.option("--doc-id", default=None, help="Chunk ID from a search-docs hit.")
-@click.option("--path", default=None, help="Docs path, e.g. '/guides/telephony/overview'.")
+@click.option(
+    "--path",
+    default=None,
+    help="Exact docs path, including `.md`, e.g. '/api-reference/server/frames/system-frames.md'.",
+)
 @click.option("--section", default=None, help="Return only this section heading.")
 @click.pass_context
 def get_doc_command(
