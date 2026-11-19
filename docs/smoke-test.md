@@ -507,6 +507,59 @@ the indexed pipecat version; re-verify against the current registry if they drif
     owners". `check-deprecation Sub.model` — `status: current`, no candidates
     (`model` has more owners than the 10-candidate cap). Regression canary for
     the hint disappearing once a second class registers the same member name.
+61. **Settings recall for STT diarization (2026-11-19).** Dev plan
+    `docs/dev_plans/20261117-fix-search-docs-cross-provider-recall.md`. A
+    cross-provider settings query returns only some providers' Settings chunks at
+    a small `--limit` while `.evidence.low_confidence` stays `false`; no ranking
+    change fixes it, so the item checks the two workarounds and the instructions
+    paragraph that points to them.
+    - **Check** (`get_doc` does not use the reranker). First run
+      `uv run pipecat-context-hub status`; it must exit 0 (exit 2 means the index
+      is not ready, and the loop would then print twelve `FAIL` lines that are not
+      a data change):
+      ```
+      for p in assemblyai aws deepgram elevenlabs meta nvidia openai smallest soniox speechmatics xai zoom-ai; do
+        uv run pipecat-context-hub get-doc --path /api-reference/server/services/stt/$p.md --section Settings \
+          | jq -e '.content | startswith("## Settings") and (split("\n") | any(startswith("|") and test("speaker_format|diarize")))' >/dev/null \
+          && echo "ok $p" || echo "FAIL $p"
+      done
+      ```
+      Expected: `ok` for all twelve (verified live 2026-11-18). It covers the first
+      Settings section only, and tests the content, not ranking.
+    - **Note (dated; needs the reranker on, `status` shows
+      `reranker_enabled: true`)**: a hit qualifies when its chunk text
+      (`get-doc --doc-id`) has a line starting with `|` naming `speaker_format` or
+      `diarize`. This prints the pages with a qualifying hit at `--limit 20`;
+      expected twelve distinct `stt/<page>.md` URLs (last page at rank 19, a thin
+      margin):
+      ```
+      uv run pipecat-context-hub search-docs "speaker diarization speaker_format" --limit 20 | jq -r '.hits[].doc_id' \
+        | while read id; do uv run pipecat-context-hub get-doc --doc-id "$id" \
+            | jq -r 'select(.content | split("\n") | any(startswith("|") and test("speaker_format|diarize"))) | .source_url'; done | sort -u
+      ```
+      At `--limit 5` none qualifies and `.evidence.low_confidence` is still
+      `false`; `get-doc` on a path without `.md` returns `Not Found` with exit 0. A
+      change here is a data or ranking change to triage, not a failure of the Check.
+    - **Instructions.** `uv run pytest tests/integration/test_report_hint_e2e.py -q`
+      passes: it starts `serve` and asserts the real `initialize` response contains
+      `**Provider settings:**` and that the Corpus hint's last sentence ends before
+      character 4096 (item 50 is the existing instructions item). Optional
+      installed-tool check, run by you: `uv tool install --force --reinstall .` (a
+      same-version rebuild may otherwise be reused), reconnect with `/mcp`, confirm
+      the paragraph, then reinstall the released tool and confirm
+      `pipecat-context-hub --version`.
+    - **Provenance and triage.** The docs corpus is the live docs site at refresh
+      time, not the framework pin, so the Check is keyed on content: the twelve
+      pages' Settings sections, as of `last_refresh_at` 2026-11-18 and
+      `indexed_framework_version` 1.16.0 (context, not identity). If the Check
+      fails, run the same commands on `main` against the same index. A failure on
+      `main` too is a data change (the docs or the index moved): re-measure the
+      twelve pages and update this item. A pass on `main` and a failure on the
+      branch is a regression in the branch. No unit test pins the data Check and
+      Note, because no code path changed. The Instructions check has the unit pin
+      (`tests/unit/test_server.py::TestServerInstructions`) and the e2e test, and
+      is left out of the main-versus-branch rule: it fails on `main` until this PR
+      merges.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.
