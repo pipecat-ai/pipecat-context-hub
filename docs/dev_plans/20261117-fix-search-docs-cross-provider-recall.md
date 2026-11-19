@@ -113,7 +113,7 @@ Use the one-shot CLI on the live index (`uv run pipecat-context-hub search-docs 
 
 Low. The limitation stays: a caller using a small `limit` still sees at most four of the twelve Settings pages and gets no `low_confidence` prompt. The instructions paragraph is advisory: an agent may not follow it, and the pin test freezes the wording, not the behaviour. One client cuts the instructions at 4096 characters; the offset pin guards the Corpus hint warnings, and the draft leaves a 15-character margin, so any later insertion must trim equal text. The mitigation is documentation of two verified workarounds (`limit=20`, which holds on this index with a one-rank margin, and `get_doc` on the exact `.md` path with `--section Settings`). If Phase 0 shows either failing for a page, the plan stops and is re-scoped before anything is written into the smoke item.
 
-<!-- reviewed: YYYY-MM-DD @ <hash> -->
+<!-- reviewed: 2026-11-19 @ c016d7cd974ae49f53ce541119593888e68f3280 -->
 
 ## Progress
 
