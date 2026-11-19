@@ -24,6 +24,14 @@ This changelog retains repository and Context Hub package history.
   stays `current`; a name under a registry key keeps that key's verdict.
 
 ### Changed
+- The server instructions gain a **Provider settings** paragraph. A `search_docs` query for a
+  setting several providers share (for example `speaker_format`) can return only some STT
+  providers' Settings chunks while `low_confidence` is `false`; the paragraph says `limit=20`
+  returns more and that `get_doc(path="/api-reference/server/services/stt/<provider>.md",
+  section="Settings")` reads one provider's settings. It is advisory and changes no ranking. To
+  fit it before the Corpus hint's trust warnings (one client shows only the first 4096
+  characters of the instructions), the `uv` guidance in the instructions is shortened; the
+  `docs/setup/*.md` snippets keep the long form. Unit tests pin the wording and the offset.
 - `check_deprecation` responses gain two keys, `candidates` and `candidates_total`, that are `null`
   when absent. `status: null` now also means "hint" (with `candidates`); with only a `note` it still
   means an unloadable deprecation map.

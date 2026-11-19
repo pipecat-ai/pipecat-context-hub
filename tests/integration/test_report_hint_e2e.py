@@ -80,6 +80,13 @@ def test_mcp_initialize_delivers_report_hint_instructions(seeded_home: Path) -> 
         # word simply being absent, which would also pass a substring
         # check for the wrong reason.
         assert "config_disabled" in instructions
+        # The cross-provider settings hint (dev plan
+        # 20261117-fix-search-docs-cross-provider-recall.md) must reach the
+        # client, and the Corpus hint trust warnings must end inside the first
+        # 4096 characters that one client shows.
+        assert "**Provider settings:**" in instructions
+        tail = "do not file it yourself."
+        assert instructions.index(tail) + len(tail) < 4096
 
         proc.stdin.close()
         rc = proc.wait(timeout=10)

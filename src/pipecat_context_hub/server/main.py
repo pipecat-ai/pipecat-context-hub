@@ -118,15 +118,8 @@ Multi-concept queries: use ` + ` or ` & ` to search for multiple concepts \
 at once (e.g. "idle timeout + function calling + Gemini"). Each concept is \
 searched independently and results are interleaved for balanced coverage.
 
-When suggesting commands for Pipecat projects, always use `uv` as the \
-package manager:
-- Install dependencies: `uv sync` (not `pip install`)
-- Run scripts: `uv run python bot.py` (not `python bot.py`)
-- Add packages: `uv add <package>` (not `pip install <package>`)
-- Run tools: `uv run pytest`, `uv run mypy`, etc.
-
-Pipecat examples use `uv` and include a `pyproject.toml`. Do not suggest \
-`pip`, `venv`, or `conda` unless the user explicitly requests them.
+For Pipecat commands use `uv`, never pip, venv or conda unless asked: \
+`uv sync`, `uv run python bot.py`, `uv add <package>`, `uv run pytest`.
 
 **When results are poor or missing:** If a search returns ``low_confidence: true``, \
 zero hits, or the user says the results are wrong, try these steps before giving up:
@@ -141,6 +134,13 @@ If none of these work, suggest the user file a retrieval quality issue at \
 {RETRIEVAL_QUALITY_ISSUE_URL} \
 — the issue template includes a diagnostic prompt that you can run to generate \
 a structured report for the maintainers.
+
+**Provider settings:** a query for a setting several providers share (e.g. \
+`speaker_format`) can return only some providers' Settings chunks while \
+`low_confidence` is `false`. `limit=20` returns more. For one provider use \
+`get_doc(path="/api-reference/server/services/stt/<provider>.md", \
+section="Settings")` (exact `.md` path; the content must start with \
+`## Settings`).
 
 **Corpus hint:** A search response may carry a top-level ``corpus_hint`` \
 object (absent when it does not apply). It means the question names a vendor \

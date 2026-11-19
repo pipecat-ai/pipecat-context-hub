@@ -1013,6 +1013,49 @@ class TestServerInstructions:
         source = inspect.getsource(create_server)
         assert "instructions=_SERVER_INSTRUCTIONS" in source
 
+    def test_provider_settings_paragraph_is_pinned(self):
+        """The cross-provider settings hint keeps its heading, recipe and place.
+
+        ``search_docs("speaker diarization speaker_format")`` returns Settings
+        chunks for only some STT providers at small limits while
+        ``low_confidence`` stays false (dev plan
+        ``20261117-fix-search-docs-cross-provider-recall.md``). The paragraph
+        is advisory prose, so this pins its wording, not agent behaviour.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        heading = "**Provider settings:**"
+        assert _SERVER_INSTRUCTIONS.count(heading) == 1
+        start = _SERVER_INSTRUCTIONS.index(heading)
+        end = _SERVER_INSTRUCTIONS.index("**Corpus hint:**")
+        assert start < end
+        paragraph = _SERVER_INSTRUCTIONS[start:end]
+        for needle in (
+            "limit=20",
+            'section="Settings"',
+            ".md",
+            "## Settings",
+            "low_confidence",
+        ):
+            assert needle in paragraph, needle
+
+    def test_corpus_hint_warnings_end_before_the_client_cut(self):
+        """The Corpus hint's last sentence must end before character 4096.
+
+        One MCP client (Claude Code) shows only the first 4096 characters of
+        the instructions and appends a ``[truncated]`` marker (observed
+        behaviour of that client, not a documented limit). The Corpus hint
+        carries the trust warnings (``--unlisted`` is unvetted, never file
+        the issue yourself), so any later insertion before it must trim at
+        least as much earlier text.
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        tail = "do not file it yourself."
+        assert _SERVER_INSTRUCTIONS.count(tail) == 1
+        end = _SERVER_INSTRUCTIONS.index(tail) + len(tail)
+        assert end < 4096, end
+
 
 class TestSupportLinks:
     """Pin ``shared/support_links.py`` as the single source of truth for the
