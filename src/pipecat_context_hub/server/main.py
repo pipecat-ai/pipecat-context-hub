@@ -90,6 +90,11 @@ INSTRUCTIONS_CLIENT_WINDOW = 4096
 Observed behaviour of that client, not a documented limit: it cuts the text at
 this length and appends a ``[truncated]`` marker. Anything past it is invisible
 to that client's agent, so safety guidance must end before it.
+
+Only the Corpus hint's trust warnings are guarded (``INSTRUCTIONS_TRUST_PHRASES``).
+The degraded-state paragraph after it starts at the cut: that client sees its
+heading and none of its body, including the instruction to leave
+``indexed_repos`` and ``configured_no_records`` out of a public bug report.
 """
 
 INSTRUCTIONS_TRUST_PHRASES = (
@@ -112,7 +117,10 @@ def corpus_hint_paragraph(instructions: str) -> str:
     them elsewhere in the instructions cannot pass once the paragraph loses one.
     """
     start = instructions.index("**Corpus hint:**")
-    return instructions[start : instructions.index("\n\n", start)]
+    # A Corpus hint that becomes the last paragraph has no blank line after it;
+    # ``str.index`` would raise a bare ValueError, so read to the end instead.
+    end = instructions.find("\n\n", start)
+    return instructions[start : len(instructions) if end == -1 else end]
 
 
 # The Provider settings paragraph below paraphrases GET_DOC_SECTION_NOTE on

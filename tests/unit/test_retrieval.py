@@ -599,6 +599,44 @@ class TestHybridRetrieverGetDoc:
 
         assert "Detailed content" in output.content
 
+    async def test_section_note_semantics(self):
+        """The ``section`` rule shown on every get_doc surface (GET_DOC_SECTION_NOTE).
+
+        A path lookup returns only the first section with that heading, even
+        when later chunks of the page repeat it, and the full page when none
+        matches; a doc-ID lookup does the same within that one chunk.
+        """
+        page = "/api-reference/server/services/stt/example.md"
+        first = _make_result(
+            "c1",
+            content="## Settings\n\nfirst service row\n\n## Other\n\nmiddle",
+            path=page,
+            metadata={"title": "Example"},
+        )
+        second = _make_result(
+            "c2",
+            content="## Settings\n\nsecond service row",
+            path=page,
+            metadata={"title": "Example"},
+        )
+        retriever = HybridRetriever(_mock_index_reader(keyword_results=[first, second]))
+
+        by_path = await retriever.get_doc(GetDocInput(path=page, section="Settings"))
+        assert by_path.content.startswith("## Settings")
+        assert "first service row" in by_path.content
+        assert "second service row" not in by_path.content
+        assert "middle" not in by_path.content
+
+        no_match = await retriever.get_doc(GetDocInput(path=page, section="Nonexistent"))
+        assert "first service row" in no_match.content
+        assert "second service row" in no_match.content
+
+        by_id = HybridRetriever(_mock_index_reader(keyword_results=[second]))
+        in_chunk = await by_id.get_doc(GetDocInput(doc_id="c2", section="Settings"))
+        assert in_chunk.content == "## Settings\n\nsecond service row"
+        elsewhere = await by_id.get_doc(GetDocInput(doc_id="c2", section="Other"))
+        assert elsewhere.content == second.chunk.content
+
 
 class TestHybridRetrieverSearchExamples:
     """Tests for HybridRetriever.search_examples()."""
