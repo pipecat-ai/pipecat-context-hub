@@ -28,7 +28,7 @@ from pipecat_context_hub.services.retrieval.decompose import (
     MAX_CONCEPTS,
     decompose_query,
 )
-from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever
+from pipecat_context_hub.services.retrieval.hybrid import HybridRetriever, _area_path_prefix
 from pipecat_context_hub.services.retrieval.rerank import (
     DEFAULT_RRF_K,
     DUAL_HIT_BONUS,
@@ -505,7 +505,7 @@ class TestHybridRetrieverSearchDocs:
         call_args = mock_reader.vector_search.call_args
         query = call_args[0][0]
         assert query.filters["content_type"] == "doc"
-        assert query.filters["path"] == "/guides"
+        assert query.filters["path"] == "/guides/"
 
     async def test_with_area_filter_already_has_slash(self):
         """search_docs preserves leading slash if area already has one."""
@@ -516,7 +516,31 @@ class TestHybridRetrieverSearchDocs:
 
         call_args = mock_reader.vector_search.call_args
         query = call_args[0][0]
-        assert query.filters["path"] == "/server/services"
+        assert query.filters["path"] == "/server/services/"
+
+    @pytest.mark.parametrize(
+        ("area", "prefix"),
+        [
+            ("pipecat", "/pipecat/"),
+            ("/pipecat/", "/pipecat/"),
+            ("pipecat/learn", "/pipecat/learn/"),
+            ("/", "/"),
+            (
+                "/api-reference/server/frames/system-frames.md",
+                "/api-reference/server/frames/system-frames.md",
+            ),
+        ],
+    )
+    async def test_area_matches_whole_path_segments(self, area, prefix):
+        """An area is a directory: ``pipecat`` must not match ``/pipecat-cloud/...``."""
+        mock_reader = _mock_index_reader()
+        retriever = HybridRetriever(mock_reader)
+
+        await retriever.search_docs(SearchDocsInput(query="test", area=area))
+
+        assert mock_reader.vector_search.call_args[0][0].filters["path"] == prefix
+        assert not "/pipecat-cloud/overview.md".startswith(_area_path_prefix("pipecat"))
+        assert "/pipecat/learn/overview.md".startswith(_area_path_prefix("pipecat"))
 
     async def test_empty_results(self):
         """search_docs with no results returns empty hits and low confidence."""
