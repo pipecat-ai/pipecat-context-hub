@@ -32,6 +32,15 @@ This changelog retains repository and Context Hub package history.
   fit it before the Corpus hint's trust warnings (one client shows only the first 4096
   characters of the instructions), the `uv` guidance in the instructions is shortened; the
   `docs/setup/*.md` snippets keep the long form. Unit tests pin the wording and the offset.
+- Tool metadata examples now resolve against the live docs index: `get_doc`'s `path` (tool
+  description, input schema, `get-doc --help`) says the path is exact and includes `.md`
+  (`/api-reference/server/frames/system-frames.md`) instead of the non-resolving
+  `/guides/learn/transports`, and `search_docs`'s `area` examples (tool description, input schema,
+  `search-docs --help`) use `api-reference` and `api-reference/server/services` instead of
+  `guides` and `server/services`, which match nothing. `AGENTS.md`, `docs/cli.md`, `docs/tools.md` and the
+  retrieval-quality issue template follow; the template no longer reads a `Not Found` on a
+  guessed path as "not indexed". The `RerankerConfig` docstring now says the reranker is enabled
+  by default.
 - `check_deprecation` responses gain two keys, `candidates` and `candidates_total`, that are `null`
   when absent. `status: null` now also means "hint" (with `candidates`); with only a `note` it still
   means an unloadable deprecation map.

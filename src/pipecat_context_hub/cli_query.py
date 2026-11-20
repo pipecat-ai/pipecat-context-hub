@@ -495,7 +495,11 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
 
 @click.command("search-docs")
 @click.argument("query")
-@click.option("--area", default=None, help="Docs path prefix, e.g. 'guides' or 'server/services'.")
+@click.option(
+    "--area",
+    default=None,
+    help="Docs path prefix, e.g. 'api-reference' or 'client'.",
+)
 @click.option("--limit", default=10, show_default=True, type=click.IntRange(1, 50))
 @click.pass_context
 def search_docs_command(ctx: click.Context, query: str, area: str | None, limit: int) -> None:

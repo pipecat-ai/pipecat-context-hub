@@ -136,7 +136,8 @@ body:
            - Was the content found by direct lookup?
            - If found: what was its chunk_id, content_type, and metadata?
            - If it returned `Not Found`: the path may be wrong, so try `search_docs`
-             with the page title before concluding the content is not indexed.
+             with the page title before concluding the content is not indexed. If that
+             also returns nothing, report the content as not indexed.
 
         5. **Try alternative queries** — run 2-3 rephrased queries or multi-concept
            queries (using ` + ` syntax) against the same tool. Report:

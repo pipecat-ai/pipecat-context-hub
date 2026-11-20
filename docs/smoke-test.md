@@ -526,8 +526,9 @@ the indexed pipecat version; re-verify against the current registry if they drif
       ```
       Expected: `ok` for all twelve (verified live 2026-11-18). It covers the first
       Settings section only, and tests the content, not ranking.
-    - **Note (dated; needs the reranker on, `status` shows
-      `reranker_enabled: true`)**: a hit qualifies when its chunk text
+    - **Note (dated; run it only after `status` exits 0, or an unready index prints
+      an empty list that reads as a ranking change; needs the reranker on, `status`
+      shows `reranker_enabled: true`)**: a hit qualifies when its chunk text
       (`get-doc --doc-id`) has a line starting with `|` naming `speaker_format` or
       `diarize`. This prints the pages with a qualifying hit at `--limit 20`;
       expected twelve distinct `stt/<page>.md` URLs (last page at rank 19, a thin

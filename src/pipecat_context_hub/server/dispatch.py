@@ -93,7 +93,7 @@ _TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         "search_docs",
         "Search Pipecat documentation for conceptual questions, guides, configuration, and API "
         "references. Use for 'how do I...?' questions. Returns ranked doc hits with evidence. "
-        "Use `area` to narrow by docs path prefix (e.g. 'guides', 'server/services'). "
+        "Use `area` to narrow by docs path prefix (e.g. 'api-reference', 'api-reference/server/services'). "
         "For multiple topics, use ` + ` or ` & ` delimiters (e.g. 'TTS + STT').",
         SearchDocsInput.model_json_schema(),
         _handle_search_docs,

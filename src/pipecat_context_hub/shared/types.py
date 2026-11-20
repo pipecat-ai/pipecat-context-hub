@@ -228,7 +228,7 @@ class SearchDocsInput(BaseModel):
     area: str | None = Field(
         default=None,
         max_length=256,
-        description="Narrow to a docs area by path prefix, e.g. 'api', 'guides', 'server/services'.",
+        description="Narrow to a docs area by path prefix, e.g. 'api-reference', 'api-reference/server/services'.",
     )
     limit: int = Field(default=10, ge=1, le=50)
 
