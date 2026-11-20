@@ -520,7 +520,7 @@ the indexed pipecat version; re-verify against the current registry if they drif
       ```
       for p in assemblyai aws deepgram elevenlabs meta nvidia openai smallest soniox speechmatics xai zoom-ai; do
         uv run pipecat-context-hub get-doc --path /api-reference/server/services/stt/$p.md --section Settings \
-          | jq -e '.content | startswith("## Settings") and (split("\n") | any(startswith("|") and test("speaker_format|diarize")))' >/dev/null \
+          | jq -e '.content | (split("\n")[0] == "## Settings") and (split("\n") | any(startswith("|") and test("speaker_format|diarize")))' >/dev/null \
           && echo "ok $p" || echo "FAIL $p"
       done
       ```
@@ -539,11 +539,17 @@ the indexed pipecat version; re-verify against the current registry if they drif
             | jq -r 'select(.content | split("\n") | any(startswith("|") and test("speaker_format|diarize"))) | .source_url'; done | sort -u
       ```
       At `--limit 5` none qualifies and `.evidence.low_confidence` is still
-      `false`; `get-doc` on a path without `.md` returns `Not Found` with exit 0. A
+      `false`; `get-doc` on a path without `.md`, or on a guessed filename such as
+      `stt/smallest-ai.md` (the indexed page is `stt/smallest.md`), returns `Not Found`
+      with exit 0, which is why the instructions say to take the path from a search hit.
+      The path example in the tool metadata resolves: `get-doc --path
+      /api-reference/server/frames/system-frames.md` returns the System Frames page.
+      `--section Settings` returns the first Settings section only (the Deepgram page
+      has four). A
       change here is a data or ranking change to triage, not a failure of the Check.
     - **Instructions.** `uv run pytest tests/integration/test_report_hint_e2e.py -q`
       passes: it starts `serve` and asserts the real `initialize` response contains
-      `**Provider settings:**` and that the Corpus hint's last sentence ends before
+      `**Provider settings:**` and that every Corpus hint trust warning ends before
       character 4096 (item 50 is the existing instructions item). Optional
       installed-tool check, run by you: `uv tool install --force --reinstall .` (a
       same-version rebuild may otherwise be reused), reconnect with `/mcp`, confirm
