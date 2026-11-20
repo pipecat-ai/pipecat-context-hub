@@ -12,6 +12,8 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-19
+
 ### Fixed
 - **`check_deprecation` no longer reads a bare deprecated member name as `current`.** A name that
   matches no registry symbol exactly but names deprecated members (for example
