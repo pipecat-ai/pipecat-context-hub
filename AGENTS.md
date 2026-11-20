@@ -165,7 +165,7 @@ src/pipecat_context_hub/
 ├── data/repo_catalog.toml    # curated public repos by vendor/topic; source for generated .env.example / docs sections
 ├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat context-hub`
 ├── shared/                   # Pydantic data contracts, interfaces, config
-│   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
+│   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence); shared description constants (BARE_NAME_RULE, SEARCH_DOCS_AREA_EXAMPLES, GET_DOC_PATH_RULE, GET_DOC_SECTION_NOTE)
 │   ├── config.py             # HubConfig + env-aware computed fields
 │   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule: what the loader uses) / config_list_entries (its lenient view: what the file holds, for naming an entry the loader skips)
 │   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
@@ -196,7 +196,7 @@ src/pipecat_context_hub/
 │   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, reopening (open_ready_index_store: the one reader open for serve + CLI; open_index_for_export: the same, taking the refresh hold itself, for the dashboard scripts; ReopeningIndexStore: serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard), chroma_schema (query_chroma_sqlite, the one raw read of Chroma's schema; chromadb_format_verified), errors (FatalIndexError subclasses incl. CompactionSwapError / CompactionRestoreError; InterruptedCompactionError, IndexNotBuiltError / MissingVectorCollectionError / MissingKeywordIndexError: readers never create the index, and IndexStore refuses a missing or empty vector half beside keyword records unless `refresh --force`; LostKeywordIndexError: IndexStore refuses a keyword half with no records beside vector records on every open, exit 2 with the reset remedy; CorruptKeywordIndexError: an unreadable keyword database, exit 2 with the reset remedy)
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/
-    ├── main.py               # MCP server setup (_SERVER_VERSION here)
+    ├── main.py               # MCP server setup (_SERVER_VERSION here; INSTRUCTIONS_CLIENT_WINDOW / INSTRUCTIONS_TRUST_PHRASES guard the 4096-char instructions window)
     ├── transport.py          # stdio transport + parent-death / grandparent-death watchdogs (idle = fallback)
     └── tools/                # Per-tool handler modules
 
