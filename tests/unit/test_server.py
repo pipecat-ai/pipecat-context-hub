@@ -1084,6 +1084,15 @@ class TestServerInstructions:
         # Corpus hint, so the whole paragraph must end inside the window too.
         assert hint_start + len(hint) < INSTRUCTIONS_CLIENT_WINDOW, len(hint)
 
+    def test_hub_status_description_keeps_repo_names_out_of_reports(self):
+        # The degraded-hub paragraph that says this sits past the 4096-char cut for
+        # Claude Code; the tool description is never truncated, so it carries the rule too.
+        from pipecat_context_hub.server.dispatch import HUB_STATUS_TOOL
+
+        flat = " ".join(HUB_STATUS_TOOL.description.split())
+        assert "`indexed_repos` and `configured_no_records` out of a public bug report" in flat
+        assert "private" in flat
+
     def test_docs_tool_examples_come_from_one_source(self):
         """``area`` and ``path`` examples match on every caller-facing surface.
 

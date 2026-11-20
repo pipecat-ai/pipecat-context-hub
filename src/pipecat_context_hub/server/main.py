@@ -94,7 +94,9 @@ to that client's agent, so safety guidance must end before it.
 Only the Corpus hint's trust warnings are guarded (``INSTRUCTIONS_TRUST_PHRASES``).
 The degraded-state paragraph after it starts at the cut: that client sees its
 heading and none of its body, including the instruction to leave
-``indexed_repos`` and ``configured_no_records`` out of a public bug report.
+``indexed_repos`` and ``configured_no_records`` out of a public bug report. That
+rule is therefore also stated in the ``get_hub_status`` tool description, which
+no client truncates (``test_hub_status_description_keeps_repo_names_out_of_reports``).
 """
 
 INSTRUCTIONS_TRUST_PHRASES = (
