@@ -547,8 +547,14 @@ the indexed pipecat version; re-verify against the current registry if they drif
       The path example in the tool metadata resolves: `get-doc --path
       /api-reference/server/frames/system-frames.md` returns the System Frames page.
       `--section Settings` returns the first Settings section only (the Deepgram page
-      has four). A
+      has four). The `area` examples in the `search_docs` metadata match pages:
+      `uv run pipecat-context-hub search-docs "speaker diarization" --area api-reference --limit 1`
+      and the same with `--area api-reference/server/services` each return a hit
+      (`--area guides` returns none). A
       change here is a data or ranking change to triage, not a failure of the Check.
+      Known limit: `get-doc --path /` returns `Not Found` for the SDK reference
+      homepages indexed at `/` (a prefix lookup capped at 200 rows, then an exact
+      filter); use their `--doc-id`.
     - **Instructions.** `uv run pytest tests/integration/test_report_hint_e2e.py -q`
       passes: it starts `serve` and asserts the real `initialize` response contains
       `**Provider settings:**` and that every Corpus hint trust warning ends before

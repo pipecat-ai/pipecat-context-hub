@@ -34,7 +34,7 @@ This changelog retains repository and Context Hub package history.
   (the Deepgram page has four), so a provider with several services needs the full page. It is
   advisory and changes no ranking. To fit it before the Corpus hint's trust warnings (one client
   shows only the first 4096 characters of the instructions), the `uv` guidance and the version-aware
-  sentence in the instructions are shortened; the `docs/setup/*.md` snippets keep the long form. The 4096 limit and
+  sentence in the instructions are shortened. The 4096 limit and
   the trust phrases that must end inside it are now named constants
   (`INSTRUCTIONS_CLIENT_WINDOW`, `INSTRUCTIONS_TRUST_PHRASES`), and unit and integration tests
   check each phrase inside the Corpus hint paragraph.
