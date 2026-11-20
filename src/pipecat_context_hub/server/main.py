@@ -104,6 +104,10 @@ Adding text above them means cutting at least as much earlier text, or the
 warnings fall past ``INSTRUCTIONS_CLIENT_WINDOW`` and that client never shows them.
 """
 
+# The Provider settings paragraph below paraphrases GET_DOC_SECTION_NOTE on
+# purpose: the full note does not fit before the trust phrases above
+# (INSTRUCTIONS_CLIENT_WINDOW), so the two are kept in step by hand and by the
+# paragraph pin in tests/unit/test_server.py.
 _SERVER_INSTRUCTIONS = (
     """\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
@@ -129,16 +133,15 @@ to verify the import path is not deprecated before recommending it. \
 **Version-aware results:** If the user mentions their pipecat version \
 (e.g. in pyproject.toml or requirements.txt), pass it as \
 ``pipecat_version`` to ``search_examples``, ``search_api``, and \
-``get_code_snippet``. This scores results for compatibility and \
-annotates them with ``version_compatibility``. Use \
-``version_filter="compatible_only"`` to exclude results requiring a \
-newer version than theirs.
+``get_code_snippet``. This scores results for compatibility and adds \
+``version_compatibility``. Use ``version_filter="compatible_only"`` to \
+drop results that need a newer version.
 
 Multi-concept queries: use ` + ` or ` & ` to search for multiple concepts \
 at once (e.g. "idle timeout + function calling + Gemini"). Each concept is \
 searched independently and results are interleaved for balanced coverage.
 
-For Pipecat commands use `uv`, not pip, venv or conda unless asked: \
+Use `uv`, not pip/venv/conda, for Pipecat commands unless asked: \
 `uv sync`, `uv run python bot.py`, `uv add <package>`.
 
 **When results are poor or missing:** If a search returns ``low_confidence: true``, \
@@ -155,12 +158,12 @@ If none of these work, suggest the user file a retrieval quality issue at \
 — the issue template includes a diagnostic prompt that you can run to generate \
 a structured report for the maintainers.
 
-**Provider settings:** a query for a setting several providers share (e.g. \
-`speaker_format`) can return only some providers' Settings chunks while \
-`low_confidence` is `false`. Retry with `limit=20`, or call \
-`get_doc(path=<its hit path>, section="Settings")` for one provider; that \
-returns the first Settings section only, so read the full page when a \
-provider has several services (e.g. Deepgram).
+**Provider settings:** a setting shared by providers can return only some \
+providers' Settings chunks with `low_confidence` `false`. Retry with \
+`limit=20`, or search the provider by name, then \
+`get_doc(path=<hit path>, section="Settings")`. That gives the first Settings \
+section only (a first line other than `## Settings` means the full page); read \
+the full page for multi-service providers (e.g. Deepgram).
 
 **Corpus hint:** A search response may carry a top-level ``corpus_hint`` \
 object (absent when it does not apply). It means the question names a vendor \

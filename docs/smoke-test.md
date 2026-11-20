@@ -520,12 +520,13 @@ the indexed pipecat version; re-verify against the current registry if they drif
       ```
       for p in assemblyai aws deepgram elevenlabs meta nvidia openai smallest soniox speechmatics xai zoom-ai; do
         uv run pipecat-context-hub get-doc --path /api-reference/server/services/stt/$p.md --section Settings \
-          | jq -e '.content | (split("\n")[0] == "## Settings") and (split("\n") | any(startswith("|") and test("speaker_format|diarize")))' >/dev/null \
+          | jq -e '.content | (split("\n")[0] == "## Settings") and ([split("\n")[] | select(startswith("## "))] | length == 1) and (split("\n") | any(startswith("|") and test("speaker_format|diarize")))' >/dev/null \
           && echo "ok $p" || echo "FAIL $p"
       done
       ```
       Expected: `ok` for all twelve (verified live 2026-11-18). It covers the first
-      Settings section only, and tests the content, not ranking.
+      Settings section only (the first line is `## Settings` and it is the only `## `
+      heading, so a full-page fallback fails), and tests the content, not ranking.
     - **Note (dated; run it only after `status` exits 0, or an unready index prints
       an empty list that reads as a ranking change; needs the reranker on, `status`
       shows `reranker_enabled: true`)**: a hit qualifies when its chunk text

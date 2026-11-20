@@ -1036,8 +1036,10 @@ class TestServerInstructions:
         paragraph = " ".join(_SERVER_INSTRUCTIONS[start:end].split())
         for needle in (
             "limit=20",
-            'get_doc(path=<its hit path>, section="Settings")',
+            "search the provider by name",
+            'get_doc(path=<hit path>, section="Settings")',
             "first Settings section only",
+            "first line other than `## Settings` means the full page",
             "read the full page",
             "low_confidence",
         ):
@@ -1063,11 +1065,22 @@ class TestServerInstructions:
         )
 
         assert INSTRUCTIONS_CLIENT_WINDOW == 4096
-        assert INSTRUCTIONS_TRUST_PHRASES[-1] == "do not file it yourself."
+        # The tuple must not be able to shrink: spell out what it has to hold.
+        assert {
+            "never by you",
+            "not vetted",
+            "content reaches you unfiltered",
+            "do not file it yourself.",
+        } <= set(INSTRUCTIONS_TRUST_PHRASES)
         for phrase in INSTRUCTIONS_TRUST_PHRASES:
             assert _SERVER_INSTRUCTIONS.count(phrase) == 1, phrase
             end = _SERVER_INSTRUCTIONS.index(phrase) + len(phrase)
             assert end < INSTRUCTIONS_CLIENT_WINDOW, (phrase, end)
+        # A warning added after the last listed phrase is still inside the
+        # Corpus hint, so the whole paragraph must end inside the window too.
+        start = _SERVER_INSTRUCTIONS.index("**Corpus hint:**")
+        paragraph_end = _SERVER_INSTRUCTIONS.index("\n\n", start)
+        assert paragraph_end < INSTRUCTIONS_CLIENT_WINDOW, paragraph_end
 
     def test_docs_tool_examples_come_from_one_source(self):
         """``area`` and ``path`` examples match on every caller-facing surface.
@@ -1086,8 +1099,6 @@ class TestServerInstructions:
             GET_DOC_PATH_RULE,
             GET_DOC_SECTION_NOTE,
             SEARCH_DOCS_AREA_EXAMPLES,
-            GetDocInput,
-            SearchDocsInput,
         )
 
         def norm(text: str) -> str:
@@ -1097,10 +1108,12 @@ class TestServerInstructions:
         runner = click.testing.CliRunner()
         search_help = norm(runner.invoke(search_docs_command, ["--help"]).output)
         get_help = norm(runner.invoke(get_doc_command, ["--help"]).output)
-        area_schema = SearchDocsInput.model_json_schema()["properties"]["area"]["description"]
-        path_schema = GetDocInput.model_json_schema()["properties"]["path"]["description"]
-        section_schema = GetDocInput.model_json_schema()["properties"]["section"]["description"]
         tools = {t.name: t for t in iter_tool_definitions()}
+        # The schema MCP clients receive is ToolDefinition.input_schema, not a
+        # fresh model_json_schema(), so read it from the registered tools.
+        area_schema = tools["search_docs"].input_schema["properties"]["area"]["description"]
+        path_schema = tools["get_doc"].input_schema["properties"]["path"]["description"]
+        section_schema = tools["get_doc"].input_schema["properties"]["section"]["description"]
         search_tool = tools["search_docs"].description
         get_tool = tools["get_doc"].description
 
