@@ -520,7 +520,7 @@ the indexed pipecat version; re-verify against the current registry if they drif
       ```
       for p in assemblyai aws deepgram elevenlabs meta nvidia openai smallest soniox speechmatics xai zoom-ai; do
         uv run pipecat-context-hub get-doc --path /api-reference/server/services/stt/$p.md --section Settings \
-          | jq -e '.content | (split("\n")[0] == "## Settings") and ([split("\n")[] | select(startswith("## "))] | length == 1) and (split("\n") | any(startswith("| `speaker_format`")))' >/dev/null \
+          | jq -e '.content | (split("\n")[0] == "## Settings") and ([split("\n")[] | select(startswith("## "))] | length == 1) and (split("\n") | any(test("^\\| `speaker_format` *\\|")))' >/dev/null \
           && echo "ok $p" || echo "FAIL $p"
       done
       ```
@@ -538,7 +538,7 @@ the indexed pipecat version; re-verify against the current registry if they drif
       ```
       uv run pipecat-context-hub search-docs "speaker diarization speaker_format" --limit 20 | jq -r '.hits[].doc_id' \
         | while read id; do uv run pipecat-context-hub get-doc --doc-id "$id" \
-            | jq -r 'select(.content | split("\n") | any(startswith("| `speaker_format`"))) | .source_url'; done | sort -u
+            | jq -r 'select(.content | split("\n") | any(test("^\\| `speaker_format` *\\|"))) | .source_url'; done | sort -u
       ```
       At `--limit 5` none qualifies and `.evidence.low_confidence` is still
       `false`; `get-doc` on a path without `.md`, or on a guessed filename such as

@@ -173,8 +173,8 @@ a structured report for the maintainers.
 providers' Settings chunks with `low_confidence` `false`. Retry with \
 `limit=20`, or search the provider by name, then \
 `get_doc(path=<hit path>, section="Settings")`. That returns the first \
-Settings section only; read the full page for multi-service providers (e.g. \
-Deepgram) and when no Settings heading appears.
+Settings section, or the whole page if none matches; read the full page for \
+multi-service providers (e.g. Deepgram).
 
 **Corpus hint:** A search response may carry a top-level ``corpus_hint`` \
 object (absent when it does not apply). It means the question names a vendor \

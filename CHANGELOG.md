@@ -45,7 +45,7 @@ This changelog retains repository and Context Hub package history.
   hit reports it (most docs paths end in `.md`, for example
   `/api-reference/server/frames/system-frames.md`) instead of the non-resolving
   `/guides/learn/transports`, and `section` says it returns the first matching section only,
-  the full page when none matches on a `path` lookup, and only that chunk on a `doc_id` lookup.
+  the full page when none matches on a path lookup, and the same within that one chunk on a doc-ID lookup.
   `search_docs`'s `area` examples use `api-reference` and `api-reference/server/services` instead
   of `guides` and `server/services`, which match nothing. `AGENTS.md`, `docs/cli.md`,
   `docs/tools.md` and the retrieval-quality issue template follow; the template no longer reads a

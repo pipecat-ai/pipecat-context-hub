@@ -1039,9 +1039,8 @@ class TestServerInstructions:
             "limit=20",
             "search the provider by name",
             'get_doc(path=<hit path>, section="Settings")',
-            "first Settings section only",
+            "first Settings section, or the whole page if none matches",
             "read the full page",
-            "when no Settings heading appears",
         ):
             assert needle in paragraph, needle
         assert "<provider>.md" not in paragraph

@@ -231,9 +231,9 @@ GET_DOC_PATH_RULE = (
 """The ``get_doc`` ``path`` rule, shown verbatim on every caller-facing surface."""
 
 GET_DOC_SECTION_NOTE = (
-    "With `path`, returns only the first section with that heading, or the full page if "
-    "none matches; a `doc_id` lookup searches only that chunk. A page that covers several "
-    "services repeats headings such as Settings, so read the full page for those."
+    "A path lookup returns only the first section with that heading, or the full page if "
+    "none matches; a doc-ID lookup does the same within that one chunk. A page that covers "
+    "several services repeats headings such as Settings, so read the full page for those."
 )
 """The ``get_doc`` ``section`` rule, shown verbatim on every caller-facing surface."""
 
