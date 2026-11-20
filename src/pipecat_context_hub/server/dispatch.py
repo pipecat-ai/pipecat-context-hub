@@ -9,6 +9,9 @@ from typing import Any
 from pipecat_context_hub.shared.interfaces import Retriever
 from pipecat_context_hub.shared.types import (
     BARE_NAME_RULE,
+    GET_DOC_PATH_RULE,
+    GET_DOC_SECTION_NOTE,
+    SEARCH_DOCS_AREA_EXAMPLES,
     CheckDeprecationInput,
     GetCodeSnippetInput,
     GetDocInput,
@@ -93,7 +96,7 @@ _TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         "search_docs",
         "Search Pipecat documentation for conceptual questions, guides, configuration, and API "
         "references. Use for 'how do I...?' questions. Returns ranked doc hits with evidence. "
-        "Use `area` to narrow by docs path prefix (e.g. 'api-reference', 'api-reference/server/services'). "
+        f"Use `area` to narrow by docs path prefix (e.g. {SEARCH_DOCS_AREA_EXAMPLES}). "
         "For multiple topics, use ` + ` or ` & ` delimiters (e.g. 'TTS + STT').",
         SearchDocsInput.model_json_schema(),
         _handle_search_docs,
@@ -101,8 +104,10 @@ _TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         "get_doc",
         "Retrieve a specific Pipecat documentation page by chunk ID or path. "
-        "Use `doc_id` (from a search_docs result) or the exact `path` including `.md` (e.g. '/api-reference/server/frames/system-frames.md') for direct lookup. "
-        "Use `section` to extract a specific heading; falls back to full document if not found.",
+        "Use `doc_id` (from a search_docs result) or `path` for direct lookup. "
+        f"{GET_DOC_PATH_RULE} "
+        "Use `section` to extract a specific heading; falls back to full document if not "
+        f"found. {GET_DOC_SECTION_NOTE}",
         GetDocInput.model_json_schema(),
         _handle_get_doc,
     ),

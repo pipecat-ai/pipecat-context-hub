@@ -1021,6 +1021,10 @@ class TestServerInstructions:
         ``low_confidence`` stays false (dev plan
         ``20261117-fix-search-docs-cross-provider-recall.md``). The paragraph
         is advisory prose, so this pins its wording, not agent behaviour.
+        The recipe takes the path from a search hit (a guessed filename such
+        as ``smallest-ai.md`` is Not Found; the indexed page is ``smallest.md``)
+        and says the section lookup returns the first Settings section only
+        (the Deepgram page has four).
         """
         from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
 
@@ -1029,32 +1033,83 @@ class TestServerInstructions:
         start = _SERVER_INSTRUCTIONS.index(heading)
         end = _SERVER_INSTRUCTIONS.index("**Corpus hint:**")
         assert start < end
-        paragraph = _SERVER_INSTRUCTIONS[start:end]
+        paragraph = " ".join(_SERVER_INSTRUCTIONS[start:end].split())
         for needle in (
             "limit=20",
-            'section="Settings"',
-            ".md",
-            "## Settings",
+            'get_doc(path=<its hit path>, section="Settings")',
+            "first Settings section only",
+            "read the full page",
             "low_confidence",
         ):
             assert needle in paragraph, needle
+        assert "<provider>.md" not in paragraph
 
-    def test_corpus_hint_warnings_end_before_the_client_cut(self):
-        """The Corpus hint's last sentence must end before character 4096.
+    def test_trust_warnings_end_before_the_client_cut(self):
+        """Every Corpus hint trust warning must end before the client cut.
 
-        One MCP client (Claude Code) shows only the first 4096 characters of
-        the instructions and appends a ``[truncated]`` marker (observed
-        behaviour of that client, not a documented limit). The Corpus hint
-        carries the trust warnings (``--unlisted`` is unvetted, never file
-        the issue yourself), so any later insertion before it must trim at
-        least as much earlier text.
+        One MCP client (Claude Code) shows only the first
+        ``INSTRUCTIONS_CLIENT_WINDOW`` characters of the instructions and
+        appends a ``[truncated]`` marker (observed behaviour of that client,
+        not a documented limit). The Corpus hint carries the trust warnings
+        (``--unlisted`` is unvetted, never file the issue yourself), so any
+        later insertion before it must trim at least as much earlier text.
+        Each phrase is checked, so dropping one cannot pass on the last
+        sentence alone.
         """
-        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+        from pipecat_context_hub.server.main import (
+            _SERVER_INSTRUCTIONS,
+            INSTRUCTIONS_CLIENT_WINDOW,
+            INSTRUCTIONS_TRUST_PHRASES,
+        )
 
-        tail = "do not file it yourself."
-        assert _SERVER_INSTRUCTIONS.count(tail) == 1
-        end = _SERVER_INSTRUCTIONS.index(tail) + len(tail)
-        assert end < 4096, end
+        assert INSTRUCTIONS_CLIENT_WINDOW == 4096
+        assert INSTRUCTIONS_TRUST_PHRASES[-1] == "do not file it yourself."
+        for phrase in INSTRUCTIONS_TRUST_PHRASES:
+            assert _SERVER_INSTRUCTIONS.count(phrase) == 1, phrase
+            end = _SERVER_INSTRUCTIONS.index(phrase) + len(phrase)
+            assert end < INSTRUCTIONS_CLIENT_WINDOW, (phrase, end)
+
+    def test_docs_tool_examples_come_from_one_source(self):
+        """``area`` and ``path`` examples match on every caller-facing surface.
+
+        The tool description, the input schema and the ``--help`` text each
+        used to carry a hand-copied example; they drifted once (the CLI said
+        ``'client'``, the schema said ``'api-reference/server/services'``) and
+        ``/guides/...`` examples stopped resolving. They now come from
+        ``shared/types.py``.
+        """
+        import click.testing
+
+        from pipecat_context_hub.cli_query import get_doc_command, search_docs_command
+        from pipecat_context_hub.server.dispatch import iter_tool_definitions
+        from pipecat_context_hub.shared.types import (
+            GET_DOC_PATH_RULE,
+            GET_DOC_SECTION_NOTE,
+            SEARCH_DOCS_AREA_EXAMPLES,
+            GetDocInput,
+            SearchDocsInput,
+        )
+
+        def norm(text: str) -> str:
+            # click wraps help text, even at a hyphen, so drop all whitespace.
+            return "".join(text.split())
+
+        runner = click.testing.CliRunner()
+        search_help = norm(runner.invoke(search_docs_command, ["--help"]).output)
+        get_help = norm(runner.invoke(get_doc_command, ["--help"]).output)
+        area_schema = SearchDocsInput.model_json_schema()["properties"]["area"]["description"]
+        path_schema = GetDocInput.model_json_schema()["properties"]["path"]["description"]
+        section_schema = GetDocInput.model_json_schema()["properties"]["section"]["description"]
+        tools = {t.name: t for t in iter_tool_definitions()}
+        search_tool = tools["search_docs"].description
+        get_tool = tools["get_doc"].description
+
+        for surface in (search_help, area_schema, search_tool):
+            assert norm(SEARCH_DOCS_AREA_EXAMPLES) in norm(surface)
+        for surface in (get_help, path_schema, get_tool):
+            assert norm(GET_DOC_PATH_RULE) in norm(surface)
+        for surface in (get_help, section_schema, get_tool):
+            assert norm(GET_DOC_SECTION_NOTE) in norm(surface)
 
 
 class TestSupportLinks:

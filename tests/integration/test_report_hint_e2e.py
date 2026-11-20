@@ -25,6 +25,10 @@ from pathlib import Path
 
 import pytest
 
+from pipecat_context_hub.server.main import (
+    INSTRUCTIONS_CLIENT_WINDOW,
+    INSTRUCTIONS_TRUST_PHRASES,
+)
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
     RETRIEVAL_QUALITY_ISSUE_URL,
@@ -82,11 +86,11 @@ def test_mcp_initialize_delivers_report_hint_instructions(seeded_home: Path) -> 
         assert "config_disabled" in instructions
         # The cross-provider settings hint (dev plan
         # 20261117-fix-search-docs-cross-provider-recall.md) must reach the
-        # client, and the Corpus hint trust warnings must end inside the first
-        # 4096 characters that one client shows.
+        # client, and every Corpus hint trust warning must end inside the
+        # window that one client shows.
         assert "**Provider settings:**" in instructions
-        tail = "do not file it yourself."
-        assert instructions.index(tail) + len(tail) < 4096
+        for phrase in INSTRUCTIONS_TRUST_PHRASES:
+            assert instructions.index(phrase) + len(phrase) < INSTRUCTIONS_CLIENT_WINDOW, phrase
 
         proc.stdin.close()
         rc = proc.wait(timeout=10)

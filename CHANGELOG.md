@@ -28,21 +28,28 @@ This changelog retains repository and Context Hub package history.
 ### Changed
 - The server instructions gain a **Provider settings** paragraph. A `search_docs` query for a
   setting several providers share (for example `speaker_format`) can return only some STT
-  providers' Settings chunks while `low_confidence` is `false`; the paragraph says `limit=20`
-  returns more and that `get_doc(path="/api-reference/server/services/stt/<provider>.md",
-  section="Settings")` reads one provider's settings. It is advisory and changes no ranking. To
-  fit it before the Corpus hint's trust warnings (one client shows only the first 4096
-  characters of the instructions), the `uv` guidance in the instructions is shortened; the
-  `docs/setup/*.md` snippets keep the long form. Unit tests pin the wording and the offset.
-- Tool metadata examples now resolve against the live docs index: `get_doc`'s `path` (tool
-  description, input schema, `get-doc --help`) says the path is exact and includes `.md`
-  (`/api-reference/server/frames/system-frames.md`) instead of the non-resolving
-  `/guides/learn/transports`, and `search_docs`'s `area` examples (tool description, input schema,
-  `search-docs --help`) use `api-reference` and `api-reference/server/services` instead of
-  `guides` and `server/services`, which match nothing. `AGENTS.md`, `docs/cli.md`, `docs/tools.md` and the
-  retrieval-quality issue template follow; the template no longer reads a `Not Found` on a
-  guessed path as "not indexed". The `RerankerConfig` docstring now says the reranker is enabled
-  by default.
+  providers' Settings chunks while `low_confidence` is `false`; the paragraph says to retry with
+  `limit=20`, or to call `get_doc` with the path from that provider's search hit and
+  `section="Settings"`. It warns that the section lookup returns the first Settings section only
+  (the Deepgram page has four), so a provider with several services needs the full page. It is
+  advisory and changes no ranking. To fit it before the Corpus hint's trust warnings (one client
+  shows only the first 4096 characters of the instructions), the `uv` guidance in the
+  instructions is shortened; the `docs/setup/*.md` snippets keep the long form. The 4096 limit and
+  the trust phrases that must end inside it are now named constants
+  (`INSTRUCTIONS_CLIENT_WINDOW`, `INSTRUCTIONS_TRUST_PHRASES`), and unit and integration tests
+  check each phrase.
+- Tool metadata examples now resolve against the live docs index, and each is defined once in
+  `shared/types.py` (`SEARCH_DOCS_AREA_EXAMPLES`, `GET_DOC_PATH_RULE`, `GET_DOC_SECTION_NOTE`)
+  and reused by the tool description, the input schema and the `--help` text; a test checks all
+  three surfaces. `get_doc`'s `path` now says to use the exact indexed path as a `search_docs`
+  hit reports it (docs pages end in `.md`, for example
+  `/api-reference/server/frames/system-frames.md`) instead of the non-resolving
+  `/guides/learn/transports`, and `section` says it returns the first matching section only.
+  `search_docs`'s `area` examples use `api-reference` and `api-reference/server/services` instead
+  of `guides` and `server/services`, which match nothing. `AGENTS.md`, `docs/cli.md`,
+  `docs/tools.md` and the retrieval-quality issue template follow; the template no longer reads a
+  `Not Found` on a guessed path as "not indexed". The `RerankerConfig` docstring now says the
+  reranker is enabled by default.
 - `check_deprecation` responses gain two keys, `candidates` and `candidates_total`, that are `null`
   when absent. `status: null` now also means "hint" (with `candidates`); with only a `note` it still
   means an unloadable deprecation map.

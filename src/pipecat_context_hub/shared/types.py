@@ -221,6 +221,22 @@ class IngestResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+SEARCH_DOCS_AREA_EXAMPLES = "'api-reference', 'api-reference/server/services'"
+"""Docs path prefixes that match indexed pages; shown on every ``area`` surface."""
+
+GET_DOC_PATH_RULE = (
+    "Use the exact indexed path, as a search_docs hit reports it; docs pages end in "
+    "`.md` (e.g. '/api-reference/server/frames/system-frames.md')."
+)
+"""The ``get_doc`` ``path`` rule, shown verbatim on every caller-facing surface."""
+
+GET_DOC_SECTION_NOTE = (
+    "Returns only the first section with that heading; a page that covers several "
+    "services repeats headings such as Settings, so read the full page for those."
+)
+"""The ``get_doc`` ``section`` caveat, shown verbatim on every caller-facing surface."""
+
+
 class SearchDocsInput(BaseModel):
     """Input for the search_docs MCP tool."""
 
@@ -228,7 +244,7 @@ class SearchDocsInput(BaseModel):
     area: str | None = Field(
         default=None,
         max_length=256,
-        description="Narrow to a docs area by path prefix, e.g. 'api-reference', 'api-reference/server/services'.",
+        description=f"Narrow to a docs area by path prefix, e.g. {SEARCH_DOCS_AREA_EXAMPLES}.",
     )
     limit: int = Field(default=10, ge=1, le=50)
 
@@ -267,12 +283,15 @@ class GetDocInput(BaseModel):
     path: str | None = Field(
         default=None,
         max_length=512,
-        description="Exact doc path, including `.md` (e.g. '/api-reference/server/frames/system-frames.md'). Looks up by path when doc_id is not known.",
+        description=f"{GET_DOC_PATH_RULE} Looks up by path when doc_id is not known.",
     )
     section: str | None = Field(
         default=None,
         max_length=256,
-        description="Extract a specific section by heading. Falls back to full document if not found.",
+        description=(
+            "Extract a specific section by heading. Falls back to full document if not "
+            f"found. {GET_DOC_SECTION_NOTE}"
+        ),
     )
 
     @model_validator(mode="after")

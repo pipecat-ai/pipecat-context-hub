@@ -84,6 +84,26 @@ def _assert_no_unsubstituted_placeholder(text: str) -> None:
         )
 
 
+INSTRUCTIONS_CLIENT_WINDOW = 4096
+"""Characters of the server instructions that one MCP client (Claude Code) shows.
+
+Observed behaviour of that client, not a documented limit: it cuts the text at
+this length and appends a ``[truncated]`` marker. Anything past it is invisible
+to that client's agent, so safety guidance must end before it.
+"""
+
+INSTRUCTIONS_TRUST_PHRASES = (
+    "never by you",
+    "not vetted",
+    "content reaches you unfiltered",
+    "do not file it yourself.",
+)
+"""Phrases of the Corpus hint's trust warnings; each must end inside the window.
+
+Adding text above them means cutting at least as much earlier text, or the
+warnings fall past ``INSTRUCTIONS_CLIENT_WINDOW`` and that client never shows them.
+"""
+
 _SERVER_INSTRUCTIONS = (
     """\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
@@ -118,8 +138,8 @@ Multi-concept queries: use ` + ` or ` & ` to search for multiple concepts \
 at once (e.g. "idle timeout + function calling + Gemini"). Each concept is \
 searched independently and results are interleaved for balanced coverage.
 
-For Pipecat commands use `uv`, never pip, venv or conda unless asked: \
-`uv sync`, `uv run python bot.py`, `uv add <package>`, `uv run pytest`.
+For Pipecat commands use `uv`, not pip, venv or conda unless asked: \
+`uv sync`, `uv run python bot.py`, `uv add <package>`.
 
 **When results are poor or missing:** If a search returns ``low_confidence: true``, \
 zero hits, or the user says the results are wrong, try these steps before giving up:
@@ -137,10 +157,10 @@ a structured report for the maintainers.
 
 **Provider settings:** a query for a setting several providers share (e.g. \
 `speaker_format`) can return only some providers' Settings chunks while \
-`low_confidence` is `false`. `limit=20` returns more. For one provider use \
-`get_doc(path="/api-reference/server/services/stt/<provider>.md", \
-section="Settings")` (exact `.md` path; the content must start with \
-`## Settings`).
+`low_confidence` is `false`. Retry with `limit=20`, or call \
+`get_doc(path=<its hit path>, section="Settings")` for one provider; that \
+returns the first Settings section only, so read the full page when a \
+provider has several services (e.g. Deepgram).
 
 **Corpus hint:** A search response may carry a top-level ``corpus_hint`` \
 object (absent when it does not apply). It means the question names a vendor \
