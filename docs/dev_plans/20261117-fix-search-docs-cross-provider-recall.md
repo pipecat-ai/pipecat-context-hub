@@ -121,7 +121,7 @@ Low. The limitation stays: a caller using a small `limit` still sees at most fou
 
 - [x] Phase 0: measured 2026-11-19 (steps 0-6; raw results in the session scratchpad, not the repo)
 - [x] Phase 0 HEAD: `5d9e150f5ed698a3f7e962d9a63707bd70a0c27b`, Phase 0 main: `709b778334a494a2eee4a2a81c97113fee87db4f` (0 behind), `last_refresh_at`: 2026-11-18T07:50:34Z, `indexed_framework_version`: 1.16.0, CLI 0.10.0, 54,791 records
-- [x] Phase 1 (2026-11-19; full gate passed: ruff, mypy, 5023 passed 9 skipped): index check, server-instructions paragraph with pin and e2e tests and CHANGELOG entry, smoke item, stale reranker text, path-example fixes (docs, issue template and source tool metadata), README row, PR
+- [x] Phase 1 (2026-11-19; full gate passed: ruff, mypy, 5023 passed 9 skipped): index check, server-instructions paragraph with pin and e2e tests and CHANGELOG entry, smoke item, stale reranker text, path-example fixes (docs, issue template and source tool metadata), README row; `/code-review xhigh --fix` applied (also `search_docs` `area` examples, outside the plan's file list); version bump to 0.10.1 requested by the user
 - [ ] Push, open the PR (body per Phase 1 step 8), optional installed-tool check by the user
 
 ## Findings
