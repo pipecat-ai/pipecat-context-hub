@@ -46,8 +46,14 @@ This changelog retains repository and Context Hub package history.
   `/api-reference/server/frames/system-frames.md`) instead of the non-resolving
   `/guides/learn/transports`, and `section` says it returns the first matching section only,
   the full page when none matches on a path lookup, and the same within that one chunk on a doc-ID lookup.
-  `search_docs`'s `area` examples use `api-reference` and `api-reference/server/services` instead
-  of `guides` and `server/services`, which match nothing. `AGENTS.md`, `docs/cli.md`,
+  `search_docs`'s `area` examples use `api-reference/server/services` and `pipecat/learn` (one
+  reference area, one guide area) instead of `guides` and `server/services`, which match nothing.
+  An `area` now matches whole path segments: `pipecat` no longer returns `/pipecat-cloud/...`
+  pages, and a partial segment such as `api-ref` matches nothing. An area ending in `.md` still
+  names one page. `get_doc`'s path rule says "as a docs search hit reports it" so the CLI help does
+  not point at a `search_docs` command that does not exist. The `get_hub_status` description now
+  tells the agent to keep `indexed_repos` and `configured_no_records` out of public reports, because
+  the degraded-hub paragraph that says so falls past Claude Code's 4096-character view. `AGENTS.md`, `docs/cli.md`,
   `docs/tools.md` and the retrieval-quality issue template follow; the template no longer reads a
   `Not Found` on a guessed path as "not indexed". The `RerankerConfig` docstring now says the
   reranker is enabled by default.
