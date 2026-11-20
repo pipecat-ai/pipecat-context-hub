@@ -503,7 +503,7 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
 @click.option(
     "--area",
     default=None,
-    help=f"Docs path prefix, e.g. {SEARCH_DOCS_AREA_EXAMPLES}.",
+    help=f"Docs path prefix, whole path segments, e.g. {SEARCH_DOCS_AREA_EXAMPLES}.",
 )
 @click.option("--limit", default=10, show_default=True, type=click.IntRange(1, 50))
 @click.pass_context

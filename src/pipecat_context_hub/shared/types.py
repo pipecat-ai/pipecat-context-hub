@@ -221,11 +221,15 @@ class IngestResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-SEARCH_DOCS_AREA_EXAMPLES = "'api-reference', 'api-reference/server/services'"
-"""Docs path prefixes that match indexed pages; shown on every ``area`` surface."""
+SEARCH_DOCS_AREA_EXAMPLES = "'api-reference/server/services', 'pipecat/learn'"
+"""Docs path prefixes that match indexed pages; shown on every ``area`` surface.
+
+One reference area and one conceptual-guide area, so a 'how do I...?' question does not
+copy a prefix that holds only API pages. An area matches whole path segments.
+"""
 
 GET_DOC_PATH_RULE = (
-    "Use the exact indexed path, as a search_docs hit reports it (e.g. "
+    "Use the exact indexed path, as a docs search hit reports it (e.g. "
     "'/api-reference/server/frames/system-frames.md'; most docs paths end in `.md`)."
 )
 """The ``get_doc`` ``path`` rule, shown verbatim on every caller-facing surface."""
@@ -245,7 +249,10 @@ class SearchDocsInput(BaseModel):
     area: str | None = Field(
         default=None,
         max_length=256,
-        description=f"Narrow to a docs area by path prefix, e.g. {SEARCH_DOCS_AREA_EXAMPLES}.",
+        description=(
+            "Narrow to a docs area by path prefix (whole path segments), "
+            f"e.g. {SEARCH_DOCS_AREA_EXAMPLES}."
+        ),
     )
     limit: int = Field(default=10, ge=1, le=50)
 
