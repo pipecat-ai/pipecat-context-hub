@@ -547,10 +547,15 @@ the indexed pipecat version; re-verify against the current registry if they drif
       The path example in the tool metadata resolves: `get-doc --path
       /api-reference/server/frames/system-frames.md` returns the System Frames page.
       `--section Settings` returns the first Settings section only (the Deepgram page
-      has four). The `area` examples in the `search_docs` metadata match pages:
-      `uv run pipecat-context-hub search-docs "speaker diarization" --area api-reference --limit 1`
-      and the same with `--area api-reference/server/services` each return a hit
-      (`--area guides` returns none). A
+      has four). The `area` examples in the `search_docs` metadata match pages, and
+      the two prefixes filter differently (`--area guides` returns none):
+      ```
+      uv run pipecat-context-hub search-docs "frame processor pipeline task" --area api-reference/server/services --limit 5 \
+        | jq -e '(.hits | length > 0) and all(.hits[].citation.path; startswith("/api-reference/server/services"))'
+      uv run pipecat-context-hub search-docs "frame processor pipeline task" --area api-reference --limit 5 \
+        | jq -e 'any(.hits[].citation.path; startswith("/api-reference/server/services") | not)'
+      ```
+      Both exit 0. A
       change here is a data or ranking change to triage, not a failure of the Check.
       Known limit: `get-doc --path /` returns `Not Found` for the SDK reference
       homepages indexed at `/` (a prefix lookup capped at 200 rows, then an exact
