@@ -68,7 +68,7 @@ uv run pipecat-context-hub check-deprecation trigger_user_turn_stopped  # bare m
 uv run pipecat-context-hub status                           # index health; <1s
 uv run pipecat-context-hub search-api "WebsocketServerParams" --limit 3   # ~3s (loads models)
 uv run pipecat-context-hub search-docs "TTS + STT"
-uv run pipecat-context-hub get-doc --path /guides/telephony/overview
+uv run pipecat-context-hub get-doc --path /api-reference/server/frames/system-frames.md
 ```
 
 Exit codes (`shared/exit_codes.py`): 0 success, 1 invalid input (also
@@ -165,7 +165,7 @@ src/pipecat_context_hub/
 ├── data/repo_catalog.toml    # curated public repos by vendor/topic; source for generated .env.example / docs sections
 ├── plugin.py                 # Typer bridge: mounts this CLI as `pipecat context-hub`
 ├── shared/                   # Pydantic data contracts, interfaces, config
-│   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence)
+│   ├── types.py              # Pydantic models (MCP I/O, chunks, evidence); shared description constants (BARE_NAME_RULE, SEARCH_DOCS_AREA_EXAMPLES, GET_DOC_PATH_RULE, GET_DOC_SECTION_NOTE)
 │   ├── config.py             # HubConfig + env-aware computed fields
 │   ├── env_loading.py        # load_env_layers (the bootstrap every entry point calls) = load_cwd_dotenv + load_global_config — three-layer precedence; returns the layer provenance map; read_trusted_config / parse_global_config / check_config_write_target (the one trust seam), config_list_value (the one list rule: what the loader uses) / config_list_entries (its lenient view: what the file holds, for naming an entry the loader skips)
 │   ├── config_writer.py      # update_extra_repos — atomic, comment-preserving (tomlkit) edit of PIPECAT_HUB_EXTRA_REPOS through the reader's trust seam
@@ -196,7 +196,7 @@ src/pipecat_context_hub/
 │   ├── index/                # ChromaDB vector, SQLite FTS5, IndexStore, reopening (open_ready_index_store: the one reader open for serve + CLI; open_index_for_export: the same, taking the refresh hold itself, for the dashboard scripts; ReopeningIndexStore: serve's drop-and-reopen handle), hnsw_validation (open-time + post-write runaway link_lists.bin guard), chroma_schema (query_chroma_sqlite, the one raw read of Chroma's schema; chromadb_format_verified), errors (FatalIndexError subclasses incl. CompactionSwapError / CompactionRestoreError; InterruptedCompactionError, IndexNotBuiltError / MissingVectorCollectionError / MissingKeywordIndexError: readers never create the index, and IndexStore refuses a missing or empty vector half beside keyword records unless `refresh --force`; LostKeywordIndexError: IndexStore refuses a keyword half with no records beside vector records on every open, exit 2 with the reset remedy; CorruptKeywordIndexError: an unreadable keyword database, exit 2 with the reset remedy)
 │   └── retrieval/            # HybridRetriever, decompose, rerank, evidence
 └── server/
-    ├── main.py               # MCP server setup (_SERVER_VERSION here)
+    ├── main.py               # MCP server setup (_SERVER_VERSION here; INSTRUCTIONS_CLIENT_WINDOW / INSTRUCTIONS_TRUST_PHRASES guard the 4096-char instructions window)
     ├── transport.py          # stdio transport + parent-death / grandparent-death watchdogs (idle = fallback)
     └── tools/                # Per-tool handler modules
 
@@ -332,7 +332,9 @@ in future reviews unless the underlying circumstances change.
 
 - **[Architecture] won't-fix**: `ApiHit.imports` has mixed precision by chunk type — per-method for method/function chunks, module-level pipecat imports for class_overview, full imports (including stdlib) for module_overview. This is a deliberate layering: `source_ingest._build_chunks` populates each chunk type differently, and `hybrid.py` passes the field through unchanged. The `ApiHit.imports` description documents the per-chunk-type semantics. Revisit only if a consumer needs uniform precision across chunk types. (2026-03-23)
 
-- **[Logic] won't-fix**: Confidence scores are optimistic on weak `search_examples` results — noisy keyword matches from large repos (e.g., gradient-bang frontend files) score high via RRF + dual-hit bonus, driving confidence to ~0.95 even when results are semantically irrelevant. This is a retrieval quality issue, not a confidence calibration bug. The cross-encoder (Phase 1, disabled by default) directly addresses this by scoring query-result *pairs* for semantic relevance. Without cross-encoder, confidence reflects score distribution, not true relevance. Follow-up: example corpus weighting / repo scoring to reduce noise from non-pipeline code. (2026-03-24)
+- **[Logic] won't-fix**: Confidence scores are optimistic on weak `search_examples` results — noisy keyword matches from large repos (e.g., gradient-bang frontend files) score high via RRF + dual-hit bonus, driving confidence to ~0.95 even when results are semantically irrelevant. This is a retrieval quality issue, not a confidence calibration bug. The cross-encoder (enabled by default) directly addresses this by scoring query-result *pairs* for semantic relevance. Without cross-encoder, confidence reflects score distribution, not true relevance. Follow-up: example corpus weighting / repo scoring to reduce noise from non-pipeline code. (2026-03-24)
+
+- **[Logic] won't-fix**: `search_docs` for the speaker-diarization query returns no Settings chunk at `limit=5` and at most four of twelve pages at the default `limit=10`, and `low_confidence` stays `false`; the mitigations are the server-instructions paragraph "Provider settings" (advisory; agent behaviour not measured), `limit=20` and `get_doc` with `--section Settings` (the PR description, smoke item 61). Revisit if table chunks are compacted at ingest or a response-level hint is added. (2026-11-19)
 
 - **[Security] resolved**: `pygments` CVE-2026-4539 resolved by upgrading to 2.20.0 via PR #34 (2026-03-31). `--ignore-vuln` entry removed from CI and justfile.
 

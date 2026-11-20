@@ -174,8 +174,8 @@ class StorageConfig(BaseModel):
 class RerankerConfig(BaseModel):
     """Cross-encoder reranking settings.
 
-    Enable via ``PIPECAT_HUB_RERANKER_ENABLED=1`` environment variable or
-    by setting ``enabled=True`` in Python. Disabled by default.
+    Enabled by default. Disable via the ``PIPECAT_HUB_RERANKER_ENABLED=0``
+    environment variable or by setting ``enabled=False`` in Python.
     """
 
     enabled: bool = Field(

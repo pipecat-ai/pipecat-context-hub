@@ -9,6 +9,9 @@ from typing import Any
 from pipecat_context_hub.shared.interfaces import Retriever
 from pipecat_context_hub.shared.types import (
     BARE_NAME_RULE,
+    GET_DOC_PATH_RULE,
+    GET_DOC_SECTION_NOTE,
+    SEARCH_DOCS_AREA_EXAMPLES,
     CheckDeprecationInput,
     GetCodeSnippetInput,
     GetDocInput,
@@ -93,7 +96,7 @@ _TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         "search_docs",
         "Search Pipecat documentation for conceptual questions, guides, configuration, and API "
         "references. Use for 'how do I...?' questions. Returns ranked doc hits with evidence. "
-        "Use `area` to narrow by docs path prefix (e.g. 'guides', 'server/services'). "
+        f"Use `area` to narrow by docs path prefix, whole path segments (e.g. {SEARCH_DOCS_AREA_EXAMPLES}). "
         "For multiple topics, use ` + ` or ` & ` delimiters (e.g. 'TTS + STT').",
         SearchDocsInput.model_json_schema(),
         _handle_search_docs,
@@ -101,8 +104,9 @@ _TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         "get_doc",
         "Retrieve a specific Pipecat documentation page by chunk ID or path. "
-        "Use `doc_id` (from a search_docs result) or `path` (e.g. '/guides/learn/transports') for direct lookup. "
-        "Use `section` to extract a specific heading; falls back to full document if not found.",
+        "Use `doc_id` (from a search_docs result) or `path` for direct lookup. "
+        f"{GET_DOC_PATH_RULE} "
+        f"Use `section` to extract a specific heading. {GET_DOC_SECTION_NOTE}",
         GetDocInput.model_json_schema(),
         _handle_get_doc,
     ),
@@ -168,7 +172,9 @@ HUB_STATUS_TOOL = ToolDefinition(
     "Get index health: last refresh time, record counts by type, indexed pipecat version, "
     "commit SHAs, and repo coverage (indexed repos, configured repos with no records, "
     "catalog groups not indexed). Use to check if the index is fresh, or covers a repo, "
-    "before answering questions.",
+    "before answering questions. Keep `indexed_repos` and `configured_no_records` out of a "
+    "public bug report or issue: they name every repo configured on this machine, which may "
+    "include private ones.",
     GetHubStatusInput.model_json_schema(),
     _handle_hub_status_front_door_only,
 )

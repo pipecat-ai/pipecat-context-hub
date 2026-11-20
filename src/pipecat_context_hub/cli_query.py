@@ -61,7 +61,12 @@ from pipecat_context_hub.shared.support_links import (
     bug_report_hint,
 )
 from pipecat_context_hub.shared.terminal import echo, echo_json
-from pipecat_context_hub.shared.types import BARE_NAME_RULE
+from pipecat_context_hub.shared.types import (
+    BARE_NAME_RULE,
+    GET_DOC_PATH_RULE,
+    GET_DOC_SECTION_NOTE,
+    SEARCH_DOCS_AREA_EXAMPLES,
+)
 
 if TYPE_CHECKING:
     from pipecat_context_hub.services.index.store import IndexStore
@@ -495,7 +500,11 @@ def _invoke(ctx: click.Context, tool: str, args: dict[str, Any], *, needs_embedd
 
 @click.command("search-docs")
 @click.argument("query")
-@click.option("--area", default=None, help="Docs path prefix, e.g. 'guides' or 'server/services'.")
+@click.option(
+    "--area",
+    default=None,
+    help=f"Docs path prefix, whole path segments, e.g. {SEARCH_DOCS_AREA_EXAMPLES}.",
+)
 @click.option("--limit", default=10, show_default=True, type=click.IntRange(1, 50))
 @click.pass_context
 def search_docs_command(ctx: click.Context, query: str, area: str | None, limit: int) -> None:
@@ -515,8 +524,16 @@ def search_docs_command(ctx: click.Context, query: str, area: str | None, limit:
 
 @click.command("get-doc")
 @click.option("--doc-id", default=None, help="Chunk ID from a search-docs hit.")
-@click.option("--path", default=None, help="Docs path, e.g. '/guides/telephony/overview'.")
-@click.option("--section", default=None, help="Return only this section heading.")
+@click.option(
+    "--path",
+    default=None,
+    help=GET_DOC_PATH_RULE,
+)
+@click.option(
+    "--section",
+    default=None,
+    help=f"Return only this section heading. {GET_DOC_SECTION_NOTE}",
+)
 @click.pass_context
 def get_doc_command(
     ctx: click.Context, doc_id: str | None, path: str | None, section: str | None

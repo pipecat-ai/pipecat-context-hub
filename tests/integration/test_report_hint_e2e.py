@@ -25,6 +25,11 @@ from pathlib import Path
 
 import pytest
 
+from pipecat_context_hub.server.main import (
+    INSTRUCTIONS_CLIENT_WINDOW,
+    INSTRUCTIONS_TRUST_PHRASES,
+    corpus_hint_paragraph,
+)
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
     RETRIEVAL_QUALITY_ISSUE_URL,
@@ -80,6 +85,19 @@ def test_mcp_initialize_delivers_report_hint_instructions(seeded_home: Path) -> 
         # word simply being absent, which would also pass a substring
         # check for the wrong reason.
         assert "config_disabled" in instructions
+        # The cross-provider settings hint (dev plan
+        # 20261117-fix-search-docs-cross-provider-recall.md) must reach the
+        # client, and every Corpus hint trust warning must end inside the
+        # window that one client shows.
+        assert "**Provider settings:**" in instructions
+        hint = corpus_hint_paragraph(instructions)
+        hint_start = instructions.index(hint)
+        for phrase in INSTRUCTIONS_TRUST_PHRASES:
+            assert phrase in hint, phrase
+            assert hint_start + hint.index(phrase) + len(phrase) < INSTRUCTIONS_CLIENT_WINDOW, (
+                phrase
+            )
+        assert hint_start + len(hint) < INSTRUCTIONS_CLIENT_WINDOW
 
         proc.stdin.close()
         rc = proc.wait(timeout=10)

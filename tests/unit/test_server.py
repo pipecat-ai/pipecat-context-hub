@@ -1013,6 +1013,128 @@ class TestServerInstructions:
         source = inspect.getsource(create_server)
         assert "instructions=_SERVER_INSTRUCTIONS" in source
 
+    def test_provider_settings_paragraph_is_pinned(self):
+        """The cross-provider settings hint keeps its heading, recipe and place.
+
+        ``search_docs("speaker diarization speaker_format")`` returns Settings
+        chunks for only some STT providers at small limits while
+        ``low_confidence`` stays false (dev plan
+        ``20261117-fix-search-docs-cross-provider-recall.md``). The paragraph
+        is advisory prose, so this pins its wording, not agent behaviour.
+        The recipe takes the path from a search hit (a guessed filename such
+        as ``smallest-ai.md`` is Not Found; the indexed page is ``smallest.md``)
+        and says the section lookup returns the first Settings section only
+        (the Deepgram page has four).
+        """
+        from pipecat_context_hub.server.main import _SERVER_INSTRUCTIONS
+
+        heading = "**Provider settings:**"
+        assert _SERVER_INSTRUCTIONS.count(heading) == 1
+        start = _SERVER_INSTRUCTIONS.index(heading)
+        end = _SERVER_INSTRUCTIONS.index("**Corpus hint:**")
+        assert start < end
+        paragraph = " ".join(_SERVER_INSTRUCTIONS[start:end].split())
+        for needle in (
+            "`low_confidence` `false`",
+            "limit=20",
+            "search the provider by name",
+            'get_doc(path=<hit path>, section="Settings")',
+            "first Settings section, or the whole page if none matches",
+            "read the full page",
+        ):
+            assert needle in paragraph, needle
+        assert "<provider>.md" not in paragraph
+
+    def test_trust_warnings_end_before_the_client_cut(self):
+        """Every Corpus hint trust warning must end before the client cut.
+
+        One MCP client (Claude Code) shows only the first
+        ``INSTRUCTIONS_CLIENT_WINDOW`` characters of the instructions and
+        appends a ``[truncated]`` marker (observed behaviour of that client,
+        not a documented limit). The Corpus hint carries the trust warnings
+        (``--unlisted`` is unvetted, never file the issue yourself), so any
+        later insertion before it must trim at least as much earlier text.
+        Each phrase is checked, so dropping one cannot pass on the last
+        sentence alone.
+        """
+        from pipecat_context_hub.server.main import (
+            _SERVER_INSTRUCTIONS,
+            INSTRUCTIONS_CLIENT_WINDOW,
+            INSTRUCTIONS_TRUST_PHRASES,
+            corpus_hint_paragraph,
+        )
+
+        assert INSTRUCTIONS_CLIENT_WINDOW == 4096
+        # The tuple must not be able to shrink: spell out what it has to hold.
+        assert {
+            "never by you",
+            "not vetted",
+            "content reaches you unfiltered",
+            "do not file it yourself.",
+        } <= set(INSTRUCTIONS_TRUST_PHRASES)
+        hint = corpus_hint_paragraph(_SERVER_INSTRUCTIONS)
+        hint_start = _SERVER_INSTRUCTIONS.index(hint)
+        for phrase in INSTRUCTIONS_TRUST_PHRASES:
+            # Inside the Corpus hint, once: a phrase moved elsewhere must fail.
+            assert hint.count(phrase) == 1, phrase
+            assert _SERVER_INSTRUCTIONS.count(phrase) == 1, phrase
+            end = hint_start + hint.index(phrase) + len(phrase)
+            assert end < INSTRUCTIONS_CLIENT_WINDOW, (phrase, end)
+        # A warning added after the last listed phrase is still inside the
+        # Corpus hint, so the whole paragraph must end inside the window too.
+        assert hint_start + len(hint) < INSTRUCTIONS_CLIENT_WINDOW, len(hint)
+
+    def test_hub_status_description_keeps_repo_names_out_of_reports(self):
+        # The degraded-hub paragraph that says this sits past the 4096-char cut for
+        # Claude Code; the tool description is never truncated, so it carries the rule too.
+        from pipecat_context_hub.server.dispatch import HUB_STATUS_TOOL
+
+        flat = " ".join(HUB_STATUS_TOOL.description.split())
+        assert "`indexed_repos` and `configured_no_records` out of a public bug report" in flat
+        assert "private" in flat
+
+    def test_docs_tool_examples_come_from_one_source(self):
+        """``area`` and ``path`` examples match on every caller-facing surface.
+
+        The tool description, the input schema and the ``--help`` text each
+        used to carry a hand-copied example; they drifted once (the CLI said
+        ``'client'``, the schema said ``'api-reference/server/services'``) and
+        ``/guides/...`` examples stopped resolving. They now come from
+        ``shared/types.py``.
+        """
+        import click.testing
+
+        from pipecat_context_hub.cli_query import get_doc_command, search_docs_command
+        from pipecat_context_hub.server.dispatch import iter_tool_definitions
+        from pipecat_context_hub.shared.types import (
+            GET_DOC_PATH_RULE,
+            GET_DOC_SECTION_NOTE,
+            SEARCH_DOCS_AREA_EXAMPLES,
+        )
+
+        def norm(text: str) -> str:
+            # click wraps help text, even at a hyphen, so drop all whitespace.
+            return "".join(text.split())
+
+        runner = click.testing.CliRunner()
+        search_help = norm(runner.invoke(search_docs_command, ["--help"]).output)
+        get_help = norm(runner.invoke(get_doc_command, ["--help"]).output)
+        tools = {t.name: t for t in iter_tool_definitions()}
+        # The schema MCP clients receive is ToolDefinition.input_schema, not a
+        # fresh model_json_schema(), so read it from the registered tools.
+        area_schema = tools["search_docs"].input_schema["properties"]["area"]["description"]
+        path_schema = tools["get_doc"].input_schema["properties"]["path"]["description"]
+        section_schema = tools["get_doc"].input_schema["properties"]["section"]["description"]
+        search_tool = tools["search_docs"].description
+        get_tool = tools["get_doc"].description
+
+        for surface in (search_help, area_schema, search_tool):
+            assert norm(SEARCH_DOCS_AREA_EXAMPLES) in norm(surface)
+        for surface in (get_help, path_schema, get_tool):
+            assert norm(GET_DOC_PATH_RULE) in norm(surface)
+        for surface in (get_help, section_schema, get_tool):
+            assert norm(GET_DOC_SECTION_NOTE) in norm(surface)
+
 
 class TestSupportLinks:
     """Pin ``shared/support_links.py`` as the single source of truth for the

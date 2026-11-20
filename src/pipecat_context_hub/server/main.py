@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # with a runtime lookup, the PyPI distribution name is "pipecat-ai-context-hub"
 # (not "pipecat-context-hub", which is only the command / server name) —
 # importlib.metadata.version() must use the former.
-_SERVER_VERSION = "0.10.0"
+_SERVER_VERSION = "0.10.1"
 
 # Tool name → (description, input schema, handler)
 _BASE_TOOLS = BASE_TOOLS
@@ -84,6 +84,51 @@ def _assert_no_unsubstituted_placeholder(text: str) -> None:
         )
 
 
+INSTRUCTIONS_CLIENT_WINDOW = 4096
+"""Characters of the server instructions that one MCP client (Claude Code) shows.
+
+Observed behaviour of that client, not a documented limit: it cuts the text at
+this length and appends a ``[truncated]`` marker. Anything past it is invisible
+to that client's agent, so safety guidance must end before it.
+
+Only the Corpus hint's trust warnings are guarded (``INSTRUCTIONS_TRUST_PHRASES``).
+The degraded-state paragraph after it starts at the cut: that client sees its
+heading and none of its body, including the instruction to leave
+``indexed_repos`` and ``configured_no_records`` out of a public bug report. That
+rule is therefore also stated in the ``get_hub_status`` tool description, which
+no client truncates (``test_hub_status_description_keeps_repo_names_out_of_reports``).
+"""
+
+INSTRUCTIONS_TRUST_PHRASES = (
+    "never by you",
+    "not vetted",
+    "content reaches you unfiltered",
+    "do not file it yourself.",
+)
+"""Phrases of the Corpus hint's trust warnings; each must end inside the window.
+
+Adding text above them means cutting at least as much earlier text, or the
+warnings fall past ``INSTRUCTIONS_CLIENT_WINDOW`` and that client never shows them.
+"""
+
+
+def corpus_hint_paragraph(instructions: str) -> str:
+    """Return the Corpus hint paragraph of ``instructions`` (heading to blank line).
+
+    The trust phrases must sit inside this paragraph, so a test that merely finds
+    them elsewhere in the instructions cannot pass once the paragraph loses one.
+    """
+    start = instructions.index("**Corpus hint:**")
+    # A Corpus hint that becomes the last paragraph has no blank line after it;
+    # ``str.index`` would raise a bare ValueError, so read to the end instead.
+    end = instructions.find("\n\n", start)
+    return instructions[start : len(instructions) if end == -1 else end]
+
+
+# The Provider settings paragraph below paraphrases GET_DOC_SECTION_NOTE on
+# purpose: the full note does not fit before the trust phrases above
+# (INSTRUCTIONS_CLIENT_WINDOW), so the two are kept in step by hand and by the
+# paragraph pin in tests/unit/test_server.py.
 _SERVER_INSTRUCTIONS = (
     """\
 You are using the Pipecat Context Hub — a retrieval server for Pipecat \
@@ -109,24 +154,16 @@ to verify the import path is not deprecated before recommending it. \
 **Version-aware results:** If the user mentions their pipecat version \
 (e.g. in pyproject.toml or requirements.txt), pass it as \
 ``pipecat_version`` to ``search_examples``, ``search_api``, and \
-``get_code_snippet``. This scores results for compatibility and \
-annotates them with ``version_compatibility``. Use \
-``version_filter="compatible_only"`` to exclude results requiring a \
-newer version than theirs.
+``get_code_snippet``. This scores results for compatibility and adds \
+``version_compatibility``. Use ``version_filter="compatible_only"`` to \
+drop results that need a newer version.
 
 Multi-concept queries: use ` + ` or ` & ` to search for multiple concepts \
 at once (e.g. "idle timeout + function calling + Gemini"). Each concept is \
 searched independently and results are interleaved for balanced coverage.
 
-When suggesting commands for Pipecat projects, always use `uv` as the \
-package manager:
-- Install dependencies: `uv sync` (not `pip install`)
-- Run scripts: `uv run python bot.py` (not `python bot.py`)
-- Add packages: `uv add <package>` (not `pip install <package>`)
-- Run tools: `uv run pytest`, `uv run mypy`, etc.
-
-Pipecat examples use `uv` and include a `pyproject.toml`. Do not suggest \
-`pip`, `venv`, or `conda` unless the user explicitly requests them.
+Use `uv`, not pip/venv/conda, for Pipecat commands unless asked: \
+`uv sync`, `uv run python bot.py`, `uv add <package>`.
 
 **When results are poor or missing:** If a search returns ``low_confidence: true``, \
 zero hits, or the user says the results are wrong, try these steps before giving up:
@@ -141,6 +178,13 @@ If none of these work, suggest the user file a retrieval quality issue at \
 {RETRIEVAL_QUALITY_ISSUE_URL} \
 — the issue template includes a diagnostic prompt that you can run to generate \
 a structured report for the maintainers.
+
+**Provider settings:** a setting shared by providers can return only some \
+providers' Settings chunks with `low_confidence` `false`. Retry with \
+`limit=20`, or search the provider by name, then \
+`get_doc(path=<hit path>, section="Settings")`. That returns the first \
+Settings section, or the whole page if none matches; read the full page for \
+multi-service providers (e.g. Deepgram).
 
 **Corpus hint:** A search response may carry a top-level ``corpus_hint`` \
 object (absent when it does not apply). It means the question names a vendor \

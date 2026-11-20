@@ -12,6 +12,8 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-19
+
 ### Fixed
 - **`check_deprecation` no longer reads a bare deprecated member name as `current`.** A name that
   matches no registry symbol exactly but names deprecated members (for example
@@ -24,6 +26,37 @@ This changelog retains repository and Context Hub package history.
   stays `current`; a name under a registry key keeps that key's verdict.
 
 ### Changed
+- The server instructions gain a **Provider settings** paragraph. A `search_docs` query for a
+  setting several providers share (for example `speaker_format`) can return only some STT
+  providers' Settings chunks while `low_confidence` is `false`; the paragraph says to retry with
+  `limit=20`, or to search the provider by name and call `get_doc` with the hit's path and
+  `section="Settings"`. It warns that the section lookup returns the first Settings section only
+  (the Deepgram page has four), so a provider with several services needs the full page. It is
+  advisory and changes no ranking. To fit it before the Corpus hint's trust warnings (one client
+  shows only the first 4096 characters of the instructions), the `uv` guidance and the version-aware
+  sentence in the instructions are shortened. The 4096 limit and
+  the trust phrases that must end inside it are now named constants
+  (`INSTRUCTIONS_CLIENT_WINDOW`, `INSTRUCTIONS_TRUST_PHRASES`), and unit and integration tests
+  check each phrase inside the Corpus hint paragraph.
+- Tool metadata examples now resolve against the live docs index, and each is defined once in
+  `shared/types.py` (`SEARCH_DOCS_AREA_EXAMPLES`, `GET_DOC_PATH_RULE`, `GET_DOC_SECTION_NOTE`)
+  and reused by the tool description, the input schema and the `--help` text; a test checks all
+  three surfaces. `get_doc`'s `path` now says to use the exact indexed path as a `search_docs`
+  hit reports it (most docs paths end in `.md`, for example
+  `/api-reference/server/frames/system-frames.md`) instead of the non-resolving
+  `/guides/learn/transports`, and `section` says it returns the first matching section only,
+  the full page when none matches on a path lookup, and the same within that one chunk on a doc-ID lookup.
+  `search_docs`'s `area` examples use `api-reference/server/services` and `pipecat/learn` (one
+  reference area, one guide area) instead of `guides` and `server/services`, which match nothing.
+  An `area` now matches whole path segments: `pipecat` no longer returns `/pipecat-cloud/...`
+  pages, and a partial segment such as `api-ref` matches nothing. An area ending in `.md` still
+  names one page. `get_doc`'s path rule says "as a docs search hit reports it" so the CLI help does
+  not point at a `search_docs` command that does not exist. The `get_hub_status` description now
+  tells the agent to keep `indexed_repos` and `configured_no_records` out of public reports, because
+  the degraded-hub paragraph that says so falls past Claude Code's 4096-character view. `AGENTS.md`, `docs/cli.md`,
+  `docs/tools.md` and the retrieval-quality issue template follow; the template no longer reads a
+  `Not Found` on a guessed path as "not indexed". The `RerankerConfig` docstring now says the
+  reranker is enabled by default.
 - `check_deprecation` responses gain two keys, `candidates` and `candidates_total`, that are `null`
   when absent. `status: null` now also means "hint" (with `candidates`); with only a `note` it still
   means an unloadable deprecation map.

@@ -74,6 +74,21 @@ def _candidate_limit(limit: int) -> int:
     return max(limit, _MIN_CANDIDATES)
 
 
+def _area_path_prefix(area: str) -> str:
+    """Turn a ``search_docs`` ``area`` into the path prefix the index filters on.
+
+    Doc paths are stored with a leading slash (``/api-reference/...``, from
+    ``urlparse(source_url).path``), so the area gets one. A directory area also
+    gets a trailing slash so it matches whole path segments: ``pipecat`` must
+    not pull in ``/pipecat-cloud/...``. An area that names a page (ends in
+    ``.md``) is kept as given.
+    """
+    path = area if area.startswith("/") else f"/{area}"
+    if path.endswith(".md"):
+        return path
+    return path.rstrip("/") + "/"
+
+
 class HybridRetriever:
     """Hybrid retrieval service implementing the Retriever protocol.
 
@@ -323,11 +338,7 @@ class HybridRetriever:
         """Search documentation with hybrid retrieval."""
         filters: dict[str, Any] = {"content_type": "doc"}
         if input.area:
-            # Doc paths are stored with a leading slash (e.g. "/guides/...")
-            # from urlparse(source_url).path.  Normalize the user-supplied
-            # area so the prefix filter matches.
-            area = input.area if input.area.startswith("/") else f"/{input.area}"
-            filters["path"] = area
+            filters["path"] = _area_path_prefix(input.area)
 
         # Version scoring not applicable to docs — docs are version-agnostic
         # (single docs site, no versioned variants).

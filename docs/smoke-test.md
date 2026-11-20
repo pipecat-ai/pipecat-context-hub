@@ -507,6 +507,81 @@ the indexed pipecat version; re-verify against the current registry if they drif
     owners". `check-deprecation Sub.model` — `status: current`, no candidates
     (`model` has more owners than the 10-candidate cap). Regression canary for
     the hint disappearing once a second class registers the same member name.
+61. **Settings recall for STT diarization (2026-11-19).** Dev plan
+    `docs/dev_plans/20261117-fix-search-docs-cross-provider-recall.md`. A
+    cross-provider settings query returns only some providers' Settings chunks at
+    a small `--limit` while `.evidence.low_confidence` stays `false`; no ranking
+    change fixes it, so the item checks the two workarounds and the instructions
+    paragraph that points to them.
+    - **Check** (`get_doc` does not use the reranker). First run
+      `uv run pipecat-context-hub status`; it must exit 0 (exit 2 means the index
+      is not ready, and the loop would then print twelve `FAIL` lines that are not
+      a data change):
+      ```
+      for p in assemblyai aws deepgram elevenlabs meta nvidia openai smallest soniox speechmatics xai zoom-ai; do
+        uv run pipecat-context-hub get-doc --path /api-reference/server/services/stt/$p.md --section Settings \
+          | jq -e '.content | (split("\n")[0] == "## Settings") and ([split("\n")[] | select(startswith("## "))] | length == 1) and (split("\n") | any(test("^\\| `speaker_format` *\\|")))' >/dev/null \
+          && echo "ok $p" || echo "FAIL $p"
+      done
+      ```
+      Expected: `ok` for all twelve (verified live 2026-11-18). It covers the first
+      Settings section only (the first line is `## Settings` and it is the only `## `
+      heading, so a full-page fallback fails) and has a table row whose first cell is
+      `speaker_format` (a row that only mentions it in a description does not count).
+      It tests the content, not ranking.
+    - **Note (dated; run it only after `status` exits 0, or an unready index prints
+      an empty list that reads as a ranking change; needs the reranker on, `status`
+      shows `reranker_enabled: true`)**: a hit qualifies when its chunk text
+      (`get-doc --doc-id`) has a table row whose first cell is `speaker_format`. This prints the pages with a qualifying hit at `--limit 20`;
+      expected twelve distinct `stt/<page>.md` URLs (last page at rank 19, a thin
+      margin):
+      ```
+      uv run pipecat-context-hub search-docs "speaker diarization speaker_format" --limit 20 | jq -r '.hits[].doc_id' \
+        | while read id; do uv run pipecat-context-hub get-doc --doc-id "$id" \
+            | jq -r 'select(.content | split("\n") | any(test("^\\| `speaker_format` *\\|"))) | .source_url'; done | sort -u
+      ```
+      At `--limit 5` none qualifies and `.evidence.low_confidence` is still
+      `false`; `get-doc` on a path without `.md`, or on a guessed filename such as
+      `stt/smallest-ai.md` (the indexed page is `stt/smallest.md`), returns `Not Found`
+      with exit 0, which is why the instructions say to take the path from a search hit.
+      The path example in the tool metadata resolves: `get-doc --path
+      /api-reference/server/frames/system-frames.md` returns the System Frames page.
+      `--section Settings` returns the first Settings section only (the Deepgram page
+      has four). The `area` examples in the `search_docs` metadata match pages, an
+      area matches whole path segments, and a guessed area returns none (`--area guides`):
+      ```
+      uv run pipecat-context-hub search-docs "frame processor pipeline task" --area api-reference/server/services --limit 5 \
+        | jq -e '(.hits | length > 0) and all(.hits[].citation.path; startswith("/api-reference/server/services"))'
+      uv run pipecat-context-hub search-docs "frame processor pipeline task" --area api-reference --limit 5 \
+        | jq -e 'any(.hits[].citation.path; startswith("/api-reference/server/services") | not)'
+      uv run pipecat-context-hub search-docs "pipecat learn" --area pipecat --limit 20 \
+        | jq -e '(.hits | length > 0) and all(.hits[].citation.path; startswith("/pipecat/"))'
+      ```
+      All three exit 0; the last fails if `pipecat` also returns `/pipecat-cloud/...` pages. A
+      change here is a data or ranking change to triage, not a failure of the Check.
+      Known limit: `get-doc --path /` returns `Not Found` for the SDK reference
+      homepages indexed at `/` (a prefix lookup capped at 200 rows, then an exact
+      filter); use their `--doc-id`.
+    - **Instructions.** `uv run pytest tests/integration/test_report_hint_e2e.py -q`
+      passes: it starts `serve` and asserts the real `initialize` response contains
+      `**Provider settings:**` and that every Corpus hint trust warning ends before
+      character 4096 (item 50 is the existing instructions item). Optional
+      installed-tool check, run by you: `uv tool install --force --reinstall .` (a
+      same-version rebuild may otherwise be reused), reconnect with `/mcp`, confirm
+      the paragraph, then reinstall the released tool and confirm
+      `pipecat-context-hub --version`.
+    - **Provenance and triage.** The docs corpus is the live docs site at refresh
+      time, not the framework pin, so the Check is keyed on content: the twelve
+      pages' Settings sections, as of `last_refresh_at` 2026-11-18 and
+      `indexed_framework_version` 1.16.0 (context, not identity). If the Check
+      fails, run the same commands on `main` against the same index. A failure on
+      `main` too is a data change (the docs or the index moved): re-measure the
+      twelve pages and update this item. A pass on `main` and a failure on the
+      branch is a regression in the branch. No unit test pins the data Check and
+      Note, because no code path changed. The Instructions check has the unit pin
+      (`tests/unit/test_server.py::TestServerInstructions`) and the e2e test, and
+      is left out of the main-versus-branch rule: it fails on `main` until this PR
+      merges.
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

@@ -221,6 +221,27 @@ class IngestResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+SEARCH_DOCS_AREA_EXAMPLES = "'api-reference/server/services', 'pipecat/learn'"
+"""Docs path prefixes that match indexed pages; shown on every ``area`` surface.
+
+One reference area and one conceptual-guide area, so a 'how do I...?' question does not
+copy a prefix that holds only API pages. An area matches whole path segments.
+"""
+
+GET_DOC_PATH_RULE = (
+    "Use the exact indexed path, as a docs search hit reports it (e.g. "
+    "'/api-reference/server/frames/system-frames.md'; most docs paths end in `.md`)."
+)
+"""The ``get_doc`` ``path`` rule, shown verbatim on every caller-facing surface."""
+
+GET_DOC_SECTION_NOTE = (
+    "A path lookup returns only the first section with that heading, or the full page if "
+    "none matches; a doc-ID lookup does the same within that one chunk. A page that covers "
+    "several services repeats headings such as Settings, so read the full page for those."
+)
+"""The ``get_doc`` ``section`` rule, shown verbatim on every caller-facing surface."""
+
+
 class SearchDocsInput(BaseModel):
     """Input for the search_docs MCP tool."""
 
@@ -228,7 +249,10 @@ class SearchDocsInput(BaseModel):
     area: str | None = Field(
         default=None,
         max_length=256,
-        description="Narrow to a docs area by path prefix, e.g. 'api', 'guides', 'server/services'.",
+        description=(
+            "Narrow to a docs area by path prefix (whole path segments), "
+            f"e.g. {SEARCH_DOCS_AREA_EXAMPLES}."
+        ),
     )
     limit: int = Field(default=10, ge=1, le=50)
 
@@ -267,12 +291,12 @@ class GetDocInput(BaseModel):
     path: str | None = Field(
         default=None,
         max_length=512,
-        description="Doc path prefix (e.g. '/guides/learn/transports'). Looks up by path when doc_id is not known.",
+        description=f"{GET_DOC_PATH_RULE} Looks up by path when doc_id is not known.",
     )
     section: str | None = Field(
         default=None,
         max_length=256,
-        description="Extract a specific section by heading. Falls back to full document if not found.",
+        description=f"Extract a specific section by heading. {GET_DOC_SECTION_NOTE}",
     )
 
     @model_validator(mode="after")
