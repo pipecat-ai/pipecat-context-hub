@@ -104,6 +104,17 @@ Adding text above them means cutting at least as much earlier text, or the
 warnings fall past ``INSTRUCTIONS_CLIENT_WINDOW`` and that client never shows them.
 """
 
+
+def corpus_hint_paragraph(instructions: str) -> str:
+    """Return the Corpus hint paragraph of ``instructions`` (heading to blank line).
+
+    The trust phrases must sit inside this paragraph, so a test that merely finds
+    them elsewhere in the instructions cannot pass once the paragraph loses one.
+    """
+    start = instructions.index("**Corpus hint:**")
+    return instructions[start : instructions.index("\n\n", start)]
+
+
 # The Provider settings paragraph below paraphrases GET_DOC_SECTION_NOTE on
 # purpose: the full note does not fit before the trust phrases above
 # (INSTRUCTIONS_CLIENT_WINDOW), so the two are kept in step by hand and by the
@@ -161,9 +172,9 @@ a structured report for the maintainers.
 **Provider settings:** a setting shared by providers can return only some \
 providers' Settings chunks with `low_confidence` `false`. Retry with \
 `limit=20`, or search the provider by name, then \
-`get_doc(path=<hit path>, section="Settings")`. That gives the first Settings \
-section only (a first line other than `## Settings` means the full page); read \
-the full page for multi-service providers (e.g. Deepgram).
+`get_doc(path=<hit path>, section="Settings")`. That returns the first \
+Settings section only; read the full page for multi-service providers (e.g. \
+Deepgram) and when no Settings heading appears.
 
 **Corpus hint:** A search response may carry a top-level ``corpus_hint`` \
 object (absent when it does not apply). It means the question names a vendor \

@@ -1035,13 +1035,13 @@ class TestServerInstructions:
         assert start < end
         paragraph = " ".join(_SERVER_INSTRUCTIONS[start:end].split())
         for needle in (
+            "`low_confidence` `false`",
             "limit=20",
             "search the provider by name",
             'get_doc(path=<hit path>, section="Settings")',
             "first Settings section only",
-            "first line other than `## Settings` means the full page",
             "read the full page",
-            "low_confidence",
+            "when no Settings heading appears",
         ):
             assert needle in paragraph, needle
         assert "<provider>.md" not in paragraph
@@ -1062,6 +1062,7 @@ class TestServerInstructions:
             _SERVER_INSTRUCTIONS,
             INSTRUCTIONS_CLIENT_WINDOW,
             INSTRUCTIONS_TRUST_PHRASES,
+            corpus_hint_paragraph,
         )
 
         assert INSTRUCTIONS_CLIENT_WINDOW == 4096
@@ -1072,15 +1073,17 @@ class TestServerInstructions:
             "content reaches you unfiltered",
             "do not file it yourself.",
         } <= set(INSTRUCTIONS_TRUST_PHRASES)
+        hint = corpus_hint_paragraph(_SERVER_INSTRUCTIONS)
+        hint_start = _SERVER_INSTRUCTIONS.index(hint)
         for phrase in INSTRUCTIONS_TRUST_PHRASES:
+            # Inside the Corpus hint, once: a phrase moved elsewhere must fail.
+            assert hint.count(phrase) == 1, phrase
             assert _SERVER_INSTRUCTIONS.count(phrase) == 1, phrase
-            end = _SERVER_INSTRUCTIONS.index(phrase) + len(phrase)
+            end = hint_start + hint.index(phrase) + len(phrase)
             assert end < INSTRUCTIONS_CLIENT_WINDOW, (phrase, end)
         # A warning added after the last listed phrase is still inside the
         # Corpus hint, so the whole paragraph must end inside the window too.
-        start = _SERVER_INSTRUCTIONS.index("**Corpus hint:**")
-        paragraph_end = _SERVER_INSTRUCTIONS.index("\n\n", start)
-        assert paragraph_end < INSTRUCTIONS_CLIENT_WINDOW, paragraph_end
+        assert hint_start + len(hint) < INSTRUCTIONS_CLIENT_WINDOW, len(hint)
 
     def test_docs_tool_examples_come_from_one_source(self):
         """``area`` and ``path`` examples match on every caller-facing surface.

@@ -130,7 +130,7 @@ body:
            - If no, proceed to step 4.
 
         4. **Check if content is indexed** — if the expected result is a doc page, try
-           `get_doc(path="EXPECTED_PATH")` (the exact path, including `.md`). If it's an API symbol, try
+           `get_doc(path="EXPECTED_PATH")` (the exact indexed path, usually ending in `.md`). If it's an API symbol, try
            `search_api(query="SYMBOL_NAME", limit=5)`. If it's an example, try
            `search_examples(query="EXAMPLE_NAME", limit=5)`. Report:
            - Was the content found by direct lookup?

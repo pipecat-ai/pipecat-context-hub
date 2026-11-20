@@ -532,10 +532,7 @@ def search_docs_command(ctx: click.Context, query: str, area: str | None, limit:
 @click.option(
     "--section",
     default=None,
-    help=(
-        "Return only this section heading; the full page if no heading matches. "
-        f"{GET_DOC_SECTION_NOTE}"
-    ),
+    help=f"Return only this section heading. {GET_DOC_SECTION_NOTE}",
 )
 @click.pass_context
 def get_doc_command(

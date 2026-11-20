@@ -28,6 +28,7 @@ import pytest
 from pipecat_context_hub.server.main import (
     INSTRUCTIONS_CLIENT_WINDOW,
     INSTRUCTIONS_TRUST_PHRASES,
+    corpus_hint_paragraph,
 )
 from pipecat_context_hub.shared.support_links import (
     BUG_REPORT_ISSUE_URL,
@@ -89,8 +90,14 @@ def test_mcp_initialize_delivers_report_hint_instructions(seeded_home: Path) -> 
         # client, and every Corpus hint trust warning must end inside the
         # window that one client shows.
         assert "**Provider settings:**" in instructions
+        hint = corpus_hint_paragraph(instructions)
+        hint_start = instructions.index(hint)
         for phrase in INSTRUCTIONS_TRUST_PHRASES:
-            assert instructions.index(phrase) + len(phrase) < INSTRUCTIONS_CLIENT_WINDOW, phrase
+            assert phrase in hint, phrase
+            assert hint_start + hint.index(phrase) + len(phrase) < INSTRUCTIONS_CLIENT_WINDOW, (
+                phrase
+            )
+        assert hint_start + len(hint) < INSTRUCTIONS_CLIENT_WINDOW
 
         proc.stdin.close()
         rc = proc.wait(timeout=10)

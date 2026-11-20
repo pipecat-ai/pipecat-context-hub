@@ -520,24 +520,25 @@ the indexed pipecat version; re-verify against the current registry if they drif
       ```
       for p in assemblyai aws deepgram elevenlabs meta nvidia openai smallest soniox speechmatics xai zoom-ai; do
         uv run pipecat-context-hub get-doc --path /api-reference/server/services/stt/$p.md --section Settings \
-          | jq -e '.content | (split("\n")[0] == "## Settings") and ([split("\n")[] | select(startswith("## "))] | length == 1) and (split("\n") | any(startswith("|") and test("speaker_format|diarize")))' >/dev/null \
+          | jq -e '.content | (split("\n")[0] == "## Settings") and ([split("\n")[] | select(startswith("## "))] | length == 1) and (split("\n") | any(startswith("| `speaker_format`")))' >/dev/null \
           && echo "ok $p" || echo "FAIL $p"
       done
       ```
       Expected: `ok` for all twelve (verified live 2026-11-18). It covers the first
       Settings section only (the first line is `## Settings` and it is the only `## `
-      heading, so a full-page fallback fails), and tests the content, not ranking.
+      heading, so a full-page fallback fails) and has a table row whose first cell is
+      `speaker_format` (a row that only mentions it in a description does not count).
+      It tests the content, not ranking.
     - **Note (dated; run it only after `status` exits 0, or an unready index prints
       an empty list that reads as a ranking change; needs the reranker on, `status`
       shows `reranker_enabled: true`)**: a hit qualifies when its chunk text
-      (`get-doc --doc-id`) has a line starting with `|` naming `speaker_format` or
-      `diarize`. This prints the pages with a qualifying hit at `--limit 20`;
+      (`get-doc --doc-id`) has a table row whose first cell is `speaker_format`. This prints the pages with a qualifying hit at `--limit 20`;
       expected twelve distinct `stt/<page>.md` URLs (last page at rank 19, a thin
       margin):
       ```
       uv run pipecat-context-hub search-docs "speaker diarization speaker_format" --limit 20 | jq -r '.hits[].doc_id' \
         | while read id; do uv run pipecat-context-hub get-doc --doc-id "$id" \
-            | jq -r 'select(.content | split("\n") | any(startswith("|") and test("speaker_format|diarize"))) | .source_url'; done | sort -u
+            | jq -r 'select(.content | split("\n") | any(startswith("| `speaker_format`"))) | .source_url'; done | sort -u
       ```
       At `--limit 5` none qualifies and `.evidence.low_confidence` is still
       `false`; `get-doc` on a path without `.md`, or on a guessed filename such as

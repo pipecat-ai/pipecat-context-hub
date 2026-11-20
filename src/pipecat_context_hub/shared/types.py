@@ -225,16 +225,17 @@ SEARCH_DOCS_AREA_EXAMPLES = "'api-reference', 'api-reference/server/services'"
 """Docs path prefixes that match indexed pages; shown on every ``area`` surface."""
 
 GET_DOC_PATH_RULE = (
-    "Use the exact indexed path, as a search_docs hit reports it; docs pages end in "
-    "`.md` (e.g. '/api-reference/server/frames/system-frames.md')."
+    "Use the exact indexed path, as a search_docs hit reports it (e.g. "
+    "'/api-reference/server/frames/system-frames.md'; most docs paths end in `.md`)."
 )
 """The ``get_doc`` ``path`` rule, shown verbatim on every caller-facing surface."""
 
 GET_DOC_SECTION_NOTE = (
-    "Returns only the first section with that heading; a page that covers several "
+    "With `path`, returns only the first section with that heading, or the full page if "
+    "none matches; a `doc_id` lookup searches only that chunk. A page that covers several "
     "services repeats headings such as Settings, so read the full page for those."
 )
-"""The ``get_doc`` ``section`` caveat, shown verbatim on every caller-facing surface."""
+"""The ``get_doc`` ``section`` rule, shown verbatim on every caller-facing surface."""
 
 
 class SearchDocsInput(BaseModel):
@@ -288,10 +289,7 @@ class GetDocInput(BaseModel):
     section: str | None = Field(
         default=None,
         max_length=256,
-        description=(
-            "Extract a specific section by heading. Falls back to full document if not "
-            f"found. {GET_DOC_SECTION_NOTE}"
-        ),
+        description=f"Extract a specific section by heading. {GET_DOC_SECTION_NOTE}",
     )
 
     @model_validator(mode="after")
