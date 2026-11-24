@@ -1697,9 +1697,12 @@ class TestRefreshCommand:
         the hub clones as and what to check."""
         import logging
 
+        from pipecat_context_hub.shared.repo_access import clone_failure_message
+
+        exc = RuntimeError("remote: Repository not found.")
         with caplog.at_level(logging.WARNING):
             result, _store, _crawler = self._run_with_framework_failure(
-                RuntimeError("remote: Repository not found."),
+                exc,
                 ["--framework-version", "v1.2.0"],
                 tmp_path,
                 monkeypatch,
@@ -1709,8 +1712,10 @@ class TestRefreshCommand:
         failure = next(
             m for m in (r.getMessage() for r in caplog.records) if "Failed to clone/fetch" in m
         )
-        assert "pipecat-ai/pipecat could not be read" in failure
-        assert "GitHub account in this environment" in failure
+        # The shared message, hint line included; its wording is pinned in
+        # test_repo_access.py, not here.
+        assert failure.strip() == clone_failure_message("pipecat-ai/pipecat", exc)
+        assert "\n  " in failure
 
     def test_clone_local_permission_failure_gets_no_private_repo_hint(
         self, tmp_path, monkeypatch, caplog
@@ -1718,9 +1723,12 @@ class TestRefreshCommand:
         """A local disk failure is not a GitHub account problem."""
         import logging
 
+        from pipecat_context_hub.shared.repo_access import clone_failure_message
+
+        exc = OSError("fatal: could not create work tree dir 'x': Permission denied")
         with caplog.at_level(logging.WARNING):
             result, _store, _crawler = self._run_with_framework_failure(
-                OSError("fatal: could not create work tree dir 'x': Permission denied"),
+                exc,
                 ["--framework-version", "v1.2.0"],
                 tmp_path,
                 monkeypatch,
@@ -1730,8 +1738,8 @@ class TestRefreshCommand:
         failure = next(
             m for m in (r.getMessage() for r in caplog.records) if "Failed to clone/fetch" in m
         )
-        assert "Permission denied" in failure
-        assert "GitHub account" not in failure
+        assert failure.strip() == clone_failure_message("pipecat-ai/pipecat", exc)
+        assert failure.strip() == f"Failed to clone/fetch pipecat-ai/pipecat: {exc}"
 
     def test_default_pin_costs_no_extra_fetch(self, tmp_path, monkeypatch):
         """`latest` skips the pre-flight — it cannot be typo'd.

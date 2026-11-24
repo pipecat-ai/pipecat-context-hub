@@ -953,12 +953,15 @@ class TestGitHubRepoIngester:
 
         assert len(result.errors) == 1
         assert "network error" in result.errors[0]
-        assert "GitHub account" not in result.errors[0]
+        assert "\n" not in result.errors[0]  # no access hint line
         assert result.records_upserted == 0
 
     async def test_ingest_clone_access_failure_adds_the_private_repo_hint(self, tmp_path: Path):
-        """A 'Repository not found' clone failure names the account requirement;
-        an unrelated failure (above) does not."""
+        """The ingester's clone failure is the shared message, hint included for
+        a 'Repository not found'; an unrelated failure (above) gets none. What
+        the hint says is pinned in test_repo_access.py."""
+        from pipecat_context_hub.shared.repo_access import clone_failure_message
+
         config = self._make_config(tmp_path)
         ingester = GitHubRepoIngester(config, _make_mock_writer())
 
@@ -966,8 +969,8 @@ class TestGitHubRepoIngester:
         with patch.object(ingester, "clone_or_fetch", side_effect=exc):
             result = await ingester.ingest()
 
-        assert result.errors
-        assert all("GitHub account in this environment" in e for e in result.errors)
+        assert result.errors == [clone_failure_message("test-org/test-repo", exc)]
+        assert "\n  " in result.errors[0]  # the hint line
 
     async def test_ingest_upsert_failure_is_reported_as_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
