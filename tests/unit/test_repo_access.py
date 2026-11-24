@@ -30,7 +30,7 @@ _ACCESS_CASES = [
     ("remote: Repository not found.", "`Repository not found`"),
     (
         "fatal: Authentication failed for 'https://github.com/acme/private.git/'",
-        "failed authentication",
+        "`Authentication failed`",
     ),
     (
         "fatal: could not read Username for 'https://github.com': No such device or address",
@@ -319,18 +319,22 @@ def test_hint_states_the_account_requirement_first_then_the_fix() -> None:
     )
     # An `insteadOf` rule can turn the hub's HTTPS clone into SSH, where the HTTPS
     # credential helper is not involved: the hint points at the SSH key too. A failed
-    # first clone leaves no checkout, so the URL comes from `ls-remote --get-url`
-    # (which expands the rewrite with no checkout), not from `origin`. A host alias
+    # first clone leaves no checkout, so its URL comes from `ls-remote --get-url`
+    # (which expands the rewrite with no checkout); a refresh of an existing clone
+    # fetches that clone's `origin`, which its own config can rewrite. A host alias
     # or GitHub Enterprise is not github.com, and ssh's defaults (local username,
-    # port 22) are not what `ssh://git@host:2222/...` uses, so the check names all three.
+    # port 22) are not what `ssh://git@host:2222/...` uses, so the check names all
+    # three. git's own ssh command can choose another key than the test.
     ssh = hint.index(
         "If your git config rewrites the HTTPS URL to SSH, "
         "`git ls-remote --get-url https://github.com/<owner>/<repo>.git` shows the URL "
-        "git uses; test its key with `ssh -T -p <port> <user>@<host>`, using the user, "
-        "host and port that URL names (not always github.com; drop `-p` if it names "
-        "no port)."
+        "a first clone uses; an existing clone fetches its own `origin` "
+        "(`git -C <clone dir> remote get-url origin`; the clone is under `repos/` in the "
+        "hub's data dir). Test that URL's key with `ssh -T -p <port> <user>@<host>`, "
+        "using the user, host and port it names (not always github.com; drop `-p` if it "
+        "names no port); ssh reads the `~/.ssh/config` entry for that host, and git's "
+        "`core.sshCommand`, if set, can pick a different key."
     )
-    assert "origin" not in hint
     # Least privilege first: read-only Contents on the one repo; classic `repo`
     # named as the broader option, bounded by what the account itself may do.
     fine_grained = hint.index("fine-grained one with read-only Contents access to just this repo")
@@ -338,6 +342,11 @@ def test_hint_states_the_account_requirement_first_then_the_fix() -> None:
     assert account < gh_status < ssh < fine_grained < classic
     assert "full access to every private repo it can reach" in hint
     assert "including write where it has write" in hint
+    # An org can block classic tokens: then a 403 even though the browser shows it.
+    blocked = hint.index(
+        "an org can block classic tokens, which then get a 403 even when the browser shows the repo"
+    )
+    assert classic < blocked
     assert "read and write" not in hint
     assert "SSO" in hint and "outside collaborator" in hint
     assert hint.endswith("If the repo is public, check the spelling.")
