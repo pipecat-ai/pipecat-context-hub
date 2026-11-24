@@ -338,13 +338,33 @@ class TestCloneOrFetchCheckoutControl:
         """`repo_access` strips the git command's last argument from stderr as the
         clone target; pin that against the real `clone_from` argv. The GitHub URL
         is rewritten to a missing local path, so no network is used."""
+        import subprocess
+
         from git.exc import GitCommandError
 
         from pipecat_context_hub.shared.repo_access import clone_failure_message
 
+        # Git only from this test's config: a global or system `insteadOf` for
+        # https://github.com/ (say, to SSH) would otherwise outrank the rewrite
+        # below. No prompt and no ssh, should anything still reach the network.
+        empty_global = tmp_path / "gitconfig"
+        empty_global.write_text("")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_global))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+        monkeypatch.setenv("GIT_SSH_COMMAND", "false")
         monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
         monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{tmp_path / 'missing'}/.insteadOf")
         monkeypatch.setenv("GIT_CONFIG_VALUE_0", "https://github.com/")
+        # The isolation itself: the rewrite above is the only URL rule git sees.
+        rules = subprocess.run(
+            ["git", "config", "--get-regexp", r"^url\."],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.splitlines()
+        assert rules == [f"url.{tmp_path / 'missing'}/.insteadof https://github.com/"]
         # A refusal phrase in the data dir: git repeats the target in its stderr.
         data_dir = tmp_path / "Authentication Failed"
         config = HubConfig(storage=StorageConfig(data_dir=data_dir))
@@ -1024,12 +1044,11 @@ class TestGitHubRepoIngester:
             result = await ingester.ingest()
 
         assert result.errors == [clone_failure_message("test-org/test-repo", exc)]
-        # The hint line, by its opening words right after the exception text
-        # (`str(exc)` itself holds indented lines).
-        assert result.errors[0].startswith(
-            f"Failed to clone/fetch test-org/test-repo: {exc}\n"
-            "  test-org/test-repo could not be read."
-        )
+        # The hint line, without quoting it: one more indented line than the
+        # first line has (`str(exc)` itself holds indented lines).
+        first = f"Failed to clone/fetch test-org/test-repo: {exc}"
+        assert result.errors[0].startswith(first + "\n  ")
+        assert result.errors[0].count("\n  ") == first.count("\n  ") + 1
 
     async def test_ingest_upsert_failure_is_reported_as_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

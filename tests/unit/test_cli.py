@@ -1718,12 +1718,11 @@ class TestRefreshCommand:
         )
         # The shared message, hint line included; its wording is pinned in
         # test_repo_access.py, not here. `str(exc)` itself holds indented lines,
-        # so the hint is checked by its opening words right after the exception.
+        # so the hint is proved by one more indented line than the first line has.
+        first = f"Failed to clone/fetch pipecat-ai/pipecat: {exc}"
         assert failure.strip() == clone_failure_message("pipecat-ai/pipecat", exc)
-        assert failure.strip().startswith(
-            f"Failed to clone/fetch pipecat-ai/pipecat: {exc}\n"
-            "  pipecat-ai/pipecat could not be read."
-        )
+        assert failure.strip().startswith(first + "\n  ")
+        assert failure.strip().count("\n  ") == first.count("\n  ") + 1
 
     def test_clone_local_permission_failure_gets_no_private_repo_hint(
         self, tmp_path, monkeypatch, caplog

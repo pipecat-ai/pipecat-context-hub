@@ -30,7 +30,9 @@ _ACCESS_TEXTS = [
     "fatal: could not read Username for 'https://github.com': No such device or address",
     "fatal: could not read Password for 'https://octocat@github.com': No such device",
     "fatal: terminal prompts disabled",
-    "git@github.com: Permission denied (publickey).",
+    # ssh's method list, ending in publickey (the plain form is checked below).
+    "git@github.com: Permission denied (keyboard-interactive,publickey).",
+    "Received disconnect from 140.82.112.3 port 22:2: Too many authentication failures",
     # GitHub's SSH key audit: the key is suspended until re-approved; nothing else
     # in the output names the cause.
     "ERROR: We're doing an SSH key audit.\n"
@@ -57,6 +59,7 @@ _UNRELATED_TEXTS = [
     # `git clone` output into a read-only directory.
     "fatal: could not create work tree dir 'ro/out2': Permission denied",
     "[Errno 13] Permission denied: '/home/u/.local/share/pipecat-context-hub/repos'",
+    "Permission denied (os error 13)",
     "Tag 'v9' not found in repository. Available tags (latest 5): ['v1.8.1']",
     # Only the quote anchor rejects this: an unanchored `repository .* not found`
     # would match it.
@@ -75,6 +78,20 @@ def test_every_pattern_is_pinned_by_its_own_case() -> None:
     }
     assert all(len(h) == 1 for h in hits.values()), hits
     assert sorted(h[0] for h in hits.values()) == sorted(patterns)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "git@github.com: Permission denied (publickey).",
+        "git@github.com: Permission denied (publickey,password).",
+        "git@github.com: Permission denied (keyboard-interactive,publickey).",
+    ],
+)
+def test_ssh_refusal_matches_by_shape_not_by_example(text: str) -> None:
+    """Any ssh method list ending in publickey is a refusal; a bare or OS-level
+    "Permission denied" (in _UNRELATED_TEXTS) is not."""
+    assert repo_access._ACCESS_RE.search(text) is not None
 
 
 # --- the exception shapes text can reach the clone sites in ------------------
@@ -269,7 +286,12 @@ def test_hint_states_the_account_requirement_first_then_the_fix() -> None:
     gh_status = hint.index("Check `gh auth status`")
     # An existing clone can fetch over SSH, where the HTTPS credential helper is
     # not involved: the hint points at the SSH key too.
-    ssh = hint.index("If `origin` uses SSH, check the SSH key instead (`ssh -T git@github.com`).")
+    # The key `origin` really uses: a host alias or GitHub Enterprise is not
+    # github.com.
+    ssh = hint.index(
+        "If `origin` uses SSH, check the key it uses instead: `ssh -T` to the host "
+        "`git remote get-url origin` names (not always github.com)."
+    )
     # Least privilege first: read-only Contents on the one repo; classic `repo`
     # named as the broader option, bounded by what the account itself may do.
     fine_grained = hint.index("fine-grained one with read-only Contents access to just this repo")
