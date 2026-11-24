@@ -24,34 +24,66 @@ _SLUG = "acme/private"
 _CLONE_ARGV = ["git", "clone", "-v", "--", "https://github.com/acme/private.git", "/data/r"]
 
 # One string per pattern; each matches that pattern and no other, so dropping any
-# one pattern fails its case (see the first test).
-_ACCESS_TEXTS = [
-    "remote: Repository not found.",
-    "fatal: Authentication failed for 'https://github.com/acme/private.git/'",
-    "fatal: could not read Username for 'https://github.com': No such device or address",
-    "fatal: could not read Password for 'https://octocat@github.com': No such device",
-    "fatal: terminal prompts disabled",
+# one pattern fails its case (see the first test). Beside each, how the trigger
+# sentence in docs/configuration.md's "Private repos" names that pattern.
+_ACCESS_CASES = [
+    ("remote: Repository not found.", "`Repository not found`"),
+    (
+        "fatal: Authentication failed for 'https://github.com/acme/private.git/'",
+        "failed authentication",
+    ),
+    (
+        "fatal: could not read Username for 'https://github.com': No such device or address",
+        "`could not read Username`",
+    ),
+    (
+        "fatal: could not read Password for 'https://octocat@github.com': No such device",
+        "or `Password`",
+    ),
+    ("fatal: terminal prompts disabled", "`terminal prompts disabled`"),
     # ssh's method list, containing publickey (other forms are checked below).
-    "git@github.com: Permission denied (keyboard-interactive,publickey).",
-    "Received disconnect from 140.82.112.3 port 22:2: Too many authentication failures",
+    (
+        "git@github.com: Permission denied (keyboard-interactive,publickey).",
+        "any method list containing `publickey`",
+    ),
+    (
+        "Received disconnect from 140.82.112.3 port 22:2: Too many authentication failures",
+        "`Too many authentication failures`",
+    ),
     # GitHub's SSH key audit: the key is suspended until re-approved; nothing else
     # in the output names the cause.
-    "ERROR: We're doing an SSH key audit.\n"
-    "Reactivate this key at https://github.com/settings/keys\n"
-    "Once you've done so, you'll be able to continue using this key.\n"
-    "fatal: Could not read from remote repository.",
-    "error: RPC failed; HTTP 401 curl 22 The requested URL returned error: 401",
-    "error: The requested URL returned error: 403",
-    "error: The requested URL returned error: 404",
+    (
+        "ERROR: We're doing an SSH key audit.\n"
+        "Reactivate this key at https://github.com/settings/keys\n"
+        "Once you've done so, you'll be able to continue using this key.\n"
+        "fatal: Could not read from remote repository.",
+        "`We're doing an SSH key audit`",
+    ),
+    (
+        "error: RPC failed; HTTP 401 curl 22 The requested URL returned error: 401",
+        "`returned error: 401`",
+    ),
+    ("error: The requested URL returned error: 403", "`returned error: 403`"),
+    ("error: The requested URL returned error: 404", "`returned error: 404`"),
     # GitHub's SAML SSO refusal over SSH, where nothing else names the cause.
-    "ERROR: The 'acme' organization has enabled or enforced SAML SSO. To access this "
-    "repository, you must use the HTTPS remote with a personal access token or SSH key "
-    "and password that has been allowed access to this organization.\n"
-    "fatal: Could not read from remote repository.",
+    (
+        "ERROR: The 'acme' organization has enabled or enforced SAML SSO. To access this "
+        "repository, you must use the HTTPS remote with a personal access token or SSH key "
+        "and password that has been allowed access to this organization.\n"
+        "fatal: Could not read from remote repository.",
+        "SAML SSO refusal",
+    ),
     # Without the `remote:` line (a proxy, GitHub Enterprise).
-    "fatal: repository 'https://github.com/acme/private.git/' not found",
-    "remote: Permission to acme/private.git denied to octocat.",
+    (
+        "fatal: repository 'https://github.com/acme/private.git/' not found",
+        "`repository '<url>' not found`",
+    ),
+    (
+        "remote: Permission to acme/private.git denied to octocat.",
+        "`Permission to <repo> denied to <user>`",
+    ),
 ]
+_ACCESS_TEXTS = [text for text, _ in _ACCESS_CASES]
 
 _UNRELATED_TEXTS = [
     "fatal: unable to access 'https://github.com/acme/x.git/': Could not resolve host: github.com",
@@ -95,33 +127,22 @@ def test_ssh_refusal_matches_by_shape_not_by_example(text: str) -> None:
     assert repo_access._ACCESS_RE.search(text) is not None
 
 
-# How docs/configuration.md's "Private repos" trigger sentence names each pattern.
-_DOCS_PHRASES = {
-    re.escape("repository not found"): "`Repository not found`",
-    re.escape("authentication failed"): "failed authentication",
-    re.escape("could not read username"): "`could not read Username`",
-    re.escape("could not read password"): "or `Password`",
-    re.escape("terminal prompts disabled"): "`terminal prompts disabled`",
-    r"permission denied \([a-z,-]*publickey": "any method list containing `publickey`",
-    re.escape("too many authentication failures"): "`Too many authentication failures`",
-    re.escape("doing an ssh key audit"): "`We're doing an SSH key audit`",
-    re.escape("returned error: 401"): "`returned error: 401`",
-    re.escape("returned error: 403"): "`returned error: 403`",
-    re.escape("returned error: 404"): "`returned error: 404`",
-    re.escape("enabled or enforced saml sso"): "SAML SSO refusal",
-    r"repository '[^']*' not found": "`repository '<url>' not found`",
-    r"permission to \S+ denied to": "`Permission to <repo> denied to <user>`",
-}
+def _pattern_of(text: str) -> str:
+    hits = [p for p in repo_access._ACCESS_PATTERNS if re.search(p, text, re.IGNORECASE)]
+    assert len(hits) == 1, (text, hits)
+    return hits[0]
 
 
 def test_docs_trigger_list_names_every_pattern() -> None:
-    """The docs list the triggers by hand; a pattern added or dropped without the
-    docs sentence following fails here."""
-    assert set(_DOCS_PHRASES) == set(repo_access._ACCESS_PATTERNS)
+    """The docs list the triggers by hand. Each docs phrase sits beside a sample
+    text, and the sample finds its pattern, so a pattern added or dropped without
+    the docs sentence following fails here, and a regex can change without it."""
+    by_pattern = {_pattern_of(text): phrase for text, phrase in _ACCESS_CASES}
+    assert sorted(by_pattern) == sorted(repo_access._ACCESS_PATTERNS)
     docs = (Path(__file__).resolve().parents[2] / "docs" / "configuration.md").read_text()
     start = docs.index("The hint fires when")
     sentence = docs[start : docs.index(". ", start)]
-    missing = [phrase for phrase in _DOCS_PHRASES.values() if phrase not in sentence]
+    missing = [phrase for phrase in by_pattern.values() if phrase not in sentence]
     assert not missing, missing
 
 
@@ -282,18 +303,27 @@ def test_hint_states_the_account_requirement_first_then_the_fix() -> None:
     account = hint.index("GitHub account in this environment")
     assert "can only index repos that account can read" in hint
     assert "gh auth setup-git" in hint
-    gh_status = hint.index("Check `gh auth status`")
-    # An existing clone can fetch over SSH, where the HTTPS credential helper is
-    # not involved: the hint points at the SSH key too.
-    # The key `origin` really uses: a host alias or GitHub Enterprise is not
-    # github.com, and ssh's defaults (local username, port 22) are not what an
-    # `ssh://git@host:2222/...` origin uses, so the check names all three.
-    ssh = hint.index(
-        "If `origin` uses SSH, check the key it uses instead: "
-        "`ssh -T -p <port> <user>@<host>` with the user, host and port "
-        "`git remote get-url origin` names (not always github.com; drop `-p` if it "
-        "names no port)."
+    # git can take a token from GIT_ASKPASS (or a prompt) instead of the credential
+    # helper, so gh's account is not assumed to be the one git used.
+    assert "git's credential helper or `GIT_ASKPASS`" in hint
+    gh_status = hint.index(
+        "Check that the account git actually used can open the repo in a browser "
+        "(`gh auth status` names gh's account, which is not always the one git used)."
     )
+    # An `insteadOf` rule can turn the hub's HTTPS clone into SSH, where the HTTPS
+    # credential helper is not involved: the hint points at the SSH key too. A failed
+    # first clone leaves no checkout, so the URL comes from `ls-remote --get-url`
+    # (which expands the rewrite with no checkout), not from `origin`. A host alias
+    # or GitHub Enterprise is not github.com, and ssh's defaults (local username,
+    # port 22) are not what `ssh://git@host:2222/...` uses, so the check names all three.
+    ssh = hint.index(
+        "If your git config rewrites the HTTPS URL to SSH, "
+        "`git ls-remote --get-url https://github.com/<owner>/<repo>.git` shows the URL "
+        "git uses; test its key with `ssh -T -p <port> <user>@<host>`, using the user, "
+        "host and port that URL names (not always github.com; drop `-p` if it names "
+        "no port)."
+    )
+    assert "origin" not in hint
     # Least privilege first: read-only Contents on the one repo; classic `repo`
     # named as the broader option, bounded by what the account itself may do.
     fine_grained = hint.index("fine-grained one with read-only Contents access to just this repo")
