@@ -31,6 +31,7 @@ from pipecat_context_hub.services.ingest.ingest_filters import (
 )
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.interfaces import FatalIndexError
+from pipecat_context_hub.shared.repo_access import access_hint, looks_like_access_failure
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
 from pipecat_context_hub.shared.terminal import shown
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
@@ -1136,6 +1137,8 @@ class GitHubRepoIngester:
                 repo_path, commit_sha = clone.path, clone.commit_sha
             except Exception as exc:
                 msg = f"Failed to clone/fetch {repo_slug}: {exc}"
+                if looks_like_access_failure(str(exc)):
+                    msg += f"\n  {access_hint(repo_slug)}"
                 logger.error(msg)
                 return IngestResult(source=repo_slug, errors=[msg])
 

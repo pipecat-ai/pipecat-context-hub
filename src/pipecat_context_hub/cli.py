@@ -31,6 +31,7 @@ from pipecat_context_hub.cli_repos import register_repos_commands, repos_group
 from pipecat_context_hub.shared import env_loading
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.exit_codes import EXIT_INDEX_UNREADY, EXIT_REFRESH_IN_PROGRESS
+from pipecat_context_hub.shared.repo_access import access_hint, looks_like_access_failure
 from pipecat_context_hub.shared.index_lock import (
     REFRESH_LOCK,
     SERVE_LOCK,
@@ -1570,7 +1571,14 @@ def refresh(
                     raise _framework_pin_not_found(fw_version, exc) from exc
                 if repo_slug == framework_slug:
                     fw_state.clone_or_fetch_failed = True
-                all_errors.append(f"Failed to clone/fetch {shown(repo_slug)}: {exc}")
+                all_errors.append(
+                    f"Failed to clone/fetch {shown(repo_slug)}: {exc}"
+                    + (
+                        f"\n  {access_hint(repo_slug)}"
+                        if looks_like_access_failure(str(exc))
+                        else ""
+                    )
+                )
                 source_status[repo_slug] = {
                     "status": "error",
                     "sha": _MISSING_SENTINEL,
