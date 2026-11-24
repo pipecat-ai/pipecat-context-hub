@@ -12,6 +12,8 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-24
+
 ### Changed
 - **A failed `refresh` clone of an inaccessible repo now says why.** GitHub reports a private repo
   you cannot read as `Repository not found`, the same as a missing one; the error now adds that the
