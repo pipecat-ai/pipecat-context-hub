@@ -1136,7 +1136,7 @@ class GitHubRepoIngester:
                 clone = await asyncio.to_thread(self.clone_or_fetch, repo_slug)
                 repo_path, commit_sha = clone.path, clone.commit_sha
             except Exception as exc:
-                msg = f"Failed to clone/fetch {repo_slug}: {exc}"
+                msg = f"Failed to clone/fetch {shown(repo_slug)}: {exc}"
                 if looks_like_access_failure(str(exc)):
                     msg += f"\n  {access_hint(repo_slug)}"
                 logger.error(msg)

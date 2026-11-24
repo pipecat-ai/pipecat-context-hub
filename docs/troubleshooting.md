@@ -153,7 +153,8 @@ Part of the [Pipecat Context Hub README](README.md).
   configured repos once at start. The hint carries `refresh_command` only when
   `repos_configured_no_records` is non-empty: those repos are already
   configured but have no records, so run `refresh` and check its log for a
-  failed clone.
+  failed clone (for a private repo, see "Private repos" in
+  [configuration.md](configuration.md)).
 
 ## Windows
 

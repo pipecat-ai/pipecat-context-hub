@@ -1690,6 +1690,49 @@ class TestRefreshCommand:
             for record in caplog.records
         )
 
+    def test_clone_access_failure_logs_the_private_repo_hint(self, tmp_path, monkeypatch, caplog):
+        """The path `refresh` actually takes: its own clone loop, not the
+        ingester's (which only clones when nothing was prefetched). GitHub shows
+        an unreadable private repo as "not found", so the failure must say what
+        the hub clones as and what to check."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result, _store, _crawler = self._run_with_framework_failure(
+                RuntimeError("remote: Repository not found."),
+                ["--framework-version", "v1.2.0"],
+                tmp_path,
+                monkeypatch,
+            )
+
+        assert result.exit_code == 0, result.output
+        failure = next(
+            m for m in (r.getMessage() for r in caplog.records) if "Failed to clone/fetch" in m
+        )
+        assert "pipecat-ai/pipecat could not be read" in failure
+        assert "GitHub account in this environment" in failure
+
+    def test_clone_local_permission_failure_gets_no_private_repo_hint(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A local disk failure is not a GitHub account problem."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result, _store, _crawler = self._run_with_framework_failure(
+                OSError("fatal: could not create work tree dir 'x': Permission denied"),
+                ["--framework-version", "v1.2.0"],
+                tmp_path,
+                monkeypatch,
+            )
+
+        assert result.exit_code == 0, result.output
+        failure = next(
+            m for m in (r.getMessage() for r in caplog.records) if "Failed to clone/fetch" in m
+        )
+        assert "Permission denied" in failure
+        assert "GitHub account" not in failure
+
     def test_default_pin_costs_no_extra_fetch(self, tmp_path, monkeypatch):
         """`latest` skips the pre-flight — it cannot be typo'd.
 
