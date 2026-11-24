@@ -19,7 +19,8 @@ from typing import Final
 from pipecat_context_hub.shared.terminal import shown
 
 # The patterns, matched case-insensitively, that mean "GitHub would not show us this
-# repo" (404 masquerading for private, bad/absent credentials, token scope, SSO).
+# repo" (404 masquerading for private, bad/absent credentials, token scope, SSO,
+# a rejected or suspended SSH key).
 # This tuple is the one source: `_ACCESS_RE` is compiled from it and the tests
 # check each pattern against its own case.
 #
@@ -36,6 +37,9 @@ _ACCESS_PATTERNS: Final = (
     re.escape("could not read password"),
     re.escape("terminal prompts disabled"),
     re.escape("permission denied (publickey"),
+    # `ERROR: We're doing an SSH key audit.` then `fatal: Could not read from remote
+    # repository.`: GitHub suspends an SSH key until its owner re-approves it.
+    re.escape("doing an ssh key audit"),
     re.escape("returned error: 401"),
     re.escape("returned error: 403"),
     re.escape("returned error: 404"),
@@ -104,7 +108,8 @@ def _access_hint(slug: str) -> str:
         "environment (git's credential helper, e.g. gh after `gh auth setup-git`), so it "
         "can only index repos that account can read; GitHub shows a private repo you "
         "cannot access as 'not found'. Check `gh auth status` and that the account can "
-        "open the repo in a browser. For a token, prefer a fine-grained one with "
+        "open the repo in a browser. If `origin` uses SSH, check the SSH key instead "
+        "(`ssh -T git@github.com`). For a token, prefer a fine-grained one with "
         "read-only Contents access to just this repo (classic `repo` scope also works, "
         "but grants the account's full access to every private repo it can reach, "
         "including write where it has write), authorised for the org if it uses SSO; a "

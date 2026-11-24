@@ -310,6 +310,57 @@ class TestCloneOrFetchCheckoutControl:
         with pytest.raises(ValueError, match="Invalid repo slug"):
             ingester.clone_or_fetch("../evil")
 
+    def test_invalid_repo_slug_error_echoes_the_slug_and_gets_no_access_hint(self, tmp_path: Path):
+        """The rejection runs before git and its message is the configured slug,
+        so a refusal phrase in the slug is not GitHub's answer."""
+        from pipecat_context_hub.shared.repo_access import clone_failure_message
+
+        config = HubConfig(storage=StorageConfig(data_dir=tmp_path / "data"))
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+        slug = "acme/Authentication Failed"
+
+        with pytest.raises(ValueError) as caught:
+            ingester.clone_or_fetch(slug)
+
+        assert str(caught.value) == f"Invalid repo slug: {slug}"
+        assert clone_failure_message(slug, caught.value) == (
+            f"Failed to clone/fetch {slug}: {caught.value}"
+        )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="verified against POSIX git only (local-path URL rewrite, how git echoes "
+        "the target); the matcher itself is platform-independent.",
+    )
+    def test_failed_clone_names_the_clone_target_last_in_its_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`repo_access` strips the git command's last argument from stderr as the
+        clone target; pin that against the real `clone_from` argv. The GitHub URL
+        is rewritten to a missing local path, so no network is used."""
+        from git.exc import GitCommandError
+
+        from pipecat_context_hub.shared.repo_access import clone_failure_message
+
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{tmp_path / 'missing'}/.insteadOf")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "https://github.com/")
+        # A refusal phrase in the data dir: git repeats the target in its stderr.
+        data_dir = tmp_path / "Authentication Failed"
+        config = HubConfig(storage=StorageConfig(data_dir=data_dir))
+        ingester = GitHubRepoIngester(config, _make_mock_writer())
+
+        with pytest.raises(GitCommandError) as caught:
+            ingester.clone_or_fetch("acme/private")
+
+        exc = caught.value
+        target = str(data_dir / "repos" / "acme_private")
+        assert exc.command[-2:] == ["https://github.com/acme/private.git", target]
+        assert target in str(exc.stderr)
+        assert clone_failure_message("acme/private", exc) == (
+            f"Failed to clone/fetch acme/private: {exc}"
+        )
+
     def test_head_sentinel_tag_rejected(self, tmp_path: Path):
         """Regression: `tag="head"` must be rejected up front rather than
         attempted as a literal (nonexistent) tag lookup — callers requesting
@@ -951,9 +1002,8 @@ class TestGitHubRepoIngester:
         with patch.object(ingester, "clone_or_fetch", side_effect=RuntimeError("network error")):
             result = await ingester.ingest()
 
-        assert len(result.errors) == 1
-        assert "network error" in result.errors[0]
-        assert "\n" not in result.errors[0]  # no access hint line
+        # Exactly the plain message: no access hint line.
+        assert result.errors == ["Failed to clone/fetch test-org/test-repo: network error"]
         assert result.records_upserted == 0
 
     async def test_ingest_clone_access_failure_adds_the_private_repo_hint(self, tmp_path: Path):
@@ -974,7 +1024,12 @@ class TestGitHubRepoIngester:
             result = await ingester.ingest()
 
         assert result.errors == [clone_failure_message("test-org/test-repo", exc)]
-        assert "\n  " in result.errors[0]  # the hint line
+        # The hint line, by its opening words right after the exception text
+        # (`str(exc)` itself holds indented lines).
+        assert result.errors[0].startswith(
+            f"Failed to clone/fetch test-org/test-repo: {exc}\n"
+            "  test-org/test-repo could not be read."
+        )
 
     async def test_ingest_upsert_failure_is_reported_as_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

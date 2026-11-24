@@ -16,7 +16,6 @@ from collections.abc import Callable
 import pytest
 from git.exc import GitCommandError
 
-from pipecat_context_hub.services.ingest.github_ingest import GitHubRepoIngester
 from pipecat_context_hub.shared import repo_access
 from pipecat_context_hub.shared.repo_access import clone_failure_message
 
@@ -32,6 +31,12 @@ _ACCESS_TEXTS = [
     "fatal: could not read Password for 'https://octocat@github.com': No such device",
     "fatal: terminal prompts disabled",
     "git@github.com: Permission denied (publickey).",
+    # GitHub's SSH key audit: the key is suspended until re-approved; nothing else
+    # in the output names the cause.
+    "ERROR: We're doing an SSH key audit.\n"
+    "Reactivate this key at https://github.com/settings/keys\n"
+    "Once you've done so, you'll be able to continue using this key.\n"
+    "fatal: Could not read from remote repository.",
     "error: RPC failed; HTTP 401 curl 22 The requested URL returned error: 401",
     "error: The requested URL returned error: 403",
     "error: The requested URL returned error: 404",
@@ -229,16 +234,11 @@ def test_a_marker_in_stderr_beside_the_clone_target_still_gets_the_hint() -> Non
 
 
 def test_an_invalid_configured_slug_gets_no_hint() -> None:
-    """G2: the ingester rejects the slug before running git, and its message
-    echoes the slug; configured input is not GitHub's answer."""
+    """G2: the slug-rejection message echoes the configured slug; configured input
+    is not GitHub's answer. (That the ingester raises exactly this is pinned in
+    test_github_ingest.py.)"""
     slug = "acme/Authentication Failed"
-    with pytest.raises(ValueError) as caught:
-        GitHubRepoIngester.clone_or_fetch(
-            object(),  # type: ignore[arg-type]  # the slug check runs before any self use
-            slug,
-        )
-    exc = caught.value
-    assert str(exc) == f"Invalid repo slug: {slug}"
+    exc = ValueError(f"Invalid repo slug: {slug}")
     assert clone_failure_message(slug, exc) == f"Failed to clone/fetch {slug}: {exc}"
 
 
@@ -265,12 +265,16 @@ def test_hint_states_the_account_requirement_first_then_the_fix() -> None:
     assert hint.startswith(f"{_SLUG} could not be read.")
     account = hint.index("GitHub account in this environment")
     assert "can only index repos that account can read" in hint
-    assert "gh auth status" in hint and "gh auth setup-git" in hint
+    assert "gh auth setup-git" in hint
+    gh_status = hint.index("Check `gh auth status`")
+    # An existing clone can fetch over SSH, where the HTTPS credential helper is
+    # not involved: the hint points at the SSH key too.
+    ssh = hint.index("If `origin` uses SSH, check the SSH key instead (`ssh -T git@github.com`).")
     # Least privilege first: read-only Contents on the one repo; classic `repo`
     # named as the broader option, bounded by what the account itself may do.
     fine_grained = hint.index("fine-grained one with read-only Contents access to just this repo")
     classic = hint.index("classic `repo` scope")
-    assert account < fine_grained < classic
+    assert account < gh_status < ssh < fine_grained < classic
     assert "full access to every private repo it can reach" in hint
     assert "including write where it has write" in hint
     assert "read and write" not in hint
