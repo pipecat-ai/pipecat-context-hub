@@ -36,8 +36,9 @@ _ACCESS_PATTERNS: Final = (
     re.escape("could not read username"),
     re.escape("could not read password"),
     re.escape("terminal prompts disabled"),
-    # ssh's refusal lists the methods it tried, ending in publickey for GitHub:
-    # `Permission denied (publickey)`, `(keyboard-interactive,publickey)`. A local
+    # ssh's refusal lists the methods it tried, containing publickey for GitHub:
+    # `Permission denied (publickey)`, `(keyboard-interactive,publickey)`,
+    # `(publickey,password)`. A local
     # `Permission denied (os error 13)` has a space and digits, so cannot match.
     r"permission denied \([a-z,-]*publickey",
     # ssh gave up after offering too many keys (an agent holding several).
@@ -114,8 +115,9 @@ def _access_hint(slug: str) -> str:
         "can only index repos that account can read; GitHub shows a private repo you "
         "cannot access as 'not found'. Check `gh auth status` and that the account can "
         "open the repo in a browser. If `origin` uses SSH, check the key it uses "
-        "instead: `ssh -T` to the host `git remote get-url origin` names (not always "
-        "github.com). For a token, prefer a fine-grained one with "
+        "instead: `ssh -T -p <port> <user>@<host>` with the user, host and port "
+        "`git remote get-url origin` names (not always github.com; drop `-p` if it "
+        "names no port). For a token, prefer a fine-grained one with "
         "read-only Contents access to just this repo (classic `repo` scope also works, "
         "but grants the account's full access to every private repo it can reach, "
         "including write where it has write), authorised for the org if it uses SSO; a "

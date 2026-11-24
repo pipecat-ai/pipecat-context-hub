@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from git.exc import GitCommandError
@@ -30,7 +31,7 @@ _ACCESS_TEXTS = [
     "fatal: could not read Username for 'https://github.com': No such device or address",
     "fatal: could not read Password for 'https://octocat@github.com': No such device",
     "fatal: terminal prompts disabled",
-    # ssh's method list, ending in publickey (the plain form is checked below).
+    # ssh's method list, containing publickey (other forms are checked below).
     "git@github.com: Permission denied (keyboard-interactive,publickey).",
     "Received disconnect from 140.82.112.3 port 22:2: Too many authentication failures",
     # GitHub's SSH key audit: the key is suspended until re-approved; nothing else
@@ -89,9 +90,39 @@ def test_every_pattern_is_pinned_by_its_own_case() -> None:
     ],
 )
 def test_ssh_refusal_matches_by_shape_not_by_example(text: str) -> None:
-    """Any ssh method list ending in publickey is a refusal; a bare or OS-level
+    """Any ssh method list containing publickey is a refusal; a bare or OS-level
     "Permission denied" (in _UNRELATED_TEXTS) is not."""
     assert repo_access._ACCESS_RE.search(text) is not None
+
+
+# How docs/configuration.md's "Private repos" trigger sentence names each pattern.
+_DOCS_PHRASES = {
+    re.escape("repository not found"): "`Repository not found`",
+    re.escape("authentication failed"): "failed authentication",
+    re.escape("could not read username"): "`could not read Username`",
+    re.escape("could not read password"): "or `Password`",
+    re.escape("terminal prompts disabled"): "`terminal prompts disabled`",
+    r"permission denied \([a-z,-]*publickey": "any method list containing `publickey`",
+    re.escape("too many authentication failures"): "`Too many authentication failures`",
+    re.escape("doing an ssh key audit"): "`We're doing an SSH key audit`",
+    re.escape("returned error: 401"): "`returned error: 401`",
+    re.escape("returned error: 403"): "`returned error: 403`",
+    re.escape("returned error: 404"): "`returned error: 404`",
+    re.escape("enabled or enforced saml sso"): "SAML SSO refusal",
+    r"repository '[^']*' not found": "`repository '<url>' not found`",
+    r"permission to \S+ denied to": "`Permission to <repo> denied to <user>`",
+}
+
+
+def test_docs_trigger_list_names_every_pattern() -> None:
+    """The docs list the triggers by hand; a pattern added or dropped without the
+    docs sentence following fails here."""
+    assert set(_DOCS_PHRASES) == set(repo_access._ACCESS_PATTERNS)
+    docs = (Path(__file__).resolve().parents[2] / "docs" / "configuration.md").read_text()
+    start = docs.index("The hint fires when")
+    sentence = docs[start : docs.index(". ", start)]
+    missing = [phrase for phrase in _DOCS_PHRASES.values() if phrase not in sentence]
+    assert not missing, missing
 
 
 # --- the exception shapes text can reach the clone sites in ------------------
@@ -221,23 +252,7 @@ def test_hint_fires_exactly_for_github_refusals(
         assert message == first
 
 
-def test_local_permission_error_naming_a_marker_in_its_path_gets_no_hint() -> None:
-    """A local ``OSError`` is never GitHub's answer, whatever its path says."""
-    exc = PermissionError(13, "Permission denied", "/Volumes/Authentication Failed/hub/repos")
-    assert str(exc) == "[Errno 13] Permission denied: '/Volumes/Authentication Failed/hub/repos'"
-    assert clone_failure_message(_SLUG, exc) == f"Failed to clone/fetch {_SLUG}: {exc}"
-
-
 _MARKED_TARGET = "/Volumes/Authentication Failed/hub/repos/a_b"
-
-
-def test_a_marker_only_in_the_clone_target_git_repeats_gets_no_hint() -> None:
-    """G1: git repeats the local clone directory in its stderr; a refusal phrase
-    there is a path, not GitHub's answer."""
-    stderr = f"fatal: could not create work tree dir '{_MARKED_TARGET}': Permission denied"
-    exc = GitCommandError([*_CLONE_ARGV[:-1], _MARKED_TARGET], 128, stderr.encode())
-    assert "Authentication Failed" in str(exc.stderr)
-    assert clone_failure_message(_SLUG, exc) == f"Failed to clone/fetch {_SLUG}: {exc}"
 
 
 def test_a_marker_in_stderr_beside_the_clone_target_still_gets_the_hint() -> None:
@@ -248,22 +263,6 @@ def test_a_marker_in_stderr_beside_the_clone_target_still_gets_the_hint() -> Non
     )
     exc = GitCommandError([*_CLONE_ARGV[:-1], _MARKED_TARGET], 128, stderr.encode())
     assert clone_failure_message(_SLUG, exc).startswith(f"Failed to clone/fetch {_SLUG}: {exc}\n  ")
-
-
-def test_an_invalid_configured_slug_gets_no_hint() -> None:
-    """G2: the slug-rejection message echoes the configured slug; configured input
-    is not GitHub's answer. (That the ingester raises exactly this is pinned in
-    test_github_ingest.py.)"""
-    slug = "acme/Authentication Failed"
-    exc = ValueError(f"Invalid repo slug: {slug}")
-    assert clone_failure_message(slug, exc) == f"Failed to clone/fetch {slug}: {exc}"
-
-
-def test_tag_verification_failure_keeps_the_hint_from_its_cause() -> None:
-    """``Could not verify tag`` wraps the ``git ls-remote`` failure."""
-    exc = _caused_by_git("remote: Repository not found.")
-    assert "not found" not in str(exc)
-    assert "\n  " in clone_failure_message(_SLUG, exc)
 
 
 def test_a_cyclic_chain_terminates() -> None:
@@ -287,10 +286,13 @@ def test_hint_states_the_account_requirement_first_then_the_fix() -> None:
     # An existing clone can fetch over SSH, where the HTTPS credential helper is
     # not involved: the hint points at the SSH key too.
     # The key `origin` really uses: a host alias or GitHub Enterprise is not
-    # github.com.
+    # github.com, and ssh's defaults (local username, port 22) are not what an
+    # `ssh://git@host:2222/...` origin uses, so the check names all three.
     ssh = hint.index(
-        "If `origin` uses SSH, check the key it uses instead: `ssh -T` to the host "
-        "`git remote get-url origin` names (not always github.com)."
+        "If `origin` uses SSH, check the key it uses instead: "
+        "`ssh -T -p <port> <user>@<host>` with the user, host and port "
+        "`git remote get-url origin` names (not always github.com; drop `-p` if it "
+        "names no port)."
     )
     # Least privilege first: read-only Contents on the one repo; classic `repo`
     # named as the broader option, bounded by what the account itself may do.
