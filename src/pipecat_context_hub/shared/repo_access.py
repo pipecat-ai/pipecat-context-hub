@@ -111,8 +111,9 @@ def _looks_like_access_failure(exc: BaseException) -> bool:
 def _access_hint(slug: str) -> str:
     return (
         f"{shown(slug)} could not be read. The hub clones with the GitHub account in this "
-        "environment (git's credential helper or `GIT_ASKPASS`, e.g. gh after "
-        "`gh auth setup-git`), so it can only index repos that account can read; GitHub "
+        "environment, using whatever credentials git is configured with (usually its "
+        "credential helper or `GIT_ASKPASS`, e.g. gh after `gh auth setup-git`), so it "
+        "can only index repos that account can read; GitHub "
         "shows a private repo you cannot access as 'not found'. Check that the account "
         "git actually used can open the repo in a browser (`gh auth status` names gh's "
         "account, which is not always the one git used). If your git config rewrites "

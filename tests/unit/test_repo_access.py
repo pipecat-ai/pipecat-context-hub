@@ -135,8 +135,11 @@ def _pattern_of(text: str) -> str:
 
 def test_docs_trigger_list_names_every_pattern() -> None:
     """The docs list the triggers by hand. Each docs phrase sits beside a sample
-    text, and the sample finds its pattern, so a pattern added or dropped without
-    the docs sentence following fails here, and a regex can change without it."""
+    text, and the sample finds its pattern. So this fails when a pattern has no
+    case row, when a row's phrase is missing from the docs sentence, or when a
+    regex stops matching its sample. It checks one direction only: a pattern
+    dropped together with its case row passes even if the docs still name it,
+    since the docs sentence is prose and is not parsed."""
     by_pattern = {_pattern_of(text): phrase for text, phrase in _ACCESS_CASES}
     assert sorted(by_pattern) == sorted(repo_access._ACCESS_PATTERNS)
     docs = (Path(__file__).resolve().parents[2] / "docs" / "configuration.md").read_text()
@@ -303,9 +306,13 @@ def test_hint_states_the_account_requirement_first_then_the_fix() -> None:
     account = hint.index("GitHub account in this environment")
     assert "can only index repos that account can read" in hint
     assert "gh auth setup-git" in hint
-    # git can take a token from GIT_ASKPASS (or a prompt) instead of the credential
-    # helper, so gh's account is not assumed to be the one git used.
-    assert "git's credential helper or `GIT_ASKPASS`" in hint
+    # git sends whatever credentials it is configured with, not only gh's, so the
+    # hint names the usual sources without claiming they are the only ones, and
+    # gh's account is not assumed to be the one git used.
+    assert (
+        "using whatever credentials git is configured with (usually its credential "
+        "helper or `GIT_ASKPASS`" in hint
+    )
     gh_status = hint.index(
         "Check that the account git actually used can open the repo in a browser "
         "(`gh auth status` names gh's account, which is not always the one git used)."

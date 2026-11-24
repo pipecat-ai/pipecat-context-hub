@@ -1026,10 +1026,12 @@ class TestGitHubRepoIngester:
         assert result.errors == ["Failed to clone/fetch test-org/test-repo: network error"]
         assert result.records_upserted == 0
 
-    async def test_ingest_clone_access_failure_adds_the_private_repo_hint(self, tmp_path: Path):
+    async def test_ingest_clone_access_failure_adds_the_private_repo_hint(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
         """The ingester's clone failure is the shared message, hint included for
-        a 'Repository not found'; an unrelated failure (above) gets none. What
-        the hint says is pinned in test_repo_access.py."""
+        a 'Repository not found', both returned and logged; an unrelated failure
+        (above) gets none. What the hint says is pinned in test_repo_access.py."""
         from git.exc import GitCommandError
 
         from pipecat_context_hub.shared.repo_access import clone_failure_message
@@ -1040,10 +1042,21 @@ class TestGitHubRepoIngester:
         exc = GitCommandError(
             ["git", "clone", "--", "url", "/r"], 128, b"remote: Repository not found."
         )
-        with patch.object(ingester, "clone_or_fetch", side_effect=exc):
+        logger_name = GitHubRepoIngester.__module__
+        with (
+            patch.object(ingester, "clone_or_fetch", side_effect=exc),
+            caplog.at_level("ERROR", logger=logger_name),
+        ):
             result = await ingester.ingest()
 
         assert result.errors == [clone_failure_message("test-org/test-repo", exc)]
+        # The log carries the same message, hint line included.
+        logged = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == logger_name and r.levelname == "ERROR"
+        ]
+        assert logged == result.errors
         # The hint line, without quoting it: one more indented line than the
         # first line has (`str(exc)` itself holds indented lines).
         first = f"Failed to clone/fetch test-org/test-repo: {exc}"
