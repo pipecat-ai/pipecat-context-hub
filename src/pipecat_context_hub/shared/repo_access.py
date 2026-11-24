@@ -18,41 +18,39 @@ from typing import Final
 
 from pipecat_context_hub.shared.terminal import shown
 
-# Substrings of a failed git clone/fetch that mean "GitHub would not show us this
-# repo" (404 masquerading for private, bad/absent credentials, token scope).
+# The patterns, matched case-insensitively, that mean "GitHub would not show us this
+# repo" (404 masquerading for private, bad/absent credentials, token scope, SSO).
+# This tuple is the one source: `_ACCESS_RE` is compiled from it and the tests
+# check each pattern against its own case.
 #
-# A bare "permission denied" is deliberately NOT a marker: git and the filesystem
+# A bare "permission denied" is deliberately NOT a pattern: git and the filesystem
 # say it for a local failure too (`fatal: could not create work tree dir '...':
 # Permission denied`, `[Errno 13] Permission denied: '.../repos'`), which this hint
 # would misdiagnose as a GitHub account problem. GitHub's own wording is
-# "Permission to <repo> denied to <user>" (matched below, a token without access), and
-# ssh's is "Permission denied (publickey)".
-_ACCESS_MARKERS: Final = (
-    "repository not found",
-    "authentication failed",
-    "could not read username",
-    "could not read password",
-    "terminal prompts disabled",
-    "permission denied (publickey",
-    "returned error: 401",
-    "returned error: 403",
-    "returned error: 404",
+# "Permission to <repo> denied to <user>" (a token without access), and ssh's is
+# "Permission denied (publickey)".
+_ACCESS_PATTERNS: Final = (
+    re.escape("repository not found"),
+    re.escape("authentication failed"),
+    re.escape("could not read username"),
+    re.escape("could not read password"),
+    re.escape("terminal prompts disabled"),
+    re.escape("permission denied (publickey"),
+    re.escape("returned error: 401"),
+    re.escape("returned error: 403"),
+    re.escape("returned error: 404"),
+    # `The '<org>' organization has enabled or enforced SAML SSO.`: over SSH this is
+    # the only refusal text (over HTTPS a 403 follows it).
+    re.escape("enabled or enforced saml sso"),
+    # `fatal: repository '<url>' not found`, which git prints without the
+    # preceding `remote: Repository not found.` line when the server (a
+    # proxy, GitHub Enterprise) does not send one. Anchored on the quote
+    # so it cannot match "Tag 'x' not found in repository".
+    r"repository '[^']*' not found",
+    # `remote: Permission to <repo> denied to <user>.`
+    r"permission to \S+ denied to",
 )
-_ACCESS_RE: Final = re.compile(
-    "|".join(
-        (
-            *(re.escape(m) for m in _ACCESS_MARKERS),
-            # `fatal: repository '<url>' not found`, which git prints without the
-            # preceding `remote: Repository not found.` line when the server (a
-            # proxy, GitHub Enterprise) does not send one. Anchored on the quote
-            # so it cannot match "Tag 'x' not found in repository".
-            r"repository '[^']*' not found",
-            # `remote: Permission to <repo> denied to <user>.`
-            r"permission to \S+ denied to",
-        )
-    ),
-    re.IGNORECASE,
-)
+_ACCESS_RE: Final = re.compile("|".join(_ACCESS_PATTERNS), re.IGNORECASE)
 
 # How far down an exception chain to look. The deepest real chain today is two
 # (`ValueError("Could not verify tag ...") from GitCommandError`).
@@ -71,29 +69,33 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
         )
 
 
-def _git_said(exc: BaseException) -> str | None:
-    """The text of ``exc`` that can carry GitHub's answer, or ``None`` if none can.
+def _github_said(exc: BaseException) -> str:
+    """The text in ``exc`` that can be GitHub's answer: only git's stderr.
 
-    An ``OSError`` is a local failure (disk, permissions, a missing binary), never
-    GitHub's answer, and its text names local paths that can hold any words. A git
-    ``CommandError`` (``GitCommandError`` is not an ``OSError``) is read through its
-    stderr only: its ``str()`` also carries the command line, which names the local
-    clone directory.
+    Only a git ``CommandError`` holds text git received from the remote, so any
+    other exception contributes nothing: an ``OSError`` names local paths, and a
+    ``ValueError`` such as ``Invalid repo slug: <slug>`` echoes configured input,
+    either of which can hold any words. A wrapper whose cause is a git failure
+    still counts, through that cause in the chain. The stderr is read without the
+    command's last argument (the clone target, a local directory), because git
+    repeats it there (``fatal: could not create work tree dir '<target>': ...``);
+    ``str()`` is not read at all, since it also carries the command line.
+
+    Residual: a ``git fetch`` in an existing clone names that clone's directory
+    in some local errors (a lock file, say), and the directory is not in the
+    exception, so a refusal phrase inside the data-dir path can still match there.
     """
-    if isinstance(exc, OSError):
-        return None
     from git.exc import CommandError  # deferred: keeps this module a leaf at import
 
-    if isinstance(exc, CommandError):
-        return str(exc.stderr)
-    return str(exc)
+    if not isinstance(exc, CommandError):
+        return ""
+    stderr = str(exc.stderr)
+    target = str(exc.command[-1]) if exc.command else ""
+    return stderr.replace(target, "") if target else stderr
 
 
 def _looks_like_access_failure(exc: BaseException) -> bool:
-    return any(
-        text is not None and _ACCESS_RE.search(text) is not None
-        for text in map(_git_said, _chain(exc))
-    )
+    return any(_ACCESS_RE.search(_github_said(link)) is not None for link in _chain(exc))
 
 
 def _access_hint(slug: str) -> str:
@@ -104,18 +106,20 @@ def _access_hint(slug: str) -> str:
         "cannot access as 'not found'. Check `gh auth status` and that the account can "
         "open the repo in a browser. For a token, prefer a fine-grained one with "
         "read-only Contents access to just this repo (classic `repo` scope also works, "
-        "but grants read and write on every private repo you can reach), authorised for "
-        "the org if it uses SSO; a fine-grained token may not see an org repo where you "
-        "are only an outside collaborator. If the repo is public, check the spelling."
+        "but grants the account's full access to every private repo it can reach, "
+        "including write where it has write), authorised for the org if it uses SSO; a "
+        "fine-grained token may not see an org repo where you are only an outside "
+        "collaborator. If the repo is public, check the spelling."
     )
 
 
 def clone_failure_message(slug: str, exc: BaseException) -> str:
     """``Failed to clone/fetch <slug>: <exc>``, plus the access hint when it applies.
 
-    The hint applies when ``exc`` or anything in its cause/context chain that is not
-    an ``OSError`` carries one of GitHub's refusal texts. The first line is the same
-    with or without it; the hint, when present, follows on an indented line.
+    The hint applies when a git ``CommandError`` in ``exc``'s cause/context chain
+    has one of GitHub's refusal texts in its stderr (see :func:`_github_said`). The
+    first line is the same with or without it; the hint, when present, follows on an
+    indented line.
     """
     message = f"Failed to clone/fetch {shown(slug)}: {exc}"
     if _looks_like_access_failure(exc):

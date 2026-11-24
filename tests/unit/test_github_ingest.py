@@ -960,12 +960,16 @@ class TestGitHubRepoIngester:
         """The ingester's clone failure is the shared message, hint included for
         a 'Repository not found'; an unrelated failure (above) gets none. What
         the hint says is pinned in test_repo_access.py."""
+        from git.exc import GitCommandError
+
         from pipecat_context_hub.shared.repo_access import clone_failure_message
 
         config = self._make_config(tmp_path)
         ingester = GitHubRepoIngester(config, _make_mock_writer())
 
-        exc = RuntimeError("remote: Repository not found.")
+        exc = GitCommandError(
+            ["git", "clone", "--", "url", "/r"], 128, b"remote: Repository not found."
+        )
         with patch.object(ingester, "clone_or_fetch", side_effect=exc):
             result = await ingester.ingest()
 

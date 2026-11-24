@@ -1697,9 +1697,13 @@ class TestRefreshCommand:
         the hub clones as and what to check."""
         import logging
 
+        from git.exc import GitCommandError
+
         from pipecat_context_hub.shared.repo_access import clone_failure_message
 
-        exc = RuntimeError("remote: Repository not found.")
+        exc = GitCommandError(
+            ["git", "clone", "--", "url", "/r"], 128, b"remote: Repository not found."
+        )
         with caplog.at_level(logging.WARNING):
             result, _store, _crawler = self._run_with_framework_failure(
                 exc,
