@@ -582,6 +582,30 @@ the indexed pipecat version; re-verify against the current registry if they drif
       (`tests/unit/test_server.py::TestServerInstructions`) and the e2e test, and
       is left out of the main-versus-branch rule: it fails on `main` until this PR
       merges.
+62. **A refused clone prints the private-repo hint (when `shared/repo_access.py`, a
+    clone site, or `docs/configuration.md`'s "Private repos" section changes).**
+    Clone a repo that does not exist, with no credentials, and pass the real error
+    through the message builder (needs network; touches no index):
+
+    ```bash
+    d=$(mktemp -d) && GIT_TERMINAL_PROMPT=0 uv run python - "$d" <<'PY'
+    import sys
+    from git import Repo
+    from pipecat_context_hub.shared.repo_access import clone_failure_message
+    slug = "<you>/no-such-repo-xyz"
+    try:
+        Repo.clone_from(f"https://github.com/{slug}.git", sys.argv[1] + "/clone", no_checkout=True)
+    except Exception as exc:
+        print(clone_failure_message(slug, exc))
+    PY
+    rm -rf "$d"
+    ```
+
+    The output is the plain `Failed to clone/fetch <slug>: ...` line, then one
+    indented paragraph that starts `<slug> could not be read` and names the GitHub
+    account in the environment. A local failure (a clone target in a read-only
+    directory) must print the plain line only, no paragraph. Verified 2026-11-24
+    against github.com (`Repository not found`).
 
 If any of these fail, investigate before merging — the unit test suite will
 not catch the regression.

@@ -12,6 +12,16 @@ This changelog retains repository and Context Hub package history.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-24
+
+### Changed
+- **A failed `refresh` clone of an inaccessible repo now says why.** GitHub reports a private repo
+  you cannot read as `Repository not found`, the same as a missing one; the error now adds that the
+  hub clones with the GitHub account in its environment, using whatever credentials git is
+  configured with (usually its credential helper or `GIT_ASKPASS`, e.g. `gh` after
+  `gh auth setup-git`), and what to check. New "Private repos" section in
+  `docs/configuration.md`.
+
 ## [0.10.1] - 2026-11-19
 
 ### Fixed

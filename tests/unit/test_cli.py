@@ -1690,6 +1690,64 @@ class TestRefreshCommand:
             for record in caplog.records
         )
 
+    def test_clone_access_failure_logs_the_private_repo_hint(self, tmp_path, monkeypatch, caplog):
+        """The path `refresh` actually takes: its own clone loop, not the
+        ingester's (which only clones when nothing was prefetched). GitHub shows
+        an unreadable private repo as "not found", so the failure must say what
+        the hub clones as and what to check."""
+        import logging
+
+        from git.exc import GitCommandError
+
+        from pipecat_context_hub.shared.repo_access import clone_failure_message
+
+        exc = GitCommandError(
+            ["git", "clone", "--", "url", "/r"], 128, b"remote: Repository not found."
+        )
+        with caplog.at_level(logging.WARNING):
+            result, _store, _crawler = self._run_with_framework_failure(
+                exc,
+                ["--framework-version", "v1.2.0"],
+                tmp_path,
+                monkeypatch,
+            )
+
+        assert result.exit_code == 0, result.output
+        failure = next(
+            m for m in (r.getMessage() for r in caplog.records) if "Failed to clone/fetch" in m
+        )
+        # The shared message, hint line included; its wording is pinned in
+        # test_repo_access.py, not here. `str(exc)` itself holds indented lines,
+        # so the hint is proved by one more indented line than the first line has.
+        first = f"Failed to clone/fetch pipecat-ai/pipecat: {exc}"
+        assert failure.strip() == clone_failure_message("pipecat-ai/pipecat", exc)
+        assert failure.strip().startswith(first + "\n  ")
+        assert failure.strip().count("\n  ") == first.count("\n  ") + 1
+
+    def test_clone_local_permission_failure_gets_no_private_repo_hint(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A local disk failure is not a GitHub account problem."""
+        import logging
+
+        from pipecat_context_hub.shared.repo_access import clone_failure_message
+
+        exc = OSError("fatal: could not create work tree dir 'x': Permission denied")
+        with caplog.at_level(logging.WARNING):
+            result, _store, _crawler = self._run_with_framework_failure(
+                exc,
+                ["--framework-version", "v1.2.0"],
+                tmp_path,
+                monkeypatch,
+            )
+
+        assert result.exit_code == 0, result.output
+        failure = next(
+            m for m in (r.getMessage() for r in caplog.records) if "Failed to clone/fetch" in m
+        )
+        assert failure.strip() == clone_failure_message("pipecat-ai/pipecat", exc)
+        assert failure.strip() == f"Failed to clone/fetch pipecat-ai/pipecat: {exc}"
+
     def test_default_pin_costs_no_extra_fetch(self, tmp_path, monkeypatch):
         """`latest` skips the pre-flight — it cannot be typo'd.
 

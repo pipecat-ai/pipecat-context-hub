@@ -31,6 +31,7 @@ from pipecat_context_hub.services.ingest.ingest_filters import (
 )
 from pipecat_context_hub.shared.config import HubConfig
 from pipecat_context_hub.shared.interfaces import FatalIndexError
+from pipecat_context_hub.shared.repo_access import clone_failure_message
 from pipecat_context_hub.shared.repo_slug import is_valid_repo_slug
 from pipecat_context_hub.shared.terminal import shown
 from pipecat_context_hub.shared.types import ChunkedRecord, IngestResult, TaxonomyEntry
@@ -1135,7 +1136,7 @@ class GitHubRepoIngester:
                 clone = await asyncio.to_thread(self.clone_or_fetch, repo_slug)
                 repo_path, commit_sha = clone.path, clone.commit_sha
             except Exception as exc:
-                msg = f"Failed to clone/fetch {repo_slug}: {exc}"
+                msg = clone_failure_message(repo_slug, exc)
                 logger.error(msg)
                 return IngestResult(source=repo_slug, errors=[msg])
 
